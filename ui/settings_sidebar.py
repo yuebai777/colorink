@@ -132,13 +132,13 @@ class SettingsSidebar(QScrollArea):
         self.layout.addWidget(self.create_header("滑块设置"))
         
         self.slider_rows = {}
-        for key, name in [("RGB", "RGB 滑条"), ("HSV", "HSV 滑条"), ("HSL", "HLS 滑条"), ("LAB", "LAB 滑条")]:
+        for key, name in [("RGB", "RGB 滑条"), ("HSV", "HSV 滑条"), ("HSL", "HLS 滑条"), ("LAB", "LAB 滑条"), ("OKLab", "OKLab 滑条"), ("OKLCh", "OKLCh 滑条")]:
             row = QHBoxLayout()
             cb = QCheckBox(name)
             cb.stateChanged.connect(self.save_settings)
             
             combo = NonScrollComboBox()
-            combo.addItems(["1", "2", "3", "4"])
+            combo.addItems(["1", "2", "3", "4", "5", "6"])
             combo.currentTextChanged.connect(self.save_settings)
             combo.setFixedWidth(50)
             
@@ -151,10 +151,18 @@ class SettingsSidebar(QScrollArea):
         row_wheel = QHBoxLayout()
         row_wheel.addWidget(QLabel("色轮模式"))
         self.combo_wheel = NonScrollComboBox()
-        self.combo_wheel.addItems(["HSV 正方形", "HLS 三角", "RGB 三角"])
+        self.combo_wheel.addItems(["HSV 正方形", "HLS 三角", "RGB 三角", "OKLCh 三角"])
         self.combo_wheel.currentTextChanged.connect(self.save_settings)
         row_wheel.addWidget(self.combo_wheel)
         self.layout.addLayout(row_wheel)
+        
+        row_viz = QHBoxLayout()
+        row_viz.addWidget(QLabel("LAB图模式"))
+        self.combo_viz_mode = NonScrollComboBox()
+        self.combo_viz_mode.addItems(["LAB 色彩空间", "OKLab 色彩空间"])
+        self.combo_viz_mode.currentTextChanged.connect(self.save_settings)
+        row_viz.addWidget(self.combo_viz_mode)
+        self.layout.addLayout(row_viz)
         
         row_pos = QHBoxLayout()
         row_pos.addWidget(QLabel("前背景色位置"))
@@ -330,20 +338,25 @@ class SettingsSidebar(QScrollArea):
             cb.blockSignals(False)
             
         # 3. Sliders
-        for key in ["RGB", "HSV", "HSL", "LAB"]:
+        for key in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh"]:
             cb, combo = self.slider_rows[key]
             cb.blockSignals(True)
-            cb.setChecked(self.cfg.get(f"showSliders{key}", True if key in ("HSV", "LAB") else False))
+            cb.setChecked(self.cfg.get(f"showSliders{key}", True if key in ("HSV", "LAB", "OKLab") else False))
             cb.blockSignals(False)
             
             combo.blockSignals(True)
             combo.setCurrentText(str(self.cfg.get(f"orderSliders{key}", 1)))
             combo.blockSignals(False)
             
-        wheel_mode_map = {"hsv": "HSV 正方形", "hls": "HLS 三角", "rgb": "RGB 三角"}
+        wheel_mode_map = {"hsv": "HSV 正方形", "hls": "HLS 三角", "rgb": "RGB 三角", "oklch": "OKLCh 三角"}
         self.combo_wheel.blockSignals(True)
         self.combo_wheel.setCurrentText(wheel_mode_map.get(self.cfg.get("colorWheelMode", "hsv"), "HSV 正方形"))
         self.combo_wheel.blockSignals(False)
+        
+        viz_mode_map = {"lab": "LAB 色彩空间", "oklab": "OKLab 色彩空间"}
+        self.combo_viz_mode.blockSignals(True)
+        self.combo_viz_mode.setCurrentText(viz_mode_map.get(self.cfg.get("visualizerMode", "lab"), "LAB 色彩空间"))
+        self.combo_viz_mode.blockSignals(False)
         
         self.cb_show_lab_lightness.blockSignals(True)
         self.cb_show_lab_lightness.setChecked(self.cfg.get("showLabLightnessSlider", True))
@@ -539,12 +552,14 @@ class SettingsSidebar(QScrollArea):
         self.cfg["noFocusMode"] = self.cb_no_focus.isChecked()
         
         # Sliders
-        for key in ["RGB", "HSV", "HSL", "LAB"]:
+        for key in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh"]:
             self.cfg[f"showSliders{key}"] = self.slider_rows[key][0].isChecked()
             self.cfg[f"orderSliders{key}"] = int(self.slider_rows[key][1].currentText())
             
-        wheel_val_map = {"HSV 正方形": "hsv", "HLS 三角": "hls", "RGB 三角": "rgb"}
+        wheel_val_map = {"HSV 正方形": "hsv", "HLS 三角": "hls", "RGB 三角": "rgb", "OKLCh 三角": "oklch"}
         self.cfg["colorWheelMode"] = wheel_val_map.get(self.combo_wheel.currentText(), "hsv")
+        viz_val_map = {"LAB 色彩空间": "lab", "OKLab 色彩空间": "oklab"}
+        self.cfg["visualizerMode"] = viz_val_map.get(self.combo_viz_mode.currentText(), "lab")
         self.cfg["showLabLightnessSlider"] = self.cb_show_lab_lightness.isChecked()
         
         software_val_map = {"CLIP Studio Paint": "csp", "SAI2": "sai", "UDM Paint": "udm"}
