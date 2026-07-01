@@ -13,6 +13,7 @@ from core import memory_sync
 from core import global_hotkeys
 from ui.color_wheel import ColorWheel, hsv_to_rgb, rgb_to_hsv, hls_to_hsv_floats
 from ui.lab_visualizer import LabSquare, LabSlider, lab_to_rgb, rgb_to_lab
+from ui.oklab_colors import oklab_to_rgb, rgb_to_oklab, oklch_to_rgb, rgb_to_oklch
 from ui.settings_sidebar import SettingsSidebar
 
 def bring_process_to_foreground(pid: int) -> bool:
@@ -442,6 +443,10 @@ class MainWindow(QMainWindow):
         self.resize_dir = None
         self.resize_start_pos = None
         self.resize_start_geometry = None
+        
+        # DPI-aware screen tracking to prevent size drift when dragging across monitors
+        self._last_dpr = None       # Previous screen devicePixelRatio
+        self._dpi_locked_size = None  # (w, h) logical size frozen during DPI transition
 
         self.init_ui()
         self.init_hotkeys()
@@ -455,11 +460,24 @@ class MainWindow(QMainWindow):
         self.update_window_flags()
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
-        # Load window dimensions
+        # Load window dimensions, adjusting for DPI differences since last save
         win_cfg = config.load_window_config()
         scale = self.cfg.get("uiScale", 100) / 100.0
+        saved_dpr = win_cfg.get("dpr", None)
+        current_dpr = self.devicePixelRatio() if hasattr(self, "devicePixelRatio") else 1.0
+        if current_dpr < 0.1:
+            current_dpr = 1.0
+        
         w = win_cfg.get("width", int(320 * scale))
         h = win_cfg.get("height", int(450 * scale))
+        
+        # If saved on a different DPI screen, adjust to current screen's logical pixels
+        if saved_dpr is not None and abs(current_dpr - saved_dpr) > 0.01:
+            phys_w = w * saved_dpr
+            phys_h = h * saved_dpr
+            w = int(phys_w / current_dpr)
+            h = int(phys_h / current_dpr)
+        
         self.resize(w, h)
         if "x" in win_cfg and "y" in win_cfg:
             self.move(win_cfg["x"], win_cfg["y"])
@@ -513,6 +531,10 @@ class MainWindow(QMainWindow):
         self.lab_square.colorChanged.connect(self.on_lab_square_color_changed)
         self.lab_square.interactionFinished.connect(self.on_interaction_finished)
         
+        # Set initial visualizer mode from config
+        viz_mode = self.cfg.get("visualizerMode", "lab")
+        self.lab_square.set_render_mode(viz_mode)
+        
         # Wrap vertical lightness slider in a column widget to support height adjustment and hiding
         self.lab_slider_column = QWidget()
         slider_col_layout = QVBoxLayout(self.lab_slider_column)
@@ -565,6 +587,8 @@ class MainWindow(QMainWindow):
             self.color_wheel.set_wheel_mode("hls-triangle")
         elif cfg_color_mode == "rgb":
             self.color_wheel.set_wheel_mode("rgb-slice")
+        elif cfg_color_mode == "oklch":
+            self.color_wheel.set_wheel_mode("oklch-slice")
         else:
             self.color_wheel.set_wheel_mode(cfg_wheel_mode)
         
@@ -610,6 +634,22 @@ class MainWindow(QMainWindow):
         lab_lay.setSpacing(same_space_base)
         self.create_group_sliders("LAB", ["L_lab", "a_lab", "b_lab"], lab_lay)
         self.sliders_layout.addWidget(self.slider_containers["LAB"])
+        
+        # 5. OKLab
+        self.slider_containers["OKLab"] = QWidget()
+        oklab_lay = QVBoxLayout(self.slider_containers["OKLab"])
+        oklab_lay.setContentsMargins(0, 0, 0, 0)
+        oklab_lay.setSpacing(same_space_base)
+        self.create_group_sliders("OKLab", ["L_oklab", "a_oklab", "b_oklab"], oklab_lay)
+        self.sliders_layout.addWidget(self.slider_containers["OKLab"])
+        
+        # 6. OKLCh
+        self.slider_containers["OKLCh"] = QWidget()
+        oklch_lay = QVBoxLayout(self.slider_containers["OKLCh"])
+        oklch_lay.setContentsMargins(0, 0, 0, 0)
+        oklch_lay.setSpacing(same_space_base)
+        self.create_group_sliders("OKLCh", ["L_oklch", "C_oklch", "h_oklch"], oklch_lay)
+        self.sliders_layout.addWidget(self.slider_containers["OKLCh"])
 
     def create_group_sliders(self, group, channels, layout):
         for chan in channels:
@@ -631,6 +671,14 @@ class MainWindow(QMainWindow):
                 slider.setRange(0, 100)
             elif chan in ("a_lab", "b_lab"):
                 slider.setRange(-128, 127)
+            elif chan in ("a_oklab", "b_oklab"):
+                slider.setRange(-40, 40)
+            elif chan in ("L_oklab", "L_oklch"):
+                slider.setRange(0, 100)
+            elif chan == "C_oklch":
+                slider.setRange(0, 100)
+            elif chan == "h_oklch":
+                slider.setRange(0, 360)
             else:
                 slider.setRange(0, 255)
                 
@@ -656,6 +704,10 @@ class MainWindow(QMainWindow):
                 slider.valueChanged.connect(self.on_hsl_slider_changed)
             elif group == "LAB":
                 slider.valueChanged.connect(self.on_lab_slider_changed)
+            elif group == "OKLab":
+                slider.valueChanged.connect(self.on_oklab_slider_changed)
+            elif group == "OKLCh":
+                slider.valueChanged.connect(self.on_oklch_slider_changed)
 
     def select_fg_slot(self):
         if self.active_slot != "fg":
@@ -742,14 +794,81 @@ class MainWindow(QMainWindow):
         g_clamped = max(0.0, min(255.0, g))
         b_clamped = max(0.0, min(255.0, b))
         h_hsv, s_hsv, v_hsv = rgb_to_hsv(r_clamped, g_clamped, b_clamped)
+        # Preserve current hue when a,b drop to achromatic
+        if s_hsv < 1.0 and hasattr(self, 'color_wheel'):
+            h_hsv = self.color_wheel.h
         r_int = int(r_clamped)
         g_int = int(g_clamped)
         b_int = int(b_clamped)
         self.update_ui_colors(r_int, g_int, b_int, source="sliders_lab", hsv=(h_hsv, s_hsv, v_hsv))
 
+    def on_oklab_slider_changed(self):
+        l_val = self.slider_widgets["L_oklab"][0].value()
+        a_val = self.slider_widgets["a_oklab"][0].value() / 100.0
+        b_val = self.slider_widgets["b_oklab"][0].value() / 100.0
+        r, g, b = oklab_to_rgb(l_val / 100.0, a_val, b_val)
+        r_clamped = max(0.0, min(255.0, r))
+        g_clamped = max(0.0, min(255.0, g))
+        b_clamped = max(0.0, min(255.0, b))
+        h_hsv, s_hsv, v_hsv = rgb_to_hsv(r_clamped, g_clamped, b_clamped)
+        # Preserve current hue when a,b drop to achromatic
+        if s_hsv < 1.0 and hasattr(self, 'color_wheel'):
+            h_hsv = self.color_wheel.h
+        self.update_ui_colors(int(r_clamped), int(g_clamped), int(b_clamped),
+                              source="sliders_oklab", hsv=(h_hsv, s_hsv, v_hsv))
+
+    def on_oklch_slider_changed(self):
+        import math
+        l_val = self.slider_widgets["L_oklch"][0].value()
+        c_raw = self.slider_widgets["C_oklch"][0].value()
+        h_val = self.slider_widgets["h_oklch"][0].value()
+        L = l_val / 100.0
+        max_c = self._find_oklch_max_chroma(L, h_val)
+        c_val = (c_raw / 100.0) * max_c if max_c > 0.0 else 0.0
+        r, g, b = oklch_to_rgb(L, c_val, h_val)
+        r_clamped = max(0.0, min(255.0, r))
+        g_clamped = max(0.0, min(255.0, g))
+        b_clamped = max(0.0, min(255.0, b))
+        h_hsv, s_hsv, v_hsv = rgb_to_hsv(r_clamped, g_clamped, b_clamped)
+        # Preserve current hue when chroma drops to achromatic
+        if s_hsv < 1.0 and hasattr(self, 'color_wheel'):
+            h_hsv = self.color_wheel.h
+        self.update_ui_colors(int(r_clamped), int(g_clamped), int(b_clamped),
+                              source="sliders_oklch", hsv=(h_hsv, s_hsv, v_hsv))
+
+    def _find_oklch_max_chroma(self, L, h):
+        """Binary search for max OKLCh chroma at given L, h within sRGB gamut."""
+        # At extreme L, gamut is a single point — return small epsilon to avoid /0
+        if L < 0.002 or L > 0.998:
+            return 0.001
+        cache_key = (round(L, 3), round(h, 1))
+        cached = getattr(self, '_oklch_max_c_cache', {})
+        if cache_key in cached:
+            return cached[cache_key]
+        lo, hi = 0.0, 0.6
+        for _ in range(16):
+            mid = (lo + hi) / 2.0
+            r, g, b = oklch_to_rgb(L, mid, h)
+            if -0.5 <= r <= 255.5 and -0.5 <= g <= 255.5 and -0.5 <= b <= 255.5:
+                lo = mid
+            else:
+                hi = mid
+        # Guard against degenerate case (all chroma values valid at extreme L)
+        if lo < 0.0001:
+            lo = 0.001
+        cached[cache_key] = lo
+        if len(cached) > 500:
+            cached.pop(next(iter(cached)))
+        self._oklch_max_c_cache = cached
+        return lo
+
     def on_interaction_finished(self):
         self.color_wheel.update()
         self.lab_square.update()
+        # Defer pre-render to avoid blocking mouse release
+        if not self.lab_square.isVisible():
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(50, self._prerender_lab)
         r, g, b = self.current_rgb
         if hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
             self.sync_thread.write_color(r, g, b)
@@ -762,10 +881,18 @@ class MainWindow(QMainWindow):
             if pid:
                 bring_process_to_foreground(pid)
 
+    def _prerender_lab(self):
+        """Background pre-render of LAB visualizer."""
+        if not self.lab_square.isVisible() and hasattr(self, 'stack'):
+            self.lab_square.resize(self.stack.size())
+            self.lab_square.prerender()
+
     def update_slider_gradients(self, r, g, b):
         h_hsv, s_hsv, v_hsv = rgb_to_hsv(r, g, b)
         h_hsl, l_hsl, s_hsl = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
         l_lab, a_lab, b_lab = rgb_to_lab(r, g, b)
+        L_oklab, a_oklab, b_oklab = rgb_to_oklab(r, g, b)
+        L_oklch, C_oklch, h_oklch = rgb_to_oklch(r, g, b)
         
         # 1) R Slider
         self.slider_widgets["R"][0].set_gradient([
@@ -858,6 +985,57 @@ class MainWindow(QMainWindow):
             (1.0, QColor(max(0, min(255, int(blab1_r))), max(0, min(255, int(blab1_g))), max(0, min(255, int(blab1_b)))))
         ])
 
+        # 13) L_oklab Slider (L from 0 to 1 mapped to slider 0-100)
+        if self.slider_containers.get("OKLab", QWidget()).isVisible():
+            okl0_r, okl0_g, okl0_b = oklab_to_rgb(0.0, a_oklab, b_oklab)
+            okl1_r, okl1_g, okl1_b = oklab_to_rgb(1.0, a_oklab, b_oklab)
+            self.slider_widgets["L_oklab"][0].set_gradient([
+                (0.0, QColor(int(max(0, min(255, okl0_r))), int(max(0, min(255, okl0_g))), int(max(0, min(255, okl0_b))))),
+                (1.0, QColor(int(max(0, min(255, okl1_r))), int(max(0, min(255, okl1_g))), int(max(0, min(255, okl1_b)))))
+            ])
+            
+            # 14) a_oklab Slider (a from -0.4 to 0.4 mapped to slider -40..40)
+            oka0_r, oka0_g, oka0_b = oklab_to_rgb(L_oklab, -0.4, b_oklab)
+            oka1_r, oka1_g, oka1_b = oklab_to_rgb(L_oklab, 0.4, b_oklab)
+            self.slider_widgets["a_oklab"][0].set_gradient([
+                (0.0, QColor(int(max(0, min(255, oka0_r))), int(max(0, min(255, oka0_g))), int(max(0, min(255, oka0_b))))),
+                (1.0, QColor(int(max(0, min(255, oka1_r))), int(max(0, min(255, oka1_g))), int(max(0, min(255, oka1_b)))))
+            ])
+            
+            # 15) b_oklab Slider
+            okb0_r, okb0_g, okb0_b = oklab_to_rgb(L_oklab, a_oklab, -0.4)
+            okb1_r, okb1_g, okb1_b = oklab_to_rgb(L_oklab, a_oklab, 0.4)
+            self.slider_widgets["b_oklab"][0].set_gradient([
+                (0.0, QColor(int(max(0, min(255, okb0_r))), int(max(0, min(255, okb0_g))), int(max(0, min(255, okb0_b))))),
+                (1.0, QColor(int(max(0, min(255, okb1_r))), int(max(0, min(255, okb1_g))), int(max(0, min(255, okb1_b)))))
+            ])
+        
+        if self.slider_containers.get("OKLCh", QWidget()).isVisible():
+            # 16) L_oklch Slider (L from 0 to 1 mapped to slider 0-100)
+            okcl0_r, okcl0_g, okcl0_b = oklch_to_rgb(0.0, C_oklch, h_oklch)
+            okcl1_r, okcl1_g, okcl1_b = oklch_to_rgb(1.0, C_oklch, h_oklch)
+            self.slider_widgets["L_oklch"][0].set_gradient([
+                (0.0, QColor(int(max(0, min(255, okcl0_r))), int(max(0, min(255, okcl0_g))), int(max(0, min(255, okcl0_b))))),
+                (1.0, QColor(int(max(0, min(255, okcl1_r))), int(max(0, min(255, okcl1_g))), int(max(0, min(255, okcl1_b)))))
+            ])
+            
+            # 17) C_oklch Slider (adaptive max chroma)
+            max_c = self._find_oklch_max_chroma(L_oklch, h_oklch)
+            okcc0_r, okcc0_g, okcc0_b = oklch_to_rgb(L_oklch, 0.0, h_oklch)
+            okcc1_r, okcc1_g, okcc1_b = oklch_to_rgb(L_oklch, max_c, h_oklch)
+            self.slider_widgets["C_oklch"][0].set_gradient([
+                (0.0, QColor(int(max(0, min(255, okcc0_r))), int(max(0, min(255, okcc0_g))), int(max(0, min(255, okcc0_b))))),
+                (1.0, QColor(int(max(0, min(255, okcc1_r))), int(max(0, min(255, okcc1_g))), int(max(0, min(255, okcc1_b)))))
+            ])
+            
+            # 18) h_oklch Slider (hue 0-360)
+            okch_stops = []
+            for i in range(7):
+                hue = i * 60
+                r_h, g_h, b_h = oklch_to_rgb(L_oklch, C_oklch, hue)
+                okch_stops.append((i / 6.0, QColor(int(max(0, min(255, r_h))), int(max(0, min(255, g_h))), int(max(0, min(255, b_h))))))
+            self.slider_widgets["h_oklch"][0].set_gradient(okch_stops)
+
     def update_ui_colors(self, r, g, b, source="", hsv=None):
         self.current_rgb = (r, g, b)
         color = QColor(r, g, b)
@@ -883,7 +1061,7 @@ class MainWindow(QMainWindow):
 
         # 4) Sync Sliders
         # Block signals for all sliders during sync
-        all_chans = ["R", "G", "B", "H_hsv", "S_hsv", "V_hsv", "H_hsl", "L_hsl", "S_hsl", "L_lab", "a_lab", "b_lab"]
+        all_chans = ["R", "G", "B", "H_hsv", "S_hsv", "V_hsv", "H_hsl", "L_hsl", "S_hsl", "L_lab", "a_lab", "b_lab", "L_oklab", "a_oklab", "b_oklab", "L_oklch", "C_oklch", "h_oklch"]
         for chan in all_chans:
             if chan in self.slider_widgets:
                 self.slider_widgets[chan][0].blockSignals(True)
@@ -895,27 +1073,30 @@ class MainWindow(QMainWindow):
             self.slider_widgets["B"][0].setValue(b)
         
         # HSV Values
-        # HSV Values
         if source != "sliders_hsv":
             if source == "wheel":
                 h_hsv = self.color_wheel.h
                 s_hsv = self.color_wheel.s
                 v_hsv = self.color_wheel.v
+            elif hsv is not None:
+                h_hsv, s_hsv, v_hsv = hsv
             else:
                 h_hsv, s_hsv, v_hsv = rgb_to_hsv(r, g, b)
-            self.slider_widgets["H_hsv"][0].setValue(int(h_hsv))
-            self.slider_widgets["S_hsv"][0].setValue(int(s_hsv))
-            self.slider_widgets["V_hsv"][0].setValue(int(v_hsv))
+            self.slider_widgets["H_hsv"][0].setValue(round(h_hsv))
+            self.slider_widgets["S_hsv"][0].setValue(round(s_hsv))
+            self.slider_widgets["V_hsv"][0].setValue(round(v_hsv))
         
         # HSL Values
         if source != "sliders_hsl":
             if source == "wheel":
                 h_hsl, l_hsl, s_hsl = hsv_to_hls_floats(self.color_wheel.h, self.color_wheel.s, self.color_wheel.v)
+                self.slider_widgets["H_hsl"][0].setValue(round(h_hsl * 360.0))
             else:
                 h_hsl, l_hsl, s_hsl = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
-            self.slider_widgets["H_hsl"][0].setValue(int(h_hsl * 360.0))
-            self.slider_widgets["L_hsl"][0].setValue(int(l_hsl * 100.0))
-            self.slider_widgets["S_hsl"][0].setValue(int(s_hsl * 100.0))
+                h_deg = hsv[0] if hsv is not None else h_hsl * 360.0  # Reuse handler's locked hue
+                self.slider_widgets["H_hsl"][0].setValue(round(h_deg))
+            self.slider_widgets["L_hsl"][0].setValue(round(l_hsl * 100.0))
+            self.slider_widgets["S_hsl"][0].setValue(round(s_hsl * 100.0))
         
         # LAB Values
         if source != "sliders_lab":
@@ -927,9 +1108,26 @@ class MainWindow(QMainWindow):
                 l_lab, a_lab, b_lab = rgb_to_lab(r_f * 255.0, g_f * 255.0, b_f * 255.0)
             else:
                 l_lab, a_lab, b_lab = rgb_to_lab(r, g, b)
-            self.slider_widgets["L_lab"][0].setValue(int(l_lab))
-            self.slider_widgets["a_lab"][0].setValue(int(a_lab))
-            self.slider_widgets["b_lab"][0].setValue(int(b_lab))
+            self.slider_widgets["L_lab"][0].setValue(round(l_lab))
+            self.slider_widgets["a_lab"][0].setValue(round(a_lab))
+            self.slider_widgets["b_lab"][0].setValue(round(b_lab))
+        
+        # OKLab Values
+        if source != "sliders_oklab":
+            L_ok, a_ok, b_ok = rgb_to_oklab(r, g, b)
+            self.slider_widgets["L_oklab"][0].setValue(round(L_ok * 100))
+            self.slider_widgets["a_oklab"][0].setValue(round(a_ok * 100))
+            self.slider_widgets["b_oklab"][0].setValue(round(b_ok * 100))
+        
+        # OKLCh Values
+        if source != "sliders_oklch":
+            L_okc, C_okc, h_okc = rgb_to_oklch(r, g, b)
+            self.slider_widgets["L_oklch"][0].setValue(round(L_okc * 100))
+            self.slider_widgets["h_oklch"][0].setValue(round(h_okc))
+            # Only compute adaptive max_c when C slider is visible (expensive binary search)
+            if self.slider_containers.get("OKLCh", QWidget()).isVisible():
+                max_c = self._find_oklch_max_chroma(L_okc, h_okc)
+                self.slider_widgets["C_oklch"][0].setValue(round(C_okc / max_c * 100) if max_c > 0.001 else 0)
         
         for chan in all_chans:
             if chan in self.slider_widgets:
@@ -954,6 +1152,55 @@ class MainWindow(QMainWindow):
                 self.sync_thread.write_color(r, g, b)
 
     def resizeEvent(self, event):
+        """Handle resize, preventing DPI-induced size drift when dragged between monitors.
+
+        When a frameless window is dragged between screens with different DPI scaling,
+        Qt may fire resize events as it recalculates device-independent pixels. Without
+        intervention, the title-bar height change in apply_theme() + layout recalculation
+        creates a feedback loop that causes progressive size drift with each cross-screen drag.
+        """
+        current_screen = self.screen()
+        if current_screen is not None:
+            current_dpr = current_screen.devicePixelRatio()
+        else:
+            current_dpr = 1.0
+        
+        # Detect DPI change (screen switch with different scaling)
+        dpi_changed = (self._last_dpr is not None and 
+                       current_dpr is not None and 
+                       abs(current_dpr - self._last_dpr) > 0.01)
+        
+        if dpi_changed and self._dpi_locked_size is None:
+            # First resize event after DPI change: lock the intended logical size.
+            # We use oldSize (the size BEFORE Qt's DPI adjustment) to compute the
+            # correct logical size for the new DPR.
+            old_size = event.oldSize()
+            if old_size.isValid() and old_size.width() > 100 and old_size.height() > 100:
+                old_dpr = self._last_dpr
+                new_dpr = current_dpr
+                # Preserve physical pixel dimensions: convert old logical → physical → new logical
+                phys_w = old_size.width() * old_dpr
+                phys_h = old_size.height() * old_dpr
+                target_w = max(200, min(1200, int(phys_w / new_dpr)))
+                target_h = max(300, min(1600, int(phys_h / new_dpr)))
+                
+                new_size = event.size()
+                if abs(target_w - new_size.width()) > 3 or abs(target_h - new_size.height()) > 3:
+                    # Qt adjusted the size; override to maintain physical consistency
+                    self._dpi_locked_size = (target_w, target_h)
+                    self.resize(target_w, target_h)
+                    self._last_dpr = current_dpr
+                    return  # self.resize() will fire another resizeEvent
+        
+        # Clear DPI lock after the stabilizing resize
+        if self._dpi_locked_size is not None:
+            locked_w, locked_h = self._dpi_locked_size
+            new_size = event.size()
+            if abs(locked_w - new_size.width()) <= 3 and abs(locked_h - new_size.height()) <= 3:
+                self._dpi_locked_size = None
+        
+        self._last_dpr = current_dpr
+        
         super().resizeEvent(event)
         self.update_geometries()
 
@@ -964,7 +1211,7 @@ class MainWindow(QMainWindow):
         dynamic_scale = self.cfg.get("uiScale", 100) / 100.0
         
         # Apply scaling and updates
-        self.apply_theme(scale=dynamic_scale)
+        self.apply_theme(scale=dynamic_scale, is_resize_event=True)
         
         title_h = self.title_bar.height()
         sliders_h = self.sliders_container.sizeHint().height()
@@ -1113,14 +1360,17 @@ class MainWindow(QMainWindow):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        was_resizing = self.resizing
         self.resizing = False
         self.resize_dir = None
         self.unsetCursor()
-        # Save window geometry
-        cfg = config.load_window_config()
-        cfg["width"] = self.width()
-        cfg["height"] = self.height()
-        config.save_window_config(cfg)
+        # Only save window geometry on actual manual resize, not on every mouse-up
+        # (prevents saving DPI-corrupted sizes from cross-screen drags)
+        if was_resizing:
+            cfg = config.load_window_config()
+            cfg["width"] = self.width()
+            cfg["height"] = self.height()
+            config.save_window_config(cfg)
         
         super().mouseReleaseEvent(event)
 
@@ -1176,7 +1426,7 @@ class MainWindow(QMainWindow):
             return "bottom"
         return None
 
-    def apply_theme(self, scale=None):
+    def apply_theme(self, scale=None, is_resize_event=False):
         if scale is None:
             scale = self.cfg.get("uiScale", 100) / 100.0
 
@@ -1192,7 +1442,9 @@ class MainWindow(QMainWindow):
         self.update_mode_buttons_visibility()
 
         # Update layouts margins & spacing
-        # Get screen device pixel ratio to keep the physical size exactly 28px on High-DPI screens
+        # Get screen device pixel ratio to keep the physical size exactly 28px on High-DPI screens.
+        # Only adjust title bar height on non-resize-event calls (init / settings change)
+        # to avoid DPI-triggered layout cascades when dragging between monitors.
         ratio = self.devicePixelRatio() if hasattr(self, "devicePixelRatio") else 1.0
         if ratio < 0.1:
             ratio = 1.0
@@ -1230,7 +1482,7 @@ class MainWindow(QMainWindow):
         )
         
         # Update spacing within each color space block
-        for group in ["RGB", "HSV", "HSL", "LAB"]:
+        for group in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh"]:
             if hasattr(self, "slider_containers") and group in self.slider_containers:
                 container = self.slider_containers[group]
                 lay = container.layout()
@@ -1271,7 +1523,7 @@ class MainWindow(QMainWindow):
             
         # Determine label text color based on background/text lightness to avoid low contrast
         is_dark_text = QColor(text).lightness() < 128
-        channel_text_color = "#000000" if is_dark_text else "#e9e9e9"
+        channel_text_color = "#666666" if is_dark_text else "#e9e9e9"
         inputBg = "#eaeaea" if is_dark_text else "#2e2e2e"
         borderColor = "#d0d0d0" if is_dark_text else "#555555"
         
@@ -1568,15 +1820,15 @@ class MainWindow(QMainWindow):
 
     def refresh_slider_visibility_and_order(self):
         # Remove all from layout
-        for group in ["RGB", "HSV", "HSL", "LAB"]:
+        for group in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh"]:
             self.sliders_layout.removeWidget(self.slider_containers[group])
             
         # Sort groups by order cfg
-        groups = ["RGB", "HSV", "HSL", "LAB"]
+        groups = ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh"]
         groups.sort(key=lambda g: self.cfg.get(f"orderSliders{g}", 1))
         
         for g in groups:
-            visible = self.cfg.get(f"showSliders{g}", True if g in ("HSV", "LAB") else False)
+            visible = self.cfg.get(f"showSliders{g}", True if g in ("HSV", "LAB", "OKLab") else False)
             self.slider_containers[g].setVisible(visible)
             self.sliders_layout.addWidget(self.slider_containers[g])
             
@@ -1717,10 +1969,19 @@ class MainWindow(QMainWindow):
             self.color_wheel.set_wheel_mode("hls-triangle")
         elif cfg_color_mode == "rgb":
             self.color_wheel.set_wheel_mode("rgb-slice")
+        elif cfg_color_mode == "oklch":
+            self.color_wheel.set_wheel_mode("oklch-slice")
         else:
             self.color_wheel.set_wheel_mode(cfg_wheel_mode)
         
         self.color_wheel.reload_config()
+        
+        # Update lab visualizer mode
+        viz_mode = self.cfg.get("visualizerMode", "lab")
+        if hasattr(self, 'lab_square'):
+            self.lab_square.set_render_mode(viz_mode)
+            # Update max_val in config for persistence
+            self.cfg["labVisualizerMaxVal"] = 110 if viz_mode == "lab" else 0.4
         
         # Apply slider visibility and order
         self.refresh_slider_visibility_and_order()
@@ -1737,13 +1998,17 @@ class MainWindow(QMainWindow):
             self.update()
 
     def close_application(self):
-        # Save window settings on exit
+        # Save window settings on exit, normalized to 1x DPI for consistency
+        dpr = self.devicePixelRatio() if hasattr(self, "devicePixelRatio") else 1.0
+        if dpr < 0.1:
+            dpr = 1.0
         cfg = {
             "x": self.x(),
             "y": self.y(),
             "width": self.width(),
             "height": self.height(),
-            "zoom": 0 # Default placeholder
+            "dpr": dpr,  # Store DPR so we can restore correctly
+            "zoom": 0  # Default placeholder
         }
         config.save_window_config(cfg)
         
