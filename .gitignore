@@ -25,5 +25,11 @@ Thumbs.db
 .codegraph/
 scratch/
 
+# AI agent session files
+.omo/
+
+# Test artifacts
+_test_log.txt
+
 # PyInstaller
 *.manifest
