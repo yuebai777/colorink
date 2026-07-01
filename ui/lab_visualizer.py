@@ -2,6 +2,7 @@ import math
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import QPainter, QColor, QImage, QPen, QBrush, QLinearGradient, QPixmap, QPainterPath
 from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
+from ui.oklab_colors import oklab_to_rgb, rgb_to_oklab
 
 def rgb_to_lab(r, g, b):
     r_val = max(0.0, min(255.0, r)) / 255.0
@@ -76,6 +77,7 @@ class LabSquare(QWidget):
         self.a = 0.0
         self.b = 0.0
         self.max_val = 110.0
+        self.render_mode = "lab"  # "lab" or "oklab"
         
         self.dragging = False
         
@@ -93,11 +95,27 @@ class LabSquare(QWidget):
         self._cached_img = None
         self._cached_key = None
 
+    def set_render_mode(self, mode):
+        """Set render mode: 'lab' or 'oklab'. Invalidates cache."""
+        if mode != self.render_mode:
+            self.render_mode = mode
+            self.max_val = 110.0 if mode == "lab" else 0.3
+            self._cached_img = None
+            self._cached_key = None
+            self.update()
+
     def set_color(self, r, g, b, block_signals=False):
-        l, a, b_val = rgb_to_lab(r, g, b)
-        self.L = l
-        self.a = a
-        self.b = b_val
+        if self.render_mode == "oklab":
+            L, a, b_val = rgb_to_oklab(r, g, b)
+            # Scale OKLab L from [0,1] to [0,100] for internal storage consistency
+            self.L = L * 100.0
+            self.a = a
+            self.b = b_val
+        else:
+            l, a, b_val = rgb_to_lab(r, g, b)
+            self.L = l
+            self.a = a
+            self.b = b_val
         self.update()
         if not block_signals:
             self.colorChanged.emit(r, g, b)
@@ -110,27 +128,35 @@ class LabSquare(QWidget):
         self.colorChanged.emit(r, g, b)
 
     def get_current_rgb(self):
-        r, g, b = lab_to_rgb(self.L, self.a, self.b)
+        if self.render_mode == "oklab":
+            r, g, b = oklab_to_rgb(self.L / 100.0, self.a, self.b)
+        else:
+            r, g, b = lab_to_rgb(self.L, self.a, self.b)
         r = max(0, min(255, int(r)))
         g = max(0, min(255, int(g)))
         b = max(0, min(255, int(b)))
         return r, g, b
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
+    def prerender(self):
+        """Pre-render a low-res preview for instant display on mode switch."""
+        self._cached_img = None
+        self._cached_key = None
+        self._render_ab_plane(low_quality=True)
+        self._prerender_img = self._cached_img
+        self._cached_img = None
+        self._cached_key = None
+
+    def _render_ab_plane(self, low_quality=False):
+        """Render ab-plane into cache. Called by paintEvent and prerender."""
         w = self.width()
         h = self.height()
         size = min(w, h)
         if size <= 10:
             return
-            
-        # Center in square layout
+
         offset_x = (w - size) / 2
         offset_y = (h - size) / 2
-        
-        # 1) Draw ab plane gradient with caching
+
         is_active = False
         win = self.window()
         if win is not None and hasattr(win, "slider_widgets"):
@@ -138,20 +164,31 @@ class LabSquare(QWidget):
                 if slider.isSliderDown():
                     is_active = True
                     break
-                        
-        cache_key = (int(self.L * 2), size, is_active) # Cache key rounded to 0.5 lightness step
-        
-        if self._cached_key == cache_key and self._cached_img is not None:
-            painter.drawImage(int(offset_x), int(offset_y), self._cached_img)
+
+        cache_key = (int(self.L * 2), size, is_active, self.render_mode)
+        if not low_quality and self._cached_key == cache_key and self._cached_img is not None:
+            return
+
+        ratio = self.devicePixelRatio()
+        if is_active or low_quality:
+            gen_size = min(size, 120)
         else:
-            ratio = self.devicePixelRatio()
-            if is_active:
-                gen_size = min(size, 120)
-            else:
-                gen_size = int(size * ratio)
-                
-            img = QImage(gen_size, gen_size, QImage.Format.Format_ARGB32)
-            
+            gen_size = int(size * ratio)
+        img = QImage(gen_size, gen_size, QImage.Format.Format_ARGB32)
+
+        if self.render_mode == "oklab":
+            # OKLab rendering: per-pixel oklab_to_rgb
+            for row in range(gen_size):
+                b_val = self.max_val - (row / gen_size) * (self.max_val * 2)
+                for col in range(gen_size):
+                    a_val = (col / gen_size) * (self.max_val * 2) - self.max_val
+                    r_val, g_val, bv = oklab_to_rgb(self.L / 100.0, a_val, b_val)
+                    if 0 <= r_val <= 255 and 0 <= g_val <= 255 and 0 <= bv <= 255:
+                        argb = (255 << 24) | (int(r_val) << 16) | (int(g_val) << 8) | int(bv)
+                        img.setPixel(col, row, argb)
+                    else:
+                        img.setPixel(col, row, 0)
+        else:
             y_const = (self.L + 16.0) / 116.0
             y_val = y_const * y_const * y_const if y_const > 0.206893 else (y_const - 16.0/116.0) / 7.787
             
@@ -199,17 +236,42 @@ class LabSquare(QWidget):
                     else:
                         img.setPixel(col, row, 0)
                         
-            if is_active:
-                final_img = img.scaled(int(size * ratio), int(size * ratio), Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                final_img.setDevicePixelRatio(ratio)
-            else:
-                final_img = img
-                final_img.setDevicePixelRatio(ratio)
-                
-            self._cached_img = final_img
-            self._cached_key = cache_key
-            painter.drawImage(int(offset_x), int(offset_y), final_img)
+        # Save to cache
+        if is_active:
+            final_img = img.scaled(int(size * ratio), int(size * ratio), Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            final_img.setDevicePixelRatio(ratio)
+        else:
+            final_img = img
+            final_img.setDevicePixelRatio(ratio)
+        self._cached_img = final_img
+        self._cached_key = cache_key
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        w = self.width()
+        h = self.height()
+        size = min(w, h)
+        if size <= 10:
+            return
             
+        offset_x = (w - size) / 2
+        offset_y = (h - size) / 2
+        
+        # Show low-res prerender first if available
+        used_prerender = False
+        prerender_img = getattr(self, '_prerender_img', None)
+        if prerender_img is not None:
+            target = QRectF(offset_x, offset_y, size, size)
+            painter.drawImage(target, prerender_img)
+            self._prerender_img = None
+            used_prerender = True
+        else:
+            self._render_ab_plane()
+            if self._cached_img is not None:
+                painter.drawImage(int(offset_x), int(offset_y), self._cached_img)
+        
         # Draw dotted crosshair
         center_x = offset_x + size / 2.0
         center_y = offset_y + size / 2.0
@@ -232,6 +294,9 @@ class LabSquare(QWidget):
         painter.setPen(QPen(color_border, 2.5))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(QPointF(ix, iy), 8.0, 8.0)
+
+        if used_prerender:
+            self.update()  # schedule full-quality render next frame
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
