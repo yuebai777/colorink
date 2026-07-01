@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import QPainter, QColor, QImage, QPen, QBrush, QConicalGradient, QPainterPath, QLinearGradient
 from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
 from ui.lab_visualizer import lab_to_rgb, rgb_to_lab
+from ui.oklab_colors import oklch_to_rgb, rgb_to_oklch
 from core import config
 
 def hsv_to_rgb(h, s, v):
@@ -61,14 +62,26 @@ def project_point_to_triangle(px, py, v0, v1, v2):
 def find_max_c(L_val, a_dir, b_dir):
     low = 0.0
     high = 150.0
-    for _ in range(12):
+    for _ in range(16):
         mid = (low + high) / 2.0
         r, g, b = lab_to_rgb(L_val, mid * a_dir, mid * b_dir)
-        if 0.0 <= r <= 255.0 and 0.0 <= g <= 255.0 and 0.0 <= b <= 255.0:
+        if -0.5 <= r <= 255.5 and -0.5 <= g <= 255.5 and -0.5 <= b <= 255.5:
             low = mid
         else:
             high = mid
     return low
+
+def find_max_oklch_c(L, h):
+    """Binary search for max OKLCh chroma at given L, h within sRGB gamut."""
+    lo, hi = 0.0, 0.6
+    for _ in range(16):
+        mid = (lo + hi) / 2.0
+        r, g, b = oklch_to_rgb(L, mid, h)
+        if -0.5 <= r <= 255.5 and -0.5 <= g <= 255.5 and -0.5 <= b <= 255.5:
+            lo = mid
+        else:
+            hi = mid
+    return lo
 
 def hls_to_hsv_floats(h, l, s):
     # h: 0-360, l: 0-1, s: 0-1
@@ -109,6 +122,7 @@ class ColorWheel(QWidget):
         self.update()
 
     def is_active_interaction(self):
+        """Return True when wheel is being dragged or an external slider is active."""
         if self.dragging:
             return True
         win = self.window()
@@ -119,6 +133,7 @@ class ColorWheel(QWidget):
         return False
 
     def set_color(self, r, g, b, block_signals=False):
+        self._drag_slice = ""  # external color change, reset indicator mode
         h, s, v = rgb_to_hsv(r, g, b)
         self.h = h
         self.s = s
@@ -243,6 +258,8 @@ class ColorWheel(QWidget):
             self.draw_hls_triangle(painter, cx, cy, triangle_radius)
         elif self.wheel_mode == "rgb-slice":
             self.draw_rgb_slice(painter, cx, cy, triangle_radius)
+        elif self.wheel_mode == "oklch-slice":
+            self.draw_oklch_slice(painter, cx, cy, triangle_radius)
         else:
             self.draw_hsl_square(painter, cx, cy, triangle_radius)
             
@@ -258,6 +275,8 @@ class ColorWheel(QWidget):
             self.draw_hls_indicator(painter, cx, cy, triangle_radius)
         elif self.wheel_mode == "rgb-slice":
             self.draw_rgb_indicator(painter, cx, cy, triangle_radius)
+        elif self.wheel_mode == "oklch-slice":
+            self.draw_oklch_indicator(painter, cx, cy, triangle_radius)
         else:
             self.draw_hsl_indicator(painter, cx, cy, triangle_radius)
 
@@ -357,6 +376,11 @@ class ColorWheel(QWidget):
         cache_key = (int(self.h), width, height, "hsv-square", self.is_active_interaction())
         if self._cached_img_key == cache_key and self._cached_img is not None:
             painter.drawImage(int(cx - half), int(cy - half), self._cached_img)
+            painter.save()
+            painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(int(cx - half), int(cy - half), width, height)
+            painter.restore()
             return
             
         ratio = self.devicePixelRatio()
@@ -390,6 +414,11 @@ class ColorWheel(QWidget):
         self._cached_img_key = cache_key
         
         painter.drawImage(int(cx - half), int(cy - half), final_img)
+        painter.save()
+        painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(int(cx - half), int(cy - half), width, height)
+        painter.restore()
 
     def draw_hue_indicator(self, painter, cx, cy, inner_r, outer_r):
         if self.cfg.get("flipColorWheelHorizontally", False):
@@ -511,8 +540,8 @@ class ColorWheel(QWidget):
         else:
             subsample = 1
             
-        sub_w = max(1, width // subsample)
-        sub_h = max(1, height // subsample)
+        sub_w = max(1, (width + subsample - 1) // subsample)
+        sub_h = max(1, (height + subsample - 1) // subsample)
         
         img = QImage(sub_w, sub_h, QImage.Format.Format_ARGB32)
         img.fill(0)
@@ -570,6 +599,7 @@ class ColorWheel(QWidget):
         cache_key = (self.h, r, "rgb", self.is_active_interaction())
         if hasattr(self, "_cached_rgb_key") and self._cached_rgb_key == cache_key and hasattr(self, "_cached_rgb_img"):
             painter.drawImage(int(self._cached_rgb_minx), int(self._cached_rgb_miny), self._cached_rgb_img)
+            self._draw_slice_outline(painter, "rgb")
             return
             
         hy = r * 0.866
@@ -589,20 +619,26 @@ class ColorWheel(QWidget):
         else:
             subsample = 1
             
-        sub_w = max(1, width // subsample)
-        sub_h = max(1, height // subsample)
+        sub_w = max(1, (width + subsample - 1) // subsample)
+        sub_h = max(1, (height + subsample - 1) // subsample)
         
         img = QImage(sub_w, sub_h, QImage.Format.Format_ARGB32)
         img.fill(0)
-        
-        scale = (r * 1.3) / 130.0
         
         pure_r, pure_g, pure_b = hsv_to_rgb(self.h, 100.0, 100.0)
         l_p, a_p, b_p = rgb_to_lab(pure_r, pure_g, pure_b)
         C_pure = math.sqrt(a_p * a_p + b_p * b_p)
         a_dir = a_p / C_pure if C_pure > 0.001 else 0.0
         b_dir = b_p / C_pure if C_pure > 0.001 else 0.0
-        
+
+        # Sample max chroma at multiple L and scale to fill available width
+        max_c = max(
+            find_max_c(20, a_dir, b_dir),
+            find_max_c(50, a_dir, b_dir),
+            find_max_c(80, a_dir, b_dir),
+        )
+        scale = (r * 1.05) / max(max_c, 0.001)
+
         sub_edge_x = [min_x] * sub_h
         
         for y in range(sub_h):
@@ -640,15 +676,20 @@ class ColorWheel(QWidget):
         
         painter.drawImage(min_x, min_y, self._cached_rgb_img)
         
-        # Calculate full-resolution edge_x for smooth outline path
+        # Save edge data and draw outline
         edge_x = [min_x] * height
         for y in range(height):
-            if subsample > 1:
-                sub_y = min(sub_h - 1, y // subsample)
-                edge_x[y] = sub_edge_x[sub_y]
-            else:
-                edge_x[y] = sub_edge_x[y]
-        
+            sub_y = min(sub_h - 1, y // subsample) if subsample > 1 else y
+            edge_x[y] = sub_edge_x[sub_y]
+        self._cached_rgb_edge = (edge_x, min_x, min_y, max_y, height)
+        self._draw_slice_outline(painter, "rgb")
+
+    def _draw_slice_outline(self, painter, tag):
+        """Draw gamut boundary outline from cached edge data."""
+        attr_key = f"_cached_{tag}_edge"
+        if not hasattr(self, attr_key):
+            return
+        edge_x, min_x, min_y, max_y, height = getattr(self, attr_key)
         path = QPainterPath()
         path.moveTo(min_x, min_y)
         for y in range(height):
@@ -661,21 +702,34 @@ class ColorWheel(QWidget):
 
     def draw_rgb_indicator(self, painter, cx, cy, r):
         hy = r * 0.866
-        min_x = cx - r * 0.5
-        scale = (r * 1.3) / 130.0
-        
-        rgb_r, rgb_g, rgb_b = self.get_color()
-        l_lab, a_lab, b_lab = rgb_to_lab(rgb_r, rgb_g, rgb_b)
-        
-        C = math.sqrt(a_lab * a_lab + b_lab * b_lab)
+        min_x = int(math.floor(cx - r * 0.5))
+        pure_r, pure_g, pure_b = hsv_to_rgb(self.h, 100.0, 100.0)
+        _, a_pure, b_pure = rgb_to_lab(pure_r, pure_g, pure_b)
+        C_pure = math.sqrt(a_pure * a_pure + b_pure * b_pure)
+        a_dir = a_pure / C_pure if C_pure > 0.001 else 0.0
+        b_dir = b_pure / C_pure if C_pure > 0.001 else 0.0
+        max_c = max(find_max_c(20, a_dir, b_dir), find_max_c(50, a_dir, b_dir), find_max_c(80, a_dir, b_dir))
+        scale = (r * 1.05) / max(max_c, 0.001)
+
+        # Use exact drag position if mid-drag, otherwise compute from current color
+        if getattr(self, '_drag_slice', '') == "rgb" and hasattr(self, '_drag_C'):
+            C = self._drag_C
+            L = self._drag_L
+        else:
+            rgb_r, rgb_g, rgb_b = self.get_color()
+            l_lab, a_lab, b_lab = rgb_to_lab(rgb_r, rgb_g, rgb_b)
+            C = math.sqrt(a_lab * a_lab + b_lab * b_lab)
+            L = l_lab
+
         px = min_x + C * scale
-        py = cy + hy * (1.0 - 2.0 * (l_lab / 100.0))
+        py = cy + hy * (1.0 - 2.0 * (L / 100.0))
         
         pos = QPointF(px, py)
         self.draw_indicator_ring(painter, pos)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_slice = ""  # reset indicator mode on new interaction
             cx, cy, _, outer_radius, inner_radius, triangle_radius = self.get_wheel_geometry()
             pos = event.position()
             dx = pos.x() - cx
@@ -695,6 +749,9 @@ class ColorWheel(QWidget):
                 elif self.wheel_mode == "rgb-slice":
                     self.dragging = "rgb-slice"
                     self.handle_rgb_slice_drag(pos.x(), pos.y(), cx, cy, triangle_radius)
+                elif self.wheel_mode == "oklch-slice":
+                    self.dragging = "oklch-slice"
+                    self.handle_oklch_slice_drag(pos.x(), pos.y(), cx, cy, triangle_radius)
                 else:
                     half = int(triangle_radius / 1.414) - 2
                     if self.wheel_mode == "hsv-square":
@@ -719,6 +776,8 @@ class ColorWheel(QWidget):
                 self.handle_hls_triangle_drag(pos.x(), pos.y(), cx, cy, triangle_radius)
             elif self.dragging == "rgb-slice":
                 self.handle_rgb_slice_drag(pos.x(), pos.y(), cx, cy, triangle_radius)
+            elif self.dragging == "oklch-slice":
+                self.handle_oklch_slice_drag(pos.x(), pos.y(), cx, cy, triangle_radius)
             elif self.dragging == "square":
                 half = int(triangle_radius / 1.414) - 2
                 self.handle_square_drag(pos.x(), pos.y(), cx, cy, half)
@@ -738,6 +797,9 @@ class ColorWheel(QWidget):
             delattr(self, "_cached_hls_key")
         if hasattr(self, "_cached_rgb_key"):
             delattr(self, "_cached_rgb_key")
+        if hasattr(self, "_cached_oklch_key"):
+            delattr(self, "_cached_oklch_key")
+        self._drag_scale = None
         self.update()
         self.interactionFinished.emit()
 
@@ -797,19 +859,32 @@ class ColorWheel(QWidget):
 
     def handle_rgb_slice_drag(self, px, py, cx, cy, r):
         hy = r * 0.866
-        min_x = cx - r * 0.5
-        scale = (r * 1.3) / 130.0
+        min_x = int(math.floor(cx - r * 0.5))
+
+        # Cache scale during drag — self.h and r are constant while in slice
+        if not hasattr(self, '_drag_scale') or self._drag_scale is None:
+            pure_r, pure_g, pure_b = hsv_to_rgb(self.h, 100.0, 100.0)
+            l_p, a_p, b_p = rgb_to_lab(pure_r, pure_g, pure_b)
+            C_pure = math.sqrt(a_p * a_p + b_p * b_p)
+            self._drag_a_dir = a_p / C_pure if C_pure > 0.001 else 0.0
+            self._drag_b_dir = b_p / C_pure if C_pure > 0.001 else 0.0
+            max_c = max(find_max_c(20, self._drag_a_dir, self._drag_b_dir),
+                        find_max_c(50, self._drag_a_dir, self._drag_b_dir),
+                        find_max_c(80, self._drag_a_dir, self._drag_b_dir))
+            self._drag_scale = (r * 1.05) / max(max_c, 0.001)
+        scale = self._drag_scale
+        a_dir = self._drag_a_dir
+        b_dir = self._drag_b_dir
         
         L = max(0.0, min(1.0, (cy + hy - py) / (2.0 * hy)))
         L_val = L * 100.0
         
-        pure_r, pure_g, pure_b = hsv_to_rgb(self.h, 100.0, 100.0)
-        l_p, a_p, b_p = rgb_to_lab(pure_r, pure_g, pure_b)
-        C_pure = math.sqrt(a_p * a_p + b_p * b_p)
-        a_dir = a_p / C_pure if C_pure > 0.001 else 0.0
-        b_dir = b_p / C_pure if C_pure > 0.001 else 0.0
-        
         C_max = find_max_c(L_val, a_dir, b_dir)
+        C_raw = (px - min_x) / scale
+        if C_raw > C_max and C_max > 0:
+            # Mouse outside gamut — snap to nearest point on boundary
+            L, L_val = self._snap_to_boundary_rgb(L, L_val, C_raw, a_dir, b_dir, scale, px, py, cx, cy, hy, min_x)
+            C_max = find_max_c(L_val, a_dir, b_dir)
         C = max(0.0, min(C_max, (px - min_x) / scale))
         
         a_val = C * a_dir
@@ -824,6 +899,10 @@ class ColorWheel(QWidget):
         h_new, s_new, v_new = rgb_to_hsv(rgb_r_clamped, rgb_g_clamped, rgb_b_clamped)
         self.s = s_new
         self.v = v_new
+        # Store exact C/L for pixel-perfect indicator positioning
+        self._drag_C = C
+        self._drag_L = L_val
+        self._drag_slice = "rgb"
         self.update()
         self.colorChanged.emit(int(rgb_r_clamped), int(rgb_g_clamped), int(rgb_b_clamped))
 
@@ -859,3 +938,177 @@ class ColorWheel(QWidget):
         self.update()
         r, g, b = self.get_color()
         self.colorChanged.emit(r, g, b)
+
+    def draw_oklch_slice(self, painter, cx, cy, r):
+        cache_key = (self.h, r, "oklch", self.is_active_interaction())
+        if hasattr(self, "_cached_oklch_key") and self._cached_oklch_key == cache_key and hasattr(self, "_cached_oklch_img"):
+            painter.drawImage(int(self._cached_oklch_minx), int(self._cached_oklch_miny), self._cached_oklch_img)
+            self._draw_slice_outline(painter, "oklch")
+            return
+
+        hy = r * 0.866
+        min_x = int(math.floor(cx - r * 0.5))
+        max_x = int(math.ceil(cx + r * 1.5))
+        min_y = int(math.floor(cy - hy))
+        max_y = int(math.ceil(cy + hy))
+        width = max_x - min_x
+        height = max_y - min_y
+        if width <= 0 or height <= 0:
+            return
+
+        subsample = 3 if self.is_active_interaction() else 1
+        sub_w = max(1, (width + subsample - 1) // subsample)
+        sub_h = max(1, (height + subsample - 1) // subsample)
+
+        img = QImage(sub_w, sub_h, QImage.Format.Format_ARGB32)
+        img.fill(0)
+
+        # Sample max chroma at multiple L; clamp rightmost edge within ring
+        max_c = max(
+            find_max_oklch_c(0.2, self.h),
+            find_max_oklch_c(0.5, self.h),
+            find_max_oklch_c(0.8, self.h),
+        )
+        scale = (r * 1.05) / max(max_c, 0.001)
+
+        sub_edge_x = [min_x] * sub_h
+
+        for y in range(sub_h):
+            py = min_y + y * subsample
+            L = max(0.0, min(1.0, (cy + hy - py) / (2.0 * hy)))
+
+            for x in range(sub_w):
+                px = min_x + x * subsample
+                C = max(0.0, (px - min_x) / scale)
+
+                rgb_r, rgb_g, rgb_b = oklch_to_rgb(L, C, self.h)
+
+                if (-0.5 <= rgb_r <= 255.5 and
+                    -0.5 <= rgb_g <= 255.5 and
+                    -0.5 <= rgb_b <= 255.5):
+                    img.setPixelColor(x, y, QColor(
+                        max(0, min(255, int(rgb_r))),
+                        max(0, min(255, int(rgb_g))),
+                        max(0, min(255, int(rgb_b)))
+                    ))
+                    if px > sub_edge_x[y]:
+                        sub_edge_x[y] = px
+
+        self._cached_oklch_key = cache_key
+        if subsample > 1:
+            self._cached_oklch_img = img.scaled(width, height, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        else:
+            self._cached_oklch_img = img
+        self._cached_oklch_minx = min_x
+        self._cached_oklch_miny = min_y
+
+        painter.drawImage(min_x, min_y, self._cached_oklch_img)
+
+        edge_x = [min_x] * height
+        for y in range(height):
+            sub_y = min(sub_h - 1, y // subsample) if subsample > 1 else y
+            edge_x[y] = sub_edge_x[sub_y]
+        self._cached_oklch_edge = (edge_x, min_x, min_y, max_y, height)
+        self._draw_slice_outline(painter, "oklch")
+
+    def draw_oklch_indicator(self, painter, cx, cy, r):
+        hy = r * 0.866
+        min_x = int(math.floor(cx - r * 0.5))
+        max_c = max(find_max_oklch_c(0.2, self.h), find_max_oklch_c(0.5, self.h), find_max_oklch_c(0.8, self.h))
+        scale = (r * 1.05) / max(max_c, 0.001)
+
+        if getattr(self, '_drag_slice', '') == "oklch" and hasattr(self, '_drag_C'):
+            C = self._drag_C
+            L = self._drag_L
+        else:
+            rgb_r, rgb_g, rgb_b = self.get_color()
+            L_ok, C_ok, h_ok = rgb_to_oklch(rgb_r, rgb_g, rgb_b)
+            C = min(C_ok, find_max_oklch_c(L_ok, self.h))
+            L = L_ok
+
+        px = min_x + C * scale
+        py = cy + hy * (1.0 - 2.0 * L)
+
+        self.draw_indicator_ring(painter, QPointF(px, py))
+
+    def handle_oklch_slice_drag(self, px, py, cx, cy, r):
+        hy = r * 0.866
+        min_x = int(math.floor(cx - r * 0.5))
+        if not hasattr(self, '_drag_scale') or self._drag_scale is None:
+            max_c = max(find_max_oklch_c(0.2, self.h), find_max_oklch_c(0.5, self.h), find_max_oklch_c(0.8, self.h))
+            self._drag_scale = (r * 1.05) / max(max_c, 0.001)
+        scale = self._drag_scale
+
+        L = max(0.0, min(1.0, (cy + hy - py) / (2.0 * hy)))
+        C_max = find_max_oklch_c(L, self.h)
+        C_raw = (px - min_x) / scale
+        if C_raw > C_max and C_max > 0:
+            L = self._snap_to_boundary_oklch(L, C_raw, scale, px, py, cx, cy, hy, min_x)
+            C_max = find_max_oklch_c(L, self.h)
+        C = max(0.0, min(C_max, (px - min_x) / scale))
+
+        rgb_r, rgb_g, rgb_b = oklch_to_rgb(L, C, self.h)
+        rgb_r_clamped = max(0.0, min(255.0, rgb_r))
+        rgb_g_clamped = max(0.0, min(255.0, rgb_g))
+        rgb_b_clamped = max(0.0, min(255.0, rgb_b))
+
+        h_new, s_new, v_new = rgb_to_hsv(rgb_r_clamped, rgb_g_clamped, rgb_b_clamped)
+        self.s = s_new
+        self.v = v_new
+        self._drag_C = C
+        self._drag_L = L
+        self._drag_slice = "oklch"
+        self.update()
+        self.colorChanged.emit(int(rgb_r_clamped), int(rgb_g_clamped), int(rgb_b_clamped))
+
+    def _snap_to_boundary_rgb(self, L, L_val, C_raw, a_dir, b_dir, scale, px, py, cx, cy, hy, min_x):
+        """Find closest in-gamut (C,L) pair when mouse is outside RGB gamut."""
+        # Coarse pass
+        best_L, best_dist = L, float('inf')
+        for t in [i / 25.0 for i in range(26)]:
+            t_val = t * 100.0
+            Cb = find_max_c(t_val, a_dir, b_dir)
+            bx = min_x + Cb * scale
+            by = cy + hy * (1.0 - 2.0 * t)
+            d = (bx - px) ** 2 + (by - py) ** 2
+            if d < best_dist:
+                best_dist = d
+                best_L = t
+        # Fine pass around best
+        lo = max(0.0, best_L - 0.04)
+        hi = min(1.0, best_L + 0.04)
+        for i in range(21):
+            t = lo + (hi - lo) * i / 20.0
+            t_val = t * 100.0
+            Cb = find_max_c(t_val, a_dir, b_dir)
+            bx = min_x + Cb * scale
+            by = cy + hy * (1.0 - 2.0 * t)
+            d = (bx - px) ** 2 + (by - py) ** 2
+            if d < best_dist:
+                best_dist = d
+                best_L = t
+        return best_L, best_L * 100.0
+
+    def _snap_to_boundary_oklch(self, L, C_raw, scale, px, py, cx, cy, hy, min_x):
+        """Find closest in-gamut L when mouse is outside OKLCh gamut."""
+        best_L, best_dist = L, float('inf')
+        for t in [i / 25.0 for i in range(26)]:
+            Cb = find_max_oklch_c(t, self.h)
+            bx = min_x + Cb * scale
+            by = cy + hy * (1.0 - 2.0 * t)
+            d = (bx - px) ** 2 + (by - py) ** 2
+            if d < best_dist:
+                best_dist = d
+                best_L = t
+        lo = max(0.0, best_L - 0.04)
+        hi = min(1.0, best_L + 0.04)
+        for i in range(21):
+            t = lo + (hi - lo) * i / 20.0
+            Cb = find_max_oklch_c(t, self.h)
+            bx = min_x + Cb * scale
+            by = cy + hy * (1.0 - 2.0 * t)
+            d = (bx - px) ** 2 + (by - py) ** 2
+            if d < best_dist:
+                best_dist = d
+                best_L = t
+        return best_L
