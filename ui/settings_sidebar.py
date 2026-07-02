@@ -45,6 +45,20 @@ class SettingsSidebar(QScrollArea):
         row_hide.addWidget(self.btn_hide)
         self.layout.addLayout(row_hide)
         
+        row_grayscale = QHBoxLayout()
+        row_grayscale.addWidget(QLabel("黑白滤镜"))
+        self.btn_grayscale = HotkeyButton("grayscaleFilterKey", self.cfg.get("grayscaleFilterKey", "Ctrl+G"))
+        self.btn_grayscale.hotkeyChanged.connect(self.save_hotkeys)
+        row_grayscale.addWidget(self.btn_grayscale)
+        self.layout.addLayout(row_grayscale)
+        
+        row_grayscale_screen = QHBoxLayout()
+        row_grayscale_screen.addWidget(QLabel("滤镜目标屏幕"))
+        self.combo_grayscale_screen = NonScrollComboBox()
+        self.combo_grayscale_screen.currentTextChanged.connect(self.save_settings)
+        row_grayscale_screen.addWidget(self.combo_grayscale_screen)
+        self.layout.addLayout(row_grayscale_screen)
+        
         row_follow = QHBoxLayout()
         row_follow.addWidget(QLabel("随鼠标移动"))
         self.cb_follow_mouse = QCheckBox()
@@ -306,6 +320,29 @@ class SettingsSidebar(QScrollArea):
         self.btn_hide.setText(self.cfg.get("hideWindowKey", "Ctrl+H") if self.cfg.get("hideWindowKey") else "未绑定")
         self.btn_hide.val = self.cfg.get("hideWindowKey", "Ctrl+H")
         
+        self.btn_grayscale.setText(self.cfg.get("grayscaleFilterKey", "Ctrl+G") if self.cfg.get("grayscaleFilterKey") else "未绑定")
+        self.btn_grayscale.val = self.cfg.get("grayscaleFilterKey", "Ctrl+G")
+        
+        # Screen selector for grayscale filter
+        from ui.grayscale_overlay import GrayscaleOverlay
+        screens = GrayscaleOverlay.available_screens()
+        self.combo_grayscale_screen.blockSignals(True)
+        self.combo_grayscale_screen.clear()
+        self.combo_grayscale_screen.addItems(screens)
+        saved_target = self.cfg.get("grayscaleFilterScreen", "all")
+        # Map "all" to display, and index to display format
+        if saved_target == "all":
+            self.combo_grayscale_screen.setCurrentText("all")
+        else:
+            # Find matching entry
+            for item in screens:
+                if item != "all" and item.startswith(f"{saved_target}:"):
+                    self.combo_grayscale_screen.setCurrentText(item)
+                    break
+            else:
+                self.combo_grayscale_screen.setCurrentText("all")
+        self.combo_grayscale_screen.blockSignals(False)
+        
         self.cb_follow_mouse.blockSignals(True)
         self.cb_follow_mouse.setChecked(self.cfg.get("followMouseEnabled", False))
         self.cb_follow_mouse.blockSignals(False)
@@ -530,6 +567,7 @@ class SettingsSidebar(QScrollArea):
 
     def save_hotkeys(self, new_val=None):
         self.cfg["hideWindowKey"] = self.btn_hide.val
+        self.cfg["grayscaleFilterKey"] = self.btn_grayscale.val
         config.save_hotkey_config(self.cfg)
         self.settingChanged.emit()
 
@@ -577,6 +615,10 @@ class SettingsSidebar(QScrollArea):
         self.cfg["uiScale"] = self.zoom_slider.value()
         self.cfg["flipColorWheelHorizontally"] = self.cb_flip_wheel.isChecked()
         
+        # Grayscale filter screen target
+        screen_text = self.combo_grayscale_screen.currentText()
+        self.cfg["grayscaleFilterScreen"] = screen_text.split(":")[0].strip() if ":" in screen_text else screen_text
+
         try:
             self.cfg["sliderScrollStep"] = int(self.lbl_scroll_step.text())
         except Exception:
