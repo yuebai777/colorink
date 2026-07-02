@@ -1,25 +1,51 @@
 """
-Fullscreen grayscale overlay using OKLCh perceptual color space.
+Fullscreen OKLCh perceptual grayscale overlay.
 
-Uses OpenGL fragment shader for GPU-accelerated conversion — the full
-OKLCh pipeline runs on the GPU, processing every pixel simultaneously.
-Only the screen capture (unavoidable system call) hits the CPU.
+Uses dxcam (DXGI Desktop Duplication API) for GPU-accelerated screen
+capture (~6 ms for 4K), then processes each frame through an OpenGL
+fragment shader that implements the full OKLCh pipeline (sRGB→linear
+→LMS→cbrt→M2→L³→gamma).
 
-Performance: ~30-50 ms/frame (bottleneck is screen capture, not processing).
+The overlay window is excluded from DXGI capture via
+SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE) so there is no
+feedback loop — dxcam always sees the desktop *behind* the overlay.
+
+Requires:
+  - dxcam   (pip install dxcam)
+  - opencv-python-headless (dxcam dependency)
+  - PyQt6
 """
-import time
+import ctypes
 import array
+import time
 from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPixmap, QImage, QScreen, QSurfaceFormat
-from PyQt6.QtOpenGL import (QOpenGLTexture, QOpenGLShader,
-                             QOpenGLShaderProgram, QOpenGLBuffer,
-                             QOpenGLFunctions_2_0,
-                             QOpenGLVertexArrayObject)
+from PyQt6.QtGui import QScreen, QSurfaceFormat
+from PyQt6.QtOpenGL import (QOpenGLShader, QOpenGLShaderProgram,
+                            QOpenGLBuffer, QOpenGLTexture,
+                            QOpenGLFunctions_2_0,
+                            QOpenGLVertexArrayObject)
+
 
 # ---------------------------------------------------------------------------
-# Fullscreen quad vertex + OKLCh grayscale fragment shader
+# Win32: exclude window from DXGI screen capture
+# ---------------------------------------------------------------------------
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
+
+def _exclude_from_capture(hwnd: int):
+    """Mark a window to be skipped by DXGI Desktop Duplication API."""
+    try:
+        ctypes.windll.user32.SetWindowDisplayAffinity(
+            ctypes.c_void_p(hwnd),
+            ctypes.c_uint(WDA_EXCLUDEFROMCAPTURE),
+        )
+    except Exception as e:
+        print(f"[GrayscaleOverlay] SetWindowDisplayAffinity failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# OKLCh grayscale vertex + fragment shaders
 # ---------------------------------------------------------------------------
 
 _VERTEX_SHADER = """
@@ -76,29 +102,51 @@ void main() {
 }
 """
 
+# Simple BT.709 luma shader — fast, matches Windows native color filters
+_LUMA_FRAGMENT_SHADER = """
+#version 130
+varying vec2 vTexCoord;
+uniform sampler2D uScreen;
+
+void main() {
+    vec3 col = texture2D(uScreen, vTexCoord).rgb;
+    float gray = 0.2126 * col.r + 0.7152 * col.g + 0.0722 * col.b;
+    gl_FragColor = vec4(gray, gray, gray, 1.0);
+}
+"""
+
 
 # ---------------------------------------------------------------------------
-# Single-screen GPU overlay
+# Single-screen GPU overlay (dxcam capture + OpenGL OKLCh shader)
 # ---------------------------------------------------------------------------
 
 class _ShaderOverlay(QOpenGLWidget):
-    """Frameless fullscreen OpenGL widget for one screen.  GPU-accelerated."""
+    """Fullscreen overlay for one screen.  dxcam captures the desktop,
+    an OpenGL fragment shader applies OKLCh grayscale, and the result
+    is displayed on a frameless topmost overlay."""
 
-    def __init__(self, screen: QScreen):
+    def __init__(self, screen: QScreen, screen_index: int, mode: str = "oklch"):
+        # Request an OpenGL surface
         fmt = QSurfaceFormat()
         fmt.setSwapInterval(0)
         QSurfaceFormat.setDefaultFormat(fmt)
-
         super().__init__()
+
         self._screen = screen
+        self._screen_index = screen_index
+        self._mode = mode
+        self._camera = None          # dxcam.DXCamera
+        self._pending_frame = None   # numpy BGR (H, W, 3) uint8
         self._texture: QOpenGLTexture | None = None
-        self._pending_pixmap: QPixmap | None = None
+        self._texture_w = 0
+        self._texture_h = 0
         self._vbo: QOpenGLBuffer | None = None
         self._program: QOpenGLShaderProgram | None = None
         self._vao: QOpenGLVertexArrayObject | None = None
         self._gl: QOpenGLFunctions_2_0 | None = None
         self._initialized = False
 
+        # Frameless, topmost, transparent to mouse/keyboard input
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -114,35 +162,48 @@ class _ShaderOverlay(QOpenGLWidget):
         geo = screen.geometry()
         self.setGeometry(geo)
         dpr = screen.devicePixelRatio()
-        phys_w = int(geo.width() * dpr)
-        phys_h = int(geo.height() * dpr)
-        print(f"[GrayscaleOverlay] Created GPU overlay: {screen.name()} "
-              f"logical={geo.width()}x{geo.height()} "
-              f"physical={phys_w}x{phys_h} DPI={dpr:.1f}")
+        print(f"[GrayscaleOverlay] Created overlay: screen {screen_index} "
+              f"({screen.name()}) "
+              f"{geo.width()}x{geo.height()} DPR={dpr:.1f}")
 
-    def refresh(self):
-        """Capture screen, schedule GPU upload on next paintGL."""
-        if not self.isVisible():
+    def _init_camera(self):
+        """Start dxcam background capture thread for this screen."""
+        if self._camera is not None:
             return
         try:
-            self._pending_pixmap = self._screen.grabWindow(0)
-            self.update()  # triggers paintGL
+            import dxcam
+            self._camera = dxcam.create(
+                output_idx=self._screen_index,
+                output_color='BGR',
+                max_buffer_len=2,
+            )
+            # Background thread captures at 120 fps — main thread only
+            # calls get_latest_frame() which returns a pre-captured
+            # numpy array without blocking on GPU I/O.
+            self._camera.start(target_fps=120, video_mode=True)
+            print(f"[GrayscaleOverlay] dxcam started: screen {self._screen_index}"
+                  f" ({self._screen.name()})")
         except Exception as e:
-            print(f"[GrayscaleOverlay] Refresh error: {e}")
+            print(f"[GrayscaleOverlay] dxcam init failed: {e}")
+            self._camera = None
 
-    # -- OpenGL lifecycle --
+    # -- OpenGL lifecycle -----------------------------------------------
 
     def initializeGL(self):
         self._gl = QOpenGLFunctions_2_0()
         if not self._gl.initializeOpenGLFunctions():
-            print("[GrayscaleOverlay] FATAL: Cannot initialize OpenGL 2.0 functions")
+            print("[GrayscaleOverlay] FATAL: Cannot init OpenGL 2.0")
             return
 
         self._program = QOpenGLShaderProgram(self.context())
-        if not self._program.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex, _VERTEX_SHADER):
+        if not self._program.addShaderFromSourceCode(
+                QOpenGLShader.ShaderTypeBit.Vertex, _VERTEX_SHADER):
             print(f"[GrayscaleOverlay] Vertex shader error:\n{self._program.log()}")
             return
-        if not self._program.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, _FRAGMENT_SHADER):
+        if not self._program.addShaderFromSourceCode(
+                QOpenGLShader.ShaderTypeBit.Fragment,
+                _LUMA_FRAGMENT_SHADER if self._mode == "luma"
+                else _FRAGMENT_SHADER):
             print(f"[GrayscaleOverlay] Fragment shader error:\n{self._program.log()}")
             return
         if not self._program.link():
@@ -150,18 +211,17 @@ class _ShaderOverlay(QOpenGLWidget):
             return
         self._program.bind()
 
-        # VAO (required on OpenGL 3.1+ core profile, safe to skip on 2.x)
+        # VAO (required on OpenGL 3.1+ core profile)
         self._vao = QOpenGLVertexArrayObject()
         if self._vao.create():
             self._vao.bind()
 
-        # Fullscreen quad: two triangles covering clip space (-1..1)
-        # Format: [x, y, u, v] * 4 vertices
+        # Fullscreen quad:  [x, y, u, v] x 4 vertices
         data = array.array('f', [
-            -1.0, -1.0,  0.0, 1.0,   # bottom-left
-             1.0, -1.0,  1.0, 1.0,   # bottom-right
-             1.0,  1.0,  1.0, 0.0,   # top-right
-            -1.0,  1.0,  0.0, 0.0,   # top-left
+            -1.0, -1.0,  0.0, 1.0,
+             1.0, -1.0,  1.0, 1.0,
+             1.0,  1.0,  1.0, 0.0,
+            -1.0,  1.0,  0.0, 0.0,
         ])
         self._vbo = QOpenGLBuffer()
         self._vbo.create()
@@ -172,30 +232,75 @@ class _ShaderOverlay(QOpenGLWidget):
         tex_loc = self._program.attributeLocation("aTexCoord")
         self._program.enableAttributeArray(pos_loc)
         self._program.enableAttributeArray(tex_loc)
-        self._program.setAttributeBuffer(pos_loc, 5126, 0, 2, 16)
-        self._program.setAttributeBuffer(tex_loc, 5126, 8, 2, 16)
+        self._program.setAttributeBuffer(pos_loc, 0x1406, 0, 2, 16)  # GL_FLOAT
+        self._program.setAttributeBuffer(tex_loc, 0x1406, 8, 2, 16)
 
+        # Exclude this window from dxcam capture -> no feedback loop
+        _exclude_from_capture(int(self.winId()))
+
+        self._init_camera()
         self._initialized = True
-        print("[GrayscaleOverlay] OpenGL initialized")
+
+        # Vsync-locked render loop: frameSwapped fires after each buffer swap.
+        # Combined with background capture, this gives butter-smooth pacing.
+        self.frameSwapped.connect(self._on_frame_swapped)
+        self._on_frame_swapped()  # kickstart first frame
+
+        print("[GrayscaleOverlay] OpenGL + dxcam initialized")
+
+    def _on_frame_swapped(self):
+        """Called after each OpenGL buffer swap — vsync aligned."""
+        if not self.isVisible() or self._camera is None:
+            return
+        try:
+            frame = self._camera.get_latest_frame()
+            if frame is not None:
+                self._pending_frame = frame
+            # Always schedule a repaint — even if no new frame,
+            # re-render cached texture to keep the swap loop alive.
+            self.update()
+        except Exception as e:
+            print(f"[GrayscaleOverlay] Capture error: {e}")
 
     def paintGL(self):
-        if not self._initialized or self._program is None or self._gl is None:
+        if (not self._initialized or self._program is None
+                or self._gl is None):
             return
 
-        # Upload new screen capture as texture
-        if self._pending_pixmap is not None and not self._pending_pixmap.isNull():
+        # Upload new frame as texture
+        if self._pending_frame is not None:
+            frame = self._pending_frame
+            self._pending_frame = None
             try:
-                img = self._pending_pixmap.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
-                self._pending_pixmap = None
-
-                if self._texture is not None:
-                    self._texture.destroy()
-                self._texture = QOpenGLTexture(img)
-                self._texture.setMinificationFilter(QOpenGLTexture.Filter.Linear)
-                self._texture.setMagnificationFilter(QOpenGLTexture.Filter.Linear)
+                h, w = frame.shape[:2]  # dxcam: (H, W, 3) BGR
+                # Recreate texture when size changes (DPI switch)
+                if (self._texture is None or w != self._texture_w
+                        or h != self._texture_h):
+                    if self._texture is not None:
+                        self._texture.destroy()
+                    self._texture = QOpenGLTexture(
+                        QOpenGLTexture.Target.Target2D)
+                    self._texture.setFormat(
+                        QOpenGLTexture.TextureFormat.RGB8_UNorm)
+                    self._texture.setSize(w, h)
+                    self._texture.allocateStorage()
+                    self._texture_w = w
+                    self._texture_h = h
+                # Upload BGR pixel data to mip level 0.
+                # PyQt6 setData accepts numpy arrays directly (buffer protocol)
+                # — no tobytes() copy needed.
+                self._texture.setData(
+                    0,
+                    QOpenGLTexture.PixelFormat.BGR,
+                    QOpenGLTexture.PixelType.UInt8,
+                    frame,  # numpy (H, W, 3) uint8 — zero-copy
+                )
+                self._texture.setMinificationFilter(
+                    QOpenGLTexture.Filter.Linear)
+                self._texture.setMagnificationFilter(
+                    QOpenGLTexture.Filter.Linear)
             except Exception as e:
                 print(f"[GrayscaleOverlay] Texture upload error: {e}")
-                return
 
         if self._texture is None:
             return
@@ -211,23 +316,47 @@ class _ShaderOverlay(QOpenGLWidget):
         if self._gl is not None:
             self._gl.glViewport(0, 0, w, h)
 
+    def cleanup(self):
+        """Stop background capture, disconnect signals, release resources."""
+        try:
+            self.frameSwapped.disconnect(self._on_frame_swapped)
+        except Exception:
+            pass
+        if self._camera is not None:
+            try:
+                self._camera.stop()
+                del self._camera
+            except Exception:
+                pass
+            self._camera = None
+
 
 # ---------------------------------------------------------------------------
-# Main overlay manager
+# Main overlay manager (same public API as before)
 # ---------------------------------------------------------------------------
 
 class GrayscaleOverlay:
-    """Manages per-screen OpenGL grayscale overlays."""
+    """Toggleable fullscreen OKLCh grayscale filter.
 
-    def __init__(self):
+    Uses dxcam for GPU capture + OpenGL for OKLCh shader processing.
+    Driven by an 8 ms QTimer (~120 fps max); background dxcam capture
+    keeps the main thread responsive.  When dxcam returns no new frame
+    the overlay simply keeps rendering the cached texture.
+
+    Usage (unchanged):
+        overlay = GrayscaleOverlay()
+        overlay.set_target("all")
+        overlay.toggle()           # Ctrl+G
+        overlay.set_active(False)  # force off
+    """
+
+    def __init__(self, mode: str = "oklch"):
         self._active = False
         self._target = "all"
-        self._refresh_interval = 100  # ms (~10 fps, GPU can handle it)
-
+        self._mode = mode
         self._overlays: list[_ShaderOverlay] = []
-        self._timer = QTimer()
-        self._timer.timeout.connect(self._refresh_all)
-        self._timer.setInterval(self._refresh_interval)
+
+    # -- Screen enumeration ---------------------------------------------
 
     @staticmethod
     def available_screens() -> list[str]:
@@ -237,16 +366,21 @@ class GrayscaleOverlay:
         result = ["all"]
         for i, screen in enumerate(app.screens()):
             geo = screen.geometry()
+            dpr = screen.devicePixelRatio()
             name = screen.name().replace("\\\\.\\", "")
-            result.append(f"{i}: {name} ({geo.width()}x{geo.height()})")
+            # Show physical pixels, not logical (important for HiDPI)
+            pw = int(geo.width() * dpr)
+            ph = int(geo.height() * dpr)
+            result.append(f"{i}: {name} ({pw}x{ph})")
         return result
+
+    # -- Target selection -----------------------------------------------
 
     def set_target(self, target: str):
         if target != "all" and ":" in target:
             target = target.split(":")[0].strip()
         if target == self._target:
             return
-        print(f"[GrayscaleOverlay] set_target: {self._target!r} -> {target!r}")
         was_active = self._active
         if was_active:
             self.set_active(False)
@@ -258,6 +392,8 @@ class GrayscaleOverlay:
     def target(self) -> str:
         return self._target
 
+    # -- Activate / deactivate ------------------------------------------
+
     def set_active(self, active: bool):
         if active == self._active:
             return
@@ -265,19 +401,30 @@ class GrayscaleOverlay:
         self._active = active
         if active:
             self._create_overlays()
-            self._timer.start()
         else:
-            self._timer.stop()
             self._destroy_overlays()
 
     def toggle(self):
         self.set_active(not self._active)
 
+    def set_mode(self, mode: str):
+        """Switch between 'oklch' and 'luma' grayscale."""
+        if mode == self._mode:
+            return
+        was_active = self._active
+        if was_active:
+            self.set_active(False)
+        self._mode = mode
+        if was_active:
+            QTimer.singleShot(0, lambda: self.set_active(True))
+
     @property
     def is_active(self) -> bool:
         return self._active
 
-    def _get_target_screens(self) -> list[QScreen]:
+    # -- Internal -------------------------------------------------------
+
+    def _get_target_screens(self) -> list[tuple[int, QScreen]]:
         app = QApplication.instance()
         if not app:
             return []
@@ -285,34 +432,30 @@ class GrayscaleOverlay:
         if not screens:
             return []
         if self._target == "all":
-            return list(screens)
+            return list(enumerate(screens))
         try:
             idx = int(self._target)
             if 0 <= idx < len(screens):
-                return [screens[idx]]
+                return [(idx, screens[idx])]
         except (ValueError, IndexError):
             pass
-        for s in screens:
+        for i, s in enumerate(screens):
             if s.name() == self._target or self._target in s.name():
-                return [s]
-        return [screens[0]]
+                return [(i, s)]
+        return [(0, screens[0])]
 
     def _create_overlays(self):
         self._destroy_overlays()
-        for screen in self._get_target_screens():
-            ov = _ShaderOverlay(screen)
+        for idx, screen in self._get_target_screens():
+            ov = _ShaderOverlay(screen, idx, self._mode)
             ov.show()
             ov.raise_()
             self._overlays.append(ov)
-        self._refresh_all()
 
     def _destroy_overlays(self):
         for ov in self._overlays:
+            ov.cleanup()
             ov.hide()
             ov.deleteLater()
         self._overlays.clear()
         QApplication.processEvents()
-
-    def _refresh_all(self):
-        for ov in self._overlays:
-            ov.refresh()
