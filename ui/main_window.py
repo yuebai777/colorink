@@ -449,8 +449,9 @@ class MainWindow(QMainWindow):
         self._last_dpr = None       # Previous screen devicePixelRatio
         self._dpi_locked_size = None  # (w, h) logical size frozen during DPI transition
 
-        # Fullscreen grayscale overlay (OKLCh perceptual)
-        self.grayscale_overlay = GrayscaleOverlay()
+        # Fullscreen grayscale overlay
+        mode = self.cfg.get("grayscaleFilterMode", "oklch")
+        self.grayscale_overlay = GrayscaleOverlay(mode=mode)
         # Apply saved screen target
         screen_target = self.cfg.get("grayscaleFilterScreen", "all")
         self.grayscale_overlay.set_target(screen_target)
@@ -1947,6 +1948,8 @@ class MainWindow(QMainWindow):
         # Update grayscale overlay target
         screen_target = self.cfg.get("grayscaleFilterScreen", "all")
         self.grayscale_overlay.set_target(screen_target)
+        mode = self.cfg.get("grayscaleFilterMode", "oklch")
+        self.grayscale_overlay.set_mode(mode)
 
         # Update window flags dynamically
         self.update_window_flags()
