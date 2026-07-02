@@ -171,6 +171,16 @@ class SettingsDialog(QDialog):
         screen_row.addWidget(self.combo_grayscale_screen)
         layout.addLayout(screen_row)
 
+        # Grayscale filter mode selector
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("黑白模式:"))
+        self.combo_grayscale_mode = QComboBox()
+        self.combo_grayscale_mode.addItems(["OKLCh (感知均匀)", "Luma (BT.709 标准)"])
+        mode_value = self.cfg.get("grayscaleFilterMode", "oklch")
+        self.combo_grayscale_mode.setCurrentIndex(1 if mode_value == "luma" else 0)
+        mode_row.addWidget(self.combo_grayscale_mode)
+        layout.addLayout(mode_row)
+
         # Section: Switches
         layout.addWidget(QLabel("<b>功能开关</b>"))
         
@@ -317,6 +327,8 @@ class SettingsDialog(QDialog):
         self.cfg["grayscaleFilterKey"] = self.btn_grayscale.val
         screen_text = self.combo_grayscale_screen.currentText()
         self.cfg["grayscaleFilterScreen"] = screen_text.split(":")[0].strip() if ":" in screen_text else screen_text
+        mode_text = self.combo_grayscale_mode.currentText()
+        self.cfg["grayscaleFilterMode"] = "luma" if "Luma" in mode_text else "oklch"
         
         self.cfg["colorPickingEnabled"] = self.cb_picking_enabled.isChecked()
         self.cfg["cspAutoClick"] = self.cb_auto_click.isChecked()

@@ -58,6 +58,14 @@ class SettingsSidebar(QScrollArea):
         self.combo_grayscale_screen.currentTextChanged.connect(self.save_settings)
         row_grayscale_screen.addWidget(self.combo_grayscale_screen)
         self.layout.addLayout(row_grayscale_screen)
+
+        row_grayscale_mode = QHBoxLayout()
+        row_grayscale_mode.addWidget(QLabel("黑白模式"))
+        self.combo_grayscale_mode = NonScrollComboBox()
+        self.combo_grayscale_mode.addItems(["OKLCh (感知均匀)", "Luma (BT.709 标准)"])
+        self.combo_grayscale_mode.currentTextChanged.connect(self.save_settings)
+        row_grayscale_mode.addWidget(self.combo_grayscale_mode)
+        self.layout.addLayout(row_grayscale_mode)
         
         row_follow = QHBoxLayout()
         row_follow.addWidget(QLabel("随鼠标移动"))
@@ -342,6 +350,11 @@ class SettingsSidebar(QScrollArea):
             else:
                 self.combo_grayscale_screen.setCurrentText("all")
         self.combo_grayscale_screen.blockSignals(False)
+
+        self.combo_grayscale_mode.blockSignals(True)
+        mode = self.cfg.get("grayscaleFilterMode", "oklch")
+        self.combo_grayscale_mode.setCurrentIndex(1 if mode == "luma" else 0)
+        self.combo_grayscale_mode.blockSignals(False)
         
         self.cb_follow_mouse.blockSignals(True)
         self.cb_follow_mouse.setChecked(self.cfg.get("followMouseEnabled", False))
@@ -618,6 +631,9 @@ class SettingsSidebar(QScrollArea):
         # Grayscale filter screen target
         screen_text = self.combo_grayscale_screen.currentText()
         self.cfg["grayscaleFilterScreen"] = screen_text.split(":")[0].strip() if ":" in screen_text else screen_text
+        # Grayscale filter mode
+        mode_text = self.combo_grayscale_mode.currentText()
+        self.cfg["grayscaleFilterMode"] = "luma" if "Luma" in mode_text else "oklch"
 
         try:
             self.cfg["sliderScrollStep"] = int(self.lbl_scroll_step.text())
