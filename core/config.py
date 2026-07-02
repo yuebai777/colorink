@@ -35,6 +35,8 @@ def load_hotkey_config():
         "injectionKey": "F12",
         "followMouseKey": "Ctrl+R",
         "hideWindowKey": "Ctrl+H",
+        "grayscaleFilterKey": "Ctrl+G",
+        "grayscaleFilterScreen": "all",
         "colorPickingEnabled": True,
         "cspAutoClick": True,
         "cspClickDelayMs": 30,

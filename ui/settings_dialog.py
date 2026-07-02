@@ -139,6 +139,7 @@ class SettingsDialog(QDialog):
         self.btn_inject = HotkeyButton("injectionKey", self.cfg.get("injectionKey", "F12"))
         self.btn_hide = HotkeyButton("hideWindowKey", self.cfg.get("hideWindowKey", "Ctrl+H"))
         self.btn_follow = HotkeyButton("followMouseKey", self.cfg.get("followMouseKey", "Ctrl+R"))
+        self.btn_grayscale = HotkeyButton("grayscaleFilterKey", self.cfg.get("grayscaleFilterKey", "Ctrl+G"))
         
         hotkey_grid.addWidget(QLabel("触发吸色:"), 0, 0)
         hotkey_grid.addWidget(self.btn_pick, 0, 1)
@@ -148,7 +149,27 @@ class SettingsDialog(QDialog):
         hotkey_grid.addWidget(self.btn_hide, 2, 1)
         hotkey_grid.addWidget(QLabel("开关跟随鼠标:"), 3, 0)
         hotkey_grid.addWidget(self.btn_follow, 3, 1)
+        hotkey_grid.addWidget(QLabel("黑白滤镜开关:"), 4, 0)
+        hotkey_grid.addWidget(self.btn_grayscale, 4, 1)
         layout.addLayout(hotkey_grid)
+
+        # Grayscale filter screen selector
+        screen_row = QHBoxLayout()
+        screen_row.addWidget(QLabel("滤镜目标屏幕:"))
+        self.combo_grayscale_screen = QComboBox()
+        from ui.grayscale_overlay import GrayscaleOverlay
+        self.combo_grayscale_screen.addItems(GrayscaleOverlay.available_screens())
+        saved_target = self.cfg.get("grayscaleFilterScreen", "all")
+        if saved_target == "all":
+            self.combo_grayscale_screen.setCurrentText("all")
+        else:
+            for i in range(self.combo_grayscale_screen.count()):
+                item = self.combo_grayscale_screen.itemText(i)
+                if item != "all" and item.startswith(f"{saved_target}:"):
+                    self.combo_grayscale_screen.setCurrentText(item)
+                    break
+        screen_row.addWidget(self.combo_grayscale_screen)
+        layout.addLayout(screen_row)
 
         # Section: Switches
         layout.addWidget(QLabel("<b>功能开关</b>"))
@@ -293,6 +314,9 @@ class SettingsDialog(QDialog):
         self.cfg["injectionKey"] = self.btn_inject.val
         self.cfg["hideWindowKey"] = self.btn_hide.val
         self.cfg["followMouseKey"] = self.btn_follow.val
+        self.cfg["grayscaleFilterKey"] = self.btn_grayscale.val
+        screen_text = self.combo_grayscale_screen.currentText()
+        self.cfg["grayscaleFilterScreen"] = screen_text.split(":")[0].strip() if ":" in screen_text else screen_text
         
         self.cfg["colorPickingEnabled"] = self.cb_picking_enabled.isChecked()
         self.cfg["cspAutoClick"] = self.cb_auto_click.isChecked()
