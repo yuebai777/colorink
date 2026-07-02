@@ -37,6 +37,7 @@ def load_hotkey_config():
         "hideWindowKey": "Ctrl+H",
         "grayscaleFilterKey": "Ctrl+G",
         "grayscaleFilterScreen": "all",
+        "grayscaleFilterMode": "oklch",
         "colorPickingEnabled": True,
         "cspAutoClick": True,
         "cspClickDelayMs": 30,
