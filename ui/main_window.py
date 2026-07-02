@@ -15,6 +15,7 @@ from ui.color_wheel import ColorWheel, hsv_to_rgb, rgb_to_hsv, hls_to_hsv_floats
 from ui.lab_visualizer import LabSquare, LabSlider, lab_to_rgb, rgb_to_lab
 from ui.oklab_colors import oklab_to_rgb, rgb_to_oklab, oklch_to_rgb, rgb_to_oklch
 from ui.settings_sidebar import SettingsSidebar
+from ui.grayscale_overlay import GrayscaleOverlay
 
 def bring_process_to_foreground(pid: int) -> bool:
     import ctypes
@@ -447,6 +448,12 @@ class MainWindow(QMainWindow):
         # DPI-aware screen tracking to prevent size drift when dragging across monitors
         self._last_dpr = None       # Previous screen devicePixelRatio
         self._dpi_locked_size = None  # (w, h) logical size frozen during DPI transition
+
+        # Fullscreen grayscale overlay (OKLCh perceptual)
+        self.grayscale_overlay = GrayscaleOverlay()
+        # Apply saved screen target
+        screen_target = self.cfg.get("grayscaleFilterScreen", "all")
+        self.grayscale_overlay.set_target(screen_target)
 
         self.init_ui()
         self.init_hotkeys()
@@ -1736,6 +1743,7 @@ class MainWindow(QMainWindow):
         global_hotkeys.bind_hotkey("pickKey", self.cfg.get("pickKey"))
         global_hotkeys.bind_hotkey("hideWindowKey", self.cfg.get("hideWindowKey"))
         global_hotkeys.bind_hotkey("followMouseKey", self.cfg.get("followMouseKey"))
+        global_hotkeys.bind_hotkey("grayscaleFilterKey", self.cfg.get("grayscaleFilterKey"))
 
     @pyqtSlot(str)
     def on_hotkey_triggered(self, hotkey_type):
@@ -1764,6 +1772,9 @@ class MainWindow(QMainWindow):
                 self.settings_sidebar.cb_follow_mouse.blockSignals(False)
         elif hotkey_type == "pickKey":
             print("[Hotkeys] Global Pick Color triggered")
+        elif hotkey_type == "grayscaleFilterKey":
+            print("[Hotkeys] Grayscale Filter toggled")
+            self.grayscale_overlay.toggle()
 
     def init_memory_sync(self):
         # Start background memory syncing thread
@@ -1932,7 +1943,11 @@ class MainWindow(QMainWindow):
         # Reload configs
         self.cfg = config.load_hotkey_config()
         self.update_hotkey_bindings()
-        
+
+        # Update grayscale overlay target
+        screen_target = self.cfg.get("grayscaleFilterScreen", "all")
+        self.grayscale_overlay.set_target(screen_target)
+
         # Update window flags dynamically
         self.update_window_flags()
         self.update_no_focus_policies()
@@ -2014,6 +2029,8 @@ class MainWindow(QMainWindow):
         
         # Clean up hotkeys and thread
         global_hotkeys.unbind_all()
+        if hasattr(self, 'grayscale_overlay'):
+            self.grayscale_overlay.set_active(False)
         if hasattr(self, 'sync_thread'):
             self.sync_thread.stop()
         
