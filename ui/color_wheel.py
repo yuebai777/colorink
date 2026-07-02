@@ -515,12 +515,15 @@ class ColorWheel(QWidget):
         return (w0 >= -0.01) and (w1 >= -0.01) and (w2 >= -0.01)
 
     def draw_hls_triangle(self, painter, cx, cy, r):
+        v0, v1, v2 = self.get_triangle_vertices(cx, cy, r)
         cache_key = (self.h, r, "hls", self.is_active_interaction())
         if hasattr(self, "_cached_hls_key") and self._cached_hls_key == cache_key and hasattr(self, "_cached_hls_img"):
             painter.drawImage(int(self._cached_hls_minx), int(self._cached_hls_miny), self._cached_hls_img)
+            is_active = self.is_active_interaction()
+            ss = 3 if (is_active and self.dragging != "hls-triangle") else 1
+            self._draw_hls_triangle_outline(painter, v0, v1, v2, ss)
             return
             
-        v0, v1, v2 = self.get_triangle_vertices(cx, cy, r)
         hy = r * 0.866
         px_left = cx - 0.5 * r
         
@@ -534,11 +537,9 @@ class ColorWheel(QWidget):
         if width <= 0 or height <= 0:
             return
             
-        # Use subsampling only during active dragging for maximum responsiveness
-        if self.is_active_interaction():
-            subsample = 3
-        else:
-            subsample = 1
+        # Only subsample for hue changes (ring/slider), not internal triangle drag
+        is_active = self.is_active_interaction()
+        subsample = 3 if (is_active and self.dragging != "hls-triangle") else 1
             
         sub_w = max(1, (width + subsample - 1) // subsample)
         sub_h = max(1, (height + subsample - 1) // subsample)
@@ -551,6 +552,7 @@ class ColorWheel(QWidget):
             l_val = max(0.0, min(1.0, (cy + hy - py) / (2.0 * hy)))
             px_right = px_left + 3.0 * r * (0.5 - abs(l_val - 0.5))
             row_w = px_right - px_left
+            first_colored = -1
             
             for x in range(sub_w):
                 px = min_x + x * subsample
@@ -558,7 +560,16 @@ class ColorWheel(QWidget):
                     s_val = (px - px_left) / row_w if row_w > 0.001 else 0.0
                     s_val = max(0.0, min(1.0, s_val))
                     red, green, blue = colorsys.hls_to_rgb(self.h / 360.0, l_val, s_val)
-                    img.setPixelColor(x, y, QColor(int(red * 255), int(green * 255), int(blue * 255)))
+                    color = QColor(int(red * 255), int(green * 255), int(blue * 255))
+                    img.setPixelColor(x, y, color)
+                    if first_colored < 0:
+                        first_colored = x
+                        
+            # Fill gap on the left — caused by integer pixel positions vs fractional triangle edge
+            if first_colored > 0:
+                fill = img.pixelColor(first_colored, y)
+                for x in range(first_colored):
+                    img.setPixelColor(x, y, fill)
                     
         self._cached_hls_key = cache_key
         if subsample > 1:
@@ -569,8 +580,9 @@ class ColorWheel(QWidget):
         self._cached_hls_miny = min_y
         
         painter.drawImage(min_x, min_y, self._cached_hls_img)
-        
-        # Stroke boundary
+        self._draw_hls_triangle_outline(painter, v0, v1, v2, subsample)
+
+    def _draw_hls_triangle_outline(self, painter, v0, v1, v2, subsample=1):
         path = QPainterPath()
         path.moveTo(v0)
         path.lineTo(v1)
@@ -613,11 +625,9 @@ class ColorWheel(QWidget):
         if width <= 0 or height <= 0:
             return
             
-        # Use subsampling only during active dragging for maximum responsiveness
-        if self.is_active_interaction():
-            subsample = 3
-        else:
-            subsample = 1
+        # Only subsample for hue changes (ring/slider), not internal slice drag
+        is_active = self.is_active_interaction()
+        subsample = 3 if (is_active and self.dragging != "rgb-slice") else 1
             
         sub_w = max(1, (width + subsample - 1) // subsample)
         sub_h = max(1, (height + subsample - 1) // subsample)
@@ -956,7 +966,9 @@ class ColorWheel(QWidget):
         if width <= 0 or height <= 0:
             return
 
-        subsample = 3 if self.is_active_interaction() else 1
+        # Only subsample for hue changes (ring/slider), not internal slice drag
+        is_active = self.is_active_interaction()
+        subsample = 3 if (is_active and self.dragging != "oklch-slice") else 1
         sub_w = max(1, (width + subsample - 1) // subsample)
         sub_h = max(1, (height + subsample - 1) // subsample)
 
