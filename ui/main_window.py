@@ -144,12 +144,14 @@ class TitleBar(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.drag_position = event.globalPosition().toPoint() - self.parent.frameGeometry().topLeft()
+            if not self.parent.cfg.get("lockWindowPosition", False):
+                self.drag_position = event.globalPosition().toPoint() - self.parent.frameGeometry().topLeft()
             event.accept()
 
     def mouseMoveEvent(self, event):
         if event.buttons() == Qt.MouseButton.LeftButton and self.drag_position is not None:
-            self.parent.move(event.globalPosition().toPoint() - self.drag_position)
+            if not self.parent.cfg.get("lockWindowPosition", False):
+                self.parent.move(event.globalPosition().toPoint() - self.drag_position)
             event.accept()
 
     def mouseReleaseEvent(self, event):
@@ -163,6 +165,21 @@ class GradientSlider(QSlider):
         self.groove_h = 16
         self.scale = 1.0
         self.update_scale(1.0)
+        self._gamut_min = None
+        self._gamut_max = None
+
+    def set_in_gamut_range(self, mn, mx):
+        """Set the valid in-gamut L range.
+        Values outside [mn, mx] will be grayed on the track.
+        Pass None for both to clear the marking."""
+        self._gamut_min = mn
+        self._gamut_max = mx
+        self.update()
+
+    def clear_in_gamut_range(self):
+        self._gamut_min = None
+        self._gamut_max = None
+        self.update()
 
     def wheelEvent(self, event):
         # Read the step size from configuration or parent window
@@ -234,6 +251,21 @@ class GradientSlider(QSlider):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(grad)
         painter.drawRoundedRect(groove_rect, 3.0 * self.scale, 3.0 * self.scale)
+        
+        # Draw out-of-gamut gray overlay
+        if self._gamut_min is not None and self._gamut_max is not None:
+            vmin = self.minimum()
+            vrange = self.maximum() - vmin
+            if vrange > 0:
+                left_frac = (self._gamut_min - vmin) / vrange
+                right_frac = (self._gamut_max - vmin) / vrange
+                
+                painter.setBrush(QColor(160, 160, 160, 140))
+                
+                if left_frac > 0.005:
+                    painter.drawRect(QRectF(0, groove_y, rect.width() * left_frac, self.groove_h))
+                if right_frac < 0.995:
+                    painter.drawRect(QRectF(rect.width() * right_frac, groove_y, rect.width() * (1.0 - right_frac), self.groove_h))
         
         super().paintEvent(event)
 
@@ -763,7 +795,44 @@ class MainWindow(QMainWindow):
         new_index = (self.stack.currentIndex() + 1) % 2
         self.stack.setCurrentIndex(new_index)
         self.update_mode_buttons_visibility()
+        # Sync the newly-shown visualizer to the current color. While a pane is
+        # hidden in the QStackedWidget, update_ui_colors skips syncing it, so a
+        # freshly-revealed pane would otherwise show a stale cursor position.
+        r, g, b = self.current_rgb
+        if new_index == 1:  # LAB pane
+            self._update_lab_avoid()
+            self.lab_square.set_color(r, g, b, block_signals=True)
+            self.lab_slider.set_lightness(self.lab_square.L)
+        else:  # Color wheel pane
+            self.color_wheel.set_color(r, g, b, block_signals=True)
         self.update()
+
+    def _update_lab_avoid(self):
+        """Tell LabSquare how much of its top is covered by the floating
+        preview box, so the ab plane renders below it instead of being hidden."""
+        if not hasattr(self, 'lab_square') or not hasattr(self, 'preview_box'):
+            return
+        pb = self.preview_box
+        ls = self.lab_square
+        if pb.position_mode != "top-left" or not pb.isVisible():
+            ls.avoid_top = 0
+            return
+        # Map the preview box corners into LabSquare's local coordinate system.
+        # QStackedWidget keeps every page at the same geometry as the stack
+        # content rect, so this is valid even while the LAB pane is hidden.
+        try:
+            top_left = ls.mapFromGlobal(pb.mapToGlobal(pb.rect().topLeft()))
+            bottom_right = ls.mapFromGlobal(pb.mapToGlobal(pb.rect().bottomRight()))
+        except Exception:
+            ls.avoid_top = 0
+            return
+        # Only avoid if there is horizontal overlap with LabSquare.
+        if bottom_right.x() <= 0 or top_left.x() >= ls.width():
+            ls.avoid_top = 0
+            return
+        scale = self.cfg.get("uiScale", 100) / 100.0
+        pad = int(4 * scale)
+        ls.avoid_top = max(0, bottom_right.y() + pad)
 
     def on_wheel_color_changed(self, r, g, b):
         self.update_ui_colors(r, g, b, source="wheel")
@@ -1044,6 +1113,190 @@ class MainWindow(QMainWindow):
                 okch_stops.append((i / 6.0, QColor(int(max(0, min(255, r_h))), int(max(0, min(255, g_h))), int(max(0, min(255, b_h))))))
             self.slider_widgets["h_oklch"][0].set_gradient(okch_stops)
 
+    # ── L-gamut range helpers for out-of-gamut slider marking ──
+
+    def _compute_lab_L_gamut_range(self):
+        """Return (min_L, max_L) for L_lab slider given current a_lab, b_lab."""
+        if "a_lab" not in self.slider_widgets or "b_lab" not in self.slider_widgets:
+            return 0, 100
+        a_val = self.slider_widgets["a_lab"][0].value()
+        b_val = self.slider_widgets["b_lab"][0].value()
+
+        def in_gamut(L):
+            r, g, bv = lab_to_rgb(L, a_val, b_val)
+            return 0.0 <= r <= 255.0 and 0.0 <= g <= 255.0 and 0.0 <= bv <= 255.0
+
+        if not in_gamut(50.0):
+            return 0, 100
+        # Find L_min
+        if in_gamut(0.0):
+            min_L = 0.0
+        else:
+            lo, hi = 0.0, 50.0
+            for _ in range(24):
+                mid = (lo + hi) * 0.5
+                if in_gamut(mid):
+                    hi = mid
+                else:
+                    lo = mid
+            min_L = hi
+        # Find L_max
+        if in_gamut(100.0):
+            max_L = 100.0
+        else:
+            lo, hi = 50.0, 100.0
+            for _ in range(24):
+                mid = (lo + hi) * 0.5
+                if in_gamut(mid):
+                    lo = mid
+                else:
+                    hi = mid
+            max_L = lo
+        return int(round(min_L)), int(round(max_L))
+
+    def _compute_oklab_L_gamut_range(self):
+        """Return (min_L, max_L) for L_oklab slider given current a_oklab, b_oklab."""
+        if "a_oklab" not in self.slider_widgets or "b_oklab" not in self.slider_widgets:
+            return 0, 100
+        a_val = self.slider_widgets["a_oklab"][0].value() / 100.0
+        b_val = self.slider_widgets["b_oklab"][0].value() / 100.0
+
+        def in_gamut(L):
+            r, g, bv = oklab_to_rgb(L / 100.0, a_val, b_val)
+            return 0.0 <= r <= 255.0 and 0.0 <= g <= 255.0 and 0.0 <= bv <= 255.0
+
+        if not in_gamut(50.0):
+            return 0, 100
+        if in_gamut(0.0):
+            min_L = 0.0
+        else:
+            lo, hi = 0.0, 50.0
+            for _ in range(24):
+                mid = (lo + hi) * 0.5
+                if in_gamut(mid):
+                    hi = mid
+                else:
+                    lo = mid
+            min_L = hi
+        if in_gamut(100.0):
+            max_L = 100.0
+        else:
+            lo, hi = 50.0, 100.0
+            for _ in range(24):
+                mid = (lo + hi) * 0.5
+                if in_gamut(mid):
+                    lo = mid
+                else:
+                    hi = mid
+            max_L = lo
+        return int(round(min_L)), int(round(max_L))
+
+    def _compute_oklch_L_gamut_range(self):
+        """Return (min_L, max_L) for L_oklch slider given current C, h."""
+        if "C_oklch" not in self.slider_widgets or "h_oklch" not in self.slider_widgets:
+            return 0, 100
+        c_raw = self.slider_widgets["C_oklch"][0].value()
+        h_val = self.slider_widgets["h_oklch"][0].value()
+        L_cur = self.slider_widgets["L_oklch"][0].value() / 100.0
+
+        max_c_cur = self._find_oklch_max_chroma(L_cur, h_val)
+        c_abs = (c_raw / 100.0) * max_c_cur if max_c_cur > 0.001 else 0.0
+
+        if c_abs < 0.001:
+            return 0, 100
+
+        def in_gamut(L):
+            r, g, bv = oklch_to_rgb(L / 100.0, c_abs, h_val)
+            return 0.0 <= r <= 255.0 and 0.0 <= g <= 255.0 and 0.0 <= bv <= 255.0
+
+        if not in_gamut(50.0):
+            return 0, 100
+        if in_gamut(0.0):
+            min_L = 0.0
+        else:
+            lo, hi = 0.0, 50.0
+            for _ in range(24):
+                mid = (lo + hi) * 0.5
+                if in_gamut(mid):
+                    hi = mid
+                else:
+                    lo = mid
+            min_L = hi
+        if in_gamut(100.0):
+            max_L = 100.0
+        else:
+            lo, hi = 50.0, 100.0
+            for _ in range(24):
+                mid = (lo + hi) * 0.5
+                if in_gamut(mid):
+                    lo = mid
+                else:
+                    hi = mid
+            max_L = lo
+        return int(round(min_L)), int(round(max_L))
+
+    def _update_lab_slider_gamut_range(self):
+        """Update the vertical LabSlider's out-of-gamut L range
+        based on the current LabSquare (a, b) and render mode."""
+        if not hasattr(self, 'lab_square') or not hasattr(self, 'lab_slider'):
+            return
+        a_val = self.lab_square.a
+        b_val = self.lab_square.b
+        mode = self.lab_square.render_mode
+
+        def in_gamut(L):
+            if mode == "oklab":
+                r, g, bv = oklab_to_rgb(L / 100.0, a_val, b_val)
+            else:
+                r, g, bv = lab_to_rgb(L, a_val, b_val)
+            return 0.0 <= r <= 255.0 and 0.0 <= g <= 255.0 and 0.0 <= bv <= 255.0
+
+        if not in_gamut(50.0):
+            min_L, max_L = 0.0, 100.0
+        else:
+            if in_gamut(0.0):
+                min_L = 0.0
+            else:
+                lo, hi = 0.0, 50.0
+                for _ in range(24):
+                    mid = (lo + hi) * 0.5
+                    if in_gamut(mid):
+                        hi = mid
+                    else:
+                        lo = mid
+                min_L = hi
+            if in_gamut(100.0):
+                max_L = 100.0
+            else:
+                lo, hi = 50.0, 100.0
+                for _ in range(24):
+                    mid = (lo + hi) * 0.5
+                    if in_gamut(mid):
+                        lo = mid
+                    else:
+                        hi = mid
+                max_L = lo
+        self.lab_slider.set_in_gamut_range(min_L, max_L)
+
+    def _update_all_L_gamut_ranges(self):
+        """Update out-of-gamut visual marking on all L sliders."""
+        if not hasattr(self, 'slider_widgets'):
+            return
+        # L_lab
+        if "L_lab" in self.slider_widgets:
+            mn, mx = self._compute_lab_L_gamut_range()
+            self.slider_widgets["L_lab"][0].set_in_gamut_range(mn, mx)
+        # L_oklab
+        if "L_oklab" in self.slider_widgets:
+            mn, mx = self._compute_oklab_L_gamut_range()
+            self.slider_widgets["L_oklab"][0].set_in_gamut_range(mn, mx)
+        # L_oklch
+        if "L_oklch" in self.slider_widgets:
+            mn, mx = self._compute_oklch_L_gamut_range()
+            self.slider_widgets["L_oklch"][0].set_in_gamut_range(mn, mx)
+        # Vertical LabSlider
+        self._update_lab_slider_gamut_range()
+
     def update_ui_colors(self, r, g, b, source="", hsv=None):
         self.current_rgb = (r, g, b)
         color = QColor(r, g, b)
@@ -1148,6 +1401,9 @@ class MainWindow(QMainWindow):
             
         self.update_slider_gradients(r, g, b)
 
+        # Update out-of-gamut visual marking on L sliders
+        self._update_all_L_gamut_ranges()
+
         # 5) Push to drawing software
         if source != "sync" and hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
             is_dragging = False
@@ -1212,6 +1468,13 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self.update_geometries()
 
+    def moveEvent(self, event):
+        """Block window movement when lockWindowPosition is enabled."""
+        if self.cfg.get("lockWindowPosition", False):
+            event.ignore()
+            return
+        super().moveEvent(event)
+
     def update_geometries(self):
         # Dimensions
         w = self.width()
@@ -1232,6 +1495,10 @@ class MainWindow(QMainWindow):
         # Dynamic preview box scaling and placement
         self.preview_box.resize_and_position(wheel_size, title_h, h, sliders_h, self.active_slot)
         self.preview_box.raise_()
+
+        # Keep LabSquare's top-avoidance in sync with the preview box position
+        # so the ab plane never renders behind the floating preview box.
+        self._update_lab_avoid()
         
         # If settings sidebar is open, ensure it remains on top!
         if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
@@ -1508,7 +1775,7 @@ class MainWindow(QMainWindow):
         theme_name = self.cfg.get("ui-theme", "auto")
         if theme_name == "auto":
             try:
-                from core.csp_color_sync import get_csp_theme
+                from core.csp_brush_link import get_csp_theme
                 t = get_csp_theme()
                 bg = t["bg"]
                 text = t["text"]
@@ -1784,18 +2051,15 @@ class MainWindow(QMainWindow):
         self.sync_thread.signals.status_changed.connect(self.on_sync_status_changed)
         
         # Set active software mode
-        software_map = {
-            "CLIP Studio Paint": "csp",
-            "SAI2": "sai",
-            "UDM Paint": "udm"
-        }
-        chosen_software = self.cfg.get("syncSoftware", "CLIP Studio Paint")
-        mode = software_map.get(chosen_software, "csp")
+        mode = self.cfg.get("syncSoftware", "csp")
+        if mode not in ("csp", "sai", "udm", "ps"):
+            mode = "csp"
         self.sync_thread.set_software_mode(mode)
         
         self.sync_thread.csp_version = self.cfg.get("cspVersion", "auto")
         self.sync_thread.sai2_version = self.cfg.get("sai2Version", "auto")
         self.sync_thread.udm_version = self.cfg.get("udmVersion", "auto")
+        self.sync_thread.ps_version = self.cfg.get("psVersion", "auto")
         self.sync_thread.update_versions()
         
         # Start syncing
@@ -1851,6 +2115,9 @@ class MainWindow(QMainWindow):
         self.resize(int(320 * factor), int(450 * factor))
 
     def show_window_at_cursor(self):
+        if self.cfg.get("lockWindowPosition", False):
+            self.show()
+            return
         from PyQt6.QtGui import QCursor
         from PyQt6.QtWidgets import QApplication
         cursor_pos = QCursor.pos()
@@ -1916,7 +2183,8 @@ class MainWindow(QMainWindow):
                 "sai2.exe" in exe_name or "sai2" in exe_name or "sai2" in title or
                 "painttool sai" in title or "paint tool sai" in title or
                 "udmpaintpro.exe" in exe_name or "udmpaintpro" in exe_name or
-                "udmpaintex.exe" in exe_name or "udmpaintex" in exe_name or "udm paint" in title
+                "udmpaintex.exe" in exe_name or "udmpaintex" in exe_name or "udm paint" in title or
+                "photoshop.exe" in exe_name or "photoshop" in exe_name or "adobe photoshop" in title
             )
             
         is_our_focused = self.isActiveWindow()
@@ -1931,10 +2199,10 @@ class MainWindow(QMainWindow):
             should_be_visible = True
             
         if should_be_visible:
-            if getattr(self, "auto_hidden", False):
+            if not self.isVisible():
                 self.show()
                 self.raise_()
-                self.auto_hidden = False
+            self.auto_hidden = False
         else:
             if self.isVisible():
                 self.hide()
@@ -1962,19 +2230,16 @@ class MainWindow(QMainWindow):
                 self.auto_hidden = False
         
         # Update active software mode in thread
-        software_map = {
-            "CLIP Studio Paint": "csp",
-            "SAI2": "sai",
-            "UDM Paint": "udm"
-        }
-        chosen_software = self.cfg.get("syncSoftware", "CLIP Studio Paint")
-        mode = software_map.get(chosen_software, "csp")
+        mode = self.cfg.get("syncSoftware", "csp")
+        if mode not in ("csp", "sai", "udm", "ps"):
+            mode = "csp"
         self.sync_thread.set_software_mode(mode)
         
         # Update settings dialog variables in thread
         self.sync_thread.csp_version = self.cfg.get("cspVersion", "auto")
         self.sync_thread.sai2_version = self.cfg.get("sai2Version", "auto")
         self.sync_thread.udm_version = self.cfg.get("udmVersion", "auto")
+        self.sync_thread.ps_version = self.cfg.get("psVersion", "auto")
         self.sync_thread.update_versions()
         
         # Update follow mouse state

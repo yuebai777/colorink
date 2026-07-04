@@ -134,6 +134,10 @@ class SettingsSidebar(QScrollArea):
         self.cb_lock_size.stateChanged.connect(self.save_settings)
         self.layout.addWidget(self.cb_lock_size)
         
+        self.cb_lock_position = QCheckBox("锁定窗口位置")
+        self.cb_lock_position.stateChanged.connect(self.save_settings)
+        self.layout.addWidget(self.cb_lock_position)
+        
         self.cb_autostart = QCheckBox("开机自启动")
         self.cb_autostart.stateChanged.connect(self.save_settings)
         self.layout.addWidget(self.cb_autostart)
@@ -265,7 +269,7 @@ class SettingsSidebar(QScrollArea):
         row_sync = QHBoxLayout()
         row_sync.addWidget(QLabel("同步软件"))
         self.combo_software = NonScrollComboBox()
-        self.combo_software.addItems(["CLIP Studio Paint", "SAI2", "UDM Paint"])
+        self.combo_software.addItems(["CLIP Studio Paint", "SAI2", "UDM Paint", "Photoshop"])
         self.combo_software.currentTextChanged.connect(self.save_settings)
         row_sync.addWidget(self.combo_software)
         self.layout.addLayout(row_sync)
@@ -302,6 +306,17 @@ class SettingsSidebar(QScrollArea):
         self.combo_udm.currentTextChanged.connect(self.save_settings)
         row_udm_layout.addWidget(self.combo_udm)
         self.layout.addWidget(self.row_udm_widget)
+        
+        # Photoshop version container (for future compatibility, PS COM is stable)
+        self.row_ps_widget = QWidget()
+        row_ps_layout = QHBoxLayout(self.row_ps_widget)
+        row_ps_layout.setContentsMargins(0, 0, 0, 0)
+        row_ps_layout.addWidget(QLabel("PS 版本"))
+        self.combo_ps = NonScrollComboBox()
+        self.combo_ps.addItems(["auto"])
+        self.combo_ps.currentTextChanged.connect(self.save_settings)
+        row_ps_layout.addWidget(self.combo_ps)
+        self.layout.addWidget(self.row_ps_widget)
         
         # 5. 语言 Section
         self.layout.addWidget(self.create_header("语言"))
@@ -378,6 +393,7 @@ class SettingsSidebar(QScrollArea):
         for cb, key in [
             (self.cb_taskbar_icon, "showTaskbarIcon"),
             (self.cb_lock_size, "lockWindowSize"),
+            (self.cb_lock_position, "lockWindowPosition"),
             (self.cb_autostart, "openAtLogin"),
             (self.cb_only_drawing, "onlyShowInCsp"),
             (self.cb_auto_focus_drawing, "autoFocusDrawingSoftware"),
@@ -426,7 +442,7 @@ class SettingsSidebar(QScrollArea):
         self.lbl_diff_space.setText(str(diff_val))
         
         # 4. Software Version
-        software_map = {"csp": "CLIP Studio Paint", "sai": "SAI2", "udm": "UDM Paint"}
+        software_map = {"csp": "CLIP Studio Paint", "sai": "SAI2", "udm": "UDM Paint", "ps": "Photoshop"}
         self.combo_software.blockSignals(True)
         self.combo_software.setCurrentText(software_map.get(self.cfg.get("syncSoftware", "csp"), "CLIP Studio Paint"))
         self.combo_software.blockSignals(False)
@@ -449,15 +465,20 @@ class SettingsSidebar(QScrollArea):
         self.combo_udm.setCurrentText(udm_display_map.get(self.cfg.get("udmVersion", "auto"), "auto"))
         self.combo_udm.blockSignals(False)
         
+        self.combo_ps.blockSignals(True)
+        self.combo_ps.setCurrentText(self.cfg.get("psVersion", "auto"))
+        self.combo_ps.blockSignals(False)
+        
         self.update_version_visibility()
         self.apply_theme()
         
     def update_version_visibility(self):
-        software_val_map = {"CLIP Studio Paint": "csp", "SAI2": "sai", "UDM Paint": "udm"}
+        software_val_map = {"CLIP Studio Paint": "csp", "SAI2": "sai", "UDM Paint": "udm", "Photoshop": "ps"}
         selected = software_val_map.get(self.combo_software.currentText(), "csp")
         self.row_csp_widget.setVisible(selected == "csp")
         self.row_sai_widget.setVisible(selected == "sai")
         self.row_udm_widget.setVisible(selected == "udm")
+        self.row_ps_widget.setVisible(selected == "ps")
 
     def apply_theme(self):
         font_factor = self.cfg.get("fontSize", 100) / 100.0
@@ -471,7 +492,7 @@ class SettingsSidebar(QScrollArea):
             theme_name = p.cfg.get("ui-theme", "auto")
             if theme_name == "auto":
                 try:
-                    from core.csp_color_sync import get_csp_theme
+                    from core.csp_brush_link import get_csp_theme
                     t = get_csp_theme()
                     bg = t["bg"]
                     text = t["text"]
@@ -590,6 +611,7 @@ class SettingsSidebar(QScrollArea):
         
         self.cfg["followMouseEnabled"] = self.cb_follow_mouse.isChecked()
         self.cfg["lockWindowSize"] = self.cb_lock_size.isChecked()
+        self.cfg["lockWindowPosition"] = self.cb_lock_position.isChecked()
         
         old_autostart = self.cfg.get("openAtLogin", False)
         new_autostart = self.cb_autostart.isChecked()
@@ -613,7 +635,7 @@ class SettingsSidebar(QScrollArea):
         self.cfg["visualizerMode"] = viz_val_map.get(self.combo_viz_mode.currentText(), "lab")
         self.cfg["showLabLightnessSlider"] = self.cb_show_lab_lightness.isChecked()
         
-        software_val_map = {"CLIP Studio Paint": "csp", "SAI2": "sai", "UDM Paint": "udm"}
+        software_val_map = {"CLIP Studio Paint": "csp", "SAI2": "sai", "UDM Paint": "udm", "Photoshop": "ps"}
         self.cfg["syncSoftware"] = software_val_map.get(self.combo_software.currentText(), "csp")
         
         pos_val_map = {"左上角": "top-left", "左下角": "bottom-left"}
@@ -624,6 +646,7 @@ class SettingsSidebar(QScrollArea):
         
         udm_val_map = {"auto": "auto", "udm4.0pro": "udm4.0", "udm4.0ex": "udm4.0-ex"}
         self.cfg["udmVersion"] = udm_val_map.get(self.combo_udm.currentText(), "auto")
+        self.cfg["psVersion"] = self.combo_ps.currentText()
         
         self.cfg["uiScale"] = self.zoom_slider.value()
         self.cfg["flipColorWheelHorizontally"] = self.cb_flip_wheel.isChecked()

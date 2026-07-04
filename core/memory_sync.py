@@ -3,9 +3,10 @@ import sys
 from PyQt6.QtCore import QThread, pyqtSignal, QObject
 
 # Import native modules
-from core import csp_color_sync
-from core import sai2_color_sync
-from core import udm_color_sync
+from core import csp_brush_link
+from core import sai2_brush_link
+from core import udm_brush_link
+from core import photoshop_color_sync
 
 class MemorySyncSignals(QObject):
     # Emitted when the drawing software color changes: (r, g, b)
@@ -20,7 +21,7 @@ class MemorySyncThread(QThread):
         self.running = True
         
         # State variables
-        self.software_mode = "csp"  # "csp" | "sai" | "udm"
+        self.software_mode = "csp"  # "csp" | "sai" | "udm" | "ps"
         self.sync_enabled = True
         self.paused = False
         
@@ -34,17 +35,20 @@ class MemorySyncThread(QThread):
         self.pending_write_color = None  # (r, g, b)
         self.last_write_time = 0.0
         
-        # Instantiate CSP and UDM sync classes
-        self.csp_sync = csp_color_sync.CSPSync()
-        self.udm_sync = udm_color_sync.UDMSync()
+        # Instantiate per-software sync backends
+        self.csp_sync = csp_brush_link.CSPSync()
+        self.sai2_sync = sai2_brush_link.SAI2Sync()
+        self.udm_sync = udm_brush_link.UDMSync()
+        self.ps_sync = photoshop_color_sync.PhotoshopSync()
         
         self.update_versions()
         
     def update_versions(self):
         # Set versions in backend scripts/instances
         self.csp_sync.set_version(self.csp_version)
-        sai2_color_sync.set_sync_version(self.sai2_version)
+        self.sai2_sync.set_version(self.sai2_version)
         self.udm_sync.set_version(self.udm_version)
+        self.ps_sync.set_version(getattr(self, 'ps_version', 'auto'))
         
     def set_software_mode(self, mode):
         self.software_mode = mode
@@ -65,10 +69,13 @@ class MemorySyncThread(QThread):
         if self.software_mode == 'csp':
             return self.csp_sync.pid if self.csp_sync.pm else None
         elif self.software_mode == 'sai':
-            status = sai2_color_sync.status()
+            status = self.sai2_sync.status()
             return status.get('pid')
         elif self.software_mode == 'udm':
             return self.udm_sync.pid if self.udm_sync.pm else None
+        elif self.software_mode == 'ps':
+            status_ = self.ps_sync.status()
+            return status_.get('pid')
         return None
         
     def stop(self):
@@ -96,9 +103,11 @@ class MemorySyncThread(QThread):
                     if self.software_mode == 'csp':
                         self.csp_sync.set_color(r, g, b)
                     elif self.software_mode == 'sai':
-                        sai2_color_sync.set_color(r, g, b)
+                        self.sai2_sync.set_color(r, g, b)
                     elif self.software_mode == 'udm':
                         self.udm_sync.set_color(r, g, b)
+                    elif self.software_mode == 'ps':
+                        self.ps_sync.set_color(r, g, b)
                     continue
                 
                 # 2) Handle read request (polling)
@@ -110,12 +119,16 @@ class MemorySyncThread(QThread):
                     status = self.csp_sync.status()
                     connected = status.get('connected', False)
                 elif self.software_mode == 'sai':
-                    color = sai2_color_sync.get_color()
-                    status = sai2_color_sync.get_status()
+                    color = self.sai2_sync.get_color()
+                    status = self.sai2_sync.status()
                     connected = status.get('connected', False)
                 elif self.software_mode == 'udm':
                     color = self.udm_sync.get_color()
                     status = self.udm_sync.status()
+                    connected = status.get('connected', False)
+                elif self.software_mode == 'ps':
+                    color = self.ps_sync.get_color()
+                    status = self.ps_sync.status()
                     connected = status.get('connected', False)
                     
                 # Notify status change

@@ -43,6 +43,7 @@ def load_hotkey_config():
         "cspClickDelayMs": 30,
         "showTaskbarIcon": False,
         "lockWindowSize": False,
+        "lockWindowPosition": False,
         "onlyShowInCsp": False,
         "openAtLogin": False,
         "previewBoxPosition": "top-left",
