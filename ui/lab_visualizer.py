@@ -95,6 +95,17 @@ class LabSquare(QWidget):
         self._cached_img = None
         self._cached_key = None
 
+        # Precomputed gamut bbox table: key = (render_mode, int(L)) →
+        # (min_a, max_a, min_b, max_b). Filled once per mode at startup /
+        # mode-switch so that dragging the L slider costs zero extra samples.
+        self._bbox_table = {}
+        self._precompute_bboxes()
+
+        # Height of the top strip to keep clear of the floating preview box,
+        # so the ab plane isn't hidden behind it. Set by MainWindow based on
+        # the preview box geometry. 0 = no avoidance (plane centered).
+        self.avoid_top = 0
+
     def set_render_mode(self, mode):
         """Set render mode: 'lab' or 'oklab'. Invalidates cache."""
         if mode != self.render_mode:
@@ -102,6 +113,7 @@ class LabSquare(QWidget):
             self.max_val = 110.0 if mode == "lab" else 0.3
             self._cached_img = None
             self._cached_key = None
+            self._precompute_bboxes()
             self.update()
 
     def set_color(self, r, g, b, block_signals=False):
@@ -122,8 +134,11 @@ class LabSquare(QWidget):
 
     def set_lightness(self, lightness):
         self.L = lightness
+        # Keep (a, b) inside the gamut at the new L so the cursor doesn't
+        # drift into the black out-of-gamut corners after L has changed
+        # significantly from the L at which the color was selected.
+        self.a, self.b = self._clamp_to_gamut(self.a, self.b)
         self.update()
-        # Re-evaluate color based on current a, b
         r, g, b = self.get_current_rgb()
         self.colorChanged.emit(r, g, b)
 
@@ -146,16 +161,116 @@ class LabSquare(QWidget):
         self._cached_img = None
         self._cached_key = None
 
+    def _compute_gamut_bbox(self, L):
+        """Sample the ab grid at lightness L and return (min_a, max_a,
+        min_b, max_b) covering only in-gamut colors, with padding. Falls back
+        to the full fixed range when no in-gamut sample is found (extreme L)."""
+        step = 0.01 if self.render_mode == "oklab" else 5.0
+        max_v = self.max_val
+        min_a, max_a = max_v, -max_v
+        min_b, max_b = max_v, -max_v
+        found = False
+        a = -max_v
+        while a <= max_v:
+            b = -max_v
+            while b <= max_v:
+                if self.render_mode == "oklab":
+                    r, g, bv = oklab_to_rgb(L / 100.0, a, b)
+                else:
+                    r, g, bv = lab_to_rgb(L, a, b)
+                if 0.0 <= r <= 255.0 and 0.0 <= g <= 255.0 and 0.0 <= bv <= 255.0:
+                    if a < min_a: min_a = a
+                    if a > max_a: max_a = a
+                    if b < min_b: min_b = b
+                    if b > max_b: max_b = b
+                    found = True
+                b += step
+            a += step
+        if not found:
+            return -max_v, max_v, -max_v, max_v
+        pad = step * 3
+        min_a = max(-max_v, min_a - pad)
+        max_a = min(max_v, max_a + pad)
+        min_b = max(-max_v, min_b - pad)
+        max_b = min(max_v, max_b + pad)
+        # Guard against degenerate ranges near black/white where the gamut is
+        # essentially a single point - widen around the midpoint so the cursor
+        # doesn't stick to the very edge.
+        min_span = step * 8
+        if max_a - min_a < min_span:
+            mid = (min_a + max_a) * 0.5
+            min_a = max(-max_v, mid - min_span / 2)
+            max_a = min(max_v, mid + min_span / 2)
+        if max_b - min_b < min_span:
+            mid = (min_b + max_b) * 0.5
+            min_b = max(-max_v, mid - min_span / 2)
+            max_b = min(max_v, mid + min_span / 2)
+        return min_a, max_a, min_b, max_b
+
+    def _get_display_range(self):
+        """Look up the precomputed gamut bbox for current render_mode and L.
+        Falls back to the full fixed range if the key is somehow missing."""
+        return self._bbox_table.get(
+            (self.render_mode, int(self.L)),
+            (-self.max_val, self.max_val, -self.max_val, self.max_val),
+        )
+
+    def _precompute_bboxes(self):
+        """Precompute gamut bboxes for every L (0..100) in the current
+        render_mode. Called once at startup / mode-switch."""
+        mode = self.render_mode
+        for L_int in range(101):
+            key = (mode, L_int)
+            if key not in self._bbox_table:
+                self._bbox_table[key] = self._compute_gamut_bbox(float(L_int))
+
+    def _is_in_gamut(self, a, b):
+        if self.render_mode == "oklab":
+            r, g, bv = oklab_to_rgb(self.L / 100.0, a, b)
+        else:
+            r, g, bv = lab_to_rgb(self.L, a, b)
+        return 0.0 <= r <= 255.0 and 0.0 <= g <= 255.0 and 0.0 <= bv <= 255.0
+
+    def _clamp_to_gamut(self, a, b):
+        """Pull (a, b) inside the in-gamut region at the current L.
+
+        The bbox is rectangular but the gamut is roughly elliptical, so clicks
+        in the corners land outside the gamut (rendered transparent/black) and
+        the cursor would appear to leave the colored area. Binary-search along
+        the segment from the click point toward a known in-gamut anchor to find
+        the boundary, then sit the cursor just inside it.
+        """
+        if self._is_in_gamut(a, b):
+            return a, b
+        min_a, max_a, min_b, max_b = self._get_display_range()
+        anchors = [(0.0, 0.0),
+                   ((min_a + max_a) * 0.5, (min_b + max_b) * 0.5)]
+        for ax, ay in anchors:
+            if not self._is_in_gamut(ax, ay):
+                continue
+            # Segment: t=0 at click point (out of gamut), t=1 at anchor (in).
+            # Find the smallest t where the point enters the gamut.
+            lo, hi = 0.0, 1.0
+            for _ in range(24):
+                mid = (lo + hi) * 0.5
+                ca = a + (ax - a) * mid
+                cb = b + (ay - b) * mid
+                if self._is_in_gamut(ca, cb):
+                    hi = mid
+                else:
+                    lo = mid
+            return a + (ax - a) * hi, b + (ay - b) * hi
+        # No in-gamut anchor found (extreme L): leave as-is; RGB will clamp.
+        return a, b
+
     def _render_ab_plane(self, low_quality=False):
         """Render ab-plane into cache. Called by paintEvent and prerender."""
         w = self.width()
         h = self.height()
-        size = min(w, h)
+        avail_h = max(0, h - self.avoid_top)
+        size = min(w, avail_h)
         if size <= 10:
             return
-
-        offset_x = (w - size) / 2
-        offset_y = (h - size) / 2
 
         is_active = False
         win = self.window()
@@ -164,6 +279,12 @@ class LabSquare(QWidget):
                 if slider.isSliderDown():
                     is_active = True
                     break
+        # Also check the standalone LabSlider next to the ab plane — it is
+        # not part of slider_widgets, so it would otherwise never trigger the
+        # low-quality rendering path.
+        if not is_active and win is not None and hasattr(win, "lab_slider"):
+            if win.lab_slider.dragging:
+                is_active = True
 
         cache_key = (int(self.L * 2), size, is_active, self.render_mode)
         if not low_quality and self._cached_key == cache_key and self._cached_img is not None:
@@ -176,12 +297,17 @@ class LabSquare(QWidget):
             gen_size = int(size * ratio)
         img = QImage(gen_size, gen_size, QImage.Format.Format_ARGB32)
 
+        # Dynamic ab display range: zoom into the in-gamut region for current L.
+        min_a, max_a, min_b, max_b = self._get_display_range()
+        span_a = max_a - min_a
+        span_b = max_b - min_b
+
         if self.render_mode == "oklab":
             # OKLab rendering: per-pixel oklab_to_rgb
             for row in range(gen_size):
-                b_val = self.max_val - (row / gen_size) * (self.max_val * 2)
+                b_val = max_b - (row / gen_size) * span_b
                 for col in range(gen_size):
-                    a_val = (col / gen_size) * (self.max_val * 2) - self.max_val
+                    a_val = min_a + (col / gen_size) * span_a
                     r_val, g_val, bv = oklab_to_rgb(self.L / 100.0, a_val, b_val)
                     if 0 <= r_val <= 255 and 0 <= g_val <= 255 and 0 <= bv <= 255:
                         argb = (255 << 24) | (int(r_val) << 16) | (int(g_val) << 8) | int(bv)
@@ -191,19 +317,19 @@ class LabSquare(QWidget):
         else:
             y_const = (self.L + 16.0) / 116.0
             y_val = y_const * y_const * y_const if y_const > 0.206893 else (y_const - 16.0/116.0) / 7.787
-            
+
             # Precalculate x_val for columns
             x_vals = []
             for col in range(gen_size):
-                a_val = (col / gen_size) * (self.max_val * 2) - self.max_val
+                a_val = min_a + (col / gen_size) * span_a
                 x = a_val / 500.0 + y_const
                 x_val = 0.96422 * (x * x * x if x > 0.206893 else (x - 16.0/116.0) / 7.787)
                 x_vals.append(x_val)
-                
+
             # Precalculate z_val for rows
             z_vals = []
             for row in range(gen_size):
-                b_val = self.max_val - (row / gen_size) * (self.max_val * 2)
+                b_val = max_b - (row / gen_size) * span_b
                 z = y_const - b_val / 200.0
                 z_val = 0.82521 * (z * z * z if z > 0.206893 else (z - 16.0/116.0) / 7.787)
                 z_vals.append(z_val)
@@ -252,12 +378,13 @@ class LabSquare(QWidget):
         
         w = self.width()
         h = self.height()
-        size = min(w, h)
+        avail_h = max(0, h - self.avoid_top)
+        size = min(w, avail_h)
         if size <= 10:
             return
-            
+
         offset_x = (w - size) / 2
-        offset_y = (h - size) / 2
+        offset_y = self.avoid_top + (avail_h - size) / 2
         
         # Show low-res prerender first if available
         used_prerender = False
@@ -272,17 +399,22 @@ class LabSquare(QWidget):
             if self._cached_img is not None:
                 painter.drawImage(int(offset_x), int(offset_y), self._cached_img)
         
-        # Draw dotted crosshair
-        center_x = offset_x + size / 2.0
-        center_y = offset_y + size / 2.0
+        # Draw neutral-axis crosshair at a=0, b=0 only when it falls inside the
+        # dynamic display range (otherwise the crosshair would be off-plane).
+        min_a, max_a, min_b, max_b = self._get_display_range()
+        if min_a <= 0 <= max_a and min_b <= 0 <= max_b:
+            cx = offset_x + ((0 - min_a) / (max_a - min_a)) * size
+            cy = offset_y + ((max_b - 0) / (max_b - min_b)) * size
+            painter.setPen(QPen(QColor(128, 128, 128, 100), 1, Qt.PenStyle.DashLine))
+            painter.drawLine(QPointF(cx, offset_y), QPointF(cx, offset_y + size))
+            painter.drawLine(QPointF(offset_x, cy), QPointF(offset_x + size, cy))
         
-        painter.setPen(QPen(QColor(128, 128, 128, 100), 1, Qt.PenStyle.DashLine))
-        painter.drawLine(QPointF(center_x, offset_y), QPointF(center_x, offset_y + size))
-        painter.drawLine(QPointF(offset_x, center_y), QPointF(offset_x + size, center_y))
-        
-        # Draw cursor
-        ix = offset_x + ((self.a + self.max_val) / (self.max_val * 2)) * size
-        iy = offset_y + ((self.max_val - self.b) / (self.max_val * 2)) * size
+        # Draw cursor (clamped to the square so it never escapes when the
+        # current a/b falls outside the dynamic range after an L change)
+        cx_frac = (self.a - min_a) / (max_a - min_a) if max_a > min_a else 0.5
+        cy_frac = (max_b - self.b) / (max_b - min_b) if max_b > min_b else 0.5
+        ix = offset_x + max(0.0, min(1.0, cx_frac)) * size
+        iy = offset_y + max(0.0, min(1.0, cy_frac)) * size
         
         r, g, b = self.get_current_rgb()
         painter.setPen(Qt.PenStyle.NoPen)
@@ -318,17 +450,23 @@ class LabSquare(QWidget):
     def handle_mouse(self, pos):
         w = self.width()
         h = self.height()
-        size = min(w, h)
+        avail_h = max(0, h - self.avoid_top)
+        size = min(w, avail_h)
         offset_x = (w - size) / 2
-        offset_y = (h - size) / 2
+        offset_y = self.avoid_top + (avail_h - size) / 2
         
         # Clamp coordinates to square bounds
         local_x = max(0.0, min(float(size), pos.x() - offset_x))
         local_y = max(0.0, min(float(size), pos.y() - offset_y))
         
-        # Convert to a and b
-        self.a = (local_x / size) * (self.max_val * 2) - self.max_val
-        self.b = self.max_val - (local_y / size) * (self.max_val * 2)
+        # Convert to a and b within the dynamic display range
+        min_a, max_a, min_b, max_b = self._get_display_range()
+        self.a = min_a + (local_x / size) * (max_a - min_a)
+        self.b = max_b - (local_y / size) * (max_b - min_b)
+        # Keep the cursor inside the in-gamut region: the bbox is rectangular
+        # but the gamut is roughly elliptical, so the corners are out-of-gamut
+        # (rendered transparent/black). Pull a/b back to the gamut boundary.
+        self.a, self.b = self._clamp_to_gamut(self.a, self.b)
         
         self.update()
         r, g, b = self.get_current_rgb()
@@ -345,6 +483,15 @@ class LabSlider(QWidget):
         
         self.L = 50.0
         self.dragging = False
+        self._gamut_min = 0.0
+        self._gamut_max = 100.0
+
+    def set_in_gamut_range(self, mn, mx):
+        """Set the valid in-gamut L range.
+        Values outside [mn, mx] will be grayed on the slider track."""
+        self._gamut_min = mn
+        self._gamut_max = mx
+        self.update()
 
     def set_lightness(self, lightness):
         self.L = lightness
@@ -365,6 +512,16 @@ class LabSlider(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(gradient)
         painter.drawRect(0, 0, w, h)
+        
+        # Draw out-of-gamut gray overlay
+        top_frac = 1.0 - self._gamut_max / 100.0
+        bottom_frac = 1.0 - self._gamut_min / 100.0
+        
+        painter.setBrush(QColor(160, 160, 160, 140))
+        if top_frac > 0.005:
+            painter.drawRect(0, 0, w, int(h * top_frac))
+        if bottom_frac < 0.995:
+            painter.drawRect(0, int(h * bottom_frac), w, int(h * (1.0 - bottom_frac)))
         
         # Draw indicator cursor (horizontal bar)
         cy = (1.0 - self.L / 100.0) * h

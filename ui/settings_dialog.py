@@ -204,6 +204,10 @@ class SettingsDialog(QDialog):
         self.cb_lock_size.setChecked(self.cfg.get("lockWindowSize", False))
         layout.addWidget(self.cb_lock_size)
         
+        self.cb_lock_position = QCheckBox("锁定窗口位置")
+        self.cb_lock_position.setChecked(self.cfg.get("lockWindowPosition", False))
+        layout.addWidget(self.cb_lock_position)
+        
         self.cb_taskbar_icon = QCheckBox("在任务栏显示图标")
         self.cb_taskbar_icon.setChecked(self.cfg.get("showTaskbarIcon", False))
         layout.addWidget(self.cb_taskbar_icon)
@@ -233,6 +237,10 @@ class SettingsDialog(QDialog):
         self.combo_udm.addItems(["auto"])
         self.combo_udm.setCurrentText(self.cfg.get("udmVersion", "auto"))
         
+        self.combo_ps = QComboBox()
+        self.combo_ps.addItems(["auto"])
+        self.combo_ps.setCurrentText(self.cfg.get("psVersion", "auto"))
+        
         sync_grid.addWidget(QLabel("UI 主题:"), 0, 0)
         sync_grid.addWidget(self.combo_theme, 0, 1)
         sync_grid.addWidget(QLabel("CSP 版本:"), 1, 0)
@@ -241,6 +249,8 @@ class SettingsDialog(QDialog):
         sync_grid.addWidget(self.combo_sai, 2, 1)
         sync_grid.addWidget(QLabel("UDM 版本:"), 3, 0)
         sync_grid.addWidget(self.combo_udm, 3, 1)
+        sync_grid.addWidget(QLabel("PS 版本:"), 4, 0)
+        sync_grid.addWidget(self.combo_ps, 4, 1)
         layout.addLayout(sync_grid)
 
         scroll.setWidget(container)
@@ -335,6 +345,7 @@ class SettingsDialog(QDialog):
         self.cfg["followMouseEnabled"] = self.cb_follow_mouse.isChecked()
         self.cfg["onlyShowInCsp"] = self.cb_only_drawing.isChecked()
         self.cfg["lockWindowSize"] = self.cb_lock_size.isChecked()
+        self.cfg["lockWindowPosition"] = self.cb_lock_position.isChecked()
         self.cfg["showTaskbarIcon"] = self.cb_taskbar_icon.isChecked()
         
         old_autostart = self.cfg.get("openAtLogin", False)
@@ -345,6 +356,7 @@ class SettingsDialog(QDialog):
         self.cfg["cspVersion"] = self.combo_csp.currentText()
         self.cfg["sai2Version"] = self.combo_sai.currentText()
         self.cfg["udmVersion"] = self.combo_udm.currentText()
+        self.cfg["psVersion"] = self.combo_ps.currentText()
 
         # Save to file
         config.save_hotkey_config(self.cfg)
