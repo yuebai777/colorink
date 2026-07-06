@@ -226,8 +226,12 @@ class SettingsDialog(QDialog):
         self.combo_theme.setCurrentText(self.cfg.get("ui-theme", "auto"))
         
         self.combo_csp = QComboBox()
-        self.combo_csp.addItems(["auto", "csp4.0", "csp4.2.7-ex", "csp5.0", "csp5.0-ex"])
-        self.combo_csp.setCurrentText(self.cfg.get("cspVersion", "auto"))
+        self.combo_csp.addItems(["auto", "csp4.x", "csp5.x"])
+        # Migrate legacy CSP version keys to simplified 4.x / 5.x scheme
+        _csp_migration = {"csp4.0": "csp4.x", "csp4.2.7-ex": "csp4.x",
+                          "csp5.0": "csp5.x", "csp5.0-ex": "csp5.x"}
+        raw_csp = self.cfg.get("cspVersion", "auto")
+        self.combo_csp.setCurrentText(_csp_migration.get(raw_csp, raw_csp))
         
         self.combo_sai = QComboBox()
         self.combo_sai.addItems(["auto", "pre-2024-sai2", "after-2024-sai2"])

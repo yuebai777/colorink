@@ -399,18 +399,9 @@ class LabSquare(QWidget):
             if self._cached_img is not None:
                 painter.drawImage(int(offset_x), int(offset_y), self._cached_img)
         
-        # Draw neutral-axis crosshair at a=0, b=0 only when it falls inside the
-        # dynamic display range (otherwise the crosshair would be off-plane).
-        min_a, max_a, min_b, max_b = self._get_display_range()
-        if min_a <= 0 <= max_a and min_b <= 0 <= max_b:
-            cx = offset_x + ((0 - min_a) / (max_a - min_a)) * size
-            cy = offset_y + ((max_b - 0) / (max_b - min_b)) * size
-            painter.setPen(QPen(QColor(128, 128, 128, 100), 1, Qt.PenStyle.DashLine))
-            painter.drawLine(QPointF(cx, offset_y), QPointF(cx, offset_y + size))
-            painter.drawLine(QPointF(offset_x, cy), QPointF(offset_x + size, cy))
-        
         # Draw cursor (clamped to the square so it never escapes when the
         # current a/b falls outside the dynamic range after an L change)
+        min_a, max_a, min_b, max_b = self._get_display_range()
         cx_frac = (self.a - min_a) / (max_a - min_a) if max_a > min_a else 0.5
         cy_frac = (max_b - self.b) / (max_b - min_b) if max_b > min_b else 0.5
         ix = offset_x + max(0.0, min(1.0, cx_frac)) * size
@@ -476,6 +467,9 @@ class LabSquare(QWidget):
 class LabSlider(QWidget):
     # Emits lightness (0 to 100)
     lightnessChanged = pyqtSignal(float)
+    # Emitted when the user releases the mouse, so the LabSquare can
+    # re-render at full quality (during drag it renders low-res).
+    interactionFinished = pyqtSignal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -540,6 +534,7 @@ class LabSlider(QWidget):
 
     def mouseReleaseEvent(self, event):
         self.dragging = False
+        self.interactionFinished.emit()
 
     def handle_mouse(self, pos):
         h = self.height()

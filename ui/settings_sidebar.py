@@ -6,6 +6,7 @@ from PyQt6.QtGui import QColor
 from core import config
 from core import autostart
 from ui.settings_dialog import HotkeyButton
+from ui.slider_themes import list_slider_theme_names
 
 class NonScrollComboBox(QComboBox):
     def wheelEvent(self, event):
@@ -85,6 +86,16 @@ class SettingsSidebar(QScrollArea):
         self.combo_theme.currentTextChanged.connect(self.save_settings)
         row_theme.addWidget(self.combo_theme)
         self.layout.addLayout(row_theme)
+
+        # Slider visual theme (track width / handle style / label letter weight)
+        row_slider_style = QHBoxLayout()
+        row_slider_style.addWidget(QLabel("滑条样式"))
+        self.combo_slider_style = NonScrollComboBox()
+        for _key, _display in list_slider_theme_names():
+            self.combo_slider_style.addItem(_display, _key)
+        self.combo_slider_style.currentIndexChanged.connect(self.save_settings)
+        row_slider_style.addWidget(self.combo_slider_style)
+        self.layout.addLayout(row_slider_style)
         
         # Font size controls (- / +)
         row_font_size = QHBoxLayout()
@@ -280,7 +291,7 @@ class SettingsSidebar(QScrollArea):
         row_csp_layout.setContentsMargins(0, 0, 0, 0)
         row_csp_layout.addWidget(QLabel("CSP 版本"))
         self.combo_csp = NonScrollComboBox()
-        self.combo_csp.addItems(["auto", "csp4.0", "csp4.2.7-ex", "csp5.0", "csp5.0-ex"])
+        self.combo_csp.addItems(["auto", "csp4.x", "csp5.x"])
         self.combo_csp.currentTextChanged.connect(self.save_settings)
         row_csp_layout.addWidget(self.combo_csp)
         self.layout.addWidget(self.row_csp_widget)
@@ -380,6 +391,19 @@ class SettingsSidebar(QScrollArea):
         self.combo_theme.blockSignals(True)
         self.combo_theme.setCurrentText(theme_map.get(self.cfg.get("ui-theme", "auto"), "背景 自动（匹配CSP）"))
         self.combo_theme.blockSignals(False)
+
+        # Slider theme combo (resolve stored key → combo index)
+        slider_style_key = self.cfg.get("sliderStyle", "default")
+        self.combo_slider_style.blockSignals(True)
+        target_idx = -1
+        for i in range(self.combo_slider_style.count()):
+            if self.combo_slider_style.itemData(i) == slider_style_key:
+                target_idx = i
+                break
+        if target_idx < 0:
+            target_idx = 0  # fall back to first item ("default")
+        self.combo_slider_style.setCurrentIndex(target_idx)
+        self.combo_slider_style.blockSignals(False)
         
         font_val = self.cfg.get("fontSize", 100)
         self.lbl_font_size.setText(f"{font_val}%")
@@ -452,8 +476,12 @@ class SettingsSidebar(QScrollArea):
         self.combo_pos.setCurrentText(pos_map.get(self.cfg.get("previewBoxPosition", "top-left"), "左上角"))
         self.combo_pos.blockSignals(False)
         
+        # Migrate legacy CSP version keys to simplified 4.x / 5.x scheme
+        _csp_migration = {"csp4.0": "csp4.x", "csp4.2.7-ex": "csp4.x",
+                          "csp5.0": "csp5.x", "csp5.0-ex": "csp5.x"}
+        raw_csp = self.cfg.get("cspVersion", "auto")
         self.combo_csp.blockSignals(True)
-        self.combo_csp.setCurrentText(self.cfg.get("cspVersion", "auto"))
+        self.combo_csp.setCurrentText(_csp_migration.get(raw_csp, raw_csp))
         self.combo_csp.blockSignals(False)
         
         self.combo_sai.blockSignals(True)
@@ -608,6 +636,10 @@ class SettingsSidebar(QScrollArea):
     def save_settings(self):
         theme_val_map = {"背景 自动（匹配CSP）": "auto", "背景 灰": "gray", "背景 白": "white", "背景 黑": "black"}
         self.cfg["ui-theme"] = theme_val_map.get(self.combo_theme.currentText(), "auto")
+
+        # Slider visual theme (key stored as combo item data)
+        slider_key = self.combo_slider_style.currentData()
+        self.cfg["sliderStyle"] = slider_key if slider_key else "default"
         
         self.cfg["followMouseEnabled"] = self.cb_follow_mouse.isChecked()
         self.cfg["lockWindowSize"] = self.cb_lock_size.isChecked()

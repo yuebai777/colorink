@@ -6,7 +6,12 @@
 Attaches to a running CLIPStudioPaint.exe process, resolves the address
 of the in-memory brush color slot via a build-specific pointer offset,
 and translates between the host's packed u32-per-channel encoding and
-regular RGB triples.  Supported builds: 4.0, 4.2.7-ex, 5.0, 5.0-ex.
+regular RGB triples.  Supported builds: 4.x, 5.x.
+
+The module exposes :data:`AOB_MAP` for external AOB scanning tools that
+need per-build signature resolution (e.g. distinguishing 4.0 from
+4.2.7-ex).  The sync path itself only cares about the base_offset
+difference between pre-5.0 and 5.0+.
 
 A separate :func:`get_csp_theme` reads the application's UI-theme
 preferences from its sidecar SQLite database so the picker can visually
@@ -55,8 +60,17 @@ _AOB_CSP4_0     = "0F 10 42 1C 0F 11 41 1C F2 0F 10 42 10 F2 0F 11 41 10 8B 42 1
 _AOB_CSP4_2_7EX = "41 0F 10 ?? 1C 41 0F 11 ?? 1C F2 41 0F 10 ?? 10 F2 41 0F 11 ?? 10 41 8B ?? 18 41 89 ?? 18"
 _AOB_CSP5_0     = "0F 10 42 1C 0F 11 41 1C F2 0F 10 42 10 F2 0F 11 41 10 8B 42 18 48 83 C2 48 89 41 18"
 
+# Public mapping used by external AOB scanning tools that need to resolve
+# a legacy per-build key (e.g. "csp4.2.7-ex") to its exact signature.
+AOB_MAP: Dict[str, str] = {
+    "csp4.0":      _AOB_CSP4_0,
+    "csp4.2.7-ex": _AOB_CSP4_2_7EX,
+    "csp5.0":      _AOB_CSP5_0,
+    "csp5.0-ex":   _AOB_CSP5_0,
+}
+
 SECTION_NAME       = "ClipStudioPaint"
-DEFAULT_VERSION_KEY = "csp4.0"
+DEFAULT_VERSION_KEY = "csp4.x"
 
 # Default per-channel offsets inside the color struct.  All four color
 # spaces are addressed relative to the RGB slot's base offset (0x20).
@@ -87,22 +101,25 @@ class _CSPBuildProfile:
 
 
 _PROFILES: Tuple[_CSPBuildProfile, ...] = (
-    _CSPBuildProfile("csp4.0",      "CLIPStudioPaint.exe", 0x0518C2C0, _AOB_CSP4_0),
-    _CSPBuildProfile("csp4.2.7-ex", "CLIPStudioPaint.exe", 0x0518C2C0, _AOB_CSP4_2_7EX),
-    _CSPBuildProfile("csp5.0",      "CLIPStudioPaint.exe", 0x05449DB0, _AOB_CSP5_0, aob_offset=0x0D),
-    _CSPBuildProfile("csp5.0-ex",   "CLIPStudioPaint.exe", 0x05449DB0, _AOB_CSP5_0, aob_offset=0x0D),
+    _CSPBuildProfile("csp4.x", "CLIPStudioPaint.exe", 0x0518C2C0, _AOB_CSP4_0),
+    _CSPBuildProfile("csp5.x", "CLIPStudioPaint.exe", 0x05449DB0, _AOB_CSP5_0,
+                     aob_offset=0x0D),
 )
 _PROFILE_INDEX: Dict[str, _CSPBuildProfile] = {p.key: p for p in _PROFILES}
 
 
 def _normalize_version_key(raw: object) -> str:
-    """Coerce arbitrary user input into one of the known profile keys."""
+    """Coerce arbitrary user input into one of the known profile keys.
+
+    Accepts legacy keys ("csp4.0", "csp4.2.7-ex", "csp5.0", "csp5.0-ex")
+    and maps them to the simplified "csp4.x" / "csp5.x" scheme.
+    """
     text = str(raw or "").strip().lower()
-    if "4.2.7" in text or "427" in text:
-        return "csp4.2.7-ex"
-    if "5.0" in text or "csp5" in text:
-        return "csp5.0-ex" if "ex" in text else "csp5.0"
-    return "csp4.0"
+    if "5.0" in text or "csp5" in text or "5.x" in text:
+        return "csp5.x"
+    if "4." in text or "csp4" in text or "4.x" in text:
+        return "csp4.x"
+    return "csp4.x"
 
 
 # ---------------------------------------------------------------------------
@@ -233,19 +250,17 @@ class _ProcessVersionQuery:
 
 
 def _detect_build_from_image_path(path: Optional[str]) -> Optional[str]:
-    """Map an exe's on-disk file version to one of our profile keys."""
+    """Map an exe's on-disk file version to a simplified profile key."""
     if not path:
         return None
     version = _ProcessVersionQuery.exe_version(path)
     if not version:
         return None
-    major, minor, build, _patch = version
+    major, minor, _build, _patch = version
     if (major, minor) >= (5, 0):
-        return "csp5.0"
-    if (major, minor, build) == (4, 2, 7):
-        return "csp4.2.7-ex"
+        return "csp5.x"
     if major == 4:
-        return "csp4.0"
+        return "csp4.x"
     return None
 
 
@@ -344,7 +359,7 @@ class CSPSync:
         sec = parser[SECTION_NAME]
         # processname / baseoffset / aobsignature from the config file only
         # apply to the default profile; non-default profiles are pinned by
-        # _PROFILES so user typos can't desync a 5.0-only build.
+        # _PROFILES so user typos can't desync a non-default build.
         if self.current_version == DEFAULT_VERSION_KEY:
             self.process_name = sec.get("processname", self.process_name)
             self.base_offset = _parse_int(sec.get("baseoffset", hex(self.base_offset)))

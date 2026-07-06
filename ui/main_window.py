@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QStackedWidget, QSlider, QLabel, QFrame,
                              QGraphicsDropShadowEffect, QApplication)
 from PyQt6.QtCore import Qt, QPoint, QSize, pyqtSlot, QRectF, pyqtSignal, QRect, QPointF, QEvent
-from PyQt6.QtGui import QColor, QPalette, QLinearGradient, QPainter, QBrush, QPen, QPixmap, QCursor
+from PyQt6.QtGui import QColor, QPalette, QLinearGradient, QPainter, QBrush, QPen, QPixmap, QCursor, QPolygonF
 
 from core import config
 from core import memory_sync
@@ -14,6 +14,7 @@ from core import global_hotkeys
 from ui.color_wheel import ColorWheel, hsv_to_rgb, rgb_to_hsv, hls_to_hsv_floats
 from ui.lab_visualizer import LabSquare, LabSlider, lab_to_rgb, rgb_to_lab
 from ui.oklab_colors import oklab_to_rgb, rgb_to_oklab, oklch_to_rgb, rgb_to_oklch
+from ui.slider_themes import get_slider_theme
 from ui.settings_sidebar import SettingsSidebar
 from ui.grayscale_overlay import GrayscaleOverlay
 
@@ -163,7 +164,9 @@ class GradientSlider(QSlider):
         super().__init__(orientation, parent)
         self.gradient_colors = []
         self.groove_h = 16
+        self.groove_radius = 3.0
         self.scale = 1.0
+        self._theme = get_slider_theme("default")
         self.update_scale(1.0)
         self._gamut_min = None
         self._gamut_max = None
@@ -201,33 +204,64 @@ class GradientSlider(QSlider):
         self.setValue(new_val)
         event.accept()
 
-    def update_scale(self, scale):
+    def update_scale(self, scale, theme=None):
+        if theme is not None:
+            self._theme = theme
+        t = self._theme
+        handle_shape = str(t.get("handle_shape", "rect"))
         self.scale = scale
-        self.groove_h = int(16 * scale)
-        handle_w = int(5 * scale)
-        handle_h = int(24 * scale)
-        margin_y = -int(4 * scale)
-        border_radius = int(1 * scale)
-        
-        self.setStyleSheet(f"""
-            QSlider::groove:horizontal {{
-                height: {self.groove_h}px;
-                background: transparent;
-            }}
-            QSlider::handle:horizontal {{
-                background: #ffffff;
-                border: 1px solid #b0b0b0;
-                width: {handle_w}px;
-                height: {handle_h}px;
-                margin-top: {margin_y}px;
-                margin-bottom: {margin_y}px;
-                border-radius: {border_radius}px;
-            }}
-            QSlider::handle:horizontal:hover {{
-                background: #ffffff;
-                border-color: #5a94e2;
-            }}
-        """)
+        self.groove_h = max(2, int(16 * scale * float(t["groove_h_factor"])))
+        self.groove_radius = 3.0 * scale * float(t["groove_radius_factor"])
+        handle_w = max(2, int(5 * scale * float(t["handle_w_factor"])))
+        handle_h = max(4, int(24 * scale * float(t["handle_h_factor"])))
+        margin_y = -max(1, int(4 * scale * float(t["handle_margin_y_factor"])))
+        border_radius = max(0, int(1 * scale * float(t["handle_radius_factor"])))
+
+        if handle_shape == "triangle-below":
+            # Native handle is invisible (but kept at standard hit size so
+            # mouse drag still works). We draw the triangle ourselves in
+            # paintEvent below the groove.
+            self.setStyleSheet(f"""
+                QSlider::groove:horizontal {{
+                    height: {self.groove_h}px;
+                    background: transparent;
+                }}
+                QSlider::handle:horizontal {{
+                    background: transparent;
+                    border: none;
+                    width: {handle_w}px;
+                    height: {handle_h}px;
+                    margin: 0px;
+                }}
+            """)
+            # Triangle needs extra vertical space below the groove
+            tri_off = int(float(t.get("handle_tri_offset_y", 2)) * scale)
+            tri_h = int(float(t.get("handle_tri_size_h", 6)) * scale)
+            pad = max(2, int(2 * scale))
+            self.setMinimumHeight(self.groove_h + tri_off + tri_h + pad)
+        else:
+            # Standard visible native handle (style-sheet driven)
+            self.setStyleSheet(f"""
+                QSlider::groove:horizontal {{
+                    height: {self.groove_h}px;
+                    background: transparent;
+                }}
+                QSlider::handle:horizontal {{
+                    background: {t["handle_bg"]};
+                    border: 1px solid {t["handle_border"]};
+                    width: {handle_w}px;
+                    height: {handle_h}px;
+                    margin-top: {margin_y}px;
+                    margin-bottom: {margin_y}px;
+                    border-radius: {border_radius}px;
+                }}
+                QSlider::handle:horizontal:hover {{
+                    background: {t["handle_hover_bg"]};
+                    border-color: {t["handle_hover_border"]};
+                }}
+            """)
+            # Reserve space for the handle's overhangs above and below the groove
+            self.setMinimumHeight(self.groove_h + 2 * abs(margin_y))
 
     def set_gradient(self, colors):
         if hasattr(self, "_cached_colors") and self._cached_colors == colors:
@@ -250,7 +284,7 @@ class GradientSlider(QSlider):
             
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(grad)
-        painter.drawRoundedRect(groove_rect, 3.0 * self.scale, 3.0 * self.scale)
+        painter.drawRoundedRect(groove_rect, self.groove_radius, self.groove_radius)
         
         # Draw out-of-gamut gray overlay
         if self._gamut_min is not None and self._gamut_max is not None:
@@ -266,8 +300,40 @@ class GradientSlider(QSlider):
                     painter.drawRect(QRectF(0, groove_y, rect.width() * left_frac, self.groove_h))
                 if right_frac < 0.995:
                     painter.drawRect(QRectF(rect.width() * right_frac, groove_y, rect.width() * (1.0 - right_frac), self.groove_h))
-        
-        super().paintEvent(event)
+
+        t = self._theme
+        handle_shape = str(t.get("handle_shape", "rect"))
+        if handle_shape == "triangle-below":
+            # Draw a small triangle (apex up) just below the groove at the
+            # current value position. The native handle is invisible per the
+            # style sheet, so this is the user-visible indicator.
+            vrange = self.maximum() - self.minimum()
+            frac = (self.value() - self.minimum()) / vrange if vrange > 0 else 0.0
+            handle_x = frac * rect.width()
+
+            tri_color = QColor(t.get("handle_tri_color", t["handle_bg"]))
+            tri_border_color = QColor(t.get("handle_tri_border", t["handle_border"]))
+            tri_size_w = float(t.get("handle_tri_size_w", 5)) * self.scale
+            tri_size_h = float(t.get("handle_tri_size_h", 6)) * self.scale
+            tri_offset_y = int(float(t.get("handle_tri_offset_y", 2)) * self.scale)
+            tri_base_y = groove_y + self.groove_h + tri_offset_y
+
+            painter.setBrush(tri_color)
+            painter.setPen(QPen(tri_border_color, 1))
+            triangle = QPolygonF([
+                QPointF(handle_x, tri_base_y),
+                QPointF(handle_x - tri_size_w, tri_base_y + tri_size_h),
+                QPointF(handle_x + tri_size_w, tri_base_y + tri_size_h),
+            ])
+            painter.drawPolygon(triangle)
+            painter.end()
+            # Do NOT call super().paintEvent — we own this paint
+        else:
+            painter.end()
+            # Important: release our QPainter before letting QSlider's native
+            # paint() open its own — otherwise the handle's overhangs above
+            # and below the groove get clipped, leaving only the side borders.
+            super().paintEvent(event)
 
 
 class ClickableFrame(QFrame):
@@ -583,6 +649,7 @@ class MainWindow(QMainWindow):
         
         self.lab_slider = LabSlider()
         self.lab_slider.lightnessChanged.connect(self.lab_square.set_lightness)
+        self.lab_slider.interactionFinished.connect(self.on_interaction_finished)
         slider_col_layout.addWidget(self.lab_slider)
         
         lab_layout.addWidget(self.lab_square, stretch=1)
@@ -803,6 +870,7 @@ class MainWindow(QMainWindow):
             self._update_lab_avoid()
             self.lab_square.set_color(r, g, b, block_signals=True)
             self.lab_slider.set_lightness(self.lab_square.L)
+            self._update_lab_slider_gamut_range()
         else:  # Color wheel pane
             self.color_wheel.set_color(r, g, b, block_signals=True)
         self.update()
@@ -1705,6 +1773,10 @@ class MainWindow(QMainWindow):
         if scale is None:
             scale = self.cfg.get("uiScale", 100) / 100.0
 
+        # Resolve slider theme (visual preset for slider track/handle/labels).
+        # Falls back to "default" if the key is missing or unknown.
+        slider_theme = get_slider_theme(self.cfg.get("sliderStyle", "default"))
+
         # Dynamically toggle vertical lightness slider visibility based on configuration
         show_lab_slider = self.cfg.get("showLabLightnessSlider", True)
         if hasattr(self, 'lab_slider_column'):
@@ -1768,9 +1840,10 @@ class MainWindow(QMainWindow):
         for row in getattr(self, "slider_row_layouts", []):
             row.setSpacing(int(3 * scale)) # 3px at 1.0 scale
             
-        # Adjust label fixed widths
+        # Adjust label fixed widths (theme-aware)
+        ch_w_factor = float(slider_theme["channel_label_width_factor"])
         for chan, label in getattr(self, "slider_labels", {}).items():
-            label.setFixedWidth(int(16 * scale))
+            label.setFixedWidth(max(8, int(16 * scale * ch_w_factor)))
 
         theme_name = self.cfg.get("ui-theme", "auto")
         if theme_name == "auto":
@@ -1857,7 +1930,7 @@ class MainWindow(QMainWindow):
             }}
             QLabel#ChannelLabel {{
                 color: {channel_text_color};
-                font-weight: bold;
+                font-weight: {slider_theme["channel_label_weight"]};
                 font-size: {lbl_font_size}px;
             }}
             QLabel#ValueLabel {{
@@ -1946,24 +2019,27 @@ class MainWindow(QMainWindow):
                 }}
             """)
             
-        # Style value labels directly for robust rendering
+        # Style value labels directly for robust rendering (theme-aware)
+        val_w_factor = float(slider_theme["value_label_width_factor"])
+        val_radius = max(0, int(3 * scale * float(slider_theme["value_label_radius_factor"])))
+        val_padding = slider_theme["value_label_padding"]
         for chan, (slider, val_label) in self.slider_widgets.items():
-            val_label.setFixedWidth(34) # Fixed width, does not scale up
+            val_label.setFixedWidth(max(20, int(34 * val_w_factor)))
             val_label.setStyleSheet(f"""
                 background-color: {inputBg};
                 border: 1px solid {borderColor};
-                border-radius: 3px;
+                border-radius: {val_radius}px;
                 color: {text};
                 font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei";
                 font-size: {val_font_size}px;
-                padding: 1px 0px;
+                padding: {val_padding};
                 qproperty-alignment: 'AlignCenter';
             """)
             
-        # Scale GradientSliders
+        # Scale GradientSliders (theme-aware)
         for chan, (slider, val_label) in self.slider_widgets.items():
             if isinstance(slider, GradientSlider):
-                slider.update_scale(scale)
+                slider.update_scale(scale, slider_theme)
             
         # Style mode buttons dynamically
         btn_w = int(28 * scale)
