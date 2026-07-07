@@ -181,6 +181,16 @@ class SettingsDialog(QDialog):
         mode_row.addWidget(self.combo_grayscale_mode)
         layout.addLayout(mode_row)
 
+        # Grayscale filter backend selector
+        backend_row = QHBoxLayout()
+        backend_row.addWidget(QLabel("渲染后端:"))
+        self.combo_grayscale_backend = QComboBox()
+        self.combo_grayscale_backend.addItems(["OpenGL Overlay", "DComp 直通 (OKLCh)"])
+        backend_value = self.cfg.get("grayscaleFilterBackend", "overlay")
+        self.combo_grayscale_backend.setCurrentIndex(1 if backend_value == "dwm" else 0)
+        backend_row.addWidget(self.combo_grayscale_backend)
+        layout.addLayout(backend_row)
+
         # Section: Switches
         layout.addWidget(QLabel("<b>功能开关</b>"))
         
@@ -343,6 +353,8 @@ class SettingsDialog(QDialog):
         self.cfg["grayscaleFilterScreen"] = screen_text.split(":")[0].strip() if ":" in screen_text else screen_text
         mode_text = self.combo_grayscale_mode.currentText()
         self.cfg["grayscaleFilterMode"] = "luma" if "Luma" in mode_text else "oklch"
+        backend_text = self.combo_grayscale_backend.currentText()
+        self.cfg["grayscaleFilterBackend"] = "dwm" if "DComp" in backend_text else "overlay"
         
         self.cfg["colorPickingEnabled"] = self.cb_picking_enabled.isChecked()
         self.cfg["cspAutoClick"] = self.cb_auto_click.isChecked()

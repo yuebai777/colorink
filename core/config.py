@@ -38,6 +38,7 @@ def load_hotkey_config():
         "grayscaleFilterKey": "Ctrl+G",
         "grayscaleFilterScreen": "all",
         "grayscaleFilterMode": "oklch",
+        "grayscaleFilterBackend": "overlay",
         "colorPickingEnabled": True,
         "cspAutoClick": True,
         "cspClickDelayMs": 30,
@@ -68,7 +69,13 @@ def load_hotkey_config():
         "colorWheelMode": "hsv",
         "sliderScrollStep": 1,
         "sliderSameSpace": 6,
-        "sliderDiffSpace": 8
+        "sliderDiffSpace": 8,
+        "showSlidersHistory": True,
+        "orderSlidersHistory": 7,
+        "historyColumns": 8,
+        "historyRows": 2,
+        "historySwatchSize": 18,
+        "historyColors": []
     }
     if os.path.exists(path):
         try:

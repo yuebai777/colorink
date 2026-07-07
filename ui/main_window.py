@@ -17,6 +17,7 @@ from ui.oklab_colors import oklab_to_rgb, rgb_to_oklab, oklch_to_rgb, rgb_to_okl
 from ui.slider_themes import get_slider_theme
 from ui.settings_sidebar import SettingsSidebar
 from ui.grayscale_overlay import GrayscaleOverlay
+from ui.color_history import ColorHistoryWidget
 
 def bring_process_to_foreground(pid: int) -> bool:
     import ctypes
@@ -351,8 +352,55 @@ class ClickableFrame(QFrame):
         super().mouseDoubleClickEvent(event)
 
 
-class LabPane(QWidget):
-    """Custom widget for LAB pane that paints a tiled checkerboard background natively."""
+class PaneWithModeButton(QWidget):
+    """Base for stacked panes that own the floating mode-switcher button.
+
+    The button is positioned in the pane's OWN coordinate system on every
+    resize — so it always sits at the bottom-right of whatever geometry the
+    pane actually has, regardless of when the parent layout settles. No
+    sizeHint guessing, no deferred QTimer re-passes.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._mode_btn = None
+        self._btn_size = 28      # px, updated by MainWindow from uiScale
+        self._btn_margin = 6
+
+    def set_mode_button(self, btn):
+        self._mode_btn = btn
+
+    def set_mode_button_metrics(self, size, margin):
+        self._btn_size = size
+        self._btn_margin = margin
+        self._reposition_mode_button()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reposition_mode_button()
+
+    def _reposition_mode_button(self):
+        btn = self._mode_btn
+        if btn is None:
+            return
+        bw = self._btn_size
+        bh = self._btn_size
+        m = self._btn_margin
+        px = self.width() - m - bw
+        py = self.height() - m - bh
+        if px < 0 or py < 0:
+            return  # pane not laid out yet
+        btn.setFixedSize(bw, bh)
+        btn.setGeometry(px, py, bw, bh)
+        btn.raise_()
+
+
+class WheelPane(PaneWithModeButton):
+    """Pane hosting the HSV/OKLCh color wheel + its floating mode button."""
+    pass
+
+
+class LabPane(PaneWithModeButton):
+    """Pane for the LAB visualizer; also paints a tiled checkerboard background."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.checker_pixmap = QPixmap(16, 16)
@@ -547,10 +595,17 @@ class MainWindow(QMainWindow):
         self._last_dpr = None       # Previous screen devicePixelRatio
         self._dpi_locked_size = None  # (w, h) logical size frozen during DPI transition
 
-        # Fullscreen grayscale overlay
+        # Fullscreen grayscale overlay — choose backend from config
         mode = self.cfg.get("grayscaleFilterMode", "oklch")
-        self.grayscale_overlay = GrayscaleOverlay(mode=mode)
-        # Apply saved screen target
+        backend = self.cfg.get("grayscaleFilterBackend", "overlay")
+        if backend == "dwm":
+            from core.dcomp_grayscale import DCompOverlayController
+            self.grayscale_overlay = DCompOverlayController()
+            if not self.grayscale_overlay.is_available:
+                self.grayscale_overlay = GrayscaleOverlay(mode=mode)
+        else:
+            self.grayscale_overlay = GrayscaleOverlay(mode=mode)
+        # Apply saved screen target (no-op for DWM backend)
         screen_target = self.cfg.get("grayscaleFilterScreen", "all")
         self.grayscale_overlay.set_target(screen_target)
 
@@ -611,7 +666,7 @@ class MainWindow(QMainWindow):
         self.main_layout.addWidget(self.stack)
 
         # Pane 1: HSV Color Wheel
-        self.pane_wheel = QWidget()
+        self.pane_wheel = WheelPane()
         wheel_layout = QVBoxLayout(self.pane_wheel)
         wheel_layout.setContentsMargins(0, 0, 0, 0)
         self.color_wheel = ColorWheel()
@@ -624,6 +679,7 @@ class MainWindow(QMainWindow):
         self.btn_mode_wheel.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_mode_wheel.setToolTip("切换模式 (色轮 / LAB)")
         self.btn_mode_wheel.clicked.connect(self.toggle_picker_mode)
+        self.pane_wheel.set_mode_button(self.btn_mode_wheel)
         
         self.stack.addWidget(self.pane_wheel)
 
@@ -660,6 +716,7 @@ class MainWindow(QMainWindow):
         self.btn_mode_lab.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_mode_lab.setToolTip("切换模式 (色轮 / LAB)")
         self.btn_mode_lab.clicked.connect(self.toggle_picker_mode)
+        self.pane_lab.set_mode_button(self.btn_mode_lab)
         
         self.stack.addWidget(self.pane_lab)
 
@@ -758,6 +815,32 @@ class MainWindow(QMainWindow):
         self.create_group_sliders("OKLCh", ["L_oklch", "C_oklch", "h_oklch"], oklch_lay)
         self.sliders_layout.addWidget(self.slider_containers["OKLCh"])
 
+        # 7. Color History — shares the sliders_layout's order mechanism so it
+        # can be reordered among the slider groups via the settings sidebar.
+        self.slider_containers["History"] = QWidget()
+        history_lay = QVBoxLayout(self.slider_containers["History"])
+        history_lay.setContentsMargins(0, 0, 0, 0)
+        history_lay.setSpacing(0)
+        self.color_history = ColorHistoryWidget(self.slider_containers["History"])
+        self.color_history.color_picked.connect(self.on_history_color_picked)
+        # Initial grid geometry from config
+        self.color_history.configure(
+            self.cfg.get("historyColumns", 8),
+            self.cfg.get("historyRows", 2),
+            self.cfg.get("historySwatchSize", 18),
+        )
+        # Restore persisted colors (config stores a list of [r,g,b] triplets)
+        persisted = self.cfg.get("historyColors", [])
+        if persisted:
+            from PyQt6.QtGui import QColor as _QColor
+            initial_colors = []
+            for entry in persisted:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 3:
+                    initial_colors.append(_QColor(int(entry[0]), int(entry[1]), int(entry[2])))
+            self.color_history.set_colors(initial_colors)
+        history_lay.addWidget(self.color_history)
+        self.sliders_layout.addWidget(self.slider_containers["History"])
+
     def create_group_sliders(self, group, channels, layout):
         for chan in channels:
             row = QHBoxLayout()
@@ -842,6 +925,27 @@ class MainWindow(QMainWindow):
         active_color = bg if self.active_slot == "fg" else fg
         r, g, b = active_color.red(), active_color.green(), active_color.blue()
         self.update_ui_colors(r, g, b, source="swap")
+
+    def on_history_color_picked(self, color):
+        """User clicked a swatch in the history widget → load into active slot."""
+        r, g, b = color.red(), color.green(), color.blue()
+        self.update_ui_colors(r, g, b, source="history")
+        if hasattr(self, "color_history"):
+            self.color_history.mark_selected(color)
+
+    def _record_color_history(self):
+        """Persist the latest RGB into the history widget and into config.
+        Called when an interaction finishes (slider/wheel/lab release)."""
+        if not hasattr(self, "color_history"):
+            return
+        r, g, b = self.current_rgb
+        updated = self.color_history.record(r, g, b)
+        # Persist as plain [r,g,b] triplets (JSON-safe)
+        self.cfg["historyColors"] = [[int(c.red()), int(c.green()), int(c.blue())]
+                                     for c in updated]
+        # Save quietly — keep this off the hot path
+        from core import config as _config
+        _config.save_hotkey_config(self.cfg)
 
     def update_mode_buttons_visibility(self):
         idx = self.stack.currentIndex()
@@ -1015,6 +1119,9 @@ class MainWindow(QMainWindow):
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(50, self._prerender_lab)
         r, g, b = self.current_rgb
+        # Record into history before pushing to drawing software so the
+        # persisted state reflects *what the user just settled on*.
+        self._record_color_history()
         if hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
             self.sync_thread.write_color(r, g, b)
             if self.cfg.get("autoFocusDrawingSoftware", False):
@@ -1030,6 +1137,11 @@ class MainWindow(QMainWindow):
         """Background pre-render of LAB visualizer."""
         if not self.lab_square.isVisible() and hasattr(self, 'stack'):
             self.lab_square.resize(self.stack.size())
+            # Sync the visualizer's L/a/b to the current color before prerendering,
+            # otherwise the low-res preview reflects the stale color from when the
+            # pane was last visible (update_ui_colors skips syncing a hidden pane).
+            r, g, b = self.current_rgb
+            self.lab_square.set_color(r, g, b, block_signals=True)
             self.lab_square.prerender()
 
     def update_slider_gradients(self, r, g, b):
@@ -1572,24 +1684,16 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
             self.settings_sidebar.raise_()
         
-        # Common coordinates for the floating switcher buttons (bottom-right corner of the stacked widgets)
-        btn_w = int(28 * dynamic_scale)
-        btn_h = int(28 * dynamic_scale)
+        # The floating mode-switcher buttons are owned by their panes and position
+# themselves from the pane's own resizeEvent — so they always sit at the
+# bottom-right of whichever pane geometry the layout actually gave them.
+        # We only push the DPI-scaled metrics down; the panes do the rest.
+        btn_size = int(28 * dynamic_scale)
         btn_margin = int(6 * dynamic_scale)
-        px = w - 8 - btn_w - btn_margin
-        py = pane_h - btn_h - btn_margin
-        
-        # Position btn_mode_wheel relative to self.pane_wheel
-        if hasattr(self, 'btn_mode_wheel'):
-            self.btn_mode_wheel.setFixedSize(btn_w, btn_h)
-            self.btn_mode_wheel.setGeometry(px, py, btn_w, btn_h)
-            self.btn_mode_wheel.raise_()
-            
-        # Position btn_mode_lab relative to self.pane_lab
-        if hasattr(self, 'btn_mode_lab'):
-            self.btn_mode_lab.setFixedSize(btn_w, btn_h)
-            self.btn_mode_lab.setGeometry(px, py, btn_w, btn_h)
-            self.btn_mode_lab.raise_()
+        if hasattr(self, 'pane_wheel'):
+            self.pane_wheel.set_mode_button_metrics(btn_size, btn_margin)
+        if hasattr(self, 'pane_lab'):
+            self.pane_lab.set_mode_button_metrics(btn_size, btn_margin)
         
         # Position settings sidebar
         if hasattr(self, 'settings_sidebar'):
@@ -2062,6 +2166,18 @@ class MainWindow(QMainWindow):
                     }}
                 """)
 
+        # Theme + geometry for the color history panel. It uses the same
+        # bg / border / text as the main chrome so it visually belongs to
+        # whichever theme is active (auto / gray / white / black). Cell
+        # size auto-fits the widget width (set in _relayout), so we only
+        # need to push cols/rows here.
+        if hasattr(self, "color_history"):
+            self.color_history.configure(
+                self.cfg.get("historyColumns", 8),
+                self.cfg.get("historyRows", 2),
+            )
+            self.color_history.apply_theme(bg, border_color, text)
+
         # Reposition the color preview box immediately when applying theme/settings
         if hasattr(self, 'preview_box') and hasattr(self, 'sliders_container') and hasattr(self, 'title_bar'):
             title_h = self.title_bar.height()
@@ -2118,7 +2234,18 @@ class MainWindow(QMainWindow):
             print("[Hotkeys] Global Pick Color triggered")
         elif hotkey_type == "grayscaleFilterKey":
             print("[Hotkeys] Grayscale Filter toggled")
-            self.grayscale_overlay.toggle()
+            try:
+                result = self.grayscale_overlay.toggle()
+                # DWM backend returns False on failure
+                if result is False and hasattr(self.grayscale_overlay, 'last_error'):
+                    err = self.grayscale_overlay.last_error
+                    if err:
+                        from PyQt6.QtWidgets import QMessageBox
+                        QMessageBox.warning(self, "黑白滤镜", err)
+            except Exception as e:
+                print(f"[Hotkeys] Grayscale toggle error: {e}")
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "黑白滤镜", f"切换失败: {e}")
 
     def init_memory_sync(self):
         # Start background memory syncing thread
@@ -2172,18 +2299,21 @@ class MainWindow(QMainWindow):
 
     def refresh_slider_visibility_and_order(self):
         # Remove all from layout
-        for group in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh"]:
+        for group in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh", "History"]:
             self.sliders_layout.removeWidget(self.slider_containers[group])
-            
-        # Sort groups by order cfg
-        groups = ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh"]
-        groups.sort(key=lambda g: self.cfg.get(f"orderSliders{g}", 1))
-        
+
+        # Sort groups by order cfg; History defaults to 7 so it sits last
+        groups = ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh", "History"]
+        groups.sort(key=lambda g: self.cfg.get(f"orderSliders{g}", 7 if g == "History" else 1))
+
         for g in groups:
-            visible = self.cfg.get(f"showSliders{g}", True if g in ("HSV", "LAB", "OKLab") else False)
+            if g == "History":
+                visible = self.cfg.get("showSlidersHistory", True)
+            else:
+                visible = self.cfg.get(f"showSliders{g}", True if g in ("HSV", "LAB", "OKLab") else False)
             self.slider_containers[g].setVisible(visible)
             self.sliders_layout.addWidget(self.slider_containers[g])
-            
+
         # Recalculate layout geometries since height changed
         self.update_geometries()
 
@@ -2289,7 +2419,24 @@ class MainWindow(QMainWindow):
         self.cfg = config.load_hotkey_config()
         self.update_hotkey_bindings()
 
-        # Update grayscale overlay target
+        # Update grayscale overlay — check if backend changed
+        new_backend = self.cfg.get("grayscaleFilterBackend", "overlay")
+        current_is_d3d11 = hasattr(self.grayscale_overlay, '_process')
+        if (new_backend == "dwm") != current_is_d3d11:
+            # Backend changed — tear down old, create new
+            self.grayscale_overlay.set_active(False)
+            if hasattr(self.grayscale_overlay, 'close'):
+                self.grayscale_overlay.close()
+            mode = self.cfg.get("grayscaleFilterMode", "oklch")
+            if new_backend == "dwm":
+                from core.dcomp_grayscale import DCompOverlayController
+                self.grayscale_overlay = DCompOverlayController()
+                if not self.grayscale_overlay.is_available:
+                    self.grayscale_overlay = GrayscaleOverlay(mode=mode)
+            else:
+                self.grayscale_overlay = GrayscaleOverlay(mode=mode)
+
+        # Update grayscale overlay target and mode
         screen_target = self.cfg.get("grayscaleFilterScreen", "all")
         self.grayscale_overlay.set_target(screen_target)
         mode = self.cfg.get("grayscaleFilterMode", "oklch")
@@ -2375,6 +2522,8 @@ class MainWindow(QMainWindow):
         global_hotkeys.unbind_all()
         if hasattr(self, 'grayscale_overlay'):
             self.grayscale_overlay.set_active(False)
+            if hasattr(self.grayscale_overlay, 'close'):
+                self.grayscale_overlay.close()
         if hasattr(self, 'sync_thread'):
             self.sync_thread.stop()
         

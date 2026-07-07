@@ -67,6 +67,14 @@ class SettingsSidebar(QScrollArea):
         self.combo_grayscale_mode.currentTextChanged.connect(self.save_settings)
         row_grayscale_mode.addWidget(self.combo_grayscale_mode)
         self.layout.addLayout(row_grayscale_mode)
+
+        row_grayscale_backend = QHBoxLayout()
+        row_grayscale_backend.addWidget(QLabel("渲染后端"))
+        self.combo_grayscale_backend = NonScrollComboBox()
+        self.combo_grayscale_backend.addItems(["OpenGL Overlay", "DComp 直通 (OKLCh)"])
+        self.combo_grayscale_backend.currentTextChanged.connect(self.save_settings)
+        row_grayscale_backend.addWidget(self.combo_grayscale_backend)
+        self.layout.addLayout(row_grayscale_backend)
         
         row_follow = QHBoxLayout()
         row_follow.addWidget(QLabel("随鼠标移动"))
@@ -169,21 +177,47 @@ class SettingsSidebar(QScrollArea):
         self.layout.addWidget(self.create_header("滑块设置"))
         
         self.slider_rows = {}
-        for key, name in [("RGB", "RGB 滑条"), ("HSV", "HSV 滑条"), ("HSL", "HLS 滑条"), ("LAB", "LAB 滑条"), ("OKLab", "OKLab 滑条"), ("OKLCh", "OKLCh 滑条")]:
+        for key, name in [("RGB", "RGB 滑条"), ("HSV", "HSV 滑条"), ("HSL", "HLS 滑条"), ("LAB", "LAB 滑条"), ("OKLab", "OKLab 滑条"), ("OKLCh", "OKLCh 滑条"), ("History", "颜色历史")]:
             row = QHBoxLayout()
             cb = QCheckBox(name)
             cb.stateChanged.connect(self.save_settings)
-            
+
             combo = NonScrollComboBox()
-            combo.addItems(["1", "2", "3", "4", "5", "6"])
+            combo.addItems(["1", "2", "3", "4", "5", "6", "7"])
             combo.currentTextChanged.connect(self.save_settings)
             combo.setFixedWidth(50)
-            
+
             row.addWidget(cb)
             row.addStretch()
             row.addWidget(combo)
             self.layout.addLayout(row)
             self.slider_rows[key] = (cb, combo)
+
+        # History grid shape — columns × rows. These only apply to the color
+        # history widget, but live alongside the slider rows for grouping.
+        row_hist_cols = QHBoxLayout()
+        row_hist_cols.addWidget(QLabel("历史列数"))
+        self.combo_history_cols = NonScrollComboBox()
+        self.combo_history_cols.addItems(["4", "6", "8", "10", "12"])
+        self.combo_history_cols.currentTextChanged.connect(self.save_settings)
+        self.combo_history_cols.setFixedWidth(50)
+        row_hist_cols.addStretch()
+        row_hist_cols.addWidget(self.combo_history_cols)
+        self.layout.addLayout(row_hist_cols)
+
+        row_hist_rows = QHBoxLayout()
+        row_hist_rows.addWidget(QLabel("历史行数"))
+        self.combo_history_rows = NonScrollComboBox()
+        self.combo_history_rows.addItems(["1", "2", "3", "4"])
+        self.combo_history_rows.currentTextChanged.connect(self.save_settings)
+        self.combo_history_rows.setFixedWidth(50)
+        row_hist_rows.addStretch()
+        row_hist_rows.addWidget(self.combo_history_rows)
+        self.layout.addLayout(row_hist_rows)
+
+        # Note: the per-cell swatch size is auto-fit to the window width —
+        # the grid always spans the full slider strip. No manual size combo
+        # is exposed because it would be overridden by the layout anyway.
             
         row_wheel = QHBoxLayout()
         row_wheel.addWidget(QLabel("色轮模式"))
@@ -381,6 +415,11 @@ class SettingsSidebar(QScrollArea):
         mode = self.cfg.get("grayscaleFilterMode", "oklch")
         self.combo_grayscale_mode.setCurrentIndex(1 if mode == "luma" else 0)
         self.combo_grayscale_mode.blockSignals(False)
+
+        self.combo_grayscale_backend.blockSignals(True)
+        backend = self.cfg.get("grayscaleFilterBackend", "overlay")
+        self.combo_grayscale_backend.setCurrentIndex(1 if backend == "dwm" else 0)
+        self.combo_grayscale_backend.blockSignals(False)
         
         self.cb_follow_mouse.blockSignals(True)
         self.cb_follow_mouse.setChecked(self.cfg.get("followMouseEnabled", False))
@@ -428,15 +467,30 @@ class SettingsSidebar(QScrollArea):
             cb.blockSignals(False)
             
         # 3. Sliders
-        for key in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh"]:
+        for key in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh", "History"]:
             cb, combo = self.slider_rows[key]
             cb.blockSignals(True)
-            cb.setChecked(self.cfg.get(f"showSliders{key}", True if key in ("HSV", "LAB", "OKLab") else False))
+            if key == "History":
+                cb.setChecked(self.cfg.get("showSlidersHistory", True))
+            else:
+                cb.setChecked(self.cfg.get(f"showSliders{key}", True if key in ("HSV", "LAB", "OKLab") else False))
             cb.blockSignals(False)
-            
+
             combo.blockSignals(True)
-            combo.setCurrentText(str(self.cfg.get(f"orderSliders{key}", 1)))
+            if key == "History":
+                combo.setCurrentText(str(self.cfg.get("orderSlidersHistory", 7)))
+            else:
+                combo.setCurrentText(str(self.cfg.get(f"orderSliders{key}", 1)))
             combo.blockSignals(False)
+
+        # History grid shape (columns × rows × swatch size)
+        self.combo_history_cols.blockSignals(True)
+        self.combo_history_cols.setCurrentText(str(self.cfg.get("historyColumns", 8)))
+        self.combo_history_cols.blockSignals(False)
+
+        self.combo_history_rows.blockSignals(True)
+        self.combo_history_rows.setCurrentText(str(self.cfg.get("historyRows", 2)))
+        self.combo_history_rows.blockSignals(False)
             
         wheel_mode_map = {"hsv": "HSV 正方形", "hls": "HLS 三角", "rgb": "RGB 三角", "oklch": "OKLCh 三角"}
         self.combo_wheel.blockSignals(True)
@@ -657,9 +711,25 @@ class SettingsSidebar(QScrollArea):
         self.cfg["noFocusMode"] = self.cb_no_focus.isChecked()
         
         # Sliders
-        for key in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh"]:
-            self.cfg[f"showSliders{key}"] = self.slider_rows[key][0].isChecked()
-            self.cfg[f"orderSliders{key}"] = int(self.slider_rows[key][1].currentText())
+        for key in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh", "History"]:
+            if key == "History":
+                self.cfg["showSlidersHistory"] = self.slider_rows[key][0].isChecked()
+                self.cfg["orderSlidersHistory"] = int(self.slider_rows[key][1].currentText())
+            else:
+                self.cfg[f"showSliders{key}"] = self.slider_rows[key][0].isChecked()
+                self.cfg[f"orderSliders{key}"] = int(self.slider_rows[key][1].currentText())
+
+        # History grid shape
+        try:
+            self.cfg["historyColumns"] = int(self.combo_history_cols.currentText())
+        except Exception:
+            self.cfg["historyColumns"] = 8
+        try:
+            self.cfg["historyRows"] = int(self.combo_history_rows.currentText())
+        except Exception:
+            self.cfg["historyRows"] = 2
+        # historySwatchSize is intentionally NOT stored here — the swatch
+        # size auto-fits the parent width via ColorHistoryWidget._relayout.
             
         wheel_val_map = {"HSV 正方形": "hsv", "HLS 三角": "hls", "RGB 三角": "rgb", "OKLCh 三角": "oklch"}
         self.cfg["colorWheelMode"] = wheel_val_map.get(self.combo_wheel.currentText(), "hsv")
@@ -689,6 +759,9 @@ class SettingsSidebar(QScrollArea):
         # Grayscale filter mode
         mode_text = self.combo_grayscale_mode.currentText()
         self.cfg["grayscaleFilterMode"] = "luma" if "Luma" in mode_text else "oklch"
+        # Grayscale filter backend
+        backend_text = self.combo_grayscale_backend.currentText()
+        self.cfg["grayscaleFilterBackend"] = "dwm" if "DComp" in backend_text else "overlay"
 
         try:
             self.cfg["sliderScrollStep"] = int(self.lbl_scroll_step.text())
