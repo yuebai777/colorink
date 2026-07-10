@@ -71,7 +71,7 @@ class SettingsSidebar(QScrollArea):
         row_grayscale_backend = QHBoxLayout()
         row_grayscale_backend.addWidget(QLabel("渲染后端"))
         self.combo_grayscale_backend = NonScrollComboBox()
-        self.combo_grayscale_backend.addItems(["OpenGL Overlay", "DComp 直通 (OKLCh)"])
+        self.combo_grayscale_backend.addItems(["OpenGL Overlay", "DComp 直通"])
         self.combo_grayscale_backend.currentTextChanged.connect(self.save_settings)
         row_grayscale_backend.addWidget(self.combo_grayscale_backend)
         self.layout.addLayout(row_grayscale_backend)

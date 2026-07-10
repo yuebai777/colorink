@@ -15,9 +15,17 @@ if core_dir not in sys.path:
 from ui.main_window import MainWindow
 
 def main():
+    # Set explicit AppUserModelID on Windows for proper taskbar grouping
+    if sys.platform == 'win32':
+        import ctypes
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("colorink.palette-lite.pyqt.1.0")
+        except Exception:
+            pass
+
     # Initialize QApplication
     app = QApplication(sys.argv)
-    app.setApplicationName("Palette Lite")
+    app.setApplicationName("Colorink")
     
     # Load and apply window icon
     icon_path = os.path.join("icons", "icon.ico")

@@ -33,3 +33,4 @@ _test_log.txt
 
 # PyInstaller
 *.manifest
+*.obj

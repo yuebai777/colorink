@@ -1,4 +1,4 @@
-// Photoshop ↔ Palette Lite bridge  (non-blocking edition)
+// Photoshop ↔ Colorink bridge  (non-blocking edition)
 // Run via File → Scripts → Browse.  Stops when stop file appears.
 // 
 // Uses a tight app.refresh()+$.sleep(5) loop so Photoshop stays
@@ -9,9 +9,9 @@
 #target photoshop
 
 var tempDir = Folder.temp;
-var colorFile = new File(tempDir + "/palette_lite_ps_color.txt");
-var cmdFile   = new File(tempDir + "/palette_lite_ps_cmd.txt");
-var stopFile  = new File(tempDir + "/palette_lite_ps_stop.txt");
+var colorFile = new File(tempDir + "/colorink_ps_color.txt");
+var cmdFile   = new File(tempDir + "/colorink_ps_cmd.txt");
+var stopFile  = new File(tempDir + "/colorink_ps_stop.txt");
 
 var lastWrittenColor = "";
 var lastCmdMtime = 0;
