@@ -29,8 +29,8 @@ Support me at [爱发电](https://afdian.com/a/colorink)
 ## Installation
 
 ```bash
-git clone https://github.com/yuebai777/palette-lite-pyqt.git
-cd palette-lite-pyqt
+git clone https://github.com/yuebai777/colorink.git
+cd colorink
 pip install -r requirements.txt
 ```
 
