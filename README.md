@@ -46,12 +46,10 @@ Or double-click `run.bat`.
 
 | Action | Default |
 |--------|---------|
-| Pick foreground color | `Ctrl + Shift + C` |
-| Pick background color | `Ctrl + Shift + X` |
-| Swap fg/bg | `Ctrl + Shift + Z` |
-| Toggle grayscale overlay | `Ctrl + Shift + G` |
-| Show/hide window | `Ctrl + Shift + A` |
-| Lock window position | `Ctrl + Shift + L` |
+| Pick foreground color | `F11` |
+| Toggle follow mouse | `Ctrl + R` |
+| Show / hide window | `Ctrl + H` |
+| Toggle grayscale overlay | `Ctrl + G` |
 
 ## Building (Standalone EXE)
 
