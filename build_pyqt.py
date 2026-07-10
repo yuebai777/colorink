@@ -16,8 +16,6 @@ def build():
         "--windowed",
         "--paths", "core",
         "--add-data", "icons;icons",
-        "--add-data", "d3d11_overlay/build/d3d11_overlay.exe;d3d11_overlay/build",
-        "--add-data", "dcomp_overlay/build/dcomp_overlay.exe;dcomp_overlay/build",
         "--icon", "icons/icon.ico",
         "--version-file", "file_version_info.txt",
         "--name", "Colorink",

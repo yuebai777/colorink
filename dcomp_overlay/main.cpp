@@ -298,6 +298,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
 }
 
 int WINAPI WinMain(HINSTANCE hInst,HINSTANCE,LPSTR,int){
+    SetProcessDPIAware();
     int screenIdx=0;
     // Get screen geometry via DXGI
     int x=0,y=0,w=1920,h=1080;

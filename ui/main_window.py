@@ -4,9 +4,10 @@ import math
 import colorsys
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QStackedWidget, QSlider, QLabel, QFrame,
-                             QGraphicsDropShadowEffect, QApplication, QStyle, QStyleOptionSlider)
+                             QGraphicsDropShadowEffect, QApplication, QStyle, QStyleOptionSlider,
+                             QSystemTrayIcon, QMenu)
 from PyQt6.QtCore import Qt, QPoint, QSize, pyqtSlot, QRectF, pyqtSignal, QRect, QPointF, QEvent
-from PyQt6.QtGui import QColor, QPalette, QLinearGradient, QPainter, QBrush, QPen, QPixmap, QCursor, QPolygonF
+from PyQt6.QtGui import QColor, QPalette, QLinearGradient, QPainter, QBrush, QPen, QPixmap, QCursor, QPolygonF, QIcon, QAction
 
 from core import config
 from core import memory_sync
@@ -678,6 +679,7 @@ class MainWindow(QMainWindow):
         self.init_memory_sync()
         self.init_foreground_tracker()
         self.apply_theme()
+        self.init_tray()
         QApplication.instance().installEventFilter(self)
 
     def init_ui(self):
@@ -995,7 +997,10 @@ class MainWindow(QMainWindow):
         r, g, b = color.red(), color.green(), color.blue()
         self.update_ui_colors(r, g, b, source="history")
         if hasattr(self, "color_history"):
-            self.color_history.mark_selected(color)
+            updated = self.color_history.mark_selected(color)
+            self.cfg["historyColors"] = [[c.red(), c.green(), c.blue()] for c in updated]
+            from core import config as _config
+            _config.save_hotkey_config(self.cfg)
 
     def _record_color_history(self):
         """Persist the latest RGB into the history widget and into config.
@@ -2058,6 +2063,18 @@ class MainWindow(QMainWindow):
             except Exception:
                 bg, text, border_color = "#b2b2b2", "#222222", "#787878"
                 barBg = border_color
+        elif theme_name == "eyedropper":
+            bar_stored = self.cfg.get("uiThemeDropperColorBar", "#787878")
+            bg_stored = self.cfg.get("uiThemeDropperColorBg", "#b2b2b2")
+            try:
+                c_bar = QColor(bar_stored)
+                bg = QColor(bg_stored).name()
+                barBg = c_bar.name()
+                border_color = c_bar.name()
+                text = "#ffffff" if QColor(bg).lightness() < 128 else "#222222"
+            except Exception:
+                bg = barBg = border_color = "#787878"
+                text = "#222222"
         else:
             themes = {
                 "black": {"bg": "#1e1e1e", "text": "#ffffff", "border": "#2d2d2d"},
@@ -2340,6 +2357,22 @@ class MainWindow(QMainWindow):
                     if err:
                         from PyQt6.QtWidgets import QMessageBox
                         QMessageBox.warning(self, "黑白滤镜", err)
+                # Auto-fallback: if OpenGL overlay is broken, switch to DComp
+                elif (isinstance(self.grayscale_overlay, GrayscaleOverlay)
+                      and self.grayscale_overlay.is_active
+                      and not self.grayscale_overlay.is_healthy):
+                    print("[Hotkeys] OpenGL overlay unhealthy, falling back to DComp")
+                    self.grayscale_overlay.set_active(False)
+                    from core.dcomp_grayscale import DCompOverlayController
+                    self.grayscale_overlay = DCompOverlayController()
+                    if self.grayscale_overlay.is_available:
+                        self.cfg["grayscaleFilterBackend"] = "dwm"
+                        self.grayscale_overlay.set_active(True)
+                    else:
+                        from PyQt6.QtWidgets import QMessageBox
+                        QMessageBox.warning(self, "黑白滤镜",
+                            "OpenGL 滤镜初始化失败（缺少 Qt OpenGL 组件）。\n\n"
+                            "建议：切换到 DComp 直通后端，或重新安装 PyQt6 完整包。")
             except Exception as e:
                 print(f"[Hotkeys] Grayscale toggle error: {e}")
                 from PyQt6.QtWidgets import QMessageBox
@@ -2625,7 +2658,62 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'sync_thread'):
             self.sync_thread.stop()
         
+        # Hide tray icon before exit
+        if hasattr(self, 'tray_icon'):
+            self.tray_icon.hide()
+        
         sys.exit(0)
+
+    def init_tray(self):
+        """Setup system tray icon with context menu for minimized window access."""
+        self.tray_icon = QSystemTrayIcon(self)
+        icon_path = os.path.join("icons", "icon.ico")
+        if os.path.exists(icon_path):
+            self.tray_icon.setIcon(QIcon(icon_path))
+        else:
+            self.tray_icon.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
+        
+        self.tray_icon.setToolTip("Colorink")
+
+        # Context menu
+        tray_menu = QMenu()
+        
+        show_action = QAction("显示/隐藏", self)
+        show_action.triggered.connect(self.toggle_visibility)
+        tray_menu.addAction(show_action)
+        
+        tray_menu.addSeparator()
+        
+        quit_action = QAction("退出", self)
+        quit_action.triggered.connect(self.close_application)
+        tray_menu.addAction(quit_action)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self.on_tray_activated)
+        self.tray_icon.show()
+
+    def on_tray_activated(self, reason):
+        """Handle tray icon click: single left-click toggles visibility."""
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.toggle_visibility()
+        elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self.toggle_visibility()
+
+    def toggle_visibility(self):
+        """Toggle window visibility — same logic as hotkey hide/show."""
+        if self.isVisible():
+            self.hide()
+        else:
+            if self.follow_mouse_active:
+                self.show_window_at_cursor()
+            else:
+                self.show()
+                self.raise_()
+
+    def closeEvent(self, event):
+        """Override: hide to tray instead of closing the application."""
+        self.hide()
+        event.ignore()
 
     def update_window_flags(self):
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint

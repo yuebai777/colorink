@@ -14,11 +14,7 @@ class DCompOverlayController:
 
     @staticmethod
     def _find_exe():
-        import sys
-        if getattr(sys, 'frozen', False):
-            base = sys._MEIPASS
-        else:
-            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         path = os.path.join(base, "dcomp_overlay", "build", "dcomp_overlay.exe")
         return os.path.abspath(path) if os.path.exists(path) else None
 

@@ -127,6 +127,7 @@ void Render(int mode){
 LRESULT CALLBACK WP(HWND h,UINT m,WPARAM w,LPARAM l){return m==WM_DESTROY?(PostQuitMessage(0),0):DefWindowProc(h,m,w,l);}
 
 int WINAPI WinMain(HINSTANCE hi,HINSTANCE,LPSTR,int){
+    SetProcessDPIAware();
     int sx=0,x=0,y=0;{IDXGIFactory1*f=0;CreateDXGIFactory1(__uuidof(IDXGIFactory1),(void**)&f);
     IDXGIAdapter*a=0;f->EnumAdapters(0,&a);IDXGIOutput*o=0;a->EnumOutputs(sx,&o);
     DXGI_OUTPUT_DESC dd;o->GetDesc(&dd);x=dd.DesktopCoordinates.left;y=dd.DesktopCoordinates.top;

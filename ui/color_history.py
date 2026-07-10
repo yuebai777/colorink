@@ -127,38 +127,25 @@ class _SwatchCell(QWidget):
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             rect = self.rect().adjusted(0, 0, -1, -1)
             if self.is_empty():
-                painter.fillRect(rect, QColor(255, 255, 255, 18))
-                parent_border = getattr(self.parent(), "_border", QColor(0, 0, 0, 80))
-                faint = QColor(parent_border)
-                faint.setAlpha(80)
-                painter.setPen(QPen(faint, 1.0))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawRect(QRectF(rect).adjusted(_HALF, _HALF, -_HALF, -_HALF))
+                # No colour → fully transparent (no grid hint)
+                pass
             else:
                 # Soft drop shadow
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QBrush(QColor(0, 0, 0, 45)))
                 painter.drawRoundedRect(QRectF(1, 2, rect.width(), rect.height()), 2, 2)
-                # Fill
+                # Fill the swatch — always visible regardless of state
+                painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QBrush(QColor(self._color.rgb())))
+                painter.drawRoundedRect(QRectF(0, 0, rect.width(), rect.height()), 2, 2)
 
                 if self._hovered:
-                    # Mouse hover → blue border (takes priority over select)
-                    painter.setPen(QPen(QColor("#5a94e2"), 2.0))
+                    painter.setPen(QPen(QColor("#5a94e2"), 1.0))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
                     painter.drawRoundedRect(QRectF(0, 0, rect.width(), rect.height()), 2, 2)
                 elif self._selected:
-                    # "红白相间" — red dashed frame with white rim
-                    red_pen = QPen(QColor(220, 40, 40), 2.0)
-                    red_pen.setDashPattern([3, 2])
-                    painter.setPen(red_pen)
-                    painter.drawRoundedRect(QRectF(1, 1, rect.width()-2, rect.height()-2), 2, 2)
-                    # Inner white rim creates the alternating red-white effect
-                    white_pen = QPen(QColor(255, 255, 255, 180), 1.0)
-                    painter.setPen(white_pen)
-                    painter.drawRoundedRect(QRectF(2.5, 2.5, rect.width()-5, rect.height()-5), 1, 1)
-                else:
-                    # Normal filled swatch: subtle light outline
-                    painter.setPen(QPen(QColor(255, 255, 255, 90), 1.0))
+                    painter.setPen(QPen(QColor(220, 40, 40), 1.0))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
                     painter.drawRoundedRect(QRectF(0, 0, rect.width(), rect.height()), 2, 2)
         finally:
             painter.end()
@@ -195,8 +182,8 @@ class ColorHistoryWidget(QWidget):
         self._rows = 2
         self._swatch_size = 18
         self._gap = 1
-        self._pad = 6
-        self._left_pad = 6  # updated by _relayout after centring
+        self._pad = 3
+        self._left_pad = 3  # updated by _relayout after centring
         self._colors = []  # list[QColor]
         self._selected_index = -1  # index into visible cells (-1 = none)
         # Cell pool sized to MAX_COLS * MAX_ROWS; never grown. configure()
@@ -372,18 +359,29 @@ class ColorHistoryWidget(QWidget):
         return result
 
     def _apply_selection_by_color(self, color):
-        """Find the visible cell holding `color` and mark it selected."""
+        """Find the visible cell holding `color` and mark it selected.
+        The color is moved to the end of `_colors` (= newest) so it
+        appears in the first cell. Returns the updated color list."""
+        # Reorder: remove the clicked color from its current position and
+        # append it to the end so it becomes the "newest" (cell 0).
+        for i, c in enumerate(self._colors):
+            if c == color:
+                self._colors.pop(i)
+                self._colors.append(c)
+                break
+        self._refill_cells()
+        # Mark cell 0 (the now-newest) as selected
         visible = self._visible_cells()
         for i, cell in enumerate(visible):
-            if cell.color == color and not cell.is_empty():
-                self._selected_index = i
-                cell.set_selected(True)
-            else:
-                cell.set_selected(False)
+            cell.set_selected(i == 0)
+        self._selected_index = 0
+        return list(self._colors)
 
     def mark_selected(self, color):
-        """Called by MainWindow when the user clicks a history swatch."""
-        self._apply_selection_by_color(QColor(color))
+        """Called by MainWindow when the user clicks a history swatch.
+        Moves the color to newest position and returns the full list for
+        persistence."""
+        return self._apply_selection_by_color(QColor(color))
 
     # ─────────────────────────── painting + sizing ─────────────────────────
 
@@ -425,23 +423,5 @@ class ColorHistoryWidget(QWidget):
             pen.setCosmetic(True)
             painter.setPen(pen)
             painter.drawRect(QRectF(rect).adjusted(_HALF, _HALF, -_HALF, -_HALF))
-
-            # Empty-cell hints so the grid reads even when nothing recorded
-            if not self._colors:
-                hint = QColor(self._text)
-                hint.setAlpha(120)
-                painter.setPen(QPen(hint, 1.0))
-                size = self._swatch_size
-                gap = self._gap
-                top_pad = self._pad
-                # Mirror the centring from _relayout so hints align with cells
-                total_used = self._cols * size + (self._cols - 1) * gap
-                left_pad = max(top_pad, (self.width() - 1 - total_used) // 2)
-                for r in range(self._rows):
-                    for c in range(self._cols):
-                        x = left_pad + c * (size + gap) + _HALF
-                        y = top_pad + r * (size + gap) + _HALF
-                        painter.setBrush(Qt.BrushStyle.NoBrush)
-                        painter.drawRect(QRectF(x, y, size - 1, size - 1))
         finally:
             painter.end()
