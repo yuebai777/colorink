@@ -41,15 +41,7 @@ python main.py
 ```
 
 Or double-click `run.bat`.
-
-### Hotkeys (configurable in Settings)
-
-| Action | Default |
-|--------|---------|
-| Pick foreground color | `F11` |
-| Toggle follow mouse | `Ctrl + R` |
-| Show / hide window | `Ctrl + H` |
-| Toggle grayscale overlay | `Ctrl + G` |
+ |
 
 ## Building (Standalone EXE)
 
