@@ -6,7 +6,7 @@ HOTKEY_CFG_NAME = "hotkey-config.json"
 
 def get_user_data_dir():
     appdata = os.getenv("APPDATA")
-    path = os.path.join(appdata, "Palette Lite")
+    path = os.path.join(appdata, "Colorink")
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -55,13 +55,13 @@ def load_hotkey_config():
         "showSlidersRGB": False,
         "showSlidersHSV": True,
         "showSlidersHSL": False,
-        "showSlidersLAB": True,
+        "showSlidersLAB": False,
         "orderSlidersRGB": 1,
         "orderSlidersHSV": 2,
         "orderSlidersHSL": 3,
         "orderSlidersLAB": 4,
         "showSlidersOKLab": True,
-        "showSlidersOKLCh": False,
+        "showSlidersOKLCh": True,
         "orderSlidersOKLab": 5,
         "orderSlidersOKLCh": 6,
         "visualizerMode": "lab",
@@ -71,11 +71,20 @@ def load_hotkey_config():
         "sliderSameSpace": 6,
         "sliderDiffSpace": 8,
         "showSlidersHistory": True,
-        "orderSlidersHistory": 7,
-        "historyColumns": 8,
-        "historyRows": 2,
+        "orderSlidersHistory": 1,
+        "historyColumns": 12,
+        "historyRows": 3,
         "historySwatchSize": 18,
-        "historyColors": []
+        "historyColors": [],
+        "sliderStyle": "default",
+        "followMouseEnabled": False,
+        "autoFocusDrawingSoftware": False,
+        "noFocusMode": False,
+        "showLabLightnessSlider": False,
+        "syncSoftware": "csp",
+        "psVersion": "auto",
+        "uiScale": 100,
+        "flipColorWheelHorizontally": True
     }
     if os.path.exists(path):
         try:

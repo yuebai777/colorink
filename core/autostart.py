@@ -12,7 +12,7 @@ def apply_autostart(enabled: bool):
         
     import winreg
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-    value_name = "PaletteLite"
+    value_name = "Colorink"
     exe_path = sys.executable
     
     try:

@@ -10,6 +10,7 @@ class DCompOverlayController:
         self._exe = self._find_exe()
         self._proc = None
         self._active = False
+        self._mode = "oklch"
 
     @staticmethod
     def _find_exe():
@@ -30,19 +31,25 @@ class DCompOverlayController:
 
     def set_mode(self, mode: str):
         if mode not in _MODE_MAP: raise ValueError(mode)
-        self._write_mode(_MODE_MAP[mode])
-        self._active = (mode != "disabled")
+        if mode != "disabled":
+            self._mode = mode
+        if self._active or mode == "disabled":
+            self._write_mode(_MODE_MAP[mode])
 
-    def set_active(self, active: bool, mode: str = "oklch"):
+    def set_active(self, active: bool, mode: str = None):
+        if mode is None:
+            mode = self._mode
         if active:
             if self._proc is None or self._proc.poll() is not None:
                 self.start()
+            self._active = True
             self.set_mode(mode)
         else:
+            self._active = False
             self.set_mode("disabled")
 
-    def toggle(self, mode: str = "oklch"):
-        self.set_active(not self._active, mode)
+    def toggle(self):
+        self.set_active(not self._active, self._mode)
 
     def start(self):
         if self._proc and self._proc.poll() is None: return

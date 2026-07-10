@@ -17,14 +17,15 @@ def build():
         "--paths", "core",
         "--add-data", "icons;icons",
         "--icon", "icons/icon.ico",
-        "--name", "Palette Lite",
+        "--version-file", "file_version_info.txt",
+        "--name", "Colorink",
         "main.py"
     ]
     
     print("Running PyInstaller...")
     try:
         subprocess.run(cmd, check=True)
-        print("Build complete! Output file in dist/Palette Lite.exe")
+        print("Build complete! Output file in dist/Colorink.exe")
     except subprocess.CalledProcessError as e:
         print("Build failed:", e)
         sys.exit(1)

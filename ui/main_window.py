@@ -4,7 +4,7 @@ import math
 import colorsys
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QStackedWidget, QSlider, QLabel, QFrame,
-                             QGraphicsDropShadowEffect, QApplication)
+                             QGraphicsDropShadowEffect, QApplication, QStyle, QStyleOptionSlider)
 from PyQt6.QtCore import Qt, QPoint, QSize, pyqtSlot, QRectF, pyqtSignal, QRect, QPointF, QEvent
 from PyQt6.QtGui import QColor, QPalette, QLinearGradient, QPainter, QBrush, QPen, QPixmap, QCursor, QPolygonF
 
@@ -100,7 +100,7 @@ class TitleBar(QWidget):
         """)
 
         # Title
-        self.title_label = QLabel("Palette Lite")
+        self.title_label = QLabel("Colorink")
         self.title_label.setStyleSheet("font-weight: bold; font-size: 7px;")
         
         # Minimize Button
@@ -241,24 +241,20 @@ class GradientSlider(QSlider):
             pad = max(2, int(2 * scale))
             self.setMinimumHeight(self.groove_h + tri_off + tri_h + pad)
         else:
-            # Standard visible native handle (style-sheet driven)
+            # Standard visible native handle (geometry configured via stylesheet, custom drawn in paintEvent)
             self.setStyleSheet(f"""
                 QSlider::groove:horizontal {{
                     height: {self.groove_h}px;
                     background: transparent;
                 }}
                 QSlider::handle:horizontal {{
-                    background: {t["handle_bg"]};
-                    border: 1px solid {t["handle_border"]};
+                    background: transparent;
+                    border: none;
                     width: {handle_w}px;
                     height: {handle_h}px;
                     margin-top: {margin_y}px;
                     margin-bottom: {margin_y}px;
                     border-radius: {border_radius}px;
-                }}
-                QSlider::handle:horizontal:hover {{
-                    background: {t["handle_hover_bg"]};
-                    border-color: {t["handle_hover_border"]};
                 }}
             """)
             # Reserve space for the handle's overhangs above and below the groove
@@ -282,12 +278,14 @@ class GradientSlider(QSlider):
         grad = QLinearGradient(0, 0, rect.width(), 0)
         for stop, color in self.gradient_colors:
             grad.setColorAt(stop, color)
-            
+             
+        # Fill groove (no border)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(grad)
         painter.drawRoundedRect(groove_rect, self.groove_radius, self.groove_radius)
         
-        # Draw out-of-gamut gray overlay
+        # Draw out-of-gamut gray overlay (no border)
+        painter.setPen(Qt.PenStyle.NoPen)
         if self._gamut_min is not None and self._gamut_max is not None:
             vmin = self.minimum()
             vrange = self.maximum() - vmin
@@ -304,37 +302,103 @@ class GradientSlider(QSlider):
 
         t = self._theme
         handle_shape = str(t.get("handle_shape", "rect"))
+        
+        # Get the exact handle bounding box from Qt QStyle to ensure perfect alignment
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        handle_rect = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderHandle, self
+        )
+        is_hover = bool(opt.activeSubControls & QStyle.SubControl.SC_SliderHandle)
+
         if handle_shape == "triangle-below":
             # Draw a small triangle (apex up) just below the groove at the
             # current value position. The native handle is invisible per the
             # style sheet, so this is the user-visible indicator.
-            vrange = self.maximum() - self.minimum()
-            frac = (self.value() - self.minimum()) / vrange if vrange > 0 else 0.0
-            handle_x = frac * rect.width()
+            handle_x = handle_rect.center().x()
 
             tri_color = QColor(t.get("handle_tri_color", t["handle_bg"]))
-            tri_border_color = QColor(t.get("handle_tri_border", t["handle_border"]))
             tri_size_w = float(t.get("handle_tri_size_w", 5)) * self.scale
             tri_size_h = float(t.get("handle_tri_size_h", 6)) * self.scale
             tri_offset_y = int(float(t.get("handle_tri_offset_y", 2)) * self.scale)
             tri_base_y = groove_y + self.groove_h + tri_offset_y
 
             painter.setBrush(tri_color)
-            painter.setPen(QPen(tri_border_color, 1))
             triangle = QPolygonF([
                 QPointF(handle_x, tri_base_y),
                 QPointF(handle_x - tri_size_w, tri_base_y + tri_size_h),
                 QPointF(handle_x + tri_size_w, tri_base_y + tri_size_h),
             ])
+            painter.setPen(Qt.PenStyle.NoPen)
+            triangle_poly = painter.drawPolygon(triangle)
+            
+            # Concentric double-ring: black on original triangle,
+            # white (or hover color) on a slightly inset copy so they nest cleanly.
+            ring_w = max(1, int(1.5 * self.scale))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(0, 0, 0, 200), ring_w))
             painter.drawPolygon(triangle)
+            
+            # Compute inset triangle — move each vertex toward centroid
+            pts = [
+                QPointF(handle_x, tri_base_y),
+                QPointF(handle_x - tri_size_w, tri_base_y + tri_size_h),
+                QPointF(handle_x + tri_size_w, tri_base_y + tri_size_h),
+            ]
+            cx = sum(p.x() for p in pts) / 3.0
+            cy = sum(p.y() for p in pts) / 3.0
+            inset = ring_w
+            inner = QPolygonF()
+            for p in pts:
+                dx, dy = p.x() - cx, p.y() - cy
+                d = (dx * dx + dy * dy) ** 0.5
+                if d > inset:
+                    inner.append(QPointF(cx + dx * (d - inset) / d,
+                                         cy + dy * (d - inset) / d))
+                else:
+                    inner.append(QPointF(cx, cy))
+            
+            border_color = QColor(t["handle_hover_border"]) if is_hover else QColor(255, 255, 255, 220)
+            painter.setPen(QPen(border_color, ring_w))
+            painter.drawPolygon(inner)
             painter.end()
             # Do NOT call super().paintEvent — we own this paint
         else:
+            # Draw the rect handle ourselves using the exact QStyle geometry.
+            # No native styling conflicts, no alignment issues, 100% pixel-perfect.
+            handle_f = QRectF(handle_rect)
+
+            # 1. Fill handle background
+            bg_color_str = t["handle_hover_bg"] if is_hover else t["handle_bg"]
+            hr = max(0, int(1 * self.scale * float(t["handle_radius_factor"])))
+            
+            if bg_color_str and bg_color_str != "transparent":
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(bg_color_str))
+                painter.drawRoundedRect(handle_f, hr, hr)
+            
+            # 2. Draw double-ring border
+            ring_w = max(1, int(1.5 * self.scale))
+            
+            # Outer ring: black for high-contrast visibility against colored/light tracks
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(0, 0, 0, 200), ring_w))
+            painter.drawRoundedRect(handle_f, hr, hr)
+            
+            # Inner ring: theme border color (grey/blue)
+            border_color_str = t["handle_hover_border"] if is_hover else t["handle_border"]
+            border_color = QColor(border_color_str)
+            
+            inner_f = QRectF(handle_f.x() + ring_w, handle_f.y() + ring_w,
+                             handle_f.width() - 2 * ring_w, handle_f.height() - 2 * ring_w)
+            
+            if inner_f.width() > 0 and inner_f.height() > 0:
+                inner_r = max(0, hr - ring_w)
+                painter.setPen(QPen(border_color, ring_w))
+                painter.drawRoundedRect(inner_f, inner_r, inner_r)
+            
             painter.end()
-            # Important: release our QPainter before letting QSlider's native
-            # paint() open its own — otherwise the handle's overhangs above
-            # and below the groove get clipped, leaving only the side borders.
-            super().paintEvent(event)
+            # Do NOT call super().paintEvent — we own this paint
 
 
 class ClickableFrame(QFrame):
@@ -630,7 +694,7 @@ class MainWindow(QMainWindow):
             current_dpr = 1.0
         
         w = win_cfg.get("width", int(320 * scale))
-        h = win_cfg.get("height", int(450 * scale))
+        h = win_cfg.get("height", int(710 * scale))
         
         # If saved on a different DPI screen, adjust to current screen's logical pixels
         if saved_dpr is not None and abs(current_dpr - saved_dpr) > 0.01:
@@ -1067,14 +1131,29 @@ class MainWindow(QMainWindow):
                               source="sliders_oklab", hsv=(h_hsv, s_hsv, v_hsv))
 
     def on_oklch_slider_changed(self):
-        import math
+        if not hasattr(self, "_oklch_target_C") or not hasattr(self, "_oklch_target_h"):
+            r, g, b = self.current_rgb
+            _, C_okc, h_okc = rgb_to_oklch(r, g, b)
+            self._oklch_target_C = C_okc
+            self._oklch_target_h = h_okc
+
+        sender = self.sender()
         l_val = self.slider_widgets["L_oklch"][0].value()
         c_raw = self.slider_widgets["C_oklch"][0].value()
         h_val = self.slider_widgets["h_oklch"][0].value()
         L = l_val / 100.0
-        max_c = self._find_oklch_max_chroma(L, h_val)
-        c_val = (c_raw / 100.0) * max_c if max_c > 0.0 else 0.0
-        r, g, b = oklch_to_rgb(L, c_val, h_val)
+
+        if sender == self.slider_widgets["C_oklch"][0]:
+            max_c = self._find_oklch_max_chroma(L, h_val)
+            self._oklch_target_C = (c_raw / 100.0) * max_c if max_c > 0.0 else 0.0
+            source_str = "sliders_oklch_C"
+        elif sender == self.slider_widgets["h_oklch"][0]:
+            self._oklch_target_h = float(h_val)
+            source_str = "sliders_oklch_h"
+        else:
+            source_str = "sliders_oklch_L"
+
+        r, g, b = oklch_to_rgb(L, self._oklch_target_C, self._oklch_target_h)
         r_clamped = max(0.0, min(255.0, r))
         g_clamped = max(0.0, min(255.0, g))
         b_clamped = max(0.0, min(255.0, b))
@@ -1083,7 +1162,7 @@ class MainWindow(QMainWindow):
         if s_hsv < 1.0 and hasattr(self, 'color_wheel'):
             h_hsv = self.color_wheel.h
         self.update_ui_colors(int(r_clamped), int(g_clamped), int(b_clamped),
-                              source="sliders_oklch", hsv=(h_hsv, s_hsv, v_hsv))
+                              source=source_str, hsv=(h_hsv, s_hsv, v_hsv))
 
     def _find_oklch_max_chroma(self, L, h):
         """Binary search for max OKLCh chroma at given L, h within sRGB gamut."""
@@ -1268,18 +1347,22 @@ class MainWindow(QMainWindow):
             ])
         
         if self.slider_containers.get("OKLCh", QWidget()).isVisible():
+            if not hasattr(self, "_oklch_target_C") or not hasattr(self, "_oklch_target_h"):
+                self._oklch_target_C = C_oklch
+                self._oklch_target_h = h_oklch
+            
             # 16) L_oklch Slider (L from 0 to 1 mapped to slider 0-100)
-            okcl0_r, okcl0_g, okcl0_b = oklch_to_rgb(0.0, C_oklch, h_oklch)
-            okcl1_r, okcl1_g, okcl1_b = oklch_to_rgb(1.0, C_oklch, h_oklch)
+            okcl0_r, okcl0_g, okcl0_b = oklch_to_rgb(0.0, self._oklch_target_C, self._oklch_target_h)
+            okcl1_r, okcl1_g, okcl1_b = oklch_to_rgb(1.0, self._oklch_target_C, self._oklch_target_h)
             self.slider_widgets["L_oklch"][0].set_gradient([
                 (0.0, QColor(int(max(0, min(255, okcl0_r))), int(max(0, min(255, okcl0_g))), int(max(0, min(255, okcl0_b))))),
                 (1.0, QColor(int(max(0, min(255, okcl1_r))), int(max(0, min(255, okcl1_g))), int(max(0, min(255, okcl1_b)))))
             ])
             
             # 17) C_oklch Slider (adaptive max chroma)
-            max_c = self._find_oklch_max_chroma(L_oklch, h_oklch)
-            okcc0_r, okcc0_g, okcc0_b = oklch_to_rgb(L_oklch, 0.0, h_oklch)
-            okcc1_r, okcc1_g, okcc1_b = oklch_to_rgb(L_oklch, max_c, h_oklch)
+            max_c = self._find_oklch_max_chroma(L_oklch, self._oklch_target_h)
+            okcc0_r, okcc0_g, okcc0_b = oklch_to_rgb(L_oklch, 0.0, self._oklch_target_h)
+            okcc1_r, okcc1_g, okcc1_b = oklch_to_rgb(L_oklch, max_c, self._oklch_target_h)
             self.slider_widgets["C_oklch"][0].set_gradient([
                 (0.0, QColor(int(max(0, min(255, okcc0_r))), int(max(0, min(255, okcc0_g))), int(max(0, min(255, okcc0_b))))),
                 (1.0, QColor(int(max(0, min(255, okcc1_r))), int(max(0, min(255, okcc1_g))), int(max(0, min(255, okcc1_b)))))
@@ -1289,7 +1372,7 @@ class MainWindow(QMainWindow):
             okch_stops = []
             for i in range(7):
                 hue = i * 60
-                r_h, g_h, b_h = oklch_to_rgb(L_oklch, C_oklch, hue)
+                r_h, g_h, b_h = oklch_to_rgb(L_oklch, self._oklch_target_C, hue)
                 okch_stops.append((i / 6.0, QColor(int(max(0, min(255, r_h))), int(max(0, min(255, g_h))), int(max(0, min(255, b_h))))))
             self.slider_widgets["h_oklch"][0].set_gradient(okch_stops)
 
@@ -1375,12 +1458,15 @@ class MainWindow(QMainWindow):
         """Return (min_L, max_L) for L_oklch slider given current C, h."""
         if "C_oklch" not in self.slider_widgets or "h_oklch" not in self.slider_widgets:
             return 0, 100
-        c_raw = self.slider_widgets["C_oklch"][0].value()
-        h_val = self.slider_widgets["h_oklch"][0].value()
-        L_cur = self.slider_widgets["L_oklch"][0].value() / 100.0
+        
+        if not hasattr(self, "_oklch_target_C") or not hasattr(self, "_oklch_target_h"):
+            r, g, b = self.current_rgb
+            _, C_okc, h_okc = rgb_to_oklch(r, g, b)
+            self._oklch_target_C = C_okc
+            self._oklch_target_h = h_okc
 
-        max_c_cur = self._find_oklch_max_chroma(L_cur, h_val)
-        c_abs = (c_raw / 100.0) * max_c_cur if max_c_cur > 0.001 else 0.0
+        c_abs = self._oklch_target_C
+        h_val = self._oklch_target_h
 
         if c_abs < 0.001:
             return 0, 100
@@ -1561,14 +1647,25 @@ class MainWindow(QMainWindow):
             self.slider_widgets["b_oklab"][0].setValue(round(b_ok * 100))
         
         # OKLCh Values
-        if source != "sliders_oklch":
+        if source not in ("sliders_oklch_L", "sliders_oklch_C", "sliders_oklch_h"):
             L_okc, C_okc, h_okc = rgb_to_oklch(r, g, b)
+            self._oklch_target_C = C_okc
+            self._oklch_target_h = h_okc
             self.slider_widgets["L_oklch"][0].setValue(round(L_okc * 100))
             self.slider_widgets["h_oklch"][0].setValue(round(h_okc))
-            # Only compute adaptive max_c when C slider is visible (expensive binary search)
             if self.slider_containers.get("OKLCh", QWidget()).isVisible():
                 max_c = self._find_oklch_max_chroma(L_okc, h_okc)
                 self.slider_widgets["C_oklch"][0].setValue(round(C_okc / max_c * 100) if max_c > 0.001 else 0)
+        else:
+            L_okc, C_okc, h_okc = rgb_to_oklch(r, g, b)
+            if source != "sliders_oklch_L":
+                self.slider_widgets["L_oklch"][0].setValue(round(L_okc * 100))
+            if source != "sliders_oklch_h":
+                self.slider_widgets["h_oklch"][0].setValue(round(h_okc))
+            if source != "sliders_oklch_C":
+                if self.slider_containers.get("OKLCh", QWidget()).isVisible():
+                    max_c = self._find_oklch_max_chroma(L_okc, h_okc)
+                    self.slider_widgets["C_oklch"][0].setValue(round(C_okc / max_c * 100) if max_c > 0.001 else 0)
         
         for chan in all_chans:
             if chan in self.slider_widgets:
@@ -1978,6 +2075,7 @@ class MainWindow(QMainWindow):
         channel_text_color = "#666666" if is_dark_text else "#e9e9e9"
         inputBg = "#eaeaea" if is_dark_text else "#2e2e2e"
         borderColor = "#d0d0d0" if is_dark_text else "#555555"
+        handle_border_global = "#999999" if is_dark_text else "#b0b0b0"
         
         # Determine title bar text color and button hover backgrounds
         title_text_color = "#666666" if is_dark_text else "#a0a0a0"
@@ -2051,7 +2149,7 @@ class MainWindow(QMainWindow):
             }}
             QSlider::handle:horizontal {{
                 background: #ffffff;
-                border: 1px solid #787878;
+                border: 1px solid {handle_border_global};
                 width: {int(6 * scale)}px;
                 height: {int(14 * scale)}px;
                 margin-top: {-int(4 * scale)}px;
@@ -2276,7 +2374,7 @@ class MainWindow(QMainWindow):
     def on_sync_status_changed(self, mode, connected):
         print(f"[Sync] Software status changed: {mode} -> connected={connected}")
         # Optionally update title bar text or border to show connection status
-        status_text = f"Palette Lite ({mode.upper()} {'✓' if connected else '×'})"
+        status_text = f"Colorink ({mode.upper()} {'✓' if connected else '×'})"
         self.title_bar.title_label.setText(status_text)
 
     def toggle_settings_sidebar(self):
@@ -2318,7 +2416,7 @@ class MainWindow(QMainWindow):
         self.update_geometries()
 
     def zoom_ui(self, factor):
-        self.resize(int(320 * factor), int(450 * factor))
+        self.resize(int(320 * factor), int(710 * factor))
 
     def show_window_at_cursor(self):
         if self.cfg.get("lockWindowPosition", False):
@@ -2421,8 +2519,8 @@ class MainWindow(QMainWindow):
 
         # Update grayscale overlay — check if backend changed
         new_backend = self.cfg.get("grayscaleFilterBackend", "overlay")
-        current_is_d3d11 = hasattr(self.grayscale_overlay, '_process')
-        if (new_backend == "dwm") != current_is_d3d11:
+        current_is_dwm = not isinstance(self.grayscale_overlay, GrayscaleOverlay)
+        if (new_backend == "dwm") != current_is_dwm:
             # Backend changed — tear down old, create new
             self.grayscale_overlay.set_active(False)
             if hasattr(self.grayscale_overlay, 'close'):

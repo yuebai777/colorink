@@ -185,7 +185,7 @@ class SettingsDialog(QDialog):
         backend_row = QHBoxLayout()
         backend_row.addWidget(QLabel("渲染后端:"))
         self.combo_grayscale_backend = QComboBox()
-        self.combo_grayscale_backend.addItems(["OpenGL Overlay", "DComp 直通 (OKLCh)"])
+        self.combo_grayscale_backend.addItems(["OpenGL Overlay", "DComp 直通"])
         backend_value = self.cfg.get("grayscaleFilterBackend", "overlay")
         self.combo_grayscale_backend.setCurrentIndex(1 if backend_value == "dwm" else 0)
         backend_row.addWidget(self.combo_grayscale_backend)
