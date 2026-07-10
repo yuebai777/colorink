@@ -19,7 +19,7 @@ Support me at [爱发电](https://afdian.com/a/colorink)
 
 ## Screenshots
 
-<!-- TODO: add screenshots -->
+![Colorink Screenshot](screenshots/screenshot.png)
 
 ## Requirements
 
