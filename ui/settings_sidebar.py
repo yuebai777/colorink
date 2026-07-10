@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QScrollArea, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QLabel, QCheckBox, QComboBox, QPushButton, QSlider)
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor
+                             QLabel, QCheckBox, QComboBox, QPushButton, QSlider, QApplication)
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint
+from PyQt6.QtGui import QColor, QCursor
 
 from core import config
 from core import autostart
@@ -15,6 +15,7 @@ class NonScrollComboBox(QComboBox):
 class NonScrollSlider(QSlider):
     def wheelEvent(self, event):
         event.ignore()
+
 
 class SettingsSidebar(QScrollArea):
     settingChanged = pyqtSignal()
@@ -90,10 +91,14 @@ class SettingsSidebar(QScrollArea):
         row_theme = QHBoxLayout()
         row_theme.addWidget(QLabel("背景"))
         self.combo_theme = NonScrollComboBox()
-        self.combo_theme.addItems(["背景 自动（匹配CSP）", "背景 灰", "背景 白", "背景 黑"])
+        self.combo_theme.addItems(["背景 自动（匹配CSP）", "背景 取色", "背景 灰", "背景 白", "背景 黑"])
         self.combo_theme.currentTextChanged.connect(self.save_settings)
         row_theme.addWidget(self.combo_theme)
         self.layout.addLayout(row_theme)
+
+        # Eyedropper control rows (visible only when "取色" theme is selected)
+        self._make_eyedropper_row("bar", "框色", "绘画软件标题栏/边框的深色")
+        self._make_eyedropper_row("bg",  "底色", "绘画软件画布区域的浅色")
 
         # Slider visual theme (track width / handle style / label letter weight)
         row_slider_style = QHBoxLayout()
@@ -134,7 +139,7 @@ class SettingsSidebar(QScrollArea):
         self.zoom_slider.setSingleStep(5)
         self.zoom_slider.setPageStep(10)
         self.zoom_slider.valueChanged.connect(self.on_zoom_slider_changed)
-        self.zoom_slider.sliderReleased.connect(self.save_settings)
+        self.zoom_slider.sliderReleased.connect(self.on_zoom_slider_released)
         
         self.lbl_zoom = QLabel("100%")
         self.lbl_zoom.setFixedWidth(30)
@@ -380,6 +385,36 @@ class SettingsSidebar(QScrollArea):
         lbl = QLabel(text)
         lbl.setObjectName("SectionHeader")
         return lbl
+
+    def _make_eyedropper_row(self, target, label_text, tooltip):
+        """Create a single eyedropper control row (target = 'bar' or 'bg')."""
+        widget = QWidget()
+        widget.setObjectName(f"EyedropperRow_{target}")
+        row = QHBoxLayout(widget)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        row.addWidget(QLabel(label_text))
+
+        lbl = QLabel("未设定")
+        lbl.setStyleSheet("color: #888;")
+        row.addWidget(lbl)
+
+        btn_set = QPushButton("设定")
+        btn_set.setToolTip(tooltip + " — 点击后窗口隐藏3秒，移鼠标到目标位置")
+        btn_set.clicked.connect(lambda: self.start_eyedropper_pick(target))
+        btn_sync = QPushButton("同步")
+        btn_sync.setToolTip("从已设定的取色点立即同步颜色")
+        btn_sync.clicked.connect(lambda: self.do_eyedropper_sync(target))
+        row.addWidget(btn_set)
+        row.addWidget(btn_sync)
+
+        self.layout.addWidget(widget)
+        widget.setVisible(False)
+
+        setattr(self, f"_eye_row_{target}", widget)
+        setattr(self, f"_eye_lbl_{target}", lbl)
+        setattr(self, f"_eye_btn_set_{target}", btn_set)
+        setattr(self, f"_eye_btn_sync_{target}", btn_sync)
         
     def refresh_ui(self):
         self.cfg = config.load_hotkey_config()
@@ -426,10 +461,26 @@ class SettingsSidebar(QScrollArea):
         self.cb_follow_mouse.blockSignals(False)
         
         # 2. Interface
-        theme_map = {"auto": "背景 自动（匹配CSP）", "gray": "背景 灰", "white": "背景 白", "black": "背景 黑"}
+        theme_map = {"auto": "背景 自动（匹配CSP）", "eyedropper": "背景 取色", "gray": "背景 灰", "white": "背景 白", "black": "背景 黑"}
         self.combo_theme.blockSignals(True)
         self.combo_theme.setCurrentText(theme_map.get(self.cfg.get("ui-theme", "auto"), "背景 自动（匹配CSP）"))
         self.combo_theme.blockSignals(False)
+
+        # Show/hide eyedropper rows and update point labels
+        is_eyedropper = self.cfg.get("ui-theme", "auto") == "eyedropper"
+        for target in ("bar", "bg"):
+            row = getattr(self, f"_eye_row_{target}")
+            lbl = getattr(self, f"_eye_lbl_{target}")
+            row.setVisible(is_eyedropper)
+            if is_eyedropper:
+                key = "uiThemeDropperPointBar" if target == "bar" else "uiThemeDropperPointBg"
+                pt = self.cfg.get(key, None)
+                if pt and isinstance(pt, dict) and "x" in pt and "y" in pt:
+                    lbl.setText(f"({pt['x']}, {pt['y']})")
+                    lbl.setStyleSheet("color: inherit;")
+                else:
+                    lbl.setText("未设定")
+                    lbl.setStyleSheet("color: #c44;")
 
         # Slider theme combo (resolve stored key → combo index)
         slider_style_key = self.cfg.get("sliderStyle", "default")
@@ -582,6 +633,17 @@ class SettingsSidebar(QScrollArea):
                     barBg = border_color
                 except Exception:
                     pass
+            elif theme_name == "eyedropper":
+                bar_stored = p.cfg.get("uiThemeDropperColorBar", "#787878")
+                bg_stored = p.cfg.get("uiThemeDropperColorBg", "#b2b2b2")
+                try:
+                    c_bar = QColor(bar_stored)
+                    bg = QColor(bg_stored).name()
+                    barBg = c_bar.name()
+                    border_color = c_bar.name()
+                    text = "#ffffff" if QColor(bg).lightness() < 128 else "#222222"
+                except Exception:
+                    pass
             else:
                 themes = {
                     "black": {"bg": "#1e1e1e", "text": "#ffffff", "border": "#2d2d2d"},
@@ -677,9 +739,27 @@ class SettingsSidebar(QScrollArea):
         self.settingChanged.emit()
 
     def on_zoom_slider_changed(self):
+        """Update label in real-time, snapped to nearest 5% step.
+        Does NOT apply resize — that happens only on slider release."""
         v = self.zoom_slider.value()
-        self.lbl_zoom.setText(f"{v}%")
-        self.parent.zoom_ui(v / 100.0)
+        snapped = round(v / 5) * 5
+        self.lbl_zoom.setText(f"{snapped}%")
+
+    def on_zoom_slider_released(self):
+        """Snap slider to nearest 5%, apply zoom once, then save."""
+        v = self.zoom_slider.value()
+        snapped = round(v / 5) * 5
+        # Snap the slider handle to the aligned value
+        if snapped != v:
+            self.zoom_slider.blockSignals(True)
+            self.zoom_slider.setValue(snapped)
+            self.zoom_slider.blockSignals(False)
+        self.lbl_zoom.setText(f"{snapped}%")
+        # Apply zoom immediately (heavy op — done once on release, not during drag)
+        self.parent.zoom_ui(snapped / 100.0)
+        self.parent.current_ui_scale = snapped
+        # Persist to config; on_settings_saved will see scale already matches → cheap update()
+        self.save_settings()
 
     def save_hotkeys(self, new_val=None):
         self.cfg["hideWindowKey"] = self.btn_hide.val
@@ -688,7 +768,7 @@ class SettingsSidebar(QScrollArea):
         self.settingChanged.emit()
 
     def save_settings(self):
-        theme_val_map = {"背景 自动（匹配CSP）": "auto", "背景 灰": "gray", "背景 白": "white", "背景 黑": "black"}
+        theme_val_map = {"背景 自动（匹配CSP）": "auto", "背景 取色": "eyedropper", "背景 灰": "gray", "背景 白": "white", "背景 黑": "black"}
         self.cfg["ui-theme"] = theme_val_map.get(self.combo_theme.currentText(), "auto")
 
         # Slider visual theme (key stored as combo item data)
@@ -781,6 +861,20 @@ class SettingsSidebar(QScrollArea):
         config.save_hotkey_config(self.cfg)
         self.settingChanged.emit()
         self.update_version_visibility()
+        is_eye = self.cfg.get("ui-theme", "auto") == "eyedropper"
+        for target in ("bar", "bg"):
+            row = getattr(self, f"_eye_row_{target}")
+            lbl = getattr(self, f"_eye_lbl_{target}")
+            row.setVisible(is_eye)
+            if is_eye:
+                key = "uiThemeDropperPointBar" if target == "bar" else "uiThemeDropperPointBg"
+                pt = self.cfg.get(key, None)
+                if pt and isinstance(pt, dict) and "x" in pt and "y" in pt:
+                    lbl.setText(f"({pt['x']}, {pt['y']})")
+                    lbl.setStyleSheet("color: inherit;")
+                else:
+                    lbl.setText("未设定")
+                    lbl.setStyleSheet("color: #c44;")
         self.apply_theme()
 
     def scroll_step_decrease(self):
@@ -832,3 +926,80 @@ class SettingsSidebar(QScrollArea):
             self.cb_auto_focus_drawing.setChecked(False)
             self.cb_auto_focus_drawing.blockSignals(False)
         self.save_settings()
+
+    # ── Eyedropper dual-point pick ────────────────────────────────────────
+    def start_eyedropper_pick(self, target):
+        """Hide palette → 3s countdown → capture cursor for 'bar' or 'bg'."""
+        self._eye_target = target
+        self._eye_countdown = 3
+        btn_set = getattr(self, f"_eye_btn_set_{target}")
+        btn_set.setEnabled(False)
+        btn_set.setText("3...")
+        if self.parent is not None:
+            self.parent.hide()
+        self._eye_countdown_timer = QTimer(self)
+        self._eye_countdown_timer.timeout.connect(self._on_countdown_tick)
+        self._eye_countdown_timer.start(1000)
+
+    def _on_countdown_tick(self):
+        self._eye_countdown -= 1
+        target = self._eye_target
+        btn_set = getattr(self, f"_eye_btn_set_{target}")
+        if self._eye_countdown > 0:
+            btn_set.setText(f"{self._eye_countdown}...")
+        else:
+            self._eye_countdown_timer.stop()
+            btn_set.setText("设定")
+            btn_set.setEnabled(True)
+            if self.parent is not None:
+                self.parent.show()
+            pos = QCursor.pos()
+            self._on_eyedropper_point_picked(pos.x(), pos.y())
+
+    def _on_eyedropper_point_picked(self, x: int, y: int):
+        target = self._eye_target
+        point_key = "uiThemeDropperPointBar" if target == "bar" else "uiThemeDropperPointBg"
+        self.cfg[point_key] = {"x": x, "y": y}
+        config.save_hotkey_config(self.cfg)
+        lbl = getattr(self, f"_eye_lbl_{target}")
+        lbl.setText(f"({x}, {y})")
+        lbl.setStyleSheet("color: inherit;")
+        self.do_eyedropper_sync(target)
+
+    @staticmethod
+    def _grab_median_color(x, y):
+        """Grab 3×3 median color from screen at logical coords (x, y) via GDI."""
+        import ctypes
+        # Convert logical → physical pixels (Qt uses logical, GDI needs physical)
+        screen = QApplication.screenAt(QPoint(x, y))
+        dpr = screen.devicePixelRatio() if screen is not None else 1.0
+        if dpr < 0.1:
+            dpr = 1.0
+        px, py = int(x * dpr), int(y * dpr)
+
+        hdc = ctypes.windll.gdi32.CreateDCW("DISPLAY", None, None, None)
+        rs, gs, bs = [], [], []
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                pixel = ctypes.windll.gdi32.GetPixel(hdc, px + dx, py + dy)
+                rs.append(pixel & 0xFF)
+                gs.append((pixel >> 8) & 0xFF)
+                bs.append((pixel >> 16) & 0xFF)
+        ctypes.windll.gdi32.DeleteDC(hdc)
+        rs.sort(); gs.sort(); bs.sort()
+        return f"#{rs[4]:02x}{gs[4]:02x}{bs[4]:02x}"
+
+    def do_eyedropper_sync(self, target):
+        """Sync color from the fixed pick point for 'bar' or 'bg'."""
+        point_key = "uiThemeDropperPointBar" if target == "bar" else "uiThemeDropperPointBg"
+        color_key = "uiThemeDropperColorBar" if target == "bar" else "uiThemeDropperColorBg"
+        pt = self.cfg.get(point_key, None)
+        if not pt or not isinstance(pt, dict) or "x" not in pt or "y" not in pt:
+            return
+        try:
+            hex_color = self._grab_median_color(pt["x"], pt["y"])
+            self.cfg[color_key] = hex_color
+            config.save_hotkey_config(self.cfg)
+            self.settingChanged.emit()
+        except Exception:
+            pass

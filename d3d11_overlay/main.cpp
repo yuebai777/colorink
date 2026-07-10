@@ -306,6 +306,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
+    SetProcessDPIAware();
     int screenIdx = 0;  // default to primary monitor
 
     // Target screen geometry
