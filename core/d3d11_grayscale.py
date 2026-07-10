@@ -42,8 +42,12 @@ class D3D11OverlayController:
 
     @staticmethod
     def _find_exe() -> str | None:
-        """Locate d3d11_overlay.exe relative to this module."""
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        """Locate d3d11_overlay.exe relative to this module or PyInstaller bundle."""
+        import sys
+        if getattr(sys, 'frozen', False):
+            base = sys._MEIPASS
+        else:
+            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         path = os.path.join(base, "d3d11_overlay", "build", "d3d11_overlay.exe")
         if os.path.exists(path):
             return os.path.abspath(path)
