@@ -242,7 +242,9 @@ class GradientSlider(QSlider):
             pad = max(2, int(2 * scale))
             self.setMinimumHeight(self.groove_h + tri_off + tri_h + pad)
         else:
-            # Standard visible native handle (geometry configured via stylesheet, custom drawn in paintEvent)
+            # Native handle is invisible (transparent fill, no border).
+            # The double-ring border is drawn underneath in paintEvent and
+            # shows through. Hover adds a blue ring on top.
             self.setStyleSheet(f"""
                 QSlider::groove:horizontal {{
                     height: {self.groove_h}px;
@@ -256,6 +258,10 @@ class GradientSlider(QSlider):
                     margin-top: {margin_y}px;
                     margin-bottom: {margin_y}px;
                     border-radius: {border_radius}px;
+                }}
+                QSlider::handle:horizontal:hover {{
+                    background: transparent;
+                    border: none;
                 }}
             """)
             # Reserve space for the handle's overhangs above and below the groove
@@ -271,6 +277,7 @@ class GradientSlider(QSlider):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setClipRect(self.rect())  # prevent partial-update clipping of handle overhang
         
         rect = self.rect()
         groove_y = (rect.height() - self.groove_h) // 2
@@ -280,12 +287,12 @@ class GradientSlider(QSlider):
         for stop, color in self.gradient_colors:
             grad.setColorAt(stop, color)
              
-        # Fill groove (no border)
+        # Fill groove
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(grad)
         painter.drawRoundedRect(groove_rect, self.groove_radius, self.groove_radius)
         
-        # Draw out-of-gamut gray overlay (no border)
+        # Out-of-gamut overlay
         painter.setPen(Qt.PenStyle.NoPen)
         if self._gamut_min is not None and self._gamut_max is not None:
             vmin = self.minimum()
@@ -293,9 +300,7 @@ class GradientSlider(QSlider):
             if vrange > 0:
                 left_frac = (self._gamut_min - vmin) / vrange
                 right_frac = (self._gamut_max - vmin) / vrange
-                
                 painter.setBrush(QColor(160, 160, 160, 140))
-                
                 if left_frac > 0.005:
                     painter.drawRect(QRectF(0, groove_y, rect.width() * left_frac, self.groove_h))
                 if right_frac < 0.995:
@@ -303,103 +308,60 @@ class GradientSlider(QSlider):
 
         t = self._theme
         handle_shape = str(t.get("handle_shape", "rect"))
-        
-        # Get the exact handle bounding box from Qt QStyle to ensure perfect alignment
-        opt = QStyleOptionSlider()
-        self.initStyleOption(opt)
-        handle_rect = self.style().subControlRect(
-            QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderHandle, self
-        )
-        is_hover = bool(opt.activeSubControls & QStyle.SubControl.SC_SliderHandle)
 
         if handle_shape == "triangle-below":
-            # Draw a small triangle (apex up) just below the groove at the
-            # current value position. The native handle is invisible per the
-            # style sheet, so this is the user-visible indicator.
-            handle_x = handle_rect.center().x()
+            vrange = self.maximum() - self.minimum()
+            frac = (self.value() - self.minimum()) / vrange if vrange > 0 else 0.0
+            handle_x = frac * rect.width()
 
             tri_color = QColor(t.get("handle_tri_color", t["handle_bg"]))
+            tri_border_color = QColor(t.get("handle_tri_border", t["handle_border"]))
             tri_size_w = float(t.get("handle_tri_size_w", 5)) * self.scale
             tri_size_h = float(t.get("handle_tri_size_h", 6)) * self.scale
             tri_offset_y = int(float(t.get("handle_tri_offset_y", 2)) * self.scale)
             tri_base_y = groove_y + self.groove_h + tri_offset_y
 
-            painter.setBrush(tri_color)
             triangle = QPolygonF([
                 QPointF(handle_x, tri_base_y),
                 QPointF(handle_x - tri_size_w, tri_base_y + tri_size_h),
                 QPointF(handle_x + tri_size_w, tri_base_y + tri_size_h),
             ])
-            painter.setPen(Qt.PenStyle.NoPen)
-            triangle_poly = painter.drawPolygon(triangle)
-            
-            # Concentric double-ring: black on original triangle,
-            # white (or hover color) on a slightly inset copy so they nest cleanly.
-            ring_w = max(1, int(1.5 * self.scale))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(QColor(0, 0, 0, 200), ring_w))
+            painter.setBrush(tri_color)
+            painter.setPen(QPen(tri_border_color, 1))
             painter.drawPolygon(triangle)
-            
-            # Compute inset triangle — move each vertex toward centroid
-            pts = [
-                QPointF(handle_x, tri_base_y),
-                QPointF(handle_x - tri_size_w, tri_base_y + tri_size_h),
-                QPointF(handle_x + tri_size_w, tri_base_y + tri_size_h),
-            ]
-            cx = sum(p.x() for p in pts) / 3.0
-            cy = sum(p.y() for p in pts) / 3.0
-            inset = ring_w
-            inner = QPolygonF()
-            for p in pts:
-                dx, dy = p.x() - cx, p.y() - cy
-                d = (dx * dx + dy * dy) ** 0.5
-                if d > inset:
-                    inner.append(QPointF(cx + dx * (d - inset) / d,
-                                         cy + dy * (d - inset) / d))
-                else:
-                    inner.append(QPointF(cx, cy))
-            
-            border_color = QColor(t["handle_hover_border"]) if is_hover else QColor(255, 255, 255, 220)
-            painter.setPen(QPen(border_color, ring_w))
-            painter.drawPolygon(inner)
             painter.end()
             # Do NOT call super().paintEvent — we own this paint
         else:
-            # Draw the rect handle ourselves using the exact QStyle geometry.
-            # No native styling conflicts, no alignment issues, 100% pixel-perfect.
-            handle_f = QRectF(handle_rect)
-
-            # 1. Fill handle background
-            bg_color_str = t["handle_hover_bg"] if is_hover else t["handle_bg"]
+            # Draw the double-ring border UNDER the invisible native handle.
+            # QStyle's rect ensures alignment; hover state is custom-drawn
+            # so it always matches pixel-for-pixel.
+            opt = QStyleOptionSlider()
+            self.initStyleOption(opt)
+            hr_q = self.style().subControlRect(
+                QStyle.ComplexControl.CC_Slider, opt,
+                QStyle.SubControl.SC_SliderHandle, self
+            )
+            is_active = bool(opt.activeSubControls & QStyle.SubControl.SC_SliderHandle)
+            hx, hy, hw, hh = float(hr_q.x()), float(hr_q.y()), float(hr_q.width()), float(hr_q.height())
             hr = max(0, int(1 * self.scale * float(t["handle_radius_factor"])))
-            
-            if bg_color_str and bg_color_str != "transparent":
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(bg_color_str))
-                painter.drawRoundedRect(handle_f, hr, hr)
-            
-            # 2. Draw double-ring border
-            ring_w = max(1, int(1.5 * self.scale))
-            
-            # Outer ring: black for high-contrast visibility against colored/light tracks
+            hf = QRectF(hx, hy, hw, hh)
+
+            bw = max(1, int(1 * self.scale))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(QColor(0, 0, 0, 200), ring_w))
-            painter.drawRoundedRect(handle_f, hr, hr)
-            
-            # Inner ring: theme border color (grey/blue)
-            border_color_str = t["handle_hover_border"] if is_hover else t["handle_border"]
-            border_color = QColor(border_color_str)
-            
-            inner_f = QRectF(handle_f.x() + ring_w, handle_f.y() + ring_w,
-                             handle_f.width() - 2 * ring_w, handle_f.height() - 2 * ring_w)
-            
-            if inner_f.width() > 0 and inner_f.height() > 0:
-                inner_r = max(0, hr - ring_w)
-                painter.setPen(QPen(border_color, ring_w))
-                painter.drawRoundedRect(inner_f, inner_r, inner_r)
-            
+
+            # Inner ring: white (normal) or theme hover colour (active)
+            inner_color = QColor(t["handle_hover_border"]) if is_active else QColor(255, 255, 255, 200)
+            wi = QRectF(hx + bw, hy + bw, hw - 2 * bw, hh - 2 * bw)
+            wr = max(0, hr - bw)
+            painter.setPen(QPen(inner_color, bw))
+            painter.drawRoundedRect(wi, wr, wr)
+
+            # Black outer ring (on top)
+            painter.setPen(QPen(QColor(0, 0, 0, 200), bw))
+            painter.drawRoundedRect(hf, hr, hr)
+
             painter.end()
-            # Do NOT call super().paintEvent — we own this paint
+            super().paintEvent(event)
 
 
 class ClickableFrame(QFrame):
@@ -586,20 +548,14 @@ class ColorPreviewBox(QWidget):
         finally:
             painter.end()
 
-    def mousePressEvent(self, event):
-        if event.button() != Qt.MouseButton.LeftButton:
-            return
-            
-        pos = event.position()
-        px, py = pos.x(), pos.y()
-        
-        # Calculate dynamic positions
+    def _get_clicked_slot(self, px, py):
+        """Return which slot ('fg' or 'bg') was hit, respecting z-order. Returns None if no hit."""
         scale = self.width() / 53.0
         fg_r = (40.0 * scale) / 2.0
         bg_r = (26.0 * scale) / 2.0
         box_size = float(self.width())
         border = 2.0 * scale
-        
+
         if self.position_mode == "top-left":
             fg_cx = fg_r + border
             fg_cy = box_size - fg_r - border
@@ -610,25 +566,53 @@ class ColorPreviewBox(QWidget):
             fg_cy = fg_r + border
             bg_cx = box_size - bg_r - border
             bg_cy = box_size - bg_r - border
-            
+
         d_fg = (px - fg_cx)**2 + (py - fg_cy)**2
         d_bg = (px - bg_cx)**2 + (py - bg_cy)**2
-        
+
         r2_fg = fg_r ** 2
         r2_bg = bg_r ** 2
-        
+
         if self.active_slot == "fg":
-            # FG (large) is on top
             if d_fg <= r2_fg:
-                self.parent.select_fg_slot()
+                return "fg"
             elif d_bg <= r2_bg:
-                self.parent.select_bg_slot()
+                return "bg"
         else:
-            # BG (small) is on top
             if d_bg <= r2_bg:
-                self.parent.select_bg_slot()
+                return "bg"
             elif d_fg <= r2_fg:
+                return "fg"
+        return None
+
+    def _show_color_context_menu(self, color):
+        """Show a right-click context menu to copy RGB or HEX color values."""
+        menu = QMenu()
+        r, g, b = color.red(), color.green(), color.blue()
+
+        menu.addAction(f"Copy RGB: rgb({r}, {g}, {b})",
+                       lambda r=r, g=g, b=b: QApplication.clipboard().setText(f"rgb({r}, {g}, {b})"))
+        menu.addAction(f"Copy HEX: #{r:02X}{g:02X}{b:02X}",
+                       lambda r=r, g=g, b=b: QApplication.clipboard().setText(f"#{r:02X}{g:02X}{b:02X}"))
+
+        menu.exec(QCursor.pos())
+
+    def mousePressEvent(self, event):
+        pos = event.position()
+        px, py = pos.x(), pos.y()
+        clicked_slot = self._get_clicked_slot(px, py)
+
+        if clicked_slot is None:
+            return
+
+        if event.button() == Qt.MouseButton.LeftButton:
+            if clicked_slot == "fg":
                 self.parent.select_fg_slot()
+            else:
+                self.parent.select_bg_slot()
+        elif event.button() == Qt.MouseButton.RightButton:
+            color = self.fg_color if clicked_slot == "fg" else self.bg_color
+            self._show_color_context_menu(color)
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:

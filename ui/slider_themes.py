@@ -32,9 +32,9 @@ SLIDER_THEMES: Dict[str, SliderTheme] = {
         # small triangle (apex up) just under the groove in paintEvent.
         "handle_shape": "rect",
         # Handle (thumb) — only used when handle_shape == "rect"
-        "handle_w_factor": 1.0,            # 5px * scale * factor
-        "handle_h_factor": 1.0,            # 24px * scale * factor
-        "handle_margin_y_factor": 1.0,      # -4px * scale * factor
+        "handle_w_factor": 1.6,            # 5px → 8px at 1×
+        "handle_h_factor": 0.75,           # 24px → 18px at 1×
+        "handle_margin_y_factor": 0.5,      # -4px → -2px at 1×
         "handle_radius_factor": 1.0,        # 1px * scale * factor
         "handle_bg": "transparent",
         "handle_border": "#b0b0b0",
