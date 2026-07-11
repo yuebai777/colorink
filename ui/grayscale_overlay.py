@@ -13,7 +13,10 @@ Requires: dxcam, opencv-python-headless, numpy, PyQt6
 """
 import ctypes
 import array
+import os
+import sys
 import time
+import traceback
 import numpy as np
 from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
@@ -23,6 +26,29 @@ from PyQt6.QtOpenGL import (QOpenGLShader, QOpenGLShaderProgram,
                             QOpenGLBuffer, QOpenGLTexture,
                             QOpenGLFunctions_2_0,
                             QOpenGLVertexArrayObject)
+
+
+# ---------------------------------------------------------------------------
+# Debug log — writes to %TEMP%\colorink_grayscale.log so errors are
+# visible even in --windowed (no-console) builds.
+# ---------------------------------------------------------------------------
+_LOG_PATH = os.path.join(
+    os.environ.get("TEMP", os.environ.get("TMP", os.path.expanduser("~"))),
+    "colorink_grayscale.log",
+)
+
+
+def _log(msg: str) -> None:
+    try:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"[{stamp}] {msg}\n")
+    except Exception:
+        pass
+
+
+def _log_exc(msg: str) -> None:
+    _log(f"{msg}\n{traceback.format_exc()}")
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +258,9 @@ class _ShaderOverlay(QOpenGLWidget):
         if self._camera is not None:
             return
         try:
+            _log(f"dxcam import starting (screen {self._screen_index})...")
             import dxcam
+            _log(f"dxcam imported OK, creating camera...")
             self._camera = dxcam.create(
                 output_idx=self._screen_index,
                 output_color='BGR',
@@ -242,32 +270,39 @@ class _ShaderOverlay(QOpenGLWidget):
             # uncapped (capture as fast as GPU allows).  The main thread
             # throttles naturally via vsync (frameSwapped).
             self._camera.start(target_fps=0, video_mode=True)
+            _log(f"dxcam started OK: screen {self._screen_index} ({self._screen.name()})")
             print(f"[GrayscaleOverlay] dxcam started: screen {self._screen_index}"
                   f" ({self._screen.name()})")
         except Exception as e:
+            _log_exc(f"dxcam init FAILED (screen {self._screen_index}): {e}")
             print(f"[GrayscaleOverlay] dxcam init failed: {e}")
             self._camera = None
 
     # -- OpenGL lifecycle -----------------------------------------------
 
     def initializeGL(self):
+        _log(f"initializeGL starting (screen {self._screen_index})...")
         self._gl = QOpenGLFunctions_2_0()
         if not self._gl.initializeOpenGLFunctions():
+            _log("initializeGL FATAL: Cannot init OpenGL 2.0")
             print("[GrayscaleOverlay] FATAL: Cannot init OpenGL 2.0")
             return
 
         self._program = QOpenGLShaderProgram(self.context())
         if not self._program.addShaderFromSourceCode(
                 QOpenGLShader.ShaderTypeBit.Vertex, _VERTEX_SHADER):
+            _log(f"Vertex shader error:\n{self._program.log()}")
             print(f"[GrayscaleOverlay] Vertex shader error:\n{self._program.log()}")
             return
         if not self._program.addShaderFromSourceCode(
                 QOpenGLShader.ShaderTypeBit.Fragment,
                 _LUMA_FRAGMENT_SHADER if self._mode == "luma"
                 else _OKLCH_ALU_FRAGMENT):
+            _log(f"Fragment shader error:\n{self._program.log()}")
             print(f"[GrayscaleOverlay] Fragment shader error:\n{self._program.log()}")
             return
         if not self._program.link():
+            _log(f"Shader link error:\n{self._program.log()}")
             print(f"[GrayscaleOverlay] Shader link error:\n{self._program.log()}")
             return
         self._program.bind()
@@ -307,6 +342,7 @@ class _ShaderOverlay(QOpenGLWidget):
         self.frameSwapped.connect(self._on_frame_swapped)
         self._on_frame_swapped()  # kickstart first frame
 
+        _log(f"OpenGL + dxcam initialized OK (screen {self._screen_index})")
         print("[GrayscaleOverlay] OpenGL + dxcam initialized")
 
     def _on_frame_swapped(self):
@@ -483,6 +519,11 @@ class GrayscaleOverlay:
     def is_active(self) -> bool:
         return self._active
 
+    @property
+    def is_healthy(self) -> bool:
+        """Overlay is healthy if not in a confirmed-failed state."""
+        return not getattr(self, '_health_failed', False)
+
     # -- Internal -------------------------------------------------------
 
     def _get_target_screens(self) -> list[tuple[int, QScreen]]:
@@ -507,16 +548,34 @@ class GrayscaleOverlay:
 
     def _create_overlays(self):
         self._destroy_overlays()
-        for idx, screen in self._get_target_screens():
+        self._health_failed = False
+        screens = self._get_target_screens()
+        _log(f"_create_overlays: target='{self._target}', {len(screens)} screen(s)")
+        for idx, screen in screens:
             ov = _ShaderOverlay(screen, idx, self._mode)
             ov.show()
             ov.raise_()
             self._overlays.append(ov)
+        # Delayed health check: OpenGL init is async.  If no overlay's
+        # OpenGL context initializes within 2.5 s, mark as failed.
+        QTimer.singleShot(2500, self._check_health)
 
     def _destroy_overlays(self):
+        self._health_failed = False
         for ov in self._overlays:
             ov.cleanup()
             ov.hide()
             ov.deleteLater()
         self._overlays.clear()
         QApplication.processEvents()
+
+    def _check_health(self):
+        """Called 2.5 s after overlay creation.  If no OpenGL context
+        initialized, mark as failed and auto-disable."""
+        if not self._active or not self._overlays:
+            return
+        if any(getattr(ov, '_initialized', False) for ov in self._overlays):
+            return  # At least one initialized — healthy
+        print("[GrayscaleOverlay] Health check FAILED — no OpenGL context initialized")
+        self._health_failed = True
+        self.set_active(False)
