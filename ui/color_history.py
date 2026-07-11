@@ -40,8 +40,8 @@ in-memory list is `cols * rows`; older entries are dropped FIFO.
 """
 
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRectF
-from PyQt6.QtGui import QColor, QPainter, QPen, QBrush
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtGui import QColor, QPainter, QPen, QBrush, QAction, QCursor
+from PyQt6.QtWidgets import QWidget, QMenu, QApplication
 
 # Maximum grid extent. The settings sidebar caps the configuration at these
 # values (cols ≤ 12, rows ≤ 4), so we pre-allocate a cell pool of this size
@@ -116,7 +116,22 @@ class _SwatchCell(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and not self.is_empty():
             self.clicked.emit(QColor(self._color))
+        elif event.button() == Qt.MouseButton.RightButton and not self.is_empty():
+            self._show_color_context_menu()
         event.accept()
+
+    def _show_color_context_menu(self):
+        """Show a right-click context menu to copy RGB or HEX color values."""
+        menu = QMenu()
+        color = self._color
+        r, g, b = color.red(), color.green(), color.blue()
+
+        menu.addAction(f"Copy RGB: rgb({r}, {g}, {b})",
+                       lambda r=r, g=g, b=b: QApplication.clipboard().setText(f"rgb({r}, {g}, {b})"))
+        menu.addAction(f"Copy HEX: #{r:02X}{g:02X}{b:02X}",
+                       lambda r=r, g=g, b=b: QApplication.clipboard().setText(f"#{r:02X}{g:02X}{b:02X}"))
+
+        menu.exec(QCursor.pos())
 
     def sizeHint(self):
         return QSize(self.width(), self.height())

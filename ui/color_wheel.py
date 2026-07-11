@@ -113,7 +113,20 @@ class ColorWheel(QWidget):
         # Cache variables for fast rendering
         self._cached_img = None
         self._cached_img_key = None
-        
+
+    def resizeEvent(self, event):
+        """Invalidate cached ring image on resize and force a full repaint.
+
+        Without this, when the window is occluded and then resized, Qt's
+        backing store (WA_TranslucentBackground) may leave stale pixels in
+        previously-occluded regions because the layout-triggered resize does
+        not automatically schedule a paint event for those areas.
+        """
+        if hasattr(self, "_cached_ring_key"):
+            delattr(self, "_cached_ring_key")
+        super().resizeEvent(event)
+        self.update()
+
     def reload_config(self):
         self.cfg = config.load_hotkey_config()
         # Invalidate the ring cache so it gets redrawn with the new settings
