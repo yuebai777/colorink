@@ -40,12 +40,26 @@ class SettingsSidebar(QScrollArea):
         # 1. 快捷键 Section
         self.layout.addWidget(self.create_header("快捷键"))
         
+        row_pick = QHBoxLayout()
+        row_pick.addWidget(QLabel("全局取色"))
+        self.btn_pick = HotkeyButton("pickKey", self.cfg.get("pickKey", "F11"))
+        self.btn_pick.hotkeyChanged.connect(self.save_hotkeys)
+        row_pick.addWidget(self.btn_pick)
+        self.layout.addLayout(row_pick)
+        
         row_hide = QHBoxLayout()
         row_hide.addWidget(QLabel("隐藏界面"))
         self.btn_hide = HotkeyButton("hideWindowKey", self.cfg.get("hideWindowKey", "Ctrl+H"))
         self.btn_hide.hotkeyChanged.connect(self.save_hotkeys)
         row_hide.addWidget(self.btn_hide)
         self.layout.addLayout(row_hide)
+        
+        row_follow = QHBoxLayout()
+        row_follow.addWidget(QLabel("随鼠标移动"))
+        self.btn_follow = HotkeyButton("followMouseKey", self.cfg.get("followMouseKey", "Ctrl+R"))
+        self.btn_follow.hotkeyChanged.connect(self.save_hotkeys)
+        row_follow.addWidget(self.btn_follow)
+        self.layout.addLayout(row_follow)
         
         row_grayscale = QHBoxLayout()
         row_grayscale.addWidget(QLabel("黑白滤镜"))
@@ -76,6 +90,24 @@ class SettingsSidebar(QScrollArea):
         self.combo_grayscale_backend.currentTextChanged.connect(self.save_settings)
         row_grayscale_backend.addWidget(self.combo_grayscale_backend)
         self.layout.addLayout(row_grayscale_backend)
+        
+        # Picker zoom control
+        row_picker_zoom = QHBoxLayout()
+        row_picker_zoom.addWidget(QLabel("取色放大倍率"))
+        self.btn_zoom_dec = QPushButton("-")
+        self.btn_zoom_dec.setFixedSize(20, 20)
+        self.btn_zoom_dec.clicked.connect(self.zoom_decrease)
+        self.lbl_picker_zoom = QLabel("6×")
+        self.lbl_picker_zoom.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_picker_zoom.setFixedSize(30, 20)
+        self.btn_zoom_inc = QPushButton("+")
+        self.btn_zoom_inc.setFixedSize(20, 20)
+        self.btn_zoom_inc.clicked.connect(self.zoom_increase)
+        row_picker_zoom.addStretch()
+        row_picker_zoom.addWidget(self.btn_zoom_dec)
+        row_picker_zoom.addWidget(self.lbl_picker_zoom)
+        row_picker_zoom.addWidget(self.btn_zoom_inc)
+        self.layout.addLayout(row_picker_zoom)
         
         row_follow = QHBoxLayout()
         row_follow.addWidget(QLabel("随鼠标移动"))
@@ -420,8 +452,14 @@ class SettingsSidebar(QScrollArea):
         self.cfg = config.load_hotkey_config()
         
         # 1. Hotkeys
+        self.btn_pick.setText(self.cfg.get("pickKey", "F11") if self.cfg.get("pickKey") else "未绑定")
+        self.btn_pick.val = self.cfg.get("pickKey", "F11")
+        
         self.btn_hide.setText(self.cfg.get("hideWindowKey", "Ctrl+H") if self.cfg.get("hideWindowKey") else "未绑定")
         self.btn_hide.val = self.cfg.get("hideWindowKey", "Ctrl+H")
+        
+        self.btn_follow.setText(self.cfg.get("followMouseKey", "Ctrl+R") if self.cfg.get("followMouseKey") else "未绑定")
+        self.btn_follow.val = self.cfg.get("followMouseKey", "Ctrl+R")
         
         self.btn_grayscale.setText(self.cfg.get("grayscaleFilterKey", "Ctrl+G") if self.cfg.get("grayscaleFilterKey") else "未绑定")
         self.btn_grayscale.val = self.cfg.get("grayscaleFilterKey", "Ctrl+G")
@@ -497,6 +535,9 @@ class SettingsSidebar(QScrollArea):
         
         font_val = self.cfg.get("fontSize", 100)
         self.lbl_font_size.setText(f"{font_val}%")
+        
+        zoom_val = self.cfg.get("pickerZoom", 6)
+        self.lbl_picker_zoom.setText(f"{zoom_val}×")
         
         self.zoom_slider.blockSignals(True)
         self.zoom_slider.setValue(self.cfg.get("uiScale", 100))
@@ -738,6 +779,22 @@ class SettingsSidebar(QScrollArea):
         config.save_hotkey_config(self.cfg)
         self.settingChanged.emit()
 
+    def zoom_decrease(self):
+        val = int(self.lbl_picker_zoom.text().replace("×", ""))
+        val = max(2, val - 1)
+        self.lbl_picker_zoom.setText(f"{val}×")
+        self.cfg["pickerZoom"] = val
+        config.save_hotkey_config(self.cfg)
+        self.settingChanged.emit()
+
+    def zoom_increase(self):
+        val = int(self.lbl_picker_zoom.text().replace("×", ""))
+        val = min(12, val + 1)
+        self.lbl_picker_zoom.setText(f"{val}×")
+        self.cfg["pickerZoom"] = val
+        config.save_hotkey_config(self.cfg)
+        self.settingChanged.emit()
+
     def on_zoom_slider_changed(self):
         """Update label in real-time, snapped to nearest 5% step.
         Does NOT apply resize — that happens only on slider release."""
@@ -762,7 +819,9 @@ class SettingsSidebar(QScrollArea):
         self.save_settings()
 
     def save_hotkeys(self, new_val=None):
+        self.cfg["pickKey"] = self.btn_pick.val
         self.cfg["hideWindowKey"] = self.btn_hide.val
+        self.cfg["followMouseKey"] = self.btn_follow.val
         self.cfg["grayscaleFilterKey"] = self.btn_grayscale.val
         config.save_hotkey_config(self.cfg)
         self.settingChanged.emit()

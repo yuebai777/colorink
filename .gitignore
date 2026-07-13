@@ -5,8 +5,14 @@ __pycache__/
 
 # Build / distribution
 build/
+build_debug*/
 dist/
 *.spec
+
+# Native picker hook build artifacts (keep .c source + .dll runtime)
+core/picker_hook.exp
+core/picker_hook.lib
+core/picker_hook.obj
 
 # Virtual environments
 venv/

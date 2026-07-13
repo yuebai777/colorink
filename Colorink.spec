@@ -36,6 +36,7 @@ a = Analysis(
         # Include C++ overlay EXEs for DComp / ScreenCapture fallback backends
         ('dcomp_overlay/build/dcomp_overlay.exe', 'dcomp_overlay/build'),
         ('sc_overlay/build/sc_overlay.exe', 'sc_overlay/build'),
+        ('core/picker_hook.dll', 'core'),
     ],
     hiddenimports=[
         # dxcam submodules — may not be auto-detected

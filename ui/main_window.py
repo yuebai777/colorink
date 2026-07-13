@@ -19,6 +19,7 @@ from ui.slider_themes import get_slider_theme
 from ui.settings_sidebar import SettingsSidebar
 from ui.grayscale_overlay import GrayscaleOverlay
 from ui.color_history import ColorHistoryWidget
+from ui.color_picker_overlay import ColorPickerOverlay
 
 def bring_process_to_foreground(pid: int) -> bool:
     import ctypes
@@ -657,6 +658,10 @@ class MainWindow(QMainWindow):
         # Apply saved screen target (no-op for DWM backend)
         screen_target = self.cfg.get("grayscaleFilterScreen", "all")
         self.grayscale_overlay.set_target(screen_target)
+
+        # Global color picker overlay (magnifier + click-to-pick)
+        self.picker_overlay = ColorPickerOverlay(None)
+        self.picker_overlay.colorPicked.connect(self._on_picker_color_picked)
 
         self.init_ui()
         self.init_hotkeys()
@@ -1313,9 +1318,11 @@ class MainWindow(QMainWindow):
         # 13) L_oklab Slider (L from 0 to 1 mapped to slider 0-100)
         if self.slider_containers.get("OKLab", QWidget()).isVisible():
             okl0_r, okl0_g, okl0_b = oklab_to_rgb(0.0, a_oklab, b_oklab)
+            okl_mid_r, okl_mid_g, okl_mid_b = oklab_to_rgb(0.5, a_oklab, b_oklab)
             okl1_r, okl1_g, okl1_b = oklab_to_rgb(1.0, a_oklab, b_oklab)
             self.slider_widgets["L_oklab"][0].set_gradient([
                 (0.0, QColor(int(max(0, min(255, okl0_r))), int(max(0, min(255, okl0_g))), int(max(0, min(255, okl0_b))))),
+                (0.5, QColor(int(max(0, min(255, okl_mid_r))), int(max(0, min(255, okl_mid_g))), int(max(0, min(255, okl_mid_b))))),
                 (1.0, QColor(int(max(0, min(255, okl1_r))), int(max(0, min(255, okl1_g))), int(max(0, min(255, okl1_b)))))
             ])
             
@@ -1341,10 +1348,16 @@ class MainWindow(QMainWindow):
                 self._oklch_target_h = h_oklch
             
             # 16) L_oklch Slider (L from 0 to 1 mapped to slider 0-100)
-            okcl0_r, okcl0_g, okcl0_b = oklch_to_rgb(0.0, self._oklch_target_C, self._oklch_target_h)
-            okcl1_r, okcl1_g, okcl1_b = oklch_to_rgb(1.0, self._oklch_target_C, self._oklch_target_h)
+            # Use C_oklch, h_oklch from rgb_to_oklch(r,g,b) (line 1225) — same
+            # approach as OKLab's L gradient which uses recomputed a,b. This
+            # makes the gradient react to gamut clamping at extreme L, matching
+            # OKLab's visual behavior.
+            okcl0_r, okcl0_g, okcl0_b = oklch_to_rgb(0.0, C_oklch, h_oklch)
+            okcl_mid_r, okcl_mid_g, okcl_mid_b = oklch_to_rgb(0.5, C_oklch, h_oklch)
+            okcl1_r, okcl1_g, okcl1_b = oklch_to_rgb(1.0, C_oklch, h_oklch)
             self.slider_widgets["L_oklch"][0].set_gradient([
                 (0.0, QColor(int(max(0, min(255, okcl0_r))), int(max(0, min(255, okcl0_g))), int(max(0, min(255, okcl0_b))))),
+                (0.5, QColor(int(max(0, min(255, okcl_mid_r))), int(max(0, min(255, okcl_mid_g))), int(max(0, min(255, okcl_mid_b))))),
                 (1.0, QColor(int(max(0, min(255, okcl1_r))), int(max(0, min(255, okcl1_g))), int(max(0, min(255, okcl1_b)))))
             ])
             
@@ -2330,7 +2343,11 @@ class MainWindow(QMainWindow):
                 self.settings_sidebar.cb_follow_mouse.setChecked(self.follow_mouse_active)
                 self.settings_sidebar.cb_follow_mouse.blockSignals(False)
         elif hotkey_type == "pickKey":
-            print("[Hotkeys] Global Pick Color triggered")
+            if self.picker_overlay.is_active:
+                self.picker_overlay.stop()
+            else:
+                self.picker_overlay.start()
+                print("[Hotkeys] Global Color Picker activated")
         elif hotkey_type == "grayscaleFilterKey":
             print("[Hotkeys] Grayscale Filter toggled")
             try:
@@ -2361,6 +2378,17 @@ class MainWindow(QMainWindow):
                 print(f"[Hotkeys] Grayscale toggle error: {e}")
                 from PyQt6.QtWidgets import QMessageBox
                 QMessageBox.warning(self, "黑白滤镜", f"切换失败: {e}")
+
+    def _on_picker_color_picked(self, r, g, b):
+        """Handle color picked from the global magnifier overlay."""
+        self.current_rgb = (r, g, b)
+        self._record_color_history()
+        self.update_ui_colors(r, g, b)
+        if hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
+            self.sync_thread.write_color(r, g, b)
+            print(f"[Picker] Picked color RGB({r}, {g}, {b})")
+            if self.cfg.get("autoFocusDrawingSoftware", False):
+                self.focus_drawing_software()
 
     def init_memory_sync(self):
         # Start background memory syncing thread
@@ -2635,18 +2663,37 @@ class MainWindow(QMainWindow):
         
         # Clean up hotkeys and thread
         global_hotkeys.unbind_all()
+        if hasattr(self, 'picker_overlay'):
+            self.picker_overlay.stop()
+            self.picker_overlay.close()
         if hasattr(self, 'grayscale_overlay'):
             self.grayscale_overlay.set_active(False)
             if hasattr(self.grayscale_overlay, 'close'):
                 self.grayscale_overlay.close()
         if hasattr(self, 'sync_thread'):
-            self.sync_thread.stop()
+            # Disable sync & reset PS COM ref so the polling loop
+            # won't try to make new COM calls to a dead Photoshop.
+            self.sync_thread.sync_enabled = False
+            if hasattr(self.sync_thread, 'ps_sync'):
+                try:
+                    self.sync_thread.ps_sync._reset()
+                except Exception:
+                    pass
+            # Signal the thread to stop, but DO NOT join it.
+            # If it's blocked in a hung COM RPC call (Photoshop died
+            # mid-call), joining would freeze the main thread forever.
+            # The OS reclaims all resources on process exit anyway.
+            self.sync_thread.running = False
         
         # Hide tray icon before exit
         if hasattr(self, 'tray_icon'):
             self.tray_icon.hide()
         
-        sys.exit(0)
+        # Use os._exit to bypass Python's thread-join on exit.
+        # sys.exit(0) would try to join non-daemon threads, which
+        # can hang if the sync thread is stuck in a COM RPC call.
+        import os as _os
+        _os._exit(0)
 
     def init_tray(self):
         """Setup system tray icon with context menu for minimized window access."""

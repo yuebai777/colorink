@@ -16,6 +16,7 @@ import sys
 import os
 from typing import Dict, Optional
 
+import ctypes
 import pythoncom
 import psutil
 
@@ -74,6 +75,7 @@ class PhotoshopSync:
         self._disp: object = None      # raw IDispatch pointer
         self._dispid_js: int = 0       # cached DISPID for DoJavaScript
         self._pid: Optional[int] = None
+        self._proc_handle: int = 0     # Win32 process handle for fast alive check
         self.current_version: str = "auto"
         self.process_name: str = PROCESS_NAME
 
@@ -84,6 +86,10 @@ class PhotoshopSync:
 
         # Re-use existing connection if healthy
         if self._app is not None and self._disp is not None:
+            # Bail early if Photoshop died — avoids hung COM RPC
+            if not self._is_process_alive():
+                self._reset()
+                return False
             try:
                 name = self._app.Name
                 if name:
@@ -95,6 +101,13 @@ class PhotoshopSync:
             _print_error("connect: win32com / pywin32 not available")
             return False
 
+        # NEVER auto-launch Photoshop via COM Dispatch.
+        # win32com.dynamic.Dispatch("Photoshop.Application") will start
+        # Photoshop if it's not running — which is NOT what we want.
+        # Check first whether the process exists at all.
+        if not self._find_process():
+            return False
+
         # Try each ProgID in order
         for progid in _PROGIDS:
             try:
@@ -102,6 +115,10 @@ class PhotoshopSync:
                 self._disp = self._app._oleobj_
                 self._dispid_js = self._disp.GetIDsOfNames("DoJavaScript")
                 self._pid = self._find_process()
+                # Close old handle and invalidate so _is_process_alive re-opens
+                if self._proc_handle:
+                    self.K32.CloseHandle(self._proc_handle)
+                    self._proc_handle = 0
                 log(f"Connected via ProgID='{progid}'  PID={self._pid}")
                 return True
             except Exception:
@@ -133,6 +150,26 @@ class PhotoshopSync:
                 return result
         return result
 
+    K32 = ctypes.windll.kernel32
+
+    def _is_process_alive(self) -> bool:
+        """Check whether the cached Photoshop process is still running.
+
+        Uses WaitForSingleObject (0ms timeout) on the process handle —
+        returns instantly, unlike psutil which creates Python objects.
+        This shrinks the TOCTOU window between the check and the COM call
+        to microseconds instead of milliseconds.
+        """
+        if self._pid is None:
+            return False
+        if not self._proc_handle:
+            # SYNCHRONIZE access — just enough to wait on the handle
+            self._proc_handle = self.K32.OpenProcess(0x00100000, False, self._pid)
+            if not self._proc_handle:
+                return False
+        # WAIT_OBJECT_0 (0) = process exited; anything else = still alive
+        return self.K32.WaitForSingleObject(self._proc_handle, 0) != 0
+
     def get_color(self) -> Optional[Dict[str, int]]:
         """Read the current Photoshop foreground colour via COM properties.
 
@@ -140,6 +177,11 @@ class PhotoshopSync:
         never trigger Photoshop's busy cursor — safe for 10 Hz polling.
         """
         if self._app is None and not self.connect():
+            return None
+
+        # Bail early if Photoshop has died — avoids hung COM RPC call
+        if not self._is_process_alive():
+            self._reset()
             return None
 
         try:
@@ -163,6 +205,11 @@ class PhotoshopSync:
         works reliably — no ExtendScript needed, no busy cursor.
         """
         if self._app is None and not self.connect():
+            return False
+
+        # Bail early if Photoshop died since connect
+        if not self._is_process_alive():
+            self._reset()
             return False
 
         r = clamp8(r)
@@ -224,6 +271,9 @@ class PhotoshopSync:
     # -- internal helpers --------------------------------------------------------
 
     def _reset(self) -> None:
+        if self._proc_handle:
+            self.K32.CloseHandle(self._proc_handle)
+            self._proc_handle = 0
         self._app = None
         self._disp = None
         self._dispid_js = 0
