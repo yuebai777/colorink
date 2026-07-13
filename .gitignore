@@ -36,6 +36,8 @@ scratch/
 
 # Test artifacts
 _test_log.txt
+err.txt
+out.txt
 
 # PyInstaller
 *.manifest
