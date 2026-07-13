@@ -1192,6 +1192,17 @@ class MainWindow(QMainWindow):
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(50, self._prerender_lab)
         r, g, b = self.current_rgb
+        # Sync _oklch_target_C from the actual (possibly clamped) color so
+        # the L-slider mask reflects the real gamut. h is NOT synced here —
+        # see comment below.
+        if hasattr(self, '_oklch_target_C'):
+            _, C_okc, h_okc = rgb_to_oklch(r, g, b)
+            # Only sync C from the actual color (needed for mask update).
+            # Do NOT sync h from round-trip — it drifts ~1° per release due
+            # to RGB clamp precision loss. h only changes when the user
+            # drags the h slider or an external source changes the color.
+            self._oklch_target_C = C_okc
+            self._update_all_L_gamut_ranges()
         # Record into history before pushing to drawing software so the
         # persisted state reflects *what the user just settled on*.
         self._record_color_history()
@@ -1651,6 +1662,11 @@ class MainWindow(QMainWindow):
         # OKLCh Values
         if source not in ("sliders_oklch_L", "sliders_oklch_C", "sliders_oklch_h"):
             L_okc, C_okc, h_okc = rgb_to_oklch(r, g, b)
+            # Preserve hue when chroma drops to ~0 (achromatic) — prevents
+            # h jumping to atan2(0,0)=0, matching HSV's hue-preservation logic
+            if C_okc < 0.002:
+                h_okc = self._oklch_target_h
+                C_okc = 0.0
             self._oklch_target_C = C_okc
             self._oklch_target_h = h_okc
             self.slider_widgets["L_oklch"][0].setValue(round(L_okc * 100))
@@ -1662,11 +1678,12 @@ class MainWindow(QMainWindow):
             L_okc, C_okc, h_okc = rgb_to_oklch(r, g, b)
             if source != "sliders_oklch_L":
                 self.slider_widgets["L_oklch"][0].setValue(round(L_okc * 100))
-            if source != "sliders_oklch_h":
-                self.slider_widgets["h_oklch"][0].setValue(round(h_okc))
+            # h slider: do NOT update from RGB round-trip when adjusting L or C.
+            # h only changes when the user drags the h slider itself — matching
+            # HSV's behavior where H stays fixed while adjusting S/V.
             if source != "sliders_oklch_C":
                 if self.slider_containers.get("OKLCh", QWidget()).isVisible():
-                    max_c = self._find_oklch_max_chroma(L_okc, h_okc)
+                    max_c = self._find_oklch_max_chroma(L_okc, self._oklch_target_h)
                     self.slider_widgets["C_oklch"][0].setValue(round(C_okc / max_c * 100) if max_c > 0.001 else 0)
         
         for chan in all_chans:
