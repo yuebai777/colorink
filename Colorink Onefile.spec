@@ -30,6 +30,7 @@ a = Analysis(
         ('icons', 'icons'),
         ('dcomp_overlay/build/dcomp_overlay.exe', 'dcomp_overlay/build'),
         ('sc_overlay/build/sc_overlay.exe', 'sc_overlay/build'),
+        ('core/picker_hook.dll', 'core'),
     ],
     hiddenimports=[
         'dxcam',

@@ -78,9 +78,18 @@ class MemorySyncThread(QThread):
             return status_.get('pid')
         return None
         
-    def stop(self):
+    def stop(self, timeout_ms: int = 3000):
+        """Signal the thread to stop, then wait with a timeout.
+
+        If the thread is blocked on a hung COM call (e.g. Photoshop died),
+        waiting forever would freeze the main thread.  After *timeout_ms*
+        we terminate the thread to unblock the caller.
+        """
         self.running = False
-        self.wait()
+        if not self.wait(timeout_ms):
+            # Thread is stuck — likely in a hung COM RPC call
+            self.terminate()
+            self.wait(500)
         
     def run(self):
         last_status = None

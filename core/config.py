@@ -31,11 +31,11 @@ def save_window_config(cfg):
 def load_hotkey_config():
     path = os.path.join(get_user_data_dir(), HOTKEY_CFG_NAME)
     default_cfg = {
-        "pickKey": "F11",
+        "pickKey": "Ctrl+Shift+B",
         "injectionKey": "F12",
-        "followMouseKey": "Ctrl+R",
-        "hideWindowKey": "Ctrl+H",
-        "grayscaleFilterKey": "Ctrl+G",
+        "followMouseKey": "Ctrl+Shift+D",
+        "hideWindowKey": "Ctrl+Shift+H",
+        "grayscaleFilterKey": "Ctrl+Shift+G",
         "grayscaleFilterScreen": "all",
         "grayscaleFilterMode": "oklch",
         "grayscaleFilterBackend": "overlay",
@@ -84,7 +84,8 @@ def load_hotkey_config():
         "syncSoftware": "csp",
         "psVersion": "auto",
         "uiScale": 100,
-        "flipColorWheelHorizontally": True
+        "flipColorWheelHorizontally": True,
+        "pickerZoom": 6
     }
     if os.path.exists(path):
         try:
