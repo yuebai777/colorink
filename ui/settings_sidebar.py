@@ -1,9 +1,13 @@
+import webbrowser
+
 from PyQt6.QtWidgets import (QScrollArea, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QLabel, QCheckBox, QComboBox, QPushButton, QSlider, QApplication)
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint
+                             QLabel, QCheckBox, QComboBox, QPushButton, QSlider,
+                             QMessageBox, QApplication)
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint, QThread
 from PyQt6.QtGui import QColor, QCursor
 
 from core import config
+from core import updater
 from core import autostart
 from ui.settings_dialog import HotkeyButton
 from ui.slider_themes import list_slider_theme_names
@@ -410,6 +414,25 @@ class SettingsSidebar(QScrollArea):
         row_lang.addWidget(self.combo_lang)
         self.layout.addLayout(row_lang)
         
+        # 6. 关于 Section
+        self.layout.addWidget(self.create_header("关于"))
+
+        row_version = QHBoxLayout()
+        row_version.addWidget(QLabel("当前版本"))
+        self.lbl_version_value = QLabel(f"v{updater.APP_VERSION}")
+        self.lbl_version_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        row_version.addStretch()
+        row_version.addWidget(self.lbl_version_value)
+        self.layout.addLayout(row_version)
+
+        self.btn_check_update = QPushButton("检查更新")
+        self.btn_check_update.clicked.connect(self.on_check_update)
+        self.layout.addWidget(self.btn_check_update)
+
+        self.btn_about_author = QPushButton("关于作者")
+        self.btn_about_author.clicked.connect(self.on_about_author)
+        self.layout.addWidget(self.btn_about_author)
+
         self.layout.addStretch()
         self.setWidget(self.container)
         
@@ -1062,3 +1085,68 @@ class SettingsSidebar(QScrollArea):
             self.settingChanged.emit()
         except Exception:
             pass
+
+    # 6. 关于 — 检查更新 / 关于作者
+    def on_check_update(self):
+        """Run the update check on a worker thread, then show a dialog."""
+        if getattr(self, "_update_worker", None) is not None:
+            return  # Already running
+        self.btn_check_update.setEnabled(False)
+        self.btn_check_update.setText("检查中...")
+        worker = _UpdateWorker(self)
+        worker.done.connect(self._on_update_result)
+        # Keep a reference alive until the signal fires; QThread auto-deletes
+        # via finished->deleteLater once we let go in the slot.
+        worker.finished.connect(worker.deleteLater)
+        self._update_worker = worker
+        worker.start()
+
+    def _on_update_result(self, result: dict):
+        self.btn_check_update.setEnabled(True)
+        self.btn_check_update.setText("检查更新")
+        self._update_worker = None
+
+        if "error" in result:
+            QMessageBox.warning(self, "检查更新", result["error"])
+            return
+
+        current = result.get("current_version", "?")
+        latest = result.get("latest_version", "?")
+        url = result.get("release_url", updater.GITHUB_URL)
+        notes = result.get("release_notes", "")
+        has_update = result.get("has_update", False)
+
+        if has_update:
+            msg = (
+                f"发现新版本 {latest}！\n"
+                f"当前版本: v{current}\n\n"
+                f"是否前往 GitHub 下载？"
+            )
+            if notes:
+                snippet = notes if len(notes) <= 600 else notes[:600] + "..."
+                msg += f"\n\n更新内容:\n{snippet}"
+            box = QMessageBox(self)
+            box.setWindowTitle("发现新版本")
+            box.setText(msg)
+            open_btn = box.addButton("前往下载", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is open_btn:
+                webbrowser.open(url)
+        else:
+            QMessageBox.information(
+                self, "检查更新", f"已是最新版本 (v{current})"
+            )
+
+    def on_about_author(self):
+        """Open the author's Bilibili homepage in the default browser."""
+        webbrowser.open(updater.BILIBILI_URL)
+
+
+class _UpdateWorker(QThread):
+    """Background worker that queries GitHub for the latest release."""
+
+    done = pyqtSignal(dict)
+
+    def run(self):  # noqa: D401 - QThread override
+        self.done.emit(updater.check_for_update())
