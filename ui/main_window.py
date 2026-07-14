@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QStackedWidget, QSlider, QLabel, QFrame,
                              QGraphicsDropShadowEffect, QApplication, QStyle, QStyleOptionSlider,
                              QSystemTrayIcon, QMenu)
-from PyQt6.QtCore import Qt, QPoint, QSize, pyqtSlot, QRectF, pyqtSignal, QRect, QPointF, QEvent
+from PyQt6.QtCore import Qt, QPoint, QSize, pyqtSlot, QRectF, pyqtSignal, QRect, QPointF, QEvent, QTimer
 from PyQt6.QtGui import QColor, QPalette, QLinearGradient, QPainter, QBrush, QPen, QPixmap, QCursor, QPolygonF, QIcon, QAction
 
 from core import config
@@ -629,6 +629,21 @@ class MainWindow(QMainWindow):
         self.current_ui_scale = self.cfg.get("uiScale", 100)
         self.current_rgb = (180, 130, 30)
         self.active_slot = "fg"  # "fg" | "bg"
+
+        # Deferred-render coalescer.
+        # update_video_colors() does heavy pure-visual work (18 slider groove
+        # gradients + L-gamut ranges binary search) on every slider/wheel drag
+        # step. Running that synchronously inside the dragged widget's
+        # mouseMoveEvent blocks the GUI thread and delays the slider handle /
+        # color-wheel indicator paints, so they stop following the cursor
+        # ("不跟手"). We defer exactly that visual-only work with a coalesced
+        # single-shot QTimer so handle/indicator paints flush first and the
+        # heavy cosmetics lag by at most one event-loop iteration (~16ms).
+        self._deferred_color_timer = QTimer(self)
+        self._deferred_color_timer.setSingleShot(True)
+        self._deferred_color_timer.setInterval(16)
+        self._deferred_color_timer.timeout.connect(self._apply_deferred_color_updates)
+        self._deferred_color_pending = None  # latest (r, g, b) awaiting render
         
         # Dragging state (mouse click-through toggle override)
         self.follow_mouse_active = self.cfg.get("followMouseEnabled", False)
@@ -1202,7 +1217,16 @@ class MainWindow(QMainWindow):
             # to RGB clamp precision loss. h only changes when the user
             # drags the h slider or an external source changes the color.
             self._oklch_target_C = C_okc
-            self._update_all_L_gamut_ranges()
+        # On drag release, cancel any pending deferred render and run the
+        # heavy visual work synchronously so the settled color's groove
+        # gradients + gamut masks are immediately consistent (rather than
+        # trailing by one frame). During the drag these were deferred so the
+        # slider handle / wheel indicator could paint first and stay glued
+        # to the cursor.
+        self._deferred_color_timer.stop()
+        self._deferred_color_pending = None
+        self.update_slider_gradients(r, g, b)
+        self._update_all_L_gamut_ranges()
         # Record into history before pushing to drawing software so the
         # persisted state reflects *what the user just settled on*.
         self._record_color_history()
@@ -1227,6 +1251,37 @@ class MainWindow(QMainWindow):
             r, g, b = self.current_rgb
             self.lab_square.set_color(r, g, b, block_signals=True)
             self.lab_square.prerender()
+
+    def _schedule_deferred_color_updates(self, r, g, b):
+        """Schedule the heavy visual-only rendering (slider groove gradients
+        + L out-of-gamut masks) to run on the next idle event-loop iteration.
+
+        Why: these computations are not safety-critical and only affect the
+        colored bars behind the other sliders. Calling them synchronously
+        inside every drag step blocks the GUI thread and delays the dragged
+        widget's own paint, so the handle/indicator stops tracking the cursor.
+        By deferring and coalescing (only one pending run is ever armed), the
+        handle/indicator paints flush first and the cosmetics trail by at
+        most ~16ms. Latest (r,g,b) wins if multiple moves arrive before the
+        timer fires.
+        """
+        self._deferred_color_pending = (r, g, b)
+        if not self._deferred_color_timer.isActive():
+            self._deferred_color_timer.start()
+
+    def _apply_deferred_color_updates(self):
+        """Run the deferred visual-only work, then clear the pending slot.
+
+        Safe to call directly (used by on_interaction_finished to flush the
+        final state synchronously); clears the pending rgb regardless.
+        """
+        pending = self._deferred_color_pending
+        self._deferred_color_pending = None
+        if pending is None:
+            return
+        r, g, b = pending
+        self.update_slider_gradients(r, g, b)
+        self._update_all_L_gamut_ranges()
 
     def update_slider_gradients(self, r, g, b):
         h_hsv, s_hsv, v_hsv = rgb_to_hsv(r, g, b)
@@ -1695,10 +1750,12 @@ class MainWindow(QMainWindow):
             if chan in self.slider_widgets:
                 self.slider_widgets[chan][1].setText(str(self.slider_widgets[chan][0].value()))
             
-        self.update_slider_gradients(r, g, b)
-
-        # Update out-of-gamut visual marking on L sliders
-        self._update_all_L_gamut_ranges()
+        # Heavy visual-only cosmetics (slider groove gradients + L out-of-gamut
+        # masks) are deferred + coalesced so they never block the dragged
+        # widget's paint. This is what keeps every slider handle and the color
+        # wheel indicator perfectly following the cursor on every mouse move;
+        # the colored groove bars / grayed gamut regions trail by ≤~16ms.
+        self._schedule_deferred_color_updates(r, g, b)
 
         # 5) Push to drawing software
         if source != "sync" and hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
@@ -2430,6 +2487,14 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(int, int, int)
     def on_external_color_changed(self, r, g, b):
+        # Drawing software (CSP/SAI/UDM/PS) color changed — e.g. the user
+        # Alt-picked a new color. Mirror _on_picker_color_picked: update
+        # current_rgb first (read by _record_color_history), then push the
+        # new color into the history widget before refreshing the UI.
+        # record() collapses consecutive duplicates, so continuous live
+        # slider drags in the drawing software won't flood the history.
+        self.current_rgb = (r, g, b)
+        self._record_color_history()
         self.update_ui_colors(r, g, b, source="sync")
 
     @pyqtSlot(str, bool)

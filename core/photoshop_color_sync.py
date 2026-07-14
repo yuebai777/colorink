@@ -29,12 +29,19 @@ except ImportError:
 
 PROCESS_NAME = "Photoshop.exe"
 
-# Preferred ProgID — versioned so it bypasses the broken
-# version-independent Photoshop.Application key on this machine.
-# Falls back to the generic ProgID if .140 isn't found.
+# Preferred ProgID — the version-independent "Photoshop.Application"
+# key routes to whatever Photoshop build is actually installed and
+# running.  The previously-preferred versioned "Photoshop.Application.140"
+# (CC 2014) is now obsolete on this machine: its COM server is a
+# leftover registry entry that fails with CO_E_SERVER_EXEC_FAILURE
+# (0x80080005) and blocks ~30s on every Dispatch attempt, which made
+# colour sync feel "dead" because each reconnect (after any transient
+# COM RPC error) stalled on the broken ProgID first.
+# We keep .140 as a fallback for any machine where the version-
+# independent key is genuinely broken.
 _PROGIDS = (
-    "Photoshop.Application.140",
     "Photoshop.Application",
+    "Photoshop.Application.140",
 )
 
 DEBUG = False
