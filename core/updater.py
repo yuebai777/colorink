@@ -15,7 +15,7 @@ import urllib.error
 
 # Bump this when shipping a new release. Must match the Windows file version
 # major.minor.patch (trailing build component is ignored for comparison).
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 
 # Author's Bilibili homepage — used by the "关于作者" button.
 BILIBILI_URL = (
