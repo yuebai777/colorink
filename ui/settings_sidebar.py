@@ -90,7 +90,7 @@ class SettingsSidebar(QScrollArea):
         row_grayscale_backend = QHBoxLayout()
         row_grayscale_backend.addWidget(QLabel("渲染后端"))
         self.combo_grayscale_backend = NonScrollComboBox()
-        self.combo_grayscale_backend.addItems(["OpenGL Overlay", "DComp 直通"])
+        self.combo_grayscale_backend.addItems(["OpenGL Overlay", "DComp 直通", "Rust D3D11"])
         self.combo_grayscale_backend.currentTextChanged.connect(self.save_settings)
         row_grayscale_backend.addWidget(self.combo_grayscale_backend)
         self.layout.addLayout(row_grayscale_backend)
@@ -509,12 +509,23 @@ class SettingsSidebar(QScrollArea):
 
         self.combo_grayscale_mode.blockSignals(True)
         mode = self.cfg.get("grayscaleFilterMode", "oklch")
-        self.combo_grayscale_mode.setCurrentIndex(1 if mode == "luma" else 0)
+        backend = self.cfg.get("grayscaleFilterBackend", "overlay")
+        # Rust 后端仅支持 OkLab
+        if backend == "rust":
+            self.combo_grayscale_mode.setEnabled(False)
+            self.combo_grayscale_mode.setCurrentIndex(0)
+        else:
+            self.combo_grayscale_mode.setEnabled(True)
+            self.combo_grayscale_mode.setCurrentIndex(1 if mode == "luma" else 0)
         self.combo_grayscale_mode.blockSignals(False)
 
         self.combo_grayscale_backend.blockSignals(True)
-        backend = self.cfg.get("grayscaleFilterBackend", "overlay")
-        self.combo_grayscale_backend.setCurrentIndex(1 if backend == "dwm" else 0)
+        if backend == "rust":
+            self.combo_grayscale_backend.setCurrentIndex(2)
+        elif backend == "dwm":
+            self.combo_grayscale_backend.setCurrentIndex(1)
+        else:
+            self.combo_grayscale_backend.setCurrentIndex(0)
         self.combo_grayscale_backend.blockSignals(False)
         
         self.cb_follow_mouse.blockSignals(True)
@@ -918,12 +929,21 @@ class SettingsSidebar(QScrollArea):
         # Grayscale filter screen target
         screen_text = self.combo_grayscale_screen.currentText()
         self.cfg["grayscaleFilterScreen"] = screen_text.split(":")[0].strip() if ":" in screen_text else screen_text
-        # Grayscale filter mode
-        mode_text = self.combo_grayscale_mode.currentText()
-        self.cfg["grayscaleFilterMode"] = "luma" if "Luma" in mode_text else "oklch"
+        # Grayscale filter mode (Rust 后端强制 OkLab)
+        backend_text = self.combo_grayscale_backend.currentText()
+        if "D3D11" in backend_text:
+            self.cfg["grayscaleFilterMode"] = "oklch"
+        else:
+            mode_text = self.combo_grayscale_mode.currentText()
+            self.cfg["grayscaleFilterMode"] = "luma" if "Luma" in mode_text else "oklch"
         # Grayscale filter backend
         backend_text = self.combo_grayscale_backend.currentText()
-        self.cfg["grayscaleFilterBackend"] = "dwm" if "DComp" in backend_text else "overlay"
+        if "D3D11" in backend_text:
+            self.cfg["grayscaleFilterBackend"] = "rust"
+        elif "DComp" in backend_text:
+            self.cfg["grayscaleFilterBackend"] = "dwm"
+        else:
+            self.cfg["grayscaleFilterBackend"] = "overlay"
 
         try:
             self.cfg["sliderScrollStep"] = int(self.lbl_scroll_step.text())

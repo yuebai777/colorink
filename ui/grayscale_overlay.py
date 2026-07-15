@@ -9,7 +9,7 @@ The OKLCh pipeline is precomputed into a 256³ 3D LUT (texture3D) —
 the shader does a single texture lookup instead of ~30 ALU ops.
 GPU time <0.1 ms per frame.
 
-Requires: dxcam, opencv-python-headless, numpy, PyQt6
+Requires: dxcam, numpy, PyQt6
 """
 import ctypes
 import array
@@ -265,6 +265,7 @@ class _ShaderOverlay(QOpenGLWidget):
                 output_idx=self._screen_index,
                 output_color='BGR',
                 max_buffer_len=2,
+                processor_backend='numpy',
             )
             # Background thread captures continuously — target_fps=0 means
             # uncapped (capture as fast as GPU allows).  The main thread
