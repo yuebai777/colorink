@@ -185,9 +185,23 @@ class SettingsDialog(QDialog):
         backend_row = QHBoxLayout()
         backend_row.addWidget(QLabel("渲染后端:"))
         self.combo_grayscale_backend = QComboBox()
-        self.combo_grayscale_backend.addItems(["OpenGL Overlay", "DComp 直通"])
+        self.combo_grayscale_backend.addItems(["OpenGL Overlay", "DComp 直通", "Rust D3D11"])
         backend_value = self.cfg.get("grayscaleFilterBackend", "overlay")
-        self.combo_grayscale_backend.setCurrentIndex(1 if backend_value == "dwm" else 0)
+        # Rust 后端仅支持 OkLab，禁用模式选择
+        if backend_value == "rust":
+            self.combo_grayscale_mode.setEnabled(False)
+            self.combo_grayscale_mode.setCurrentIndex(0)
+        # 后端切换时同步模式状态
+        self.combo_grayscale_backend.currentTextChanged.connect(lambda t: (
+            self.combo_grayscale_mode.setEnabled("D3D11" not in t),
+            self.combo_grayscale_mode.setCurrentIndex(0) if "D3D11" in t else None
+        ))
+        if backend_value == "rust":
+            self.combo_grayscale_backend.setCurrentIndex(2)
+        elif backend_value == "dwm":
+            self.combo_grayscale_backend.setCurrentIndex(1)
+        else:
+            self.combo_grayscale_backend.setCurrentIndex(0)
         backend_row.addWidget(self.combo_grayscale_backend)
         layout.addLayout(backend_row)
 
@@ -352,9 +366,15 @@ class SettingsDialog(QDialog):
         screen_text = self.combo_grayscale_screen.currentText()
         self.cfg["grayscaleFilterScreen"] = screen_text.split(":")[0].strip() if ":" in screen_text else screen_text
         mode_text = self.combo_grayscale_mode.currentText()
-        self.cfg["grayscaleFilterMode"] = "luma" if "Luma" in mode_text else "oklch"
+        backend_text2 = self.combo_grayscale_backend.currentText()
+        self.cfg["grayscaleFilterMode"] = "oklch" if "D3D11" in backend_text2 else ("luma" if "Luma" in mode_text else "oklch")
         backend_text = self.combo_grayscale_backend.currentText()
-        self.cfg["grayscaleFilterBackend"] = "dwm" if "DComp" in backend_text else "overlay"
+        if "D3D11" in backend_text:
+            self.cfg["grayscaleFilterBackend"] = "rust"
+        elif "DComp" in backend_text:
+            self.cfg["grayscaleFilterBackend"] = "dwm"
+        else:
+            self.cfg["grayscaleFilterBackend"] = "overlay"
         
         self.cfg["colorPickingEnabled"] = self.cb_picking_enabled.isChecked()
         self.cfg["cspAutoClick"] = self.cb_auto_click.isChecked()

@@ -663,7 +663,12 @@ class MainWindow(QMainWindow):
         # Fullscreen grayscale overlay — choose backend from config
         mode = self.cfg.get("grayscaleFilterMode", "oklch")
         backend = self.cfg.get("grayscaleFilterBackend", "overlay")
-        if backend == "dwm":
+        if backend == "rust":
+            from core.rust_filter import RustFilterController
+            self.grayscale_overlay = RustFilterController(mode=mode)
+            if not self.grayscale_overlay.is_available:
+                self.grayscale_overlay = GrayscaleOverlay(mode=mode)
+        elif backend == "dwm":
             from core.dcomp_grayscale import DCompOverlayController
             self.grayscale_overlay = DCompOverlayController()
             if not self.grayscale_overlay.is_available:
@@ -2646,14 +2651,27 @@ class MainWindow(QMainWindow):
 
         # Update grayscale overlay — check if backend changed
         new_backend = self.cfg.get("grayscaleFilterBackend", "overlay")
-        current_is_dwm = not isinstance(self.grayscale_overlay, GrayscaleOverlay)
-        if (new_backend == "dwm") != current_is_dwm:
+
+        # Detect current backend by controller class name
+        current_backend = "overlay"
+        cls_name = type(self.grayscale_overlay).__name__
+        if cls_name == "RustFilterController":
+            current_backend = "rust"
+        elif cls_name == "DCompOverlayController":
+            current_backend = "dwm"
+
+        if new_backend != current_backend:
             # Backend changed — tear down old, create new
             self.grayscale_overlay.set_active(False)
             if hasattr(self.grayscale_overlay, 'close'):
                 self.grayscale_overlay.close()
             mode = self.cfg.get("grayscaleFilterMode", "oklch")
-            if new_backend == "dwm":
+            if new_backend == "rust":
+                from core.rust_filter import RustFilterController
+                self.grayscale_overlay = RustFilterController(mode=mode)
+                if not self.grayscale_overlay.is_available:
+                    self.grayscale_overlay = GrayscaleOverlay(mode=mode)
+            elif new_backend == "dwm":
                 from core.dcomp_grayscale import DCompOverlayController
                 self.grayscale_overlay = DCompOverlayController()
                 if not self.grayscale_overlay.is_available:
