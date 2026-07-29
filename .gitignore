@@ -30,9 +30,11 @@ Thumbs.db
 # Misc
 .codegraph/
 scratch/
+*.log
 
 # AI agent session files
 .omo/
+.reasonix/
 
 # Test artifacts
 _test_log.txt
