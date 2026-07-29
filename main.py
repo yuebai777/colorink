@@ -68,7 +68,20 @@ def _acquire_instance_lock() -> QSharedMemory | None:
         shared_mem.unlock()
     return shared_mem
 
+def _log_exception(exc_type, exc_value, exc_tb):
+    """Global exception hook — write to stderr.log so crashes leave a trace."""
+    import traceback
+    try:
+        with open("stderr.log", "a", encoding="utf-8") as f:
+            f.write("".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
+            f.write("\n")
+    except Exception:
+        traceback.print_exc()
+
 def main():
+    # Install global exception hook early
+    sys.excepthook = _log_exception
+
     # Set explicit AppUserModelID on Windows for proper taskbar grouping
     if sys.platform == 'win32':
         try:
