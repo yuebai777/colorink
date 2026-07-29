@@ -214,25 +214,32 @@ class SettingsSidebar(QScrollArea):
         self.cb_no_focus.clicked.connect(self.on_no_focus_clicked)
         self.layout.addWidget(self.cb_no_focus)
         
-        # 3. 滑块设置 Section
+        # 3. 滑块设置 Section（按模块动态显示）
         self.layout.addWidget(self.create_header("滑块设置"))
         
+        self._MODULE_SLIDER_MAP = {
+            "hsv":  ["HSV", "RGB", "LAB"],
+            "hls":  ["HSL", "RGB", "LAB"],
+            "lch":  ["OKLCh", "OKLab", "RGB"],
+        }
         self.slider_rows = {}
-        for key, name in [("RGB", "RGB 滑条"), ("HSV", "HSV 滑条"), ("HSL", "HLS 滑条"), ("LAB", "LAB 滑条"), ("OKLab", "OKLab 滑条"), ("OKLCh", "OKLCh 滑条"), ("History", "颜色历史")]:
-            row = QHBoxLayout()
+        for key, name in [("RGB", "RGB 滑条"), ("HSV", "HSV 滑条"), ("HSL", "HLS 滑条"),
+                          ("LAB", "LAB 滑条"), ("OKLab", "OKLab 滑条"), ("OKLCh", "OKLCh 滑条"),
+                          ("History", "颜色历史")]:
+            row_layout = QHBoxLayout()
             cb = QCheckBox(name)
             cb.stateChanged.connect(self.save_settings)
-
             combo = NonScrollComboBox()
             combo.addItems(["1", "2", "3", "4", "5", "6", "7"])
             combo.currentTextChanged.connect(self.save_settings)
             combo.setFixedWidth(50)
+            row_layout.addWidget(cb)
+            row_layout.addStretch()
+            row_layout.addWidget(combo)
+            self.layout.addLayout(row_layout)
+            self.slider_rows[key] = (cb, combo, row_layout)
 
-            row.addWidget(cb)
-            row.addStretch()
-            row.addWidget(combo)
-            self.layout.addLayout(row)
-            self.slider_rows[key] = (cb, combo)
+        self._refresh_module_sliders()
 
         # History grid shape — columns × rows. These only apply to the color
         # history widget, but live alongside the slider rows for grouping.
@@ -259,15 +266,20 @@ class SettingsSidebar(QScrollArea):
         # Note: the per-cell swatch size is auto-fit to the window width —
         # the grid always spans the full slider strip. No manual size combo
         # is exposed because it would be overridden by the layout anyway.
-            
-        row_wheel = QHBoxLayout()
-        row_wheel.addWidget(QLabel("色轮模式"))
-        self.combo_wheel = NonScrollComboBox()
-        self.combo_wheel.addItems(["HSV 正方形", "HLS 三角", "RGB 三角", "OKLCh 三角"])
-        self.combo_wheel.currentTextChanged.connect(self.save_settings)
-        row_wheel.addWidget(self.combo_wheel)
-        self.layout.addLayout(row_wheel)
-        
+
+        # ── Color-space module selector (replaces old "色轮模式" dropdown) ──
+        row_module = QHBoxLayout()
+        row_module.addWidget(QLabel("色彩空间模块"))
+        self.combo_module = NonScrollComboBox()
+        self.combo_module.addItems(["HSV", "HLS", "LCH"])
+        self.combo_module.currentTextChanged.connect(self.save_settings)
+        row_module.addWidget(self.combo_module)
+        self.layout.addLayout(row_module)
+
+        self.cb_show_module_btn = QCheckBox("显示模块切换按钮")
+        self.cb_show_module_btn.stateChanged.connect(self.save_settings)
+        self.layout.addWidget(self.cb_show_module_btn)
+
         row_viz = QHBoxLayout()
         row_viz.addWidget(QLabel("LAB图模式"))
         self.combo_viz_mode = NonScrollComboBox()
@@ -355,10 +367,25 @@ class SettingsSidebar(QScrollArea):
         row_sync = QHBoxLayout()
         row_sync.addWidget(QLabel("同步软件"))
         self.combo_software = NonScrollComboBox()
-        self.combo_software.addItems(["CLIP Studio Paint", "SAI2", "UDM Paint", "Photoshop"])
+        self.combo_software.addItems(["CLIP Studio Paint", "SAI2", "UDM Paint", "Photoshop", "CSP 智能手机 (R)"])
         self.combo_software.currentTextChanged.connect(self.save_settings)
         row_sync.addWidget(self.combo_software)
         self.layout.addLayout(row_sync)
+
+        # Companion status row (visible only when "CSP 智能手机" selected)
+        self.row_companion_widget = QWidget()
+        row_comp = QHBoxLayout(self.row_companion_widget)
+        row_comp.setContentsMargins(0, 0, 0, 0); row_comp.setSpacing(6)
+        self.lbl_companion_status = QLabel("未连接")
+        self.btn_companion_reconnect = QPushButton("重新连接")
+        self.btn_companion_reconnect.clicked.connect(self._on_companion_reconnect)
+        self.btn_companion_disconnect = QPushButton("断开")
+        self.btn_companion_disconnect.clicked.connect(self._on_companion_disconnect)
+        row_comp.addWidget(self.lbl_companion_status)
+        row_comp.addStretch()
+        row_comp.addWidget(self.btn_companion_reconnect)
+        row_comp.addWidget(self.btn_companion_disconnect)
+        self.layout.addWidget(self.row_companion_widget)
         
         # CSP Version Container
         self.row_csp_widget = QWidget()
@@ -592,22 +619,23 @@ class SettingsSidebar(QScrollArea):
             cb.setChecked(self.cfg.get(key, False))
             cb.blockSignals(False)
             
-        # 3. Sliders
+        # 3. Sliders — load only existing groups, respect module visibility
         for key in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh", "History"]:
-            cb, combo = self.slider_rows[key]
+            cb, combo, _ = self.slider_rows[key]
             cb.blockSignals(True)
             if key == "History":
                 cb.setChecked(self.cfg.get("showSlidersHistory", True))
             else:
-                cb.setChecked(self.cfg.get(f"showSliders{key}", True if key in ("HSV", "LAB", "OKLab") else False))
+                cb.setChecked(self.cfg.get(f"showSliders{key}", True))
             cb.blockSignals(False)
-
             combo.blockSignals(True)
             if key == "History":
                 combo.setCurrentText(str(self.cfg.get("orderSlidersHistory", 7)))
             else:
                 combo.setCurrentText(str(self.cfg.get(f"orderSliders{key}", 1)))
             combo.blockSignals(False)
+
+        self._refresh_module_sliders()
 
         # History grid shape (columns × rows × swatch size)
         self.combo_history_cols.blockSignals(True)
@@ -618,11 +646,15 @@ class SettingsSidebar(QScrollArea):
         self.combo_history_rows.setCurrentText(str(self.cfg.get("historyRows", 2)))
         self.combo_history_rows.blockSignals(False)
             
-        wheel_mode_map = {"hsv": "HSV 正方形", "hls": "HLS 三角", "rgb": "RGB 三角", "oklch": "OKLCh 三角"}
-        self.combo_wheel.blockSignals(True)
-        self.combo_wheel.setCurrentText(wheel_mode_map.get(self.cfg.get("colorWheelMode", "hsv"), "HSV 正方形"))
-        self.combo_wheel.blockSignals(False)
-        
+        module_map = {"hsv": "HSV", "hls": "HLS", "lch": "LCH"}
+        self.combo_module.blockSignals(True)
+        self.combo_module.setCurrentText(module_map.get(self.cfg.get("colorSpaceModule", "hsv"), "HSV"))
+        self.combo_module.blockSignals(False)
+
+        self.cb_show_module_btn.blockSignals(True)
+        self.cb_show_module_btn.setChecked(self.cfg.get("showModuleSwitchButton", True))
+        self.cb_show_module_btn.blockSignals(False)
+
         viz_mode_map = {"lab": "LAB 色彩空间", "oklab": "OKLab 色彩空间"}
         self.combo_viz_mode.blockSignals(True)
         self.combo_viz_mode.setCurrentText(viz_mode_map.get(self.cfg.get("visualizerMode", "lab"), "LAB 色彩空间"))
@@ -646,7 +678,7 @@ class SettingsSidebar(QScrollArea):
         self.lbl_diff_space.setText(str(diff_val))
         
         # 4. Software Version
-        software_map = {"csp": "CLIP Studio Paint", "sai": "SAI2", "udm": "UDM Paint", "ps": "Photoshop"}
+        software_map = {"csp": "CLIP Studio Paint", "sai": "SAI2", "udm": "UDM Paint", "ps": "Photoshop", "companion": "CSP 智能手机 (R)"}
         self.combo_software.blockSignals(True)
         self.combo_software.setCurrentText(software_map.get(self.cfg.get("syncSoftware", "csp"), "CLIP Studio Paint"))
         self.combo_software.blockSignals(False)
@@ -679,14 +711,17 @@ class SettingsSidebar(QScrollArea):
         
         self.update_version_visibility()
         self.apply_theme()
-        
+        self._refresh_module_sliders()
     def update_version_visibility(self):
-        software_val_map = {"CLIP Studio Paint": "csp", "SAI2": "sai", "UDM Paint": "udm", "Photoshop": "ps"}
+        software_val_map = {"CLIP Studio Paint": "csp", "SAI2": "sai", "UDM Paint": "udm", "Photoshop": "ps", "CSP 智能手机 (R)": "companion"}
         selected = software_val_map.get(self.combo_software.currentText(), "csp")
         self.row_csp_widget.setVisible(selected == "csp")
         self.row_sai_widget.setVisible(selected == "sai")
         self.row_udm_widget.setVisible(selected == "udm")
         self.row_ps_widget.setVisible(selected == "ps")
+        self.row_companion_widget.setVisible(selected == "companion")
+        if selected == "companion":
+            self._refresh_companion_status()
 
     def apply_theme(self):
         font_factor = self.cfg.get("fontSize", 100) / 100.0
@@ -883,14 +918,16 @@ class SettingsSidebar(QScrollArea):
         self.cfg["autoFocusDrawingSoftware"] = self.cb_auto_focus_drawing.isChecked()
         self.cfg["noFocusMode"] = self.cb_no_focus.isChecked()
         
-        # Sliders
+        # Sliders (all groups stored, but only current-module groups shown in UI)
         for key in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh", "History"]:
+            cb = self.slider_rows[key][0]
+            combo = self.slider_rows[key][1]
             if key == "History":
-                self.cfg["showSlidersHistory"] = self.slider_rows[key][0].isChecked()
-                self.cfg["orderSlidersHistory"] = int(self.slider_rows[key][1].currentText())
+                self.cfg["showSlidersHistory"] = cb.isChecked()
+                self.cfg["orderSlidersHistory"] = int(combo.currentText())
             else:
-                self.cfg[f"showSliders{key}"] = self.slider_rows[key][0].isChecked()
-                self.cfg[f"orderSliders{key}"] = int(self.slider_rows[key][1].currentText())
+                self.cfg[f"showSliders{key}"] = cb.isChecked()
+                self.cfg[f"orderSliders{key}"] = int(combo.currentText())
 
         # History grid shape
         try:
@@ -904,13 +941,14 @@ class SettingsSidebar(QScrollArea):
         # historySwatchSize is intentionally NOT stored here — the swatch
         # size auto-fits the parent width via ColorHistoryWidget._relayout.
             
-        wheel_val_map = {"HSV 正方形": "hsv", "HLS 三角": "hls", "RGB 三角": "rgb", "OKLCh 三角": "oklch"}
-        self.cfg["colorWheelMode"] = wheel_val_map.get(self.combo_wheel.currentText(), "hsv")
+        module_val_map = {"HSV": "hsv", "HLS": "hls", "LCH": "lch"}
+        self.cfg["colorSpaceModule"] = module_val_map.get(self.combo_module.currentText(), "hsv")
+        self.cfg["showModuleSwitchButton"] = self.cb_show_module_btn.isChecked()
         viz_val_map = {"LAB 色彩空间": "lab", "OKLab 色彩空间": "oklab"}
         self.cfg["visualizerMode"] = viz_val_map.get(self.combo_viz_mode.currentText(), "lab")
         self.cfg["showLabLightnessSlider"] = self.cb_show_lab_lightness.isChecked()
         
-        software_val_map = {"CLIP Studio Paint": "csp", "SAI2": "sai", "UDM Paint": "udm", "Photoshop": "ps"}
+        software_val_map = {"CLIP Studio Paint": "csp", "SAI2": "sai", "UDM Paint": "udm", "Photoshop": "ps", "CSP 智能手机 (R)": "companion"}
         self.cfg["syncSoftware"] = software_val_map.get(self.combo_software.currentText(), "csp")
         
         pos_val_map = {"左上角": "top-left", "左下角": "bottom-left"}
@@ -978,6 +1016,27 @@ class SettingsSidebar(QScrollArea):
                     lbl.setText("未设定")
                     lbl.setStyleSheet("color: #c44;")
         self.apply_theme()
+        self._refresh_module_sliders()
+
+    def _refresh_module_sliders(self):
+        """Show only the slider rows that belong to the currently active module.
+        Re-reads config from disk so changes outside the sidebar are picked up."""
+        self.cfg = config.load_hotkey_config()
+        module = self.cfg.get("colorSpaceModule", "hsv")
+        allowed = set(self._MODULE_SLIDER_MAP.get(module, ["HSV", "RGB", "LAB"]))
+        for key, (cb, combo, row_layout) in self.slider_rows.items():
+            if key == "History":
+                continue
+            visible = key in allowed
+            for i in range(row_layout.count()):
+                w = row_layout.itemAt(i).widget()
+                if w:
+                    w.setVisible(visible)
+
+    def notify_module_changed(self):
+        """Called by MainWindow when the module changes externally."""
+        self.cfg = config.load_hotkey_config()
+        self._refresh_module_sliders()
 
     def scroll_step_decrease(self):
         val = self.cfg.get("sliderScrollStep", 1)
@@ -1162,6 +1221,40 @@ class SettingsSidebar(QScrollArea):
         """Open the author's Bilibili homepage in the default browser."""
         webbrowser.open(updater.BILIBILI_URL)
 
+
+    # ── Companion helpers ──────────────────────────────────────────────
+    def _refresh_companion_status(self):
+        if not hasattr(self, 'parent') or self.parent is None: return
+        if not hasattr(self.parent, 'sync_thread'): return
+        c = self.parent.sync_thread.companion_sync
+        connected = getattr(c, '_connected', False)
+        if connected:
+            self.lbl_companion_status.setText("● 已连接")
+            self.lbl_companion_status.setStyleSheet("color: #4a4; font-weight: bold;")
+            self.btn_companion_reconnect.setVisible(False)
+            self.btn_companion_disconnect.setVisible(True)
+        elif c._has_session():
+            self.lbl_companion_status.setText("○ 已保存 — 等待 CSP...")
+            self.lbl_companion_status.setStyleSheet("color: #c84;")
+            self.btn_companion_reconnect.setVisible(True)
+            self.btn_companion_disconnect.setVisible(False)
+        else:
+            self.lbl_companion_status.setText("○ 未设置")
+            self.lbl_companion_status.setStyleSheet("color: #888;")
+            self.btn_companion_reconnect.setText("连接智能手机")
+            self.btn_companion_reconnect.setVisible(True)
+            self.btn_companion_disconnect.setVisible(False)
+
+    def _on_companion_reconnect(self):
+        if hasattr(self, 'parent') and self.parent is not None:
+            self.parent._setup_companion_connection()
+            self._refresh_companion_status()
+
+    def _on_companion_disconnect(self):
+        if hasattr(self, 'parent') and self.parent is not None:
+            if hasattr(self.parent, 'sync_thread'):
+                self.parent.sync_thread.companion_sync._disconnect()
+            self._refresh_companion_status()
 
 class _UpdateWorker(QThread):
     """Background worker that queries GitHub for the latest release."""
