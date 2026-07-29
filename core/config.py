@@ -31,11 +31,11 @@ def save_window_config(cfg):
 def load_hotkey_config():
     path = os.path.join(get_user_data_dir(), HOTKEY_CFG_NAME)
     default_cfg = {
-        "pickKey": "Ctrl+Shift+B",
+        "pickKey": "F11",
         "injectionKey": "F12",
-        "followMouseKey": "Ctrl+Shift+D",
-        "hideWindowKey": "Ctrl+Shift+H",
-        "grayscaleFilterKey": "Ctrl+Shift+G",
+        "followMouseKey": "Ctrl+R",
+        "hideWindowKey": "Ctrl+H",
+        "grayscaleFilterKey": "Ctrl+G",
         "grayscaleFilterScreen": "all",
         "grayscaleFilterMode": "oklch",
         "grayscaleFilterBackend": "overlay",
@@ -67,13 +67,15 @@ def load_hotkey_config():
         "visualizerMode": "lab",
         "labVisualizerMaxVal": 110,
         "colorWheelMode": "hsv",
+        "colorSpaceModule": "hsv",          # "hsv" | "hls" | "lch"
+        "showModuleSwitchButton": True,     # floating button next to ⊙/△
         "sliderScrollStep": 1,
         "sliderSameSpace": 6,
         "sliderDiffSpace": 8,
         "showSlidersHistory": True,
         "orderSlidersHistory": 1,
-        "historyColumns": 12,
-        "historyRows": 3,
+        "historyColumns": 8,
+        "historyRows": 2,
         "historySwatchSize": 18,
         "historyColors": [],
         "sliderStyle": "default",
