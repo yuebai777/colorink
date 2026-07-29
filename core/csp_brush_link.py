@@ -45,9 +45,11 @@ from brush_color_spaces import (
     build_space_offsets,
     decode_space_raws,
     encode_space_values,
+    encode_space_values_float,
     format_space_values,
     resolve_active_rgb,
     rgb_to_space_values,
+    space_to_rgb_float,
 )
 
 # ---------------------------------------------------------------------------
@@ -334,6 +336,8 @@ class CSPSync:
         self.b_off: int = _DEFAULT_BLUE_OFFSET
         self.color_format: str = "u16x2_dup"
         self.space_offsets = build_space_offsets(self.r_off)
+        self._last_hsv_h: float = 0.0
+        self._last_hsv_s: float = 0.0
 
         # Honor CSP_SYNC_VERSION env override before applying user config.
         env_version = os.environ.get("CSP_SYNC_VERSION", DEFAULT_VERSION_KEY)
@@ -543,6 +547,11 @@ class CSPSync:
             }
 
         source_space, rgb, source_values = resolve_active_rgb(snapshots)
+        if source_space == "hsv":
+            h_val = source_values.get("h", 0)
+            s_val = source_values.get("s", 0)
+            if h_val > 0 or s_val > 1: self._last_hsv_h = h_val
+            if source_values.get("v", 0) > 1: self._last_hsv_s = s_val
         source_raws = snapshots[source_space]["raws"]
         _log(
             "get_color: "
@@ -554,7 +563,17 @@ class CSPSync:
         )
         return rgb
 
-    def set_color(self, r: int, g: int, b: int) -> bool:
+    def set_color(self, r: int, g: int, b: int, source_space: str = None, source_values=None) -> bool:
+        """Write color to CSP memory, optionally preserving native source-space precision.
+
+        *source_space* / *source_values* (the space the user last interacted
+        with and its float values) are written directly to that space's memory
+        slot via :func:`encode_space_values_float` — no int rounding, no
+        RGB → source round-trip loss.
+
+        Other spaces are derived from the source (or from the passed RGB when
+        no source is given) with standard int conversions.
+        """
         if self.pm is None and not self.connect():
             return False
 
@@ -565,15 +584,46 @@ class CSPSync:
 
         rgb = {"r": _clamp_byte(r), "g": _clamp_byte(g), "b": _clamp_byte(b)}
         try:
+            # When a source space is provided, derive the RGB used for other
+            # spaces from it using float precision (one-way, minimal loss).
+            if source_space and source_values and source_space in SPACE_ORDER:
+                source_rgb_float = space_to_rgb_float(source_space, source_values)
+                source_rgb = {
+                    "r": int(round(source_rgb_float["r"])),
+                    "g": int(round(source_rgb_float["g"])),
+                    "b": int(round(source_rgb_float["b"])),
+                }
+            else:
+                source_rgb = rgb
+                source_space = None
+
+            hsv_vals = rgb_to_space_values("hsv", source_rgb)
+            if hsv_vals["s"] < 1:
+                hsv_vals["h"] = self._last_hsv_h
+            else:
+                self._last_hsv_h = hsv_vals["h"]
+            if hsv_vals["v"] < 1:
+                hsv_vals["s"] = self._last_hsv_s
+            else:
+                self._last_hsv_s = hsv_vals["s"]
+
             for space_name in SPACE_ORDER:
-                encoded = encode_space_values(
-                    space_name, rgb_to_space_values(space_name, rgb)
-                )
+                if source_space and space_name == source_space:
+                    # Source space: encode directly from float values — no
+                    # RGB → source round-trip precision loss.
+                    encoded = encode_space_values_float(space_name, source_values)
+                elif space_name == "hsv":
+                    encoded = encode_space_values(space_name, hsv_vals)
+                else:
+                    values = rgb_to_space_values(space_name, source_rgb)
+                    encoded = encode_space_values(space_name, values)
                 for addr, raw in zip(space_addrs[space_name], encoded):
                     self._write_u32(addr, raw)
+
             _log(
                 "set_color: "
-                f"RGB=[{rgb['r']}, {rgb['g']}, {rgb['b']}] "
+                f"RGB=[{source_rgb['r']}, {source_rgb['g']}, {source_rgb['b']}] "
+                f"source={source_space or 'rgb'} "
                 f"synced_spaces={list(SPACE_ORDER)}"
             )
             return True
