@@ -132,6 +132,18 @@ class LabSquare(QWidget):
         if not block_signals:
             self.colorChanged.emit(r, g, b)
 
+    def set_oklab(self, L, a, b, block_signals=False):
+        """Direct OKLab state — avoids HSV→RGB→OKLab round-trip drift."""
+        # L is expected in [0, 1], convert to internal [0, 100]
+        self.L = L * 100.0
+        self.a = a
+        self.b = b
+        self.a, self.b = self._clamp_to_gamut(self.a, self.b)
+        self.update()
+        if not block_signals:
+            r, g, b = self.get_current_rgb()
+            self.colorChanged.emit(r, g, b)
+
     def set_lightness(self, lightness):
         self.L = lightness
         # Keep (a, b) inside the gamut at the new L so the cursor doesn't
