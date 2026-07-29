@@ -243,6 +243,8 @@ class UDMSync:
         self.g_off: int = _DEFAULT_GREEN_OFFSET
         self.b_off: int = _DEFAULT_BLUE_OFFSET
         self.space_offsets = build_space_offsets(self.r_off)
+        self._last_hsv_h: float = 0.0
+        self._last_hsv_s: float = 0.0
 
         # Absolute-address mode overrides.  In use_abs mode the user
         # supplies fixed addresses for each channel and we bypass the
@@ -490,6 +492,11 @@ class UDMSync:
             }
 
         source_space, rgb, source_values = resolve_active_rgb(snapshots)
+        if source_space == "hsv":
+            h_val = source_values.get("h", 0)
+            s_val = source_values.get("s", 0)
+            if h_val > 0 or s_val > 1: self._last_hsv_h = h_val
+            if source_values.get("v", 0) > 1: self._last_hsv_s = s_val
         source_raws = snapshots[source_space]["raws"]
         _log(
             "get_color: "
@@ -512,10 +519,15 @@ class UDMSync:
 
         rgb = {"r": _clamp_byte(r), "g": _clamp_byte(g), "b": _clamp_byte(b)}
         try:
+            hsv_vals = rgb_to_space_values("hsv", rgb)
+            if hsv_vals["s"] < 1: hsv_vals["h"] = self._last_hsv_h
+            else: self._last_hsv_h = hsv_vals["h"]
+            if hsv_vals["v"] < 1: hsv_vals["s"] = self._last_hsv_s
+            else: self._last_hsv_s = hsv_vals["s"]
             for space_name in SPACE_ORDER:
-                encoded = encode_space_values(
-                    space_name, rgb_to_space_values(space_name, rgb)
-                )
+                if space_name == "hsv": values = hsv_vals
+                else: values = rgb_to_space_values(space_name, rgb)
+                encoded = encode_space_values(space_name, values)
                 for addr, raw in zip(space_addrs[space_name], encoded):
                     self._write_u32(addr, raw)
             _log(

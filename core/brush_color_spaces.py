@@ -225,6 +225,20 @@ def encode_space_values(space_name: str, values: Mapping[str, int]) -> Tuple[int
     return _lookup(space_name).encode(values)
 
 
+def encode_space_values_float(space_name: str, values: Mapping[str, float]) -> Tuple[int, ...]:
+    """Like :func:`encode_space_values` but accepts float values for direct uint32 encoding.
+
+    Float values are passed straight to :func:`encode_scaled_u32` without
+    intermediate int rounding, so the full float precision survives into
+    the u32 memory layout (e.g. H=180.4 encodes as 180.4/360 * MAX_U32).
+    """
+    spec = _lookup(space_name)
+    return tuple(
+        encode_scaled_u32(float(values[ch]), mx)
+        for ch, mx in zip(spec.channels, spec.maxima)
+    )
+
+
 def format_space_values(space_name: str, values: Mapping[str, int]) -> str:
     return _lookup(space_name).render(values)
 
@@ -288,6 +302,80 @@ def hls_to_rgb_values(values: Mapping[str, int]) -> Dict[str, int]:
         _percent(values["s"]) / 100.0,
     )
     return {"r": _byte(r * 255.0), "g": _byte(g * 255.0), "b": _byte(b * 255.0)}
+
+
+# ---------------------------------------------------------------------------
+# Float-precision conversions (no int rounding; same value ranges as int)
+# ---------------------------------------------------------------------------
+# These mirror the int versions above but never round, so chained
+# conversions (e.g. HSV → RGB → HSV) are near-lossless.  Use these for
+# all internal conversion chains, sync backends, and memory writes.
+# Display layers (slider labels, QSlider int positions) still use the
+# int versions.
+
+def _clip_float_255(value: float) -> float:
+    """Clip a float into the closed range [0.0, 255.0]."""
+    if value <= 0.0:
+        return 0.0
+    if value >= 255.0:
+        return 255.0
+    return float(value)
+
+
+def rgb_to_hsv_float(rgb: Mapping[str, object]) -> Dict[str, float]:
+    """RGB → HSV with full float precision.
+
+    Returns ``{"h": 0-360, "s": 0-100, "v": 0-100}`` as floats (no rounding).
+    Accepts int or float RGB input in 0-255 range.
+    """
+    r = _clip_float_255(float(rgb["r"])) / 255.0
+    g = _clip_float_255(float(rgb["g"])) / 255.0
+    b = _clip_float_255(float(rgb["b"])) / 255.0
+    h, s, v = colorsys.rgb_to_hsv(r, g, b)
+    h_deg = h * 360.0
+    if h_deg >= 360.0:
+        h_deg = 0.0
+    return {"h": h_deg, "s": s * 100.0, "v": v * 100.0}
+
+
+def hsv_to_rgb_float(values: Mapping[str, object]) -> Dict[str, float]:
+    """HSV → RGB with full float precision.
+
+    Returns ``{"r": 0-255, "g": 0-255, "b": 0-255}`` as floats (no rounding).
+    Input: h in 0-360, s/v in 0-100.
+    """
+    h = float(values["h"]) % 360.0
+    s = _clip_float(float(values["s"]), 100.0) / 100.0
+    v = _clip_float(float(values["v"]), 100.0) / 100.0
+    r, g, b = colorsys.hsv_to_rgb(h / 360.0, s, v)
+    return {"r": r * 255.0, "g": g * 255.0, "b": b * 255.0}
+
+
+def rgb_to_hls_float(rgb: Mapping[str, object]) -> Dict[str, float]:
+    """RGB → HLS with full float precision.
+
+    Returns ``{"h": 0-360, "l": 0-100, "s": 0-100}`` as floats.
+    """
+    r = _clip_float_255(float(rgb["r"])) / 255.0
+    g = _clip_float_255(float(rgb["g"])) / 255.0
+    b = _clip_float_255(float(rgb["b"])) / 255.0
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+    h_deg = h * 360.0
+    if h_deg >= 360.0:
+        h_deg = 0.0
+    return {"h": h_deg, "l": l * 100.0, "s": s * 100.0}
+
+
+def hls_to_rgb_float(values: Mapping[str, object]) -> Dict[str, float]:
+    """HLS → RGB with full float precision.
+
+    Returns ``{"r": 0-255, "g": 0-255, "b": 0-255}`` as floats.
+    """
+    h = float(values["h"]) % 360.0
+    l = _clip_float(float(values["l"]), 100.0) / 100.0
+    s = _clip_float(float(values["s"]), 100.0) / 100.0
+    r, g, b = colorsys.hls_to_rgb(h / 360.0, l, s)
+    return {"r": r * 255.0, "g": g * 255.0, "b": b * 255.0}
 
 
 # --- CIE L*a*b* path (drives the CMYK GCR curve) -------------------------
@@ -434,6 +522,61 @@ def cmyk_to_rgb_values(values: Mapping[str, int]) -> Dict[str, int]:
     }
 
 
+def _gcr_k_fraction_float(rgb: Mapping[str, object]) -> float:
+    """Float version of :func:`_gcr_k_fraction` — uses float HSV for saturation."""
+    lab = rgb_to_lab_values(rgb)  # already returns float
+    chroma = math.sqrt(lab["a"] * lab["a"] + lab["b"] * lab["b"])
+    saturation = min(1.0, max(0.0, rgb_to_hsv_float(rgb)["s"] / 100.0))
+
+    lightness_factor = 0.0
+    if lab["l"] < _GCR.lightness_kick_in:
+        span = max(1.0, _GCR.lightness_kick_in - _GCR.lightness_saturated)
+        t = min(1.0, max(0.0, (_GCR.lightness_kick_in - lab["l"]) / span))
+        lightness_factor = math.pow(t, _GCR.lightness_exponent)
+
+    chroma_suppress = min(1.0, max(0.0, 1.0 - chroma / _GCR.chroma_suppress_ref))
+    saturation_suppress = math.pow(1.0 - saturation, _GCR.saturation_exponent)
+    return min(1.0, max(0.0, lightness_factor * max(chroma_suppress, saturation_suppress)))
+
+
+def rgb_to_cmyk_float(rgb: Mapping[str, object]) -> Dict[str, float]:
+    """RGB → CMYK with full float precision. Returns c/m/y/k: 0-100 (float)."""
+    r = _clip_float_255(float(rgb["r"]))
+    g = _clip_float_255(float(rgb["g"]))
+    b = _clip_float_255(float(rgb["b"]))
+    c_pure = 1.0 - r / 255.0
+    m_pure = 1.0 - g / 255.0
+    y_pure = 1.0 - b / 255.0
+    neutral = min(c_pure, m_pure, y_pure)
+    k = neutral * _gcr_k_fraction_float({"r": r, "g": g, "b": b})
+    c = max(0.0, c_pure - k)
+    m = max(0.0, m_pure - k)
+    y = max(0.0, y_pure - k)
+
+    total = c + m + y + k
+    if total > _GCR.total_ink_cap:
+        chroma_sum = max(1e-6, c + m + y)
+        scale = (_GCR.total_ink_cap - k) / chroma_sum
+        c *= scale
+        m *= scale
+        y *= scale
+
+    return {"c": c * 100.0, "m": m * 100.0, "y": y * 100.0, "k": k * 100.0}
+
+
+def cmyk_to_rgb_float(values: Mapping[str, object]) -> Dict[str, float]:
+    """CMYK → RGB with full float precision. Returns r/g/b: 0-255 (float)."""
+    c = _clip_float(float(values["c"]), 100.0) / 100.0
+    m = _clip_float(float(values["m"]), 100.0) / 100.0
+    y = _clip_float(float(values["y"]), 100.0) / 100.0
+    k = _clip_float(float(values["k"]), 100.0) / 100.0
+    return {
+        "r": (1.0 - c) * (1.0 - k) * 255.0,
+        "g": (1.0 - m) * (1.0 - k) * 255.0,
+        "b": (1.0 - y) * (1.0 - k) * 255.0,
+    }
+
+
 # ---------------------------------------------------------------------------
 # RGB <-> any-space dispatch tables
 # ---------------------------------------------------------------------------
@@ -462,6 +605,46 @@ def rgb_to_space_values(space_name: str, rgb: Mapping[str, int]) -> Dict[str, in
 def space_to_rgb_values(space_name: str, values: Mapping[str, int]) -> Dict[str, int]:
     try:
         return _SPACE_TO_RGB[space_name](values)
+    except KeyError:
+        raise KeyError(f"unknown color space: {space_name!r}") from None
+
+
+# ---------------------------------------------------------------------------
+# Float-precision dispatch tables (NO int rounding)
+# ---------------------------------------------------------------------------
+_RGB_TO_SPACE_FLOAT: Dict[str, Callable[[Mapping[str, object]], Dict[str, float]]] = {
+    "rgb": lambda rgb: {"r": float(rgb["r"]), "g": float(rgb["g"]), "b": float(rgb["b"])},
+    "cmyk": rgb_to_cmyk_float,
+    "hsv": rgb_to_hsv_float,
+    "hls": rgb_to_hls_float,
+}
+
+_SPACE_TO_RGB_FLOAT: Dict[str, Callable[[Mapping[str, object]], Dict[str, float]]] = {
+    "rgb": lambda v: {"r": float(v["r"]), "g": float(v["g"]), "b": float(v["b"])},
+    "cmyk": cmyk_to_rgb_float,
+    "hsv": hsv_to_rgb_float,
+    "hls": hls_to_rgb_float,
+}
+
+
+def rgb_to_space_float(space_name: str, rgb: Mapping[str, object]) -> Dict[str, float]:
+    """RGB → *space_name* with full float precision (no int rounding).
+
+    Same interface as :func:`rgb_to_space_values` but returns floats.
+    """
+    try:
+        return _RGB_TO_SPACE_FLOAT[space_name](rgb)
+    except KeyError:
+        raise KeyError(f"unknown color space: {space_name!r}") from None
+
+
+def space_to_rgb_float(space_name: str, values: Mapping[str, object]) -> Dict[str, float]:
+    """*space_name* → RGB with full float precision (no int rounding).
+
+    Same interface as :func:`space_to_rgb_values` but returns floats.
+    """
+    try:
+        return _SPACE_TO_RGB_FLOAT[space_name](values)
     except KeyError:
         raise KeyError(f"unknown color space: {space_name!r}") from None
 
