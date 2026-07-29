@@ -66,8 +66,11 @@ def rgb_to_oklab(r: float, g: float, b: float) -> tuple[float, float, float]:
     a = _M2_A[0] * l_cbrt + _M2_A[1] * m_cbrt + _M2_A[2] * s_cbrt
     b = _M2_B[0] * l_cbrt + _M2_B[1] * m_cbrt + _M2_B[2] * s_cbrt
 
-    # Snap near-achromatic RGB to exact a=b=0 — prevents chroma noise
-    if abs(r - g) < 0.5 and abs(g - b) < 0.5 and abs(b - r) < 0.5:
+    # Snap near-achromatic RGB to exact a=b=0 — prevents chroma noise.
+    # Tolerance is 0.01 (vs the old 0.5) so dark colours like R=1,G=1,B=1.4
+    # (visibly blue) are NOT zeroed.  Only true floating-point noise from
+    # a mathematically perfect gray (channel‑diff < 0.01/255) is clamped.
+    if abs(r - g) < 0.01 and abs(g - b) < 0.01 and abs(b - r) < 0.01:
         a = 0.0
         b = 0.0
 

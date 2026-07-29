@@ -65,19 +65,32 @@ def find_max_c(L_val, a_dir, b_dir):
     for _ in range(16):
         mid = (low + high) / 2.0
         r, g, b = lab_to_rgb(L_val, mid * a_dir, mid * b_dir)
-        if -0.5 <= r <= 255.5 and -0.5 <= g <= 255.5 and -0.5 <= b <= 255.5:
+        if 0.0 <= r <= 255.0 and 0.0 <= g <= 255.0 and 0.0 <= b <= 255.0:
             low = mid
         else:
             high = mid
     return low
 
 def find_max_oklch_c(L, h):
-    """Binary search for max OKLCh chroma at given L, h within sRGB gamut."""
+    """Binary search for max OKLCh chroma at given L, h within sRGB gamut.
+
+    Uses the same gamut test as oklch.com / @colordx/core: accept a colour
+    when every linear-sRGB channel is in [0, 1] (here approximated as
+    [-0.5, 255.5] for the gamma-encoded return of oklch_to_rgb).
+
+    Returns the TRUE mathematical gamut boundary.  Very-dark in-gamut
+    colours at low L are handled by the render loop's alpha blending,
+    mirroring oklch.com's GPU shader where near-black pixels are
+    indistinguishable from the dark page background.
+    """
+    if L <= 0.0:
+        return 0.0
+
     lo, hi = 0.0, 0.6
     for _ in range(16):
         mid = (lo + hi) / 2.0
         r, g, b = oklch_to_rgb(L, mid, h)
-        if -0.5 <= r <= 255.5 and -0.5 <= g <= 255.5 and -0.5 <= b <= 255.5:
+        if 0.0 <= r <= 255.0 and 0.0 <= g <= 255.0 and 0.0 <= b <= 255.0:
             lo = mid
         else:
             hi = mid
@@ -99,11 +112,18 @@ class ColorWheel(QWidget):
         self.setMinimumSize(120, 120)
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.cfg = config.load_hotkey_config()
-        
+
         # Color state (HSV)
         self.h = 0.0
         self.s = 100.0
         self.v = 100.0
+        self._last_hue = 0.0
+
+        # Direct OKLCh state — set by external callers so the indicator
+        # doesn't have to round-trip through HSV→RGB→OKLCh.
+        self._oklch_L = None      # float 0-1 or None
+        self._oklch_C = None      # float 0-0.5 or None
+        self._oklch_h = None      # float 0-360 or None
         
         self.dragging = None
         
@@ -148,17 +168,17 @@ class ColorWheel(QWidget):
     def set_color(self, r, g, b, block_signals=False):
         self._drag_slice = ""  # external color change, reset indicator mode
         h, s, v = rgb_to_hsv(r, g, b)
-        self.h = h
-        self.s = s
-        self.v = v
+        if s > 0.5: self._last_hue = h
+        else: h = self._last_hue
+        self.h = h; self.s = s; self.v = v
         self.update()
         if not block_signals:
             self.colorChanged.emit(r, g, b)
 
     def set_hsv(self, h, s, v):
-        self.h = h
-        self.s = s
-        self.v = v
+        if s > 0.5: self._last_hue = h
+        else: h = self._last_hue
+        self.h = h; self.s = s; self.v = v
         self.update()
 
     def get_color(self):
@@ -168,6 +188,59 @@ class ColorWheel(QWidget):
         # "triangle" | "hsl-square" | "hsv-square" | "hls-triangle" | "rgb-slice"
         self.wheel_mode = mode
         self.update()
+
+    def set_oklch(self, L, C, h):
+        """Direct OKLCh state — avoids HSV→RGB→OKLCh round-trip drift."""
+        self._oklch_L = L
+        self._oklch_C = C
+        self._oklch_h = h
+        # Invalidate OKLCh slice cache and boundary cache so the next
+        # paint redraws at the new hue with the correct boundary line.
+        if hasattr(self, "_cached_oklch_key"):
+            delattr(self, "_cached_oklch_key")
+        if hasattr(self, "_bdry_h"):
+            delattr(self, "_bdry_h")
+        self.update()
+
+    def _oklch_boundary_data(self, h):
+        """Pre-compute gamut boundary curve for a given hue.
+
+        Returns (scale, boundary_points) where *boundary_points* is a list
+        of 201 (C_max, L) pairs (L from 0 to 1, step 0.005) and *scale*
+        maps chroma to pixels so the widest part fills the slice width.
+        The result is cached so repeated calls at the same hue are free.
+        """
+        cache_h = getattr(self, '_bdry_h', None)
+        if cache_h is not None and abs(cache_h - h) < 0.05:
+            return self._bdry_scale, self._bdry_points
+
+        points = []  # (C_max, L)  — L from 0 → 1
+        max_c = 0.0
+        for i in range(201):
+            _l = i / 200.0
+            _c = find_max_oklch_c(_l, h)
+            points.append((_c, _l))
+            if _c > max_c:
+                max_c = _c
+
+        self._bdry_h = h
+        self._bdry_points = points
+        # Scale: widest chroma fills the triangle radius (100 %, not 95 % —
+        # the boundary line itself marks the gamut edge precisely).
+        r = getattr(self, '_bdry_slice_r', None)
+        if r is None:
+            r = 130  # sensible default before first layout
+        self._bdry_scale = (r * 1.0) / max(max_c, 0.001)
+        return self._bdry_scale, points
+
+    def _oklch_scale_for_hue(self, h, r):
+        """Compute the C→pixel scale used by slice, indicator, and drag."""
+        scale, _ = self._oklch_boundary_data(h)
+        # Update the cached slice radius so boundary_data's scale stays accurate
+        self._bdry_slice_r = r
+        self._bdry_scale = (r * 1.0) / max(
+            max((c for c, _ in self._bdry_points), default=0.001), 0.001)
+        return self._bdry_scale
 
     def get_wheel_geometry(self):
         w = self.width()
@@ -220,47 +293,98 @@ class ColorWheel(QWidget):
         if size <= 20:
             return
             
-        # 1) Draw Hue Ring with Caching
-        flip_h = self.cfg.get("flipColorWheelHorizontally", False)
-        ring_key = (int(cx), int(cy), int(outer_radius), int(inner_radius), flip_h)
-        if not hasattr(self, "_cached_ring_key") or self._cached_ring_key != ring_key or not hasattr(self, "_cached_ring_img") or self._cached_ring_img is None:
-            w = self.width()
-            h = self.height()
-            self._cached_ring_img = QImage(w, h, QImage.Format.Format_ARGB32)
-            self._cached_ring_img.fill(0)
-            
-            p = QPainter(self._cached_ring_img)
-            p.setRenderHint(QPainter.RenderHint.Antialiasing)
-            
-            if flip_h:
-                gradient = QConicalGradient(QPointF(cx, cy), 150.0)
-                for i in range(361):
-                    gradient.setColorAt(i / 360.0, QColor.fromHsvF((360 - i) / 360.0, 1.0, 1.0))
-            else:
-                gradient = QConicalGradient(QPointF(cx, cy), 30.0)
-                for i in range(361):
-                    gradient.setColorAt(i / 360.0, QColor.fromHsvF(i / 360.0, 1.0, 1.0))
+        # 1) Draw Hue Ring with Caching (skip in oklch-slice mode — it has no ring)
+        if self.wheel_mode != "oklch-slice":
+            flip_h = self.cfg.get("flipColorWheelHorizontally", False)
+            ring_key = (int(cx), int(cy), int(outer_radius), int(inner_radius), flip_h)
+            if not hasattr(self, "_cached_ring_key") or self._cached_ring_key != ring_key or not hasattr(self, "_cached_ring_img") or self._cached_ring_img is None:
+                w = self.width()
+                h = self.height()
+                self._cached_ring_img = QImage(w, h, QImage.Format.Format_ARGB32)
+                self._cached_ring_img.fill(0)
+
+                p = QPainter(self._cached_ring_img)
+                p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+                if flip_h:
+                    gradient = QConicalGradient(QPointF(cx, cy), 150.0)
+                    for i in range(361):
+                        gradient.setColorAt(i / 360.0, QColor.fromHsvF((360 - i) / 360.0, 1.0, 1.0))
+                else:
+                    gradient = QConicalGradient(QPointF(cx, cy), 30.0)
+                    for i in range(361):
+                        gradient.setColorAt(i / 360.0, QColor.fromHsvF(i / 360.0, 1.0, 1.0))
+
+                # Calculate geometry
+                ring_width = outer_radius - inner_radius
+                r_mid = (outer_radius + inner_radius) / 2.0
+
+                # Draw ring using a thick pen with the conical gradient
+                pen = QPen(QBrush(gradient), ring_width)
+                pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+                p.setPen(pen)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(QPointF(cx, cy), r_mid, r_mid)
                 
-            # Calculate geometry
-            ring_width = outer_radius - inner_radius
-            r_mid = (outer_radius + inner_radius) / 2.0
-            
-            # Draw ring using a thick pen with the conical gradient
-            pen = QPen(QBrush(gradient), ring_width)
-            pen.setCapStyle(Qt.PenCapStyle.FlatCap)
-            p.setPen(pen)
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawEllipse(QPointF(cx, cy), r_mid, r_mid)
-            
-            # Draw thin gray outlines to eliminate aliasing/jagged edges
-            p.setPen(QPen(QColor(128, 128, 128, 90), 1.0))
-            p.drawEllipse(QPointF(cx, cy), outer_radius, outer_radius)
-            p.drawEllipse(QPointF(cx, cy), inner_radius, inner_radius)
-            p.end()
-            
-            self._cached_ring_key = ring_key
-            
-        painter.drawImage(0, 0, self._cached_ring_img)
+                # Draw thin gray outlines to eliminate aliasing/jagged edges
+                p.setPen(QPen(QColor(128, 128, 128, 90), 1.0))
+                p.drawEllipse(QPointF(cx, cy), outer_radius, outer_radius)
+                p.drawEllipse(QPointF(cx, cy), inner_radius, inner_radius)
+                p.end()
+
+                self._cached_ring_key = ring_key
+
+            painter.drawImage(0, 0, self._cached_ring_img)
+        else:
+            # OKLCh mode: hue ring with fixed L=85%, C=0.4
+            #（色环固定明度和彩度，仅响应色相变化）
+            L_ring = 0.85
+            C_ring = 0.4
+            flip_h = self.cfg.get("flipColorWheelHorizontally", False)
+            ring_key = (int(cx), int(cy), int(outer_radius), int(inner_radius), flip_h)
+            if not hasattr(self, "_cached_oklch_ring_key") or self._cached_oklch_ring_key != ring_key or not hasattr(self, "_cached_oklch_ring_img"):
+                w = self.width()
+                h = self.height()
+                self._cached_oklch_ring_img = QImage(w, h, QImage.Format.Format_ARGB32)
+                self._cached_oklch_ring_img.fill(0)
+                p = QPainter(self._cached_oklch_ring_img)
+                p.setRenderHint(QPainter.RenderHint.Antialiasing)
+                # Build OKLCh conical gradient
+                if flip_h:
+                    gradient = QConicalGradient(QPointF(cx, cy), 150.0)
+                    for i in range(361):
+                        hue = (360 - i) % 360
+                        c_safe = min(C_ring, find_max_oklch_c(L_ring, hue))
+                        rr, gg, bb = oklch_to_rgb(L_ring, c_safe, hue)
+                        gradient.setColorAt(i / 360.0, QColor(
+                            max(0, min(255, int(rr))),
+                            max(0, min(255, int(gg))),
+                            max(0, min(255, int(bb)))))
+                else:
+                    gradient = QConicalGradient(QPointF(cx, cy), 30.0)
+                    for i in range(361):
+                        hue = i
+                        # Gamut-clamp C at this hue so ring colours match the
+                        # in-gamut slice (oklch.com's range strips do the same).
+                        c_safe = min(C_ring, find_max_oklch_c(L_ring, hue))
+                        rr, gg, bb = oklch_to_rgb(L_ring, c_safe, hue)
+                        gradient.setColorAt(i / 360.0, QColor(
+                            max(0, min(255, int(rr))),
+                            max(0, min(255, int(gg))),
+                            max(0, min(255, int(bb)))))
+                ring_width = outer_radius - inner_radius
+                r_mid = (outer_radius + inner_radius) / 2.0
+                pen = QPen(QBrush(gradient), ring_width)
+                pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+                p.setPen(pen)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(QPointF(cx, cy), r_mid, r_mid)
+                p.setPen(QPen(QColor(128, 128, 128, 90), 1.0))
+                p.drawEllipse(QPointF(cx, cy), outer_radius, outer_radius)
+                p.drawEllipse(QPointF(cx, cy), inner_radius, inner_radius)
+                p.end()
+                self._cached_oklch_ring_key = ring_key
+            painter.drawImage(0, 0, self._cached_oklch_ring_img)
         
         # 2) Draw SV triangle, HSL square, HSV square, HLS triangle, or RGB slice
         if self.wheel_mode == "triangle":
@@ -434,10 +558,12 @@ class ColorWheel(QWidget):
         painter.restore()
 
     def draw_hue_indicator(self, painter, cx, cy, inner_r, outer_r):
+        # In OKLCh mode the ring uses OKLCh hue angles, not HSV
+        hue = self._oklch_h if (self.wheel_mode == "oklch-slice" and self._oklch_h is not None) else self.h
         if self.cfg.get("flipColorWheelHorizontally", False):
-            angle_deg = (150.0 - self.h) % 360.0
+            angle_deg = (150.0 - hue) % 360.0
         else:
-            angle_deg = (self.h + 30.0) % 360.0
+            angle_deg = (hue + 30.0) % 360.0
         rad = math.radians(angle_deg)
         r = (inner_r + outer_r) / 2.0
         pos_x = cx + r * math.cos(rad)
@@ -677,9 +803,9 @@ class ColorWheel(QWidget):
                 
                 rgb_r, rgb_g, rgb_b = lab_to_rgb(L_val, a_val, b_val)
                 
-                if (-0.5 <= rgb_r <= 255.5 and 
-                    -0.5 <= rgb_g <= 255.5 and 
-                    -0.5 <= rgb_b <= 255.5):
+                if (0.0 <= rgb_r <= 255.0 and
+                    0.0 <= rgb_g <= 255.0 and
+                    0.0 <= rgb_b <= 255.0):
                     
                     img.setPixelColor(x, y, QColor(
                         max(0, min(255, int(rgb_r))),
@@ -824,6 +950,9 @@ class ColorWheel(QWidget):
             delattr(self, "_cached_oklch_key")
         self._drag_scale = None
         self._drag_oklch_h = None
+        self._drag_slice = ""
+        self._drag_C = None
+        self._drag_L = None
         self.update()
         self.interactionFinished.emit()
 
@@ -834,14 +963,56 @@ class ColorWheel(QWidget):
         deg = math.degrees(angle)
         if deg < 0:
             deg += 360.0
-            
-        if self.cfg.get("flipColorWheelHorizontally", False):
-            self.h = (150.0 - deg) % 360.0
+
+        if self.wheel_mode == "oklch-slice":
+            # Mouse angle maps directly to OKLCh hue on the OKLCh ring
+            # (same mapping as the ConicalGradient which starts at 30°)
+            if self.cfg.get("flipColorWheelHorizontally", False):
+                oklch_h = (150.0 - deg) % 360.0
+            else:
+                oklch_h = (deg - 30.0) % 360.0
+            if oklch_h < 0:
+                oklch_h += 360.0
+            self._oklch_h = oklch_h
+            self._drag_oklch_h = None
+
+            # Derive ring L, C to compute the colour at this hue
+            if hasattr(self, '_drag_L') and self._drag_L is not None:
+                L_ring, C_ring = self._drag_L, self._drag_C
+            elif self._oklch_L is not None:
+                L_ring, C_ring = self._oklch_L, self._oklch_C
+            else:
+                cr, cg, cb = self.get_color()
+                L_ring, C_ring, _ = rgb_to_oklch(cr, cg, cb)
+
+            # Keep _oklch_* triad in sync so on_wheel_color_changed can pass
+            # the exact OKLCh values to update_ui_colors without an RGB
+            # round-trip (which would shift the hue ~0.2° on the H slider).
+            self._oklch_L = L_ring
+            self._oklch_C = C_ring
+
+            rr, gg, bb = oklch_to_rgb(L_ring, C_ring, oklch_h)
+            r = max(0, min(255, int(rr)))
+            g = max(0, min(255, int(gg)))
+            b = max(0, min(255, int(bb)))
+            self.h, self.s, self.v = rgb_to_hsv(r, g, b)
+            if self.s > 0.5:
+                self._last_hue = self.h
+
+            if hasattr(self, "_cached_oklch_key"):
+                delattr(self, "_cached_oklch_key")
+            if hasattr(self, "_bdry_h"):
+                delattr(self, "_bdry_h")
         else:
-            self.h = (deg - 30.0) % 360.0
-            
-        if self.h < 0:
-            self.h += 360.0
+            if self.cfg.get("flipColorWheelHorizontally", False):
+                self.h = (150.0 - deg) % 360.0
+            else:
+                self.h = (deg - 30.0) % 360.0
+            if self.h < 0:
+                self.h += 360.0
+            if self.s > 0.5:
+                self._last_hue = self.h
+
         self.update()
         r, g, b = self.get_color()
         self.colorChanged.emit(r, g, b)
@@ -964,19 +1135,13 @@ class ColorWheel(QWidget):
         self.colorChanged.emit(r, g, b)
 
     def draw_oklch_slice(self, painter, cx, cy, r):
-        # Derive OKLCh hue from current RGB color, NOT from self.h (which is HSV hue).
-        # OKLCh hue and HSV hue are different angular mappings — passing HSV h to
-        # OKLCh functions produces a slice at the wrong hue.
+        # Derive OKLCh hue from drag cache, stored state, or current RGB color
         oklch_h = getattr(self, '_drag_oklch_h', None)
+        if oklch_h is None:
+            oklch_h = self._oklch_h
         if oklch_h is None:
             rgb_r, rgb_g, rgb_b = self.get_color()
             _, _, oklch_h = rgb_to_oklch(rgb_r, rgb_g, rgb_b)
-
-        cache_key = (int(oklch_h), r, "oklch", self.is_active_interaction())
-        if hasattr(self, "_cached_oklch_key") and self._cached_oklch_key == cache_key and hasattr(self, "_cached_oklch_img"):
-            painter.drawImage(int(self._cached_oklch_minx), int(self._cached_oklch_miny), self._cached_oklch_img)
-            self._draw_slice_outline(painter, "oklch")
-            return
 
         hy = r * 0.866
         min_x = int(math.floor(cx - r * 0.5))
@@ -988,79 +1153,114 @@ class ColorWheel(QWidget):
         if width <= 0 or height <= 0:
             return
 
-        # Only subsample for hue changes (ring/slider), not internal slice drag
-        is_active = self.is_active_interaction()
-        subsample = 3 if (is_active and self.dragging != "oklch-slice") else 1
-        sub_w = max(1, (width + subsample - 1) // subsample)
-        sub_h = max(1, (height + subsample - 1) // subsample)
+        cache_key = (round(oklch_h, 1), r, "oklch", self.is_active_interaction())
+        img_ready = (hasattr(self, "_cached_oklch_key")
+                     and self._cached_oklch_key == cache_key
+                     and hasattr(self, "_cached_oklch_img"))
 
-        img = QImage(sub_w, sub_h, QImage.Format.Format_ARGB32)
-        img.fill(0)
+        if not img_ready:
+            # Only subsample for hue changes (ring/slider), not internal slice drag
+            is_active = self.is_active_interaction()
+            subsample = 3 if (is_active and self.dragging != "oklch-slice") else 1
+            sub_w = max(1, (width + subsample - 1) // subsample)
+            sub_h = max(1, (height + subsample - 1) // subsample)
 
-        # Sample max chroma at multiple L; clamp rightmost edge within ring
-        max_c = max(
-            find_max_oklch_c(0.2, oklch_h),
-            find_max_oklch_c(0.5, oklch_h),
-            find_max_oklch_c(0.8, oklch_h),
-        )
-        scale = (r * 1.05) / max(max_c, 0.001)
+            img = QImage(sub_w, sub_h, QImage.Format.Format_ARGB32)
+            img.fill(0)
 
-        sub_edge_x = [min_x] * sub_h
+            scale = self._oklch_scale_for_hue(oklch_h, r)
 
-        for y in range(sub_h):
-            py = min_y + y * subsample
-            L = max(0.0, min(1.0, (cy + hy - py) / (2.0 * hy)))
+            for y in range(sub_h):
+                py = min_y + y * subsample
+                L = max(0.0, min(1.0, (cy + hy - py) / (2.0 * hy)))
 
-            for x in range(sub_w):
-                px = min_x + x * subsample
-                C = max(0.0, (px - min_x) / scale)
+                for x in range(sub_w):
+                    px = min_x + x * subsample
+                    C = max(0.0, (px - min_x) / scale)
 
-                rgb_r, rgb_g, rgb_b = oklch_to_rgb(L, C, oklch_h)
+                    rgb_r, rgb_g, rgb_b = oklch_to_rgb(L, C, oklch_h)
 
-                if (-0.5 <= rgb_r <= 255.5 and
-                    -0.5 <= rgb_g <= 255.5 and
-                    -0.5 <= rgb_b <= 255.5):
-                    img.setPixelColor(x, y, QColor(
-                        max(0, min(255, int(rgb_r))),
-                        max(0, min(255, int(rgb_g))),
-                        max(0, min(255, int(rgb_b)))
-                    ))
-                    if px > sub_edge_x[y]:
-                        sub_edge_x[y] = px
+                    if not (0.0 <= rgb_r <= 255.0 and
+                            0.0 <= rgb_g <= 255.0 and
+                            0.0 <= rgb_b <= 255.0):
+                        continue
 
-        self._cached_oklch_key = cache_key
-        if subsample > 1:
-            self._cached_oklch_img = img.scaled(width, height, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        else:
-            self._cached_oklch_img = img
-        self._cached_oklch_minx = min_x
-        self._cached_oklch_miny = min_y
+                    r8 = max(0, min(255, int(rgb_r)))
+                    g8 = max(0, min(255, int(rgb_g)))
+                    b8 = max(0, min(255, int(rgb_b)))
 
-        painter.drawImage(min_x, min_y, self._cached_oklch_img)
+                    img.setPixelColor(x, y, QColor(r8, g8, b8))
 
-        edge_x = [min_x] * height
-        for y in range(height):
-            sub_y = min(sub_h - 1, y // subsample) if subsample > 1 else y
-            edge_x[y] = sub_edge_x[sub_y]
-        self._cached_oklch_edge = (edge_x, min_x, min_y, max_y, height)
-        self._draw_slice_outline(painter, "oklch")
+            self._cached_oklch_key = cache_key
+            if subsample > 1:
+                self._cached_oklch_img = img.scaled(
+                    width, height,
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.FastTransformation)
+            else:
+                self._cached_oklch_img = img
+            self._cached_oklch_minx = min_x
+            self._cached_oklch_miny = min_y
+
+        painter.drawImage(int(self._cached_oklch_minx),
+                          int(self._cached_oklch_miny),
+                          self._cached_oklch_img)
+
+        # ── sRGB gamut boundary outline ──
+        # Trace the max-C curve rightward, then close along C=0 (the
+        # neutral axis).  201-point boundary gives a sharp peak.
+        scale = getattr(self, '_bdry_scale', None)
+        if scale is None:
+            scale = self._oklch_scale_for_hue(oklch_h, r)
+        _, bdry = self._oklch_boundary_data(oklch_h)
+
+        path = QPainterPath()
+        # 1) Gamut edge: L=0 → L=1 (left to right along the max-C curve)
+        for i, (C_max, L_val) in enumerate(bdry):
+            px_b = min_x + C_max * scale
+            py_b = cy + hy * (1.0 - 2.0 * L_val)
+            if i == 0:
+                path.moveTo(px_b, py_b)
+            else:
+                path.lineTo(px_b, py_b)
+        # 2) Return along C=0 (neutral axis) — L=1 → L=0
+        px_c0_top = min_x  # C=0, L=1
+        py_c0_top = cy + hy * (1.0 - 2.0 * 1.0)  # cy - hy
+        px_c0_bot = min_x  # C=0, L=0
+        py_c0_bot = cy + hy * (1.0 - 2.0 * 0.0)  # cy + hy
+        path.lineTo(px_c0_top, py_c0_top)
+        path.lineTo(px_c0_bot, py_c0_bot)
+        path.closeSubpath()
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor(0, 0, 0, 100), 1.0))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(path)
+        painter.restore()
 
     def draw_oklch_indicator(self, painter, cx, cy, r):
         hy = r * 0.866
         min_x = int(math.floor(cx - r * 0.5))
 
-        # Use the same OKLCh hue as the slice (from drag cache or derive from current color)
+        # Hue from drag cache or stored OKLCh state (avoids round-trip drift)
         oklch_h = getattr(self, '_drag_oklch_h', None)
+        if oklch_h is None:
+            oklch_h = self._oklch_h
+
         if oklch_h is None:
             rgb_r, rgb_g, rgb_b = self.get_color()
             _, _, oklch_h = rgb_to_oklch(rgb_r, rgb_g, rgb_b)
 
-        max_c = max(find_max_oklch_c(0.2, oklch_h), find_max_oklch_c(0.5, oklch_h), find_max_oklch_c(0.8, oklch_h))
-        scale = (r * 1.05) / max(max_c, 0.001)
+        scale = self._oklch_scale_for_hue(oklch_h, r)
 
         if getattr(self, '_drag_slice', '') == "oklch" and hasattr(self, '_drag_C'):
             C = self._drag_C
             L = self._drag_L
+        elif self._oklch_C is not None and self._oklch_L is not None:
+            # Use direct OKLCh state (set by main_window) — no RGB round-trip
+            C = self._oklch_C
+            L = self._oklch_L
         else:
             rgb_r, rgb_g, rgb_b = self.get_color()
             L_ok, C_ok, h_ok = rgb_to_oklch(rgb_r, rgb_g, rgb_b)
@@ -1076,11 +1276,14 @@ class ColorWheel(QWidget):
         hy = r * 0.866
         min_x = int(math.floor(cx - r * 0.5))
         if not hasattr(self, '_drag_scale') or self._drag_scale is None:
-            # Lock in OKLCh hue from current color at drag start — NOT self.h (HSV hue)
-            cr, cg, cb = self.get_color()
-            _, _, oklch_h = rgb_to_oklch(cr, cg, cb)
-            max_c = max(find_max_oklch_c(0.2, oklch_h), find_max_oklch_c(0.5, oklch_h), find_max_oklch_c(0.8, oklch_h))
-            self._drag_scale = (r * 1.05) / max(max_c, 0.001)
+            # Lock in OKLCh hue from stored state — avoids RGB→OKLCh
+            # round-trip drift (~0.2° per interaction). Fall back to
+            # rgb_to_oklch only when _oklch_h has never been set.
+            oklch_h = self._oklch_h
+            if oklch_h is None:
+                cr, cg, cb = self.get_color()
+                _, _, oklch_h = rgb_to_oklch(cr, cg, cb)
+            self._drag_scale = self._oklch_scale_for_hue(oklch_h, r)
             self._drag_oklch_h = oklch_h
         scale = self._drag_scale
         oklch_h = self._drag_oklch_h
@@ -1099,11 +1302,31 @@ class ColorWheel(QWidget):
         rgb_b_clamped = max(0.0, min(255.0, rgb_b))
 
         h_new, s_new, v_new = rgb_to_hsv(rgb_r_clamped, rgb_g_clamped, rgb_b_clamped)
+        if s_new > 0.5:
+            self._last_hue = h_new
+            self.h = h_new
+        else:
+            # C ≈ 0: rgb_to_hsv returns h=0 for achromatic colors.
+            # Probe the hue direction at a fixed mid-gray point with just
+            # enough chroma to survive every noise filter and give atan2 a
+            # clean signal, without being so saturated that the hue mapping
+            # drifts noticeably from the C≈0 region (avoids a "colour jump"
+            # when the user barely crosses the C=0 boundary).
+            rr_eps, gg_eps, bb_eps = oklch_to_rgb(0.5, 0.02, oklch_h)
+            h_eps, _, _ = rgb_to_hsv(
+                max(0.0, min(255.0, rr_eps)),
+                max(0.0, min(255.0, gg_eps)),
+                max(0.0, min(255.0, bb_eps)))
+            self.h = h_eps
         self.s = s_new
         self.v = v_new
         self._drag_C = C
         self._drag_L = L
         self._drag_slice = "oklch"
+        # Keep _oklch_* in sync so hue ring colors match live drag position
+        self._oklch_L = L
+        self._oklch_C = C
+        self._oklch_h = oklch_h
         self.update()
         self.colorChanged.emit(int(rgb_r_clamped), int(rgb_g_clamped), int(rgb_b_clamped))
 
