@@ -4,6 +4,7 @@ from PyQt6.QtCore import QThread, pyqtSignal, QObject
 
 # Import native modules
 from core import csp_brush_link
+from core import csp_companion_sync
 from core import sai2_brush_link
 from core import udm_brush_link
 from core import photoshop_color_sync
@@ -21,7 +22,7 @@ class MemorySyncThread(QThread):
         self.running = True
         
         # State variables
-        self.software_mode = "csp"  # "csp" | "sai" | "udm" | "ps"
+        self.software_mode = "csp"  # "csp" | "sai" | "udm" | "ps" | "companion"
         self.sync_enabled = True
         self.paused = False
         
@@ -33,6 +34,11 @@ class MemorySyncThread(QThread):
         # Cache to prevent loops
         self.last_synced_color = None  # (r, g, b)
         self.pending_write_color = None  # (r, g, b)
+        self.pending_hsv_u32 = None      # (h, s, v) uint32 for companion mode
+        self.pending_source_space = None # e.g. "hsv", "hls" — for CSP memory mode
+        self.pending_source_values = None # float values in that space
+        self.companion_hsv = None
+        self._last_companion_hsv = (0.0, 0.0, 0.0)
         self.last_write_time = 0.0
         
         # Instantiate per-software sync backends
@@ -40,6 +46,7 @@ class MemorySyncThread(QThread):
         self.sai2_sync = sai2_brush_link.SAI2Sync()
         self.udm_sync = udm_brush_link.UDMSync()
         self.ps_sync = photoshop_color_sync.PhotoshopSync()
+        self.companion_sync = csp_companion_sync.CSPCompanionSync()
         
         self.update_versions()
         
@@ -59,8 +66,11 @@ class MemorySyncThread(QThread):
         if not enabled:
             self.last_synced_color = None
             
-    def write_color(self, r, g, b):
+    def write_color(self, r, g, b, hsv_u32=None, source_space=None, source_values=None):
         self.pending_write_color = (r, g, b)
+        self.pending_hsv_u32 = hsv_u32
+        self.pending_source_space = source_space
+        self.pending_source_values = source_values
         self.last_write_time = time.time()
         
     def get_active_pid(self):
@@ -76,6 +86,8 @@ class MemorySyncThread(QThread):
         elif self.software_mode == 'ps':
             status_ = self.ps_sync.status()
             return status_.get('pid')
+        elif self.software_mode == 'companion':
+            return None
         return None
         
     def stop(self, timeout_ms: int = 3000):
@@ -105,18 +117,36 @@ class MemorySyncThread(QThread):
                 # 1) Handle write request
                 if self.pending_write_color is not None:
                     r, g, b = self.pending_write_color
+                    hsv_override = self.pending_hsv_u32
+                    src_space = self.pending_source_space
+                    src_vals = self.pending_source_values
                     self.pending_write_color = None
-                    
+                    self.pending_hsv_u32 = None
+                    self.pending_source_space = None
+                    self.pending_source_values = None
+
                     self.last_synced_color = (r, g, b)
-                    
+
                     if self.software_mode == 'csp':
-                        self.csp_sync.set_color(r, g, b)
+                        self.csp_sync.set_color(r, g, b, source_space=src_space, source_values=src_vals)
                     elif self.software_mode == 'sai':
                         self.sai2_sync.set_color(r, g, b)
                     elif self.software_mode == 'udm':
                         self.udm_sync.set_color(r, g, b)
                     elif self.software_mode == 'ps':
                         self.ps_sync.set_color(r, g, b)
+                    elif self.software_mode == 'companion':
+                        self.companion_sync.set_color(r, g, b, hsv_u32=hsv_override)
+                        # Seed dedup with what we just wrote so the read-back
+                        # echo is suppressed (HSV dedup below catches it).
+                        if hsv_override:
+                            _U32 = 4294967295
+                            self.companion_hsv = (
+                                hsv_override[0] / _U32 * 360.0,
+                                hsv_override[1] / _U32 * 100.0,
+                                hsv_override[2] / _U32 * 100.0,
+                            )
+                            self._last_companion_hsv = self.companion_hsv
                     continue
                 
                 # 2) Handle read request (polling)
@@ -139,6 +169,12 @@ class MemorySyncThread(QThread):
                     color = self.ps_sync.get_color()
                     status = self.ps_sync.status()
                     connected = status.get('connected', False)
+                elif self.software_mode == 'companion':
+                    color = self.companion_sync.get_color_hsv()
+                    if color: self.companion_hsv = (color["h"], color["s"], color["v"])
+                    else: self.companion_hsv = None
+                    status = self.companion_sync.status()
+                    connected = status.get('connected', False)
                     
                 # Notify status change
                 status_key = (self.software_mode, connected)
@@ -155,10 +191,18 @@ class MemorySyncThread(QThread):
                 if r is None or g is None or b is None:
                     continue
                     
-                # If we recently wrote a color locally, ignore incoming reads to prevent drag feedback loops
-                if time.time() - self.last_write_time < 0.8:
-                    continue
-                    
+                if self.last_synced_color is not None:
+                    if self.software_mode == 'companion' and self.companion_hsv is not None:
+                        lh, ls, lv = self._last_companion_hsv
+                        ch, cs, cv = self.companion_hsv
+                        if abs(ch - lh) <= 0.1 and abs(cs - ls) <= 0.5 and abs(cv - lv) <= 0.5:
+                            continue
+                        self._last_companion_hsv = self.companion_hsv
+                    else:
+                        lr, lg, lb = self.last_synced_color
+                        if abs(r - lr) <= 2 and abs(g - lg) <= 2 and abs(b - lb) <= 2:
+                            continue
+
                 color_tuple = (r, g, b)
                 if self.last_synced_color != color_tuple:
                     self.last_synced_color = color_tuple
