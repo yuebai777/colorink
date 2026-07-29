@@ -4,3 +4,8 @@ keyboard>=0.13.5
 psutil>=5.9.8
 dxcam>=0.3.0
 numpy>=2.0
+
+# CSP Companion QR scanning
+pyzbar>=0.1.9
+Pillow>=10.0.0
+mss>=9.0.0

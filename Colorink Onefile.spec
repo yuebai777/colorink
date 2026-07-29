@@ -30,10 +30,25 @@ def _find_dxcam_pyd():
         return pyd
     return None
 
+def _find_site_file(package, filename):
+    for sp in site.getsitepackages() + [site.getusersitepackages()]:
+        path = os.path.join(sp, package, filename)
+        if os.path.exists(path):
+            return path
+    return None
+
 _dxcam_pyd = _find_dxcam_pyd()
 _binaries = []
 if _dxcam_pyd:
     _binaries.append((_dxcam_pyd, 'dxcam/processor'))
+
+for _zbar_name in ('libzbar-64.dll', 'libiconv.dll'):
+    _zbar_path = _find_site_file('pyzbar', _zbar_name)
+    if _zbar_path:
+        _binaries.append((_zbar_path, 'pyzbar'))
+        print(f"  -> Including pyzbar runtime DLL: {_zbar_path}")
+    else:
+        print(f"  WARNING: {_zbar_name} not found — QR scanning may be unavailable")
 
 # Build data files list (with existence checks for optional overlay EXEs)
 _datas = []
@@ -76,6 +91,15 @@ a = Analysis(
         'dxcam._libs.user32',
         'comtypes',
         'comtypes.client',
+        # CSP Companion QR scanning uses delayed imports.
+        'mss',
+        'mss.base',
+        'mss.screenshot',
+        'mss.windows',
+        'pyzbar',
+        'pyzbar.pyzbar',
+        'PIL',
+        'PIL.Image',
         'PyQt6.QtOpenGL',
         'PyQt6.QtOpenGLWidgets',
     ],
