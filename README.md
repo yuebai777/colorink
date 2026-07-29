@@ -4,16 +4,17 @@
 
 ## 功能特性
 
-- **双取色模式** — HSV 色轮 + CIELAB 色空间，实时预览
+- **色空间模块** — HSV / HLS / LCH 三模块，一键切换对应色轮与滑块组合
 - **多色域滑块** — RGB、HSV、HSL、CIELAB、OKLab、OKLCh，全部可调节
 - **前景 / 背景双色槽** — 一键交换、复制、对比
 - **取色历史** — 持久化色板，行列和色块大小可调
 - **全屏灰度滤镜** — 一键切换感知型（OKLCh）或 BT.709 亮度灰度滤镜，覆盖整个屏幕（支持 DirectComposition / GDI）
 - **全局热键** — 无需切换窗口即可取色或开关滤镜
+- **CSP Companion 同步** — 支持 CLIP STUDIO PAINT 智能手机连接协议，无需内存扫描即可同步颜色
 - **Photoshop 桥接** — 通过 JSX 脚本直接发送颜色到 PS 前景 / 背景色
 - **DPI 自适应** — 正确处理多显示器 DPI 变化
 - **无边框置顶窗口** — 极简悬浮，不用时贴边隐藏
-- **高度可定制** — 滑块顺序 / 显隐、色空间模式、主题、UI 缩放
+- **高度可定制** — 滑块顺序 / 显隐、色空间模块、主题、UI 缩放
 
 ## 截图
 
@@ -56,7 +57,12 @@ pip install pyinstaller
 python build_pyqt.py
 ```
 
-打包输出在 `dist/` 目录。
+打包输出在 `dist/` 目录：
+
+- `dist/Onedir/Colorink/`：目录版，便于排查运行依赖
+- `dist/Onefile/Colorink.exe`：单文件版，适合作为 GitHub Release 下载资产
+
+CSP Companion 的二维码自动扫描依赖 `pyzbar`、`Pillow`、`mss`；源码安装会随 `requirements.txt` 安装，发行包已内置。二维码不可用时仍可手动粘贴连接 URL。
 
 ## License
 
