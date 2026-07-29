@@ -32,6 +32,13 @@ def _find_dxcam_pyd():
         return pyd
     return None
 
+def _find_site_file(package, filename):
+    for sp in site.getsitepackages() + [site.getusersitepackages()]:
+        path = os.path.join(sp, package, filename)
+        if os.path.exists(path):
+            return path
+    return None
+
 _dxcam_pyd = _find_dxcam_pyd()
 _binaries = []
 if _dxcam_pyd:
@@ -39,6 +46,14 @@ if _dxcam_pyd:
     print(f"  -> Including dxcam C extension: {_dxcam_pyd}")
 else:
     print("  WARNING: _numpy_kernels.pyd not found — dxcam may run slower")
+
+for _zbar_name in ('libzbar-64.dll', 'libiconv.dll'):
+    _zbar_path = _find_site_file('pyzbar', _zbar_name)
+    if _zbar_path:
+        _binaries.append((_zbar_path, 'pyzbar'))
+        print(f"  -> Including pyzbar runtime DLL: {_zbar_path}")
+    else:
+        print(f"  WARNING: {_zbar_name} not found — QR scanning may be unavailable")
 
 # Build data files list (with existence checks for optional overlay EXEs)
 _datas = []
@@ -83,6 +98,15 @@ a = Analysis(
         # comtypes (needed by dxcam for WinRT)
         'comtypes',
         'comtypes.client',
+        # CSP Companion QR scanning uses delayed imports.
+        'mss',
+        'mss.base',
+        'mss.screenshot',
+        'mss.windows',
+        'pyzbar',
+        'pyzbar.pyzbar',
+        'PIL',
+        'PIL.Image',
         # Ensure PyQt OpenGL modules are included
         'PyQt6.QtOpenGL',
         'PyQt6.QtOpenGLWidgets',
