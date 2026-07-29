@@ -71,6 +71,27 @@ def hsv_to_hls_floats(h, s, v):
         hsl_s = 0.0
     return h_f, l_f, hsl_s
 
+
+# ── Color-space module definitions ────────────────────────────────────────
+# Each module bundles a default wheel mode + slider subset (user can
+# still toggle individual slider groups in settings via the "module
+# default + adjustable" policy).
+_MODULE_DEFS = {
+    "hsv":  {"wheel": "hsv-square",   "sliders": ["HSV", "RGB", "LAB"]},
+    "hls":  {"wheel": "hls-triangle",  "sliders": ["HSL", "RGB", "LAB"]},
+    "lch":  {"wheel": "oklch-slice",   "sliders": ["OKLCh", "OKLab", "RGB"]},
+}
+_MODULE_NAMES = {"hsv": "HSV", "hls": "HLS", "lch": "LCH"}
+_MODULE_ORDER = ["hsv", "hls", "lch"]
+
+# ── Normalized chroma scale for the C_oklch slider ────────────────────────
+# The C slider keeps its handle stable while L/H changes by representing a
+# fraction of the current in-gamut chroma boundary. L-only drags still use
+# the absolute C/H snapshot for authentic OKLCh coordinates.
+_C_SCALE = 1000          # 0.001 chroma resolution (legacy; not used for slider→C)
+_C_RAW_MAX = 100         # slider range → 0..100% of max chroma
+
+
 class TitleBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -381,21 +402,28 @@ class ClickableFrame(QFrame):
 
 
 class PaneWithModeButton(QWidget):
-    """Base for stacked panes that own the floating mode-switcher button.
+    """Base for stacked panes that own a floating mode-switcher button.
 
-    The button is positioned in the pane's OWN coordinate system on every
-    resize — so it always sits at the bottom-right of whatever geometry the
-    pane actually has, regardless of when the parent layout settles. No
-    sizeHint guessing, no deferred QTimer re-passes.
+    The primary button sits at the bottom-right of the pane.  An optional
+    *module* button is placed immediately to its left with a small gap.
+
+    Both are repositioned on every resize so they stay anchored regardless
+    of when the parent layout settles.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
         self._mode_btn = None
-        self._btn_size = 28      # px, updated by MainWindow from uiScale
+        self._module_btn = None       # optional second button (left of mode)
+        self._btn_size = 28           # px, updated by MainWindow from uiScale
         self._btn_margin = 6
+        self._btn_gap = 4
 
     def set_mode_button(self, btn):
         self._mode_btn = btn
+
+    def set_module_button(self, btn):
+        """Optional second button placed to the LEFT of the mode button."""
+        self._module_btn = btn
 
     def set_mode_button_metrics(self, size, margin):
         self._btn_size = size
@@ -407,19 +435,36 @@ class PaneWithModeButton(QWidget):
         self._reposition_mode_button()
 
     def _reposition_mode_button(self):
-        btn = self._mode_btn
-        if btn is None:
-            return
         bw = self._btn_size
         bh = self._btn_size
         m = self._btn_margin
-        px = self.width() - m - bw
-        py = self.height() - m - bh
-        if px < 0 or py < 0:
-            return  # pane not laid out yet
-        btn.setFixedSize(bw, bh)
-        btn.setGeometry(px, py, bw, bh)
-        btn.raise_()
+        gap = self._btn_gap
+        pw = self.width()
+        ph = self.height()
+
+        # Primary button: bottom-right corner
+        if self._mode_btn is not None:
+            px = pw - m - bw
+            py = ph - m - bh
+            if px >= 0 and py >= 0:
+                self._mode_btn.setFixedSize(bw, bh)
+                self._mode_btn.setGeometry(px, py, bw, bh)
+                self._mode_btn.raise_()
+
+        # Module button: to the left of the mode button
+        if self._module_btn is not None:
+            # Position relative to mode button's left edge; fall back to
+            # bottom-right if mode button isn't set.
+            if self._mode_btn is not None:
+                left_anchor = pw - m - bw
+            else:
+                left_anchor = pw - m
+            mx = left_anchor - gap - bw
+            my = ph - m - bh
+            if mx >= 0 and my >= 0:
+                self._module_btn.setFixedSize(bw, bh)
+                self._module_btn.setGeometry(mx, my, bw, bh)
+                self._module_btn.raise_()
 
 
 class WheelPane(PaneWithModeButton):
@@ -484,7 +529,7 @@ class ColorPreviewBox(QWidget):
         spacing = int(4 * wheel_scale)
         
         if self.position_mode == "top-left":
-            margin_y = title_bar_h + spacing + int(6 * wheel_scale)
+            margin_y = title_bar_h + spacing
             self.move(margin_x, margin_y)
         else:
             self.move(margin_x, window_h - sliders_h - box_dim - int(6 * wheel_scale))
@@ -644,6 +689,19 @@ class MainWindow(QMainWindow):
         self._deferred_color_timer.setInterval(16)
         self._deferred_color_timer.timeout.connect(self._apply_deferred_color_updates)
         self._deferred_color_pending = None  # latest (r, g, b) awaiting render
+        self._oklch_target_h = 0.0
+        self._oklch_target_frac = 0.0
+        self._gamut_oklch_C = None
+        self._gamut_oklch_h = None
+
+        # Content-driven window height state
+        self._last_auto_height = None
+        self._manual_height_override = False
+        self._adjusting_content_height = False
+        self._content_height_adjust_pending = False
+        self._content_height_timer = QTimer(self)
+        self._content_height_timer.setSingleShot(True)
+        self._content_height_timer.timeout.connect(self._run_deferred_content_height)
         
         # Dragging state (mouse click-through toggle override)
         self.follow_mouse_active = self.cfg.get("followMouseEnabled", False)
@@ -748,7 +806,18 @@ class MainWindow(QMainWindow):
         self.color_wheel.colorChanged.connect(self.on_wheel_color_changed)
         self.color_wheel.interactionFinished.connect(self.on_interaction_finished)
         wheel_layout.addWidget(self.color_wheel)
-        
+
+        # Source-space tracking — carries the "native" color space the user
+        # last interacted with, so sync backends can write source→memory
+        # without an RGB→source round-trip.
+        self._source_space = "rgb"     # "hsv" | "hls" | "rgb" | "lab" | "oklab" | "oklch" | "cmyk"
+        self._source_values = None     # {ch: float, ...}  — float values in that space
+        # Per-slot source tracking (fg / bg)
+        self._fg_source_space = "rgb"
+        self._fg_source_values = None
+        self._bg_source_space = "rgb"
+        self._bg_source_values = None
+
         # Floating mode buttons parented to their respective views
         self.btn_mode_wheel = QPushButton("☉", self.pane_wheel)
         self.btn_mode_wheel.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -818,18 +887,13 @@ class MainWindow(QMainWindow):
 
         # Sync slider state
         self.update_ui_colors(self.current_rgb[0], self.current_rgb[1], self.current_rgb[2], source="init")
-        
-        # Set initial color wheel mode
-        cfg_color_mode = self.cfg.get("colorWheelMode", "hsv")
-        cfg_wheel_mode = self.cfg.get("wheelMode", "hsv-square")
-        if cfg_color_mode == "hls":
-            self.color_wheel.set_wheel_mode("hls-triangle")
-        elif cfg_color_mode == "rgb":
-            self.color_wheel.set_wheel_mode("rgb-slice")
-        elif cfg_color_mode == "oklch":
-            self.color_wheel.set_wheel_mode("oklch-slice")
-        else:
-            self.color_wheel.set_wheel_mode(cfg_wheel_mode)
+
+        # Create floating module switch button (next to ⊙/△)
+        self._init_module_button()
+
+        # Apply color-space module (wheel mode + slider set from config or default)
+        self._current_module = self.cfg.get("colorSpaceModule", "hsv")
+        self._apply_module(self._current_module)
         
         # Apply slider visibility and order on startup
         self.refresh_slider_visibility_and_order()
@@ -904,14 +968,36 @@ class MainWindow(QMainWindow):
             self.cfg.get("historyRows", 2),
             self.cfg.get("historySwatchSize", 18),
         )
-        # Restore persisted colors (config stores a list of [r,g,b] triplets)
+        # Restore persisted colors (config stores a list of entries — old
+        # format [r,g,b] or new format {"rgb":[r,g,b],"s":"hsv","v":[h,s,v]})
         persisted = self.cfg.get("historyColors", [])
+        self._history_source = {}  # index → {"source":..., "values":...}
+        self._color_source_store = {}  # hex_key → {"rgb":..., "s":..., "v":...}
+        self._SOURCE_CHANNELS = {
+            "rgb": ("r", "g", "b"), "cmyk": ("c", "m", "y", "k"),
+            "hsv": ("h", "s", "v"), "hls": ("h", "l", "s"),
+            "lab": ("l", "a", "b"), "oklab": ("L", "a", "b"), "oklch": ("L", "C", "h"),
+        }
         if persisted:
             from PyQt6.QtGui import QColor as _QColor
             initial_colors = []
-            for entry in persisted:
-                if isinstance(entry, (list, tuple)) and len(entry) >= 3:
-                    initial_colors.append(_QColor(int(entry[0]), int(entry[1]), int(entry[2])))
+            for i, entry in enumerate(persisted):
+                src = vals = None
+                if isinstance(entry, list):
+                    r, g, b = int(entry[0]), int(entry[1]), int(entry[2])
+                elif isinstance(entry, dict):
+                    rgb = entry.get("rgb", [0, 0, 0])
+                    r, g, b = int(rgb[0]), int(rgb[1]), int(rgb[2])
+                    src = entry.get("s")
+                    vals = entry.get("v")
+                    if src and vals:
+                        self._history_source[i] = {"source": src, "values": vals}
+                else:
+                    continue
+                hex_key = f"#{r:02x}{g:02x}{b:02x}"
+                initial_colors.append(_QColor(r, g, b))
+                if src and vals:
+                    self._color_source_store[hex_key] = {"rgb": [r, g, b], "s": src, "v": vals}
             self.color_history.set_colors(initial_colors)
         history_lay.addWidget(self.color_history)
         self.sliders_layout.addWidget(self.slider_containers["History"])
@@ -941,7 +1027,7 @@ class MainWindow(QMainWindow):
             elif chan in ("L_oklab", "L_oklch"):
                 slider.setRange(0, 100)
             elif chan == "C_oklch":
-                slider.setRange(0, 100)
+                slider.setRange(0, _C_RAW_MAX)
             elif chan == "h_oklch":
                 slider.setRange(0, 360)
             else:
@@ -976,17 +1062,27 @@ class MainWindow(QMainWindow):
 
     def select_fg_slot(self):
         if self.active_slot != "fg":
+            # Save current source to bg slot
+            self._bg_source_space = self._source_space
+            self._bg_source_values = self._source_values
             self.active_slot = "fg"
             self.preview_box.update_slot_borders(self.active_slot)
-            # Load fg color into visualizers and sliders
+            # Restore fg source
+            self._source_space = self._fg_source_space
+            self._source_values = self._fg_source_values
             col = self.preview_box.fg_color
             self.update_ui_colors(col.red(), col.green(), col.blue(), source="slot_change")
 
     def select_bg_slot(self):
         if self.active_slot != "bg":
+            # Save current source to fg slot
+            self._fg_source_space = self._source_space
+            self._fg_source_values = self._source_values
             self.active_slot = "bg"
             self.preview_box.update_slot_borders(self.active_slot)
-            # Load bg color into visualizers and sliders
+            # Restore bg source
+            self._source_space = self._bg_source_space
+            self._source_values = self._bg_source_values
             col = self.preview_box.bg_color
             self.update_ui_colors(col.red(), col.green(), col.blue(), source="slot_change")
 
@@ -995,7 +1091,16 @@ class MainWindow(QMainWindow):
         fg = self.preview_box.fg_color
         bg = self.preview_box.bg_color
         self.preview_box.set_colors(bg, fg)
-        
+        # Swap source tracking
+        self._fg_source_space, self._bg_source_space = self._bg_source_space, self._fg_source_space
+        self._fg_source_values, self._bg_source_values = self._bg_source_values, self._fg_source_values
+        # Update current source to match newly active slot
+        if self.active_slot == "fg":
+            self._source_space = self._fg_source_space
+            self._source_values = self._fg_source_values
+        else:
+            self._source_space = self._bg_source_space
+            self._source_values = self._bg_source_values
         # Maintain active slot color
         active_color = bg if self.active_slot == "fg" else fg
         r, g, b = active_color.red(), active_color.green(), active_color.blue()
@@ -1004,10 +1109,24 @@ class MainWindow(QMainWindow):
     def on_history_color_picked(self, color):
         """User clicked a swatch in the history widget → load into active slot."""
         r, g, b = color.red(), color.green(), color.blue()
+        hex_key = f"#{r:02x}{g:02x}{b:02x}"
+        stored = self._color_source_store.get(hex_key)
+        if stored:
+            self._source_space = stored["s"]
+            # Reconstruct float values from stored list
+            vals_list = stored.get("v", [])
+            if hasattr(self, "_SOURCE_CHANNELS"):
+                ch_names = self._SOURCE_CHANNELS.get(self._source_space, [])
+                self._source_values = {ch: float(vals_list[i]) for i, ch in enumerate(ch_names) if i < len(vals_list)}
+            else:
+                self._source_values = None
+        else:
+            self._source_space = "rgb"
+            self._source_values = {"r": float(r), "g": float(g), "b": float(b)}
         self.update_ui_colors(r, g, b, source="history")
         if hasattr(self, "color_history"):
             updated = self.color_history.mark_selected(color)
-            self.cfg["historyColors"] = [[c.red(), c.green(), c.blue()] for c in updated]
+            self.cfg["historyColors"] = self._build_history_entries(updated)
             from core import config as _config
             _config.save_hotkey_config(self.cfg)
 
@@ -1018,12 +1137,47 @@ class MainWindow(QMainWindow):
             return
         r, g, b = self.current_rgb
         updated = self.color_history.record(r, g, b)
-        # Persist as plain [r,g,b] triplets (JSON-safe)
-        self.cfg["historyColors"] = [[int(c.red()), int(c.green()), int(c.blue())]
-                                     for c in updated]
-        # Save quietly — keep this off the hot path
+        # Cache source info for the newest entry
+        if self._source_space and self._source_values:
+            hex_key = f"#{r:02x}{g:02x}{b:02x}"
+            ch_names = self._SOURCE_CHANNELS.get(self._source_space, [])
+            vals_list = [round(float(self._source_values.get(ch, 0)), 4)
+                         for ch in ch_names]
+            self._color_source_store[hex_key] = {
+                "rgb": [r, g, b], "s": self._source_space, "v": vals_list,
+            }
+        self.cfg["historyColors"] = self._build_history_entries(list(updated))
         from core import config as _config
         _config.save_hotkey_config(self.cfg)
+
+    def _build_history_entries(self, colors):
+        """Convert QColor list to serialisable entries, preserving source info."""
+        entries = []
+        for c in colors:
+            hex_key = f"#{c.red():02x}{c.green():02x}{c.blue():02x}"
+            stored = self._color_source_store.get(hex_key)
+            if stored:
+                entries.append(stored)
+            else:
+                entries.append([int(c.red()), int(c.green()), int(c.blue())])
+        return entries
+
+    def _init_module_button(self):
+        """Create a floating button next to ⊙/△ to cycle HSV→HLS→LCH modules."""
+        btn = QPushButton("HSV", self.pane_wheel)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setToolTip("切换色彩空间模块 (HSV / HLS / LCH)")
+        btn.clicked.connect(self._next_module)
+        btn.setVisible(self.cfg.get("showModuleSwitchButton", True))
+        btn.setObjectName("ModuleButton")
+        self.pane_wheel.set_module_button(btn)
+        self.btn_module = btn
+
+    def _update_module_button_label(self):
+        if hasattr(self, "btn_module"):
+            name = {"hsv": "◉", "hls": "△", "lch": "◈"}.get(self._current_module, "◉")
+            self.btn_module.setText(name)
+            self.btn_module.setToolTip(f"模块: {_MODULE_NAMES.get(self._current_module, 'HSV')} (点击切换)")
 
     def update_mode_buttons_visibility(self):
         idx = self.stack.currentIndex()
@@ -1033,12 +1187,20 @@ class MainWindow(QMainWindow):
                 self.btn_mode_wheel.raise_()
             if hasattr(self, 'btn_mode_lab'):
                 self.btn_mode_lab.hide()
+            # Module button only visible in wheel pane
+            if hasattr(self, 'btn_module'):
+                show_module = self.cfg.get("showModuleSwitchButton", True)
+                self.btn_module.setVisible(show_module)
+                if show_module:
+                    self.btn_module.raise_()
         else:
             if hasattr(self, 'btn_mode_lab'):
                 self.btn_mode_lab.show()
                 self.btn_mode_lab.raise_()
             if hasattr(self, 'btn_mode_wheel'):
                 self.btn_mode_wheel.hide()
+            if hasattr(self, 'btn_module'):
+                self.btn_module.hide()
 
     def toggle_picker_mode(self):
         new_index = (self.stack.currentIndex() + 1) % 2
@@ -1085,15 +1247,37 @@ class MainWindow(QMainWindow):
         ls.avoid_top = max(0, bottom_right.y() + pad)
 
     def on_wheel_color_changed(self, r, g, b):
-        self.update_ui_colors(r, g, b, source="wheel")
+        wm = self.color_wheel.wheel_mode
+        src = {"triangle": "hsv", "hsv-square": "hsv", "hls-triangle": "hls",
+               "rgb-slice": "rgb", "oklch-slice": "oklch"}.get(wm, "hsv")
+        self._source_space = src
+        # Pass the wheel's native HSV so companion-mode writes preserve hue
+        # when saturation drops to ~0 (RGB→HSV loses hue for grayscale).
+        h = self.color_wheel.h
+        s = self.color_wheel.s
+        v = self.color_wheel.v
+        # In OKLCh mode, store the native LCH values as source so
+        # memory-mode CSP sync uses the original OKLCh data directly.
+        oklch_wheel = None
+        if wm == "oklch-slice":
+            cw = self.color_wheel
+            if cw._oklch_L is not None and cw._oklch_C is not None and cw._oklch_h is not None:
+                self._source_values = {"L": cw._oklch_L, "C": cw._oklch_C, "h": cw._oklch_h}
+                oklch_wheel = (cw._oklch_L, cw._oklch_C, cw._oklch_h)
+        self.update_ui_colors(r, g, b, source="wheel", hsv=(h, s, v),
+                              oklch=oklch_wheel)
 
     def on_lab_square_color_changed(self, r, g, b):
+        self._source_space = "lab"
+        self._source_values = None  # LAB square uses RGB internally
         self.update_ui_colors(r, g, b, source="lab")
 
     def on_rgb_slider_changed(self):
         r = self.slider_widgets["R"][0].value()
         g = self.slider_widgets["G"][0].value()
         b = self.slider_widgets["B"][0].value()
+        self._source_space = "rgb"
+        self._source_values = {"r": float(r), "g": float(g), "b": float(b)}
         h_hsv, s_hsv, v_hsv = rgb_to_hsv(r, g, b)
         self.update_ui_colors(r, g, b, source="sliders_rgb", hsv=(h_hsv, s_hsv, v_hsv))
 
@@ -1101,13 +1285,19 @@ class MainWindow(QMainWindow):
         h = self.slider_widgets["H_hsv"][0].value()
         s = self.slider_widgets["S_hsv"][0].value()
         v = self.slider_widgets["V_hsv"][0].value()
+        self._source_space = "hsv"
+        self._source_values = {"h": float(h), "s": float(s), "v": float(v)}
         r, g, b = hsv_to_rgb(h, s, v)
         self.update_ui_colors(r, g, b, source="sliders_hsv", hsv=(h, s, v))
 
     def on_hsl_slider_changed(self):
         h = self.slider_widgets["H_hsl"][0].value()
-        l_val = self.slider_widgets["L_hsl"][0].value() / 100.0
-        s_val = self.slider_widgets["S_hsl"][0].value() / 100.0
+        l_raw = self.slider_widgets["L_hsl"][0].value()
+        s_raw = self.slider_widgets["S_hsl"][0].value()
+        self._source_space = "hls"
+        self._source_values = {"h": float(h), "l": float(l_raw), "s": float(s_raw)}
+        l_val = l_raw / 100.0
+        s_val = s_raw / 100.0
         r, g, b = colorsys.hls_to_rgb(h / 360.0, l_val, s_val)
         h_hsv, s_hsv, v_hsv = hls_to_hsv_floats(h, l_val, s_val)
         self.update_ui_colors(int(r * 255), int(g * 255), int(b * 255), source="sliders_hsl", hsv=(h_hsv, s_hsv, v_hsv))
@@ -1116,12 +1306,13 @@ class MainWindow(QMainWindow):
         l_val = self.slider_widgets["L_lab"][0].value()
         a_val = self.slider_widgets["a_lab"][0].value()
         b_val = self.slider_widgets["b_lab"][0].value()
+        self._source_space = "lab"
+        self._source_values = {"l": float(l_val), "a": float(a_val), "b": float(b_val)}
         r, g, b = lab_to_rgb(l_val, a_val, b_val)
         r_clamped = max(0.0, min(255.0, r))
         g_clamped = max(0.0, min(255.0, g))
         b_clamped = max(0.0, min(255.0, b))
         h_hsv, s_hsv, v_hsv = rgb_to_hsv(r_clamped, g_clamped, b_clamped)
-        # Preserve current hue when a,b drop to achromatic
         if s_hsv < 1.0 and hasattr(self, 'color_wheel'):
             h_hsv = self.color_wheel.h
         r_int = int(r_clamped)
@@ -1130,79 +1321,313 @@ class MainWindow(QMainWindow):
         self.update_ui_colors(r_int, g_int, b_int, source="sliders_lab", hsv=(h_hsv, s_hsv, v_hsv))
 
     def on_oklab_slider_changed(self):
-        l_val = self.slider_widgets["L_oklab"][0].value()
-        a_val = self.slider_widgets["a_oklab"][0].value() / 100.0
-        b_val = self.slider_widgets["b_oklab"][0].value() / 100.0
-        r, g, b = oklab_to_rgb(l_val / 100.0, a_val, b_val)
+        sender = self.sender()
+        l_raw = self.slider_widgets["L_oklab"][0].value()
+        a_raw = self.slider_widgets["a_oklab"][0].value()
+        b_raw = self.slider_widgets["b_oklab"][0].value()
+
+        # ── L slider sync ──
+        # Both L_oklab and L_oklch always show the same value.
+        if sender == self.slider_widgets["L_oklab"][0]:
+            # User dragged L_oklab → push to L_oklch and let the OKLCh
+            # handler do the actual work (avoids double processing).
+            self.slider_widgets["L_oklch"][0].setValue(l_raw)
+            return
+        else:
+            # a or b changed → sync L_oklch silently
+            self.slider_widgets["L_oklch"][0].blockSignals(True)
+            self.slider_widgets["L_oklch"][0].setValue(l_raw)
+            self.slider_widgets["L_oklch"][0].blockSignals(False)
+
+        self._source_space = "oklab"
+        self._source_values = {"L": l_raw / 100.0, "a": a_raw / 100.0, "b": b_raw / 100.0}
+        l_val = l_raw / 100.0
+        a_val = a_raw / 100.0
+        b_val = b_raw / 100.0
+        r, g, b = oklab_to_rgb(l_val, a_val, b_val)
         r_clamped = max(0.0, min(255.0, r))
         g_clamped = max(0.0, min(255.0, g))
         b_clamped = max(0.0, min(255.0, b))
         h_hsv, s_hsv, v_hsv = rgb_to_hsv(r_clamped, g_clamped, b_clamped)
-        # Preserve current hue when a,b drop to achromatic
         if s_hsv < 1.0 and hasattr(self, 'color_wheel'):
             h_hsv = self.color_wheel.h
         self.update_ui_colors(int(r_clamped), int(g_clamped), int(b_clamped),
-                              source="sliders_oklab", hsv=(h_hsv, s_hsv, v_hsv))
+                              source="sliders_oklab", hsv=(h_hsv, s_hsv, v_hsv),
+                              oklab=(l_val, a_val, b_val))
+        # Synchronous gradient refresh — same cadence as OKLCh sliders
+        self._update_oklab_slider_gradients()
+        self._update_oklch_slider_gradients()
 
     def on_oklch_slider_changed(self):
-        if not hasattr(self, "_oklch_target_C") or not hasattr(self, "_oklch_target_h"):
+        # ── Init fraction-based target ──
+        # _oklch_target_frac stores the user's desired chroma as a fraction
+        # (0…1) of max_c at the current L/h for C-slider changes. L-slider
+        # changes use the absolute C/H snapshot below instead.
+        if not hasattr(self, "_oklch_target_frac") or not hasattr(self, "_oklch_target_h"):
             r, g, b = self.current_rgb
-            _, C_okc, h_okc = rgb_to_oklch(r, g, b)
-            self._oklch_target_C = C_okc
-            self._oklch_target_h = h_okc
+            L_tmp, C_tmp, h_tmp = rgb_to_oklch(r, g, b)
+            max_c_init = self._find_oklch_max_chroma(L_tmp, h_tmp)
+            self._oklch_target_frac = (C_tmp / max_c_init) if max_c_init > 0.001 else 0.0
+            self._oklch_target_h = h_tmp
 
         sender = self.sender()
-        l_val = self.slider_widgets["L_oklch"][0].value()
-        c_raw = self.slider_widgets["C_oklch"][0].value()
-        h_val = self.slider_widgets["h_oklch"][0].value()
+        l_slider = self.slider_widgets["L_oklch"][0]
+        c_slider = self.slider_widgets["C_oklch"][0]
+        h_slider = self.slider_widgets["h_oklch"][0]
+        l_val = l_slider.value()
+        c_raw = c_slider.value()
+        h_val = h_slider.value()
         L = l_val / 100.0
+        h_cur = float(h_val)
 
-        if sender == self.slider_widgets["C_oklch"][0]:
-            max_c = self._find_oklch_max_chroma(L, h_val)
-            self._oklch_target_C = (c_raw / 100.0) * max_c if max_c > 0.0 else 0.0
+        frac = max(0.0, min(1.0, c_raw / _C_RAW_MAX))
+        self._source_space = "oklch"
+
+        if sender == c_slider:
+            self._oklch_target_frac = frac
             source_str = "sliders_oklch_C"
-        elif sender == self.slider_widgets["h_oklch"][0]:
-            self._oklch_target_h = float(h_val)
+        elif sender == h_slider:
+            self._oklch_target_h = h_cur
             source_str = "sliders_oklch_h"
         else:
             source_str = "sliders_oklch_L"
 
-        r, g, b = oklch_to_rgb(L, self._oklch_target_C, self._oklch_target_h)
+        # L is a real OKLCh coordinate: while the fixed C/H value remains in
+        # sRGB, moving L must not scale C with the boundary at the new L.
+        # Once fixed C/H is outside sRGB, reduce C to the current boundary and
+        # rebase the mask on that mapped OKLCh value.
+        if source_str == "sliders_oklch_L":
+            fixed_C = self._gamut_oklch_C
+            fixed_h = self._gamut_oklch_h
+            if fixed_C is None:
+                fixed_C = getattr(self, "_oklch_target_C", None)
+            if fixed_h is None:
+                fixed_h = getattr(self, "_oklch_target_h", h_cur)
+            if fixed_C is None or fixed_h is None:
+                r, g, b = self.current_rgb
+                _, current_C, current_h = rgb_to_oklch(r, g, b)
+                fixed_C = current_C if fixed_C is None else fixed_C
+                fixed_h = current_h if fixed_h is None else fixed_h
+
+            fixed_C = max(0.0, float(fixed_C))
+            fixed_h = float(fixed_h)
+            max_c = self._find_oklch_max_chroma(L, fixed_h)
+            display_C = min(fixed_C, max_c) if max_c > 0.001 else 0.0
+            l_only_outside_gamut = fixed_C > max_c + 1e-6
+            h_for_color = fixed_h
+            source_C = display_C if l_only_outside_gamut else fixed_C
+            self._source_values = {"L": L, "C": source_C, "h": fixed_h}
+        else:
+            h_for_color = h_cur
+            max_c = self._find_oklch_max_chroma(L, h_for_color)
+            C = frac * max_c
+            display_C = min(C, max_c) if max_c > 0.001 else 0.0
+            l_only_outside_gamut = False
+            self._source_values = {"L": L, "C": display_C, "h": h_for_color}
+
+        # 保存 OKLCh 滑块值——拖一个滑块绝不改变其他滑块的值
+        saved_L = l_val
+        saved_h = h_val
+
+        r, g, b = oklch_to_rgb(L, display_C, h_for_color)
         r_clamped = max(0.0, min(255.0, r))
         g_clamped = max(0.0, min(255.0, g))
         b_clamped = max(0.0, min(255.0, b))
+        if l_only_outside_gamut:
+            # The boundary C is the actual OKLCh value after gamut mapping at
+            # this L. Rebase all L masks on it immediately; the deferred
+            # updater will repaint the grooves without blocking the drag.
+            self._gamut_oklch_C = display_C
+            self._gamut_oklch_h = h_for_color
+            self._oklch_target_C = display_C
+            h_rad = math.radians(h_for_color)
+            self._gamut_oklab_a = display_C * math.cos(h_rad)
+            self._gamut_oklab_b = display_C * math.sin(h_rad)
+            _, self._gamut_lab_a, self._gamut_lab_b = rgb_to_lab(
+                r_clamped, g_clamped, b_clamped)
         h_hsv, s_hsv, v_hsv = rgb_to_hsv(r_clamped, g_clamped, b_clamped)
-        # Preserve current hue when chroma drops to achromatic
-        if s_hsv < 1.0 and hasattr(self, 'color_wheel'):
-            h_hsv = self.color_wheel.h
+        if s_hsv < 1.0:
+            rr_eps, gg_eps, bb_eps = oklch_to_rgb(0.5, 0.02, h_for_color)
+            h_hsv, _, _ = rgb_to_hsv(
+                max(0.0, min(255.0, rr_eps)),
+                max(0.0, min(255.0, gg_eps)),
+                max(0.0, min(255.0, bb_eps)))
         self.update_ui_colors(int(r_clamped), int(g_clamped), int(b_clamped),
-                              source=source_str, hsv=(h_hsv, s_hsv, v_hsv))
+                              source=source_str, hsv=(h_hsv, s_hsv, v_hsv),
+                              oklch=(L, display_C, h_for_color))
+
+        # ── Update slider gradients (no range change — safe during drag) ──
+        self._update_oklch_slider_gradients()
+        self._update_oklab_slider_gradients()
+
+        # 恢复非 source 滑块为原始值——okLch-picker 中拖 L 不会动 C/H
+        # C/H handles remain unchanged; L-only mapping only changes the
+        # internal absolute C used by the color and gamut mask.
+        if sender != self.slider_widgets["L_oklch"][0]:
+            self.slider_widgets["L_oklch"][0].blockSignals(True)
+            self.slider_widgets["L_oklch"][0].setValue(saved_L)
+            self.slider_widgets["L_oklch"][0].blockSignals(False)
+        if sender != self.slider_widgets["h_oklch"][0]:
+            self.slider_widgets["h_oklch"][0].blockSignals(True)
+            self.slider_widgets["h_oklch"][0].setValue(saved_h)
+            self.slider_widgets["h_oklch"][0].blockSignals(False)
+
+        # Sync L_oklab to match the shared L value
+        if "L_oklab" in self.slider_widgets:
+            self.slider_widgets["L_oklab"][0].blockSignals(True)
+            self.slider_widgets["L_oklab"][0].setValue(saved_L)
+            self.slider_widgets["L_oklab"][0].blockSignals(False)
+
+        # Update labels. L drags show the fixed/mapped absolute chroma.
+        cur_max_c = getattr(self, '_cached_max_c', max_c)
+        for chan in ("L_oklch", "C_oklch", "h_oklch", "L_oklab"):
+            if chan not in self.slider_widgets:
+                continue
+            sl, lb = self.slider_widgets[chan]
+            val = sl.value()
+            if chan == "C_oklch":
+                if source_str == "sliders_oklch_L":
+                    display_c_val = display_C
+                else:
+                    display_c_val = (val / _C_RAW_MAX) * cur_max_c
+                lb.setText(f"{display_c_val:.3f}")
+            else:
+                lb.setText(str(val))
 
     def _find_oklch_max_chroma(self, L, h):
         """Binary search for max OKLCh chroma at given L, h within sRGB gamut."""
-        # At extreme L, gamut is a single point — return small epsilon to avoid /0
-        if L < 0.002 or L > 0.998:
-            return 0.001
-        cache_key = (round(L, 3), round(h, 1))
-        cached = getattr(self, '_oklch_max_c_cache', {})
-        if cache_key in cached:
-            return cached[cache_key]
-        lo, hi = 0.0, 0.6
-        for _ in range(16):
-            mid = (lo + hi) / 2.0
-            r, g, b = oklch_to_rgb(L, mid, h)
-            if -0.5 <= r <= 255.5 and -0.5 <= g <= 255.5 and -0.5 <= b <= 255.5:
-                lo = mid
-            else:
-                hi = mid
-        # Guard against degenerate case (all chroma values valid at extreme L)
-        if lo < 0.0001:
-            lo = 0.001
-        cached[cache_key] = lo
-        if len(cached) > 500:
-            cached.pop(next(iter(cached)))
-        self._oklch_max_c_cache = cached
-        return lo
+        from ui.color_wheel import find_max_oklch_c
+        return find_max_oklch_c(L, h)
+
+    def _update_oklch_slider_gradients(self):
+        """更新 OKLCh 三个滑块的背景渐变，从滑块直接读取当前值。
+
+        对应 okLch-picker 的逻辑：
+        - L 条: 固定 C 和 H，显示 L 从 0→100 的渐变
+        - C 条: 固定 L 和 H，显示 C 从 0→max 的渐变
+        - H 条: 固定 L 和 C，显示 H 从 0→360 的渐变
+        拖动一个滑块时，另外两条的背景立即重绘。
+        """
+        # 从滑块读取当前值
+        l_slider_val = self.slider_widgets["L_oklch"][0].value()
+        c_slider_val = self.slider_widgets["C_oklch"][0].value()
+        h_slider_val = self.slider_widgets["h_oklch"][0].value()
+        L_cur = l_slider_val / 100.0
+        h_cur = float(h_slider_val)
+
+        from ui.color_wheel import find_max_oklch_c as _fmc
+        # Compute max_c once for the normalized C slider and its label.
+        max_c = self._find_oklch_max_chroma(L_cur, h_cur)
+        # Proportional chroma: slider value = % of max_c
+        frac = max(0.0, min(1.0, c_slider_val / _C_RAW_MAX))
+        C_cur = frac * max_c
+
+        fixed_C = getattr(self, "_gamut_oklch_C", None)
+        fixed_h = getattr(self, "_gamut_oklch_h", None)
+        if fixed_C is None or fixed_h is None:
+            l_gradient_C = C_cur
+            l_gradient_h = h_cur
+            hue_gradient_C = C_cur
+        else:
+            # L and H gradients represent the actual current OKLCh color,
+            # rather than recomputing C from the normalized slider position.
+            l_gradient_C = max(0.0, float(fixed_C))
+            l_gradient_h = float(fixed_h)
+            hue_gradient_C = l_gradient_C
+
+        # 16) L_oklch Slider — 固定 C 和 H，显示 L 从 0→1 的渐变
+        # 每步 gamut-map C 确保轨槽始终显示色域内颜色
+        c0 = min(l_gradient_C, _fmc(0.0, l_gradient_h))
+        cm = min(l_gradient_C, _fmc(0.5, l_gradient_h))
+        c1 = min(l_gradient_C, _fmc(1.0, l_gradient_h))
+        okcl0_r, okcl0_g, okcl0_b = oklch_to_rgb(0.0, c0, l_gradient_h)
+        okcl_mid_r, okcl_mid_g, okcl_mid_b = oklch_to_rgb(0.5, cm, l_gradient_h)
+        okcl1_r, okcl1_g, okcl1_b = oklch_to_rgb(1.0, c1, l_gradient_h)
+        self.slider_widgets["L_oklch"][0].set_gradient([
+            (0.0, QColor(int(max(0, min(255, okcl0_r))), int(max(0, min(255, okcl0_g))), int(max(0, min(255, okcl0_b))))),
+            (0.5, QColor(int(max(0, min(255, okcl_mid_r))), int(max(0, min(255, okcl_mid_g))), int(max(0, min(255, okcl_mid_b))))),
+            (1.0, QColor(int(max(0, min(255, okcl1_r))), int(max(0, min(255, okcl1_g))), int(max(0, min(255, okcl1_b)))))
+        ])
+        # L_oklch gamut mask: computed in the *deferred* path only
+        # (_update_all_L_gamut_ranges).  Don't call _compute_oklch_L_gamut_range
+        # here — its 48-iteration binary search is too expensive to run on
+        # every mouse-move and kills drag responsiveness ("不跟手").
+        # The ~16 ms deferred lag is acceptable; there is no flicker because
+        # we simply never touch the mask in the synchronous path.
+
+        # 17) C_oklch Slider — 固定 L 和 H
+        # Dynamic upper limit via proportional mapping: the slider value
+        # (0 .. _C_RAW_MAX) represents a *fraction* of the current max chroma.
+        # So C = (value / _C_RAW_MAX) * max_c.  When L or h moves, max_c
+        # changes, the slider position stays, but the computed chroma scales
+        # proportionally — giving the "dynamic upper limit" behaviour without
+        # ever changing the Qt slider range (which can cause instability
+        # during a drag).
+        c_slider = self.slider_widgets["C_oklch"][0]
+        # Gradient fills the full bar: C=0 → C=max_c
+        okcc0_r, okcc0_g, okcc0_b = oklch_to_rgb(L_cur, 0.0, h_cur)
+        okcc1_r, okcc1_g, okcc1_b = oklch_to_rgb(L_cur, max_c, h_cur)
+        c_slider.set_gradient([
+            (0.0, QColor(int(max(0, min(255, okcc0_r))), int(max(0, min(255, okcc0_g))), int(max(0, min(255, okcc0_b))))),
+            (1.0, QColor(int(max(0, min(255, okcc1_r))), int(max(0, min(255, okcc1_g))), int(max(0, min(255, okcc1_b))))),
+        ])
+        c_slider.clear_in_gamut_range()
+        # Store for the label-update loop in on_oklch_slider_changed
+        self._cached_max_c = max_c
+
+        # 18) h_oklch Slider (色相 0-360) — 固定 L 和 C，显示 H 从 0→360 的渐变
+        # 对应 okLch-picker 中 paintLcStrip 的逻辑
+        okch_stops = []
+        for i in range(7):
+            hue = i * 60
+            r_h, g_h, b_h = oklch_to_rgb(L_cur, hue_gradient_C, hue)
+            okch_stops.append((i / 6.0, QColor(int(max(0, min(255, r_h))), int(max(0, min(255, g_h))), int(max(0, min(255, b_h))))))
+        self.slider_widgets["h_oklch"][0].set_gradient(okch_stops)
+
+    def _update_oklab_slider_gradients(self):
+        """Update OKLab slider groove gradients synchronously.
+
+        Mirrors _update_oklch_slider_gradients so that OKLab sliders
+        get their coloured bars at the same instant as OKLCh sliders
+        rather than trailing by one ~16 ms deferred frame.
+        """
+        if "a_oklab" not in self.slider_widgets or "b_oklab" not in self.slider_widgets:
+            return
+        if not self.slider_containers.get("OKLab", QWidget()).isVisible():
+            return
+
+        # Derive chromaticity from the current RGB colour (full float
+        # precision) so the synchronous gradient matches the deferred
+        # update_slider_gradients path pixel-for-pixel.
+        r, g, b = self.current_rgb
+        _, a_val, b_val = rgb_to_oklab(r, g, b)
+        L_cur = self.slider_widgets["L_oklab"][0].value() / 100.0
+
+        # L_oklab — fixed a, b, L varies 0→1
+        okl0_r, okl0_g, okl0_b = oklab_to_rgb(0.0, a_val, b_val)
+        okl_mid_r, okl_mid_g, okl_mid_b = oklab_to_rgb(0.5, a_val, b_val)
+        okl1_r, okl1_g, okl1_b = oklab_to_rgb(1.0, a_val, b_val)
+        self.slider_widgets["L_oklab"][0].set_gradient([
+            (0.0, QColor(int(max(0, min(255, okl0_r))), int(max(0, min(255, okl0_g))), int(max(0, min(255, okl0_b))))),
+            (0.5, QColor(int(max(0, min(255, okl_mid_r))), int(max(0, min(255, okl_mid_g))), int(max(0, min(255, okl_mid_b))))),
+            (1.0, QColor(int(max(0, min(255, okl1_r))), int(max(0, min(255, okl1_g))), int(max(0, min(255, okl1_b))))),
+        ])
+
+        # a_oklab — fixed L, b, a varies -0.4→0.4
+        oka0_r, oka0_g, oka0_b = oklab_to_rgb(L_cur, -0.4, b_val)
+        oka1_r, oka1_g, oka1_b = oklab_to_rgb(L_cur, 0.4, b_val)
+        self.slider_widgets["a_oklab"][0].set_gradient([
+            (0.0, QColor(int(max(0, min(255, oka0_r))), int(max(0, min(255, oka0_g))), int(max(0, min(255, oka0_b))))),
+            (1.0, QColor(int(max(0, min(255, oka1_r))), int(max(0, min(255, oka1_g))), int(max(0, min(255, oka1_b))))),
+        ])
+
+        # b_oklab — fixed L, a, b varies -0.4→0.4
+        okb0_r, okb0_g, okb0_b = oklab_to_rgb(L_cur, a_val, -0.4)
+        okb1_r, okb1_g, okb1_b = oklab_to_rgb(L_cur, a_val, 0.4)
+        self.slider_widgets["b_oklab"][0].set_gradient([
+            (0.0, QColor(int(max(0, min(255, okb0_r))), int(max(0, min(255, okb0_g))), int(max(0, min(255, okb0_b))))),
+            (1.0, QColor(int(max(0, min(255, okb1_r))), int(max(0, min(255, okb1_g))), int(max(0, min(255, okb1_b))))),
+        ])
 
     def on_interaction_finished(self):
         self.color_wheel.update()
@@ -1212,15 +1637,19 @@ class MainWindow(QMainWindow):
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(50, self._prerender_lab)
         r, g, b = self.current_rgb
-        # Sync _oklch_target_C from the actual (possibly clamped) color so
+        # Sync _oklch_target_frac from the actual (possibly clamped) color so
         # the L-slider mask reflects the real gamut. h is NOT synced here —
         # see comment below.
-        if hasattr(self, '_oklch_target_C'):
-            _, C_okc, h_okc = rgb_to_oklch(r, g, b)
-            # Only sync C from the actual color (needed for mask update).
-            # Do NOT sync h from round-trip — it drifts ~1° per release due
-            # to RGB clamp precision loss. h only changes when the user
-            # drags the h slider or an external source changes the color.
+        if hasattr(self, '_oklch_target_frac'):
+            L_okc, C_okc, h_okc = rgb_to_oklch(r, g, b)
+            if self._source_space == "oklch" and self._source_values:
+                L_okc = self._source_values.get("L", L_okc)
+                C_okc = self._source_values.get("C", C_okc)
+                h_okc = self._source_values.get("h", h_okc)
+            max_c_sync = self._find_oklch_max_chroma(L_okc, h_okc)
+            self._oklch_target_frac = (C_okc / max_c_sync) if max_c_sync > 0.001 else 0.0
+            # Keep the native OKLCh values through an L-only release instead
+            # of replacing them with quantized RGB round-trip values.
             self._oklch_target_C = C_okc
         # On drag release, cancel any pending deferred render and run the
         # heavy visual work synchronously so the settled color's groove
@@ -1231,14 +1660,66 @@ class MainWindow(QMainWindow):
         self._deferred_color_timer.stop()
         self._deferred_color_pending = None
         self.update_slider_gradients(r, g, b)
+        # An L-only release must keep the chromaticity snapshots from before
+        # the drag. Recomputing them from the quantized RGB would turn a
+        # chromatic OKLCh color into a different (often gray) mask on release.
+        if getattr(self, "_last_update_source", "") != "sliders_oklch_L":
+            _, a_ok_snap, b_ok_snap = rgb_to_oklab(r, g, b)
+            self._gamut_oklab_a = a_ok_snap
+            self._gamut_oklab_b = b_ok_snap
+            _, a_lb_snap, b_lb_snap = rgb_to_lab(r, g, b)
+            self._gamut_lab_a = a_lb_snap
+            self._gamut_lab_b = b_lb_snap
+        _, c_ok_snap, h_ok_snap = rgb_to_oklch(r, g, b)
+        if self._source_space == "oklch" and self._source_values:
+            c_ok_snap = self._source_values.get("C", c_ok_snap)
+            h_ok_snap = self._source_values.get("h", h_ok_snap)
+        self._gamut_oklch_C = c_ok_snap
+        self._gamut_oklch_h = h_ok_snap
         self._update_all_L_gamut_ranges()
         # Record into history before pushing to drawing software so the
         # persisted state reflects *what the user just settled on*.
         self._record_color_history()
         if hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
-            self.sync_thread.write_color(r, g, b)
+            hsv_override = None
+            if self.sync_thread.software_mode == 'companion':
+                entry_h = self.slider_widgets.get("H_hsv")
+                entry_s = self.slider_widgets.get("S_hsv")
+                entry_v = self.slider_widgets.get("V_hsv")
+                if entry_h and entry_s and entry_v:
+                    MAX = 4294967295
+                    hsv_override = (int(entry_h[0].value()/360*MAX), int(entry_s[0].value()/100*MAX), int(entry_v[0].value()/100*MAX))
+            # Source-space sync for CSP memory mode
+            self._sync_wheel_source_values()
+            src_sp, src_v = self._resolve_sync_source()
+            self.sync_thread.write_color(r, g, b, hsv_u32=hsv_override,
+                                         source_space=src_sp, source_values=src_v)
             if self.cfg.get("autoFocusDrawingSoftware", False):
                 self.focus_drawing_software()
+
+    def _sync_wheel_source_values(self):
+        """If the source space originates from the wheel, pull live h/s/v from it."""
+        src = self._source_space
+        if src in ("hsv", "hls", "oklch"):
+            try:
+                wh = self.color_wheel.h
+                ws = self.color_wheel.s
+                wv = self.color_wheel.v
+            except Exception:
+                return
+            if src == "hsv":
+                self._source_values = {"h": wh, "s": ws, "v": wv}
+            elif src == "hls":
+                l_norm = max(0.0, min(1.0,
+                    (2.0 - ws / 100.0) * wv / 200.0 if wv > 0.001 else 0.0))
+                s_norm = 0.0
+                if l_norm > 0.001 and l_norm < 0.999:
+                    s_norm = (wv / 100.0 - l_norm) / min(l_norm, 1.0 - l_norm)
+                self._source_values = {"h": wh, "l": l_norm * 100.0, "s": max(0.0, min(100.0, s_norm * 100.0))}
+            elif src == "oklch":
+                r_f, g_f, b_f = colorsys.hsv_to_rgb(wh / 360.0, ws / 100.0, wv / 100.0)
+                L, C, h = rgb_to_oklch(r_f * 255.0, g_f * 255.0, b_f * 255.0)
+                self._source_values = {"L": L, "C": C, "h": h}
 
     def focus_drawing_software(self):
         if hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
@@ -1396,7 +1877,7 @@ class MainWindow(QMainWindow):
                 (0.5, QColor(int(max(0, min(255, okl_mid_r))), int(max(0, min(255, okl_mid_g))), int(max(0, min(255, okl_mid_b))))),
                 (1.0, QColor(int(max(0, min(255, okl1_r))), int(max(0, min(255, okl1_g))), int(max(0, min(255, okl1_b)))))
             ])
-            
+
             # 14) a_oklab Slider (a from -0.4 to 0.4 mapped to slider -40..40)
             oka0_r, oka0_g, oka0_b = oklab_to_rgb(L_oklab, -0.4, b_oklab)
             oka1_r, oka1_g, oka1_b = oklab_to_rgb(L_oklab, 0.4, b_oklab)
@@ -1404,7 +1885,7 @@ class MainWindow(QMainWindow):
                 (0.0, QColor(int(max(0, min(255, oka0_r))), int(max(0, min(255, oka0_g))), int(max(0, min(255, oka0_b))))),
                 (1.0, QColor(int(max(0, min(255, oka1_r))), int(max(0, min(255, oka1_g))), int(max(0, min(255, oka1_b)))))
             ])
-            
+
             # 15) b_oklab Slider
             okb0_r, okb0_g, okb0_b = oklab_to_rgb(L_oklab, a_oklab, -0.4)
             okb1_r, okb1_g, okb1_b = oklab_to_rgb(L_oklab, a_oklab, 0.4)
@@ -1414,61 +1895,122 @@ class MainWindow(QMainWindow):
             ])
         
         if self.slider_containers.get("OKLCh", QWidget()).isVisible():
-            if not hasattr(self, "_oklch_target_C") or not hasattr(self, "_oklch_target_h"):
-                self._oklch_target_C = C_oklch
-                self._oklch_target_h = h_oklch
-            
-            # 16) L_oklch Slider (L from 0 to 1 mapped to slider 0-100)
-            # Use C_oklch, h_oklch from rgb_to_oklch(r,g,b) (line 1225) — same
-            # approach as OKLab's L gradient which uses recomputed a,b. This
-            # makes the gradient react to gamut clamping at extreme L, matching
-            # OKLab's visual behavior.
-            okcl0_r, okcl0_g, okcl0_b = oklch_to_rgb(0.0, C_oklch, h_oklch)
-            okcl_mid_r, okcl_mid_g, okcl_mid_b = oklch_to_rgb(0.5, C_oklch, h_oklch)
-            okcl1_r, okcl1_g, okcl1_b = oklch_to_rgb(1.0, C_oklch, h_oklch)
-            self.slider_widgets["L_oklch"][0].set_gradient([
-                (0.0, QColor(int(max(0, min(255, okcl0_r))), int(max(0, min(255, okcl0_g))), int(max(0, min(255, okcl0_b))))),
-                (0.5, QColor(int(max(0, min(255, okcl_mid_r))), int(max(0, min(255, okcl_mid_g))), int(max(0, min(255, okcl_mid_b))))),
-                (1.0, QColor(int(max(0, min(255, okcl1_r))), int(max(0, min(255, okcl1_g))), int(max(0, min(255, okcl1_b)))))
-            ])
-            
-            # 17) C_oklch Slider (adaptive max chroma)
-            max_c = self._find_oklch_max_chroma(L_oklch, self._oklch_target_h)
-            okcc0_r, okcc0_g, okcc0_b = oklch_to_rgb(L_oklch, 0.0, self._oklch_target_h)
-            okcc1_r, okcc1_g, okcc1_b = oklch_to_rgb(L_oklch, max_c, self._oklch_target_h)
-            self.slider_widgets["C_oklch"][0].set_gradient([
-                (0.0, QColor(int(max(0, min(255, okcc0_r))), int(max(0, min(255, okcc0_g))), int(max(0, min(255, okcc0_b))))),
-                (1.0, QColor(int(max(0, min(255, okcc1_r))), int(max(0, min(255, okcc1_g))), int(max(0, min(255, okcc1_b)))))
-            ])
-            
-            # 18) h_oklch Slider (hue 0-360)
-            okch_stops = []
-            for i in range(7):
-                hue = i * 60
-                r_h, g_h, b_h = oklch_to_rgb(L_oklch, self._oklch_target_C, hue)
-                okch_stops.append((i / 6.0, QColor(int(max(0, min(255, r_h))), int(max(0, min(255, g_h))), int(max(0, min(255, b_h))))))
-            self.slider_widgets["h_oklch"][0].set_gradient(okch_stops)
+            self._update_oklch_slider_gradients()
 
     # ── L-gamut range helpers for out-of-gamut slider marking ──
 
     def _compute_lab_L_gamut_range(self):
-        """Return (min_L, max_L) for L_lab slider given current a_lab, b_lab."""
+        """Return (min_L, max_L) for L_lab at the snapshot LAB chromaticity."""
         if "a_lab" not in self.slider_widgets or "b_lab" not in self.slider_widgets:
             return 0, 100
-        a_val = self.slider_widgets["a_lab"][0].value()
-        b_val = self.slider_widgets["b_lab"][0].value()
-
-        def in_gamut(L):
-            r, g, bv = lab_to_rgb(L, a_val, b_val)
-            return 0.0 <= r <= 255.0 and 0.0 <= g <= 255.0 and 0.0 <= bv <= 255.0
-
-        if not in_gamut(50.0):
+        a_fixed = getattr(self, '_gamut_lab_a', None)
+        b_fixed = getattr(self, '_gamut_lab_b', None)
+        if a_fixed is None or b_fixed is None:
             return 0, 100
-        # Find L_min
+        def in_gamut(L):
+            rr, gg, bb = lab_to_rgb(L, a_fixed, b_fixed)
+            return 0.0 <= rr <= 255.0 and 0.0 <= gg <= 255.0 and 0.0 <= bb <= 255.0
+        return self._compute_L_gamut_range(in_gamut)
+
+    @staticmethod
+    def _resolve_content_height(current_height, required_height,
+                                last_auto_height, manual_override):
+        required_height = max(1, int(required_height))
+        current_height = int(current_height)
+        if current_height < required_height:
+            return required_height, False
+        if (manual_override and last_auto_height is not None
+                and required_height == int(last_auto_height)):
+            return current_height, True
+        return required_height, False
+
+    @staticmethod
+    def _required_content_height(title_height, stack_min_height, sliders_height,
+                                 margins_top, margins_bottom, spacing):
+        return max(
+            240,
+            int(title_height) + int(stack_min_height) + int(sliders_height)
+            + int(margins_top) + int(margins_bottom) + 2 * int(spacing),
+        )
+
+    @staticmethod
+    def _required_visualizer_height(window_width, margins_left, margins_right,
+                                    stack_min_height):
+        available_width = int(window_width) - int(margins_left) - int(margins_right)
+        return max(available_width, int(stack_min_height))
+
+    def _run_deferred_content_height(self):
+        self._content_height_adjust_pending = False
+        self._adjust_content_height()
+
+    def _adjust_content_height(self):
+        if getattr(self, "_adjusting_content_height", False):
+            return
+        if not self.isVisible():
+            if not self._content_height_adjust_pending:
+                self._content_height_adjust_pending = True
+                self._content_height_timer.start(0)
+            return
+        self._content_height_adjust_pending = False
+        required = 0
+        try:
+            self.sliders_layout.activate()
+            self.main_layout.activate()
+            margins = self.main_layout.contentsMargins()
+            visualizer_h = self._required_visualizer_height(
+                self.width(),
+                margins.left(),
+                margins.right(),
+                self.stack.minimumSizeHint().height(),
+            )
+            required = self._required_content_height(
+                self.title_bar.sizeHint().height(),
+                visualizer_h,
+                self.sliders_container.sizeHint().height(),
+                margins.top(), margins.bottom(), self.main_layout.spacing(),
+            )
+        except AttributeError:
+            return
+
+        self.setMinimumHeight(required)
+        target, manual = self._resolve_content_height(
+            self.height(), required, self._last_auto_height,
+            self._manual_height_override,
+        )
+        self._last_auto_height = required
+        self._manual_height_override = manual
+        if target == self.height():
+            return
+
+        self._adjusting_content_height = True
+        try:
+            self.resize(self.width(), target)
+        finally:
+            self._adjusting_content_height = False
+
+    @staticmethod
+    def _compute_L_gamut_range(in_gamut):
+        """Shared binary search: find [min_L, max_L] of in-gamut L values.
+
+        Does NOT assume L=50 is in gamut — high-chroma colours near the
+        gamut boundary can push mid-L out of gamut while low/high L
+        remain valid.  Scans for any in-gamut reference point first,
+        then searches outward in both directions from it.
+        """
+        # ── Find any in-gamut reference L ──
+        ref_L = None
+        for test_L in (0.0, 25.0, 50.0, 75.0, 100.0):
+            if in_gamut(test_L):
+                ref_L = test_L
+                break
+        if ref_L is None:
+            return 0, 100  # colour is unreachable at this chromaticity
+
+        # ── min_L: lowest in-gamut L ──
         if in_gamut(0.0):
             min_L = 0.0
         else:
-            lo, hi = 0.0, 50.0
+            lo, hi = 0.0, ref_L
             for _ in range(24):
                 mid = (lo + hi) * 0.5
                 if in_gamut(mid):
@@ -1476,11 +2018,12 @@ class MainWindow(QMainWindow):
                 else:
                     lo = mid
             min_L = hi
-        # Find L_max
+
+        # ── max_L: highest in-gamut L ──
         if in_gamut(100.0):
             max_L = 100.0
         else:
-            lo, hi = 50.0, 100.0
+            lo, hi = ref_L, 100.0
             for _ in range(24):
                 mid = (lo + hi) * 0.5
                 if in_gamut(mid):
@@ -1488,91 +2031,36 @@ class MainWindow(QMainWindow):
                 else:
                     hi = mid
             max_L = lo
+
         return int(round(min_L)), int(round(max_L))
 
     def _compute_oklab_L_gamut_range(self):
-        """Return (min_L, max_L) for L_oklab slider given current a_oklab, b_oklab."""
+        """Return (min_L, max_L) for L_oklab at the snapshot OKLab chromaticity."""
         if "a_oklab" not in self.slider_widgets or "b_oklab" not in self.slider_widgets:
             return 0, 100
-        a_val = self.slider_widgets["a_oklab"][0].value() / 100.0
-        b_val = self.slider_widgets["b_oklab"][0].value() / 100.0
-
-        def in_gamut(L):
-            r, g, bv = oklab_to_rgb(L / 100.0, a_val, b_val)
-            return 0.0 <= r <= 255.0 and 0.0 <= g <= 255.0 and 0.0 <= bv <= 255.0
-
-        if not in_gamut(50.0):
+        a_fixed = getattr(self, '_gamut_oklab_a', None)
+        b_fixed = getattr(self, '_gamut_oklab_b', None)
+        if a_fixed is None or b_fixed is None:
             return 0, 100
-        if in_gamut(0.0):
-            min_L = 0.0
-        else:
-            lo, hi = 0.0, 50.0
-            for _ in range(24):
-                mid = (lo + hi) * 0.5
-                if in_gamut(mid):
-                    hi = mid
-                else:
-                    lo = mid
-            min_L = hi
-        if in_gamut(100.0):
-            max_L = 100.0
-        else:
-            lo, hi = 50.0, 100.0
-            for _ in range(24):
-                mid = (lo + hi) * 0.5
-                if in_gamut(mid):
-                    lo = mid
-                else:
-                    hi = mid
-            max_L = lo
-        return int(round(min_L)), int(round(max_L))
+        def in_gamut(L):
+            rr, gg, bb = oklab_to_rgb(L / 100.0, a_fixed, b_fixed)
+            return 0.0 <= rr <= 255.0 and 0.0 <= gg <= 255.0 and 0.0 <= bb <= 255.0
+        return self._compute_L_gamut_range(in_gamut)
 
     def _compute_oklch_L_gamut_range(self):
-        """Return (min_L, max_L) for L_oklch slider given current C, h."""
+        """Return (min_L, max_L) for L_oklch at the snapshot chromaticity."""
         if "C_oklch" not in self.slider_widgets or "h_oklch" not in self.slider_widgets:
             return 0, 100
-        
-        if not hasattr(self, "_oklch_target_C") or not hasattr(self, "_oklch_target_h"):
-            r, g, b = self.current_rgb
-            _, C_okc, h_okc = rgb_to_oklch(r, g, b)
-            self._oklch_target_C = C_okc
-            self._oklch_target_h = h_okc
-
-        c_abs = self._oklch_target_C
-        h_val = self._oklch_target_h
-
-        if c_abs < 0.001:
+        if "L_oklch" not in self.slider_widgets:
             return 0, 100
-
+        c_val = self._gamut_oklch_C
+        h_val = self._gamut_oklch_h
+        if c_val is None or h_val is None or c_val < 0.001:
+            return 0, 100
         def in_gamut(L):
-            r, g, bv = oklch_to_rgb(L / 100.0, c_abs, h_val)
-            return 0.0 <= r <= 255.0 and 0.0 <= g <= 255.0 and 0.0 <= bv <= 255.0
-
-        if not in_gamut(50.0):
-            return 0, 100
-        if in_gamut(0.0):
-            min_L = 0.0
-        else:
-            lo, hi = 0.0, 50.0
-            for _ in range(24):
-                mid = (lo + hi) * 0.5
-                if in_gamut(mid):
-                    hi = mid
-                else:
-                    lo = mid
-            min_L = hi
-        if in_gamut(100.0):
-            max_L = 100.0
-        else:
-            lo, hi = 50.0, 100.0
-            for _ in range(24):
-                mid = (lo + hi) * 0.5
-                if in_gamut(mid):
-                    lo = mid
-                else:
-                    hi = mid
-            max_L = lo
-        return int(round(min_L)), int(round(max_L))
+            rr, gg, bb = oklch_to_rgb(L / 100.0, c_val, h_val)
+            return 0.0 <= rr <= 255.0 and 0.0 <= gg <= 255.0 and 0.0 <= bb <= 255.0
+        return self._compute_L_gamut_range(in_gamut)
 
     def _update_lab_slider_gamut_range(self):
         """Update the vertical LabSlider's out-of-gamut L range
@@ -1636,7 +2124,8 @@ class MainWindow(QMainWindow):
         # Vertical LabSlider
         self._update_lab_slider_gamut_range()
 
-    def update_ui_colors(self, r, g, b, source="", hsv=None):
+    def update_ui_colors(self, r, g, b, source="", hsv=None, oklch=None, oklab=None):
+        self._last_update_source = source
         self.current_rgb = (r, g, b)
         color = QColor(r, g, b)
 
@@ -1647,16 +2136,37 @@ class MainWindow(QMainWindow):
             self.preview_box.bg_color = color
         self.preview_box.update_slot_borders(self.active_slot)
 
+        # Persist source to the active slot (skip for slot_change/swap — those
+        # restore, not overwrite, the per-slot source).
+        if source not in ("slot_change", "swap") and self._source_values:
+            if self.active_slot == "fg":
+                self._fg_source_space = self._source_space
+                self._fg_source_values = self._source_values
+            else:
+                self._bg_source_space = self._source_space
+                self._bg_source_values = self._source_values
+
         # 2) Sync Color Wheel (Only if visible or during init)
         if source == "init" or (source != "wheel" and self.color_wheel.isVisible()):
             if hsv is not None:
                 self.color_wheel.set_hsv(hsv[0], hsv[1], hsv[2])
             else:
                 self.color_wheel.set_color(r, g, b, block_signals=True)
+            # Push direct OKLCh state so the indicator avoids HSV→RGB→OKLCh drift
+            if self.color_wheel.wheel_mode == "oklch-slice":
+                if oklch is not None:
+                    L_ok, C_ok, h_ok = oklch
+                else:
+                    L_ok, C_ok, h_ok = rgb_to_oklch(r, g, b)
+                self.color_wheel.set_oklch(L_ok, C_ok, h_ok)
 
         # 3) Sync LAB Square / Slider (Only if visible or during init)
         if source == "init" or (source != "lab" and self.lab_square.isVisible()):
-            self.lab_square.set_color(r, g, b, block_signals=True)
+            if oklab is not None and self.lab_square.render_mode == "oklab":
+                L_ok, a_ok, b_ok = oklab
+                self.lab_square.set_oklab(L_ok, a_ok, b_ok, block_signals=True)
+            else:
+                self.lab_square.set_color(r, g, b, block_signals=True)
             self.lab_slider.set_lightness(self.lab_square.L)
 
         # 4) Sync Sliders
@@ -1682,9 +2192,10 @@ class MainWindow(QMainWindow):
                 h_hsv, s_hsv, v_hsv = hsv
             else:
                 h_hsv, s_hsv, v_hsv = rgb_to_hsv(r, g, b)
-            self.slider_widgets["H_hsv"][0].setValue(round(h_hsv))
             self.slider_widgets["S_hsv"][0].setValue(round(s_hsv))
             self.slider_widgets["V_hsv"][0].setValue(round(v_hsv))
+            if s_hsv >= 0.5:
+                self.slider_widgets["H_hsv"][0].setValue(round(h_hsv))
         
         # HSL Values
         if source != "sliders_hsl":
@@ -1715,25 +2226,41 @@ class MainWindow(QMainWindow):
         # OKLab Values
         if source != "sliders_oklab":
             L_ok, a_ok, b_ok = rgb_to_oklab(r, g, b)
-            self.slider_widgets["L_oklab"][0].setValue(round(L_ok * 100))
+            if "L_oklab" in self.slider_widgets:
+                self.slider_widgets["L_oklab"][0].setValue(round(L_ok * 100))
             self.slider_widgets["a_oklab"][0].setValue(round(a_ok * 100))
             self.slider_widgets["b_oklab"][0].setValue(round(b_ok * 100))
         
         # OKLCh Values
         if source not in ("sliders_oklch_L", "sliders_oklch_C", "sliders_oklch_h"):
-            L_okc, C_okc, h_okc = rgb_to_oklch(r, g, b)
-            # Preserve hue when chroma drops to ~0 (achromatic) — prevents
-            # h jumping to atan2(0,0)=0, matching HSV's hue-preservation logic
-            if C_okc < 0.002:
-                h_okc = self._oklch_target_h
-                C_okc = 0.0
-            self._oklch_target_C = C_okc
+            # Use direct OKLCh values when available (avoids RGB round-trip drift)
+            if oklch is not None:
+                L_okc, C_okc, h_okc = oklch
+            else:
+                L_okc, C_okc, h_okc = rgb_to_oklch(r, g, b)
+                # Preserve hue when chroma drops to ~0 (achromatic) or when
+                # lightness is very low (<5%) — both cases produce near-black
+                # RGB where atan2(0,0) makes h jump to 0°.
+                if C_okc < 0.002 or L_okc < 0.05:
+                    h_okc = self._oklch_target_h
+                    if C_okc < 0.002:
+                        C_okc = 0.0
             self._oklch_target_h = h_okc
+            # Store fraction: use 0.32 (sRGB absolute max chroma) as reference
+            # to avoid calling _find_oklch_max_chroma (16-iteration binary
+            # search) on every wheel drag.  The deferred gradient update will
+            # refine the fraction with the exact max_c within ~16 ms.
+            max_c_ref = 0.32
+            self._oklch_target_frac = min(1.0, C_okc / max_c_ref) if max_c_ref > 0.001 else 0.0
             self.slider_widgets["L_oklch"][0].setValue(round(L_okc * 100))
             self.slider_widgets["h_oklch"][0].setValue(round(h_okc))
             if self.slider_containers.get("OKLCh", QWidget()).isVisible():
-                max_c = self._find_oklch_max_chroma(L_okc, h_okc)
-                self.slider_widgets["C_oklch"][0].setValue(round(C_okc / max_c * 100) if max_c > 0.001 else 0)
+                # Slider value = fraction * full range
+                c_slider_val = int(round(self._oklch_target_frac * _C_RAW_MAX))
+                c_sl = self.slider_widgets["C_oklch"][0]
+                c_sl.blockSignals(True)
+                c_sl.setValue(c_slider_val)
+                c_sl.blockSignals(False)
         else:
             L_okc, C_okc, h_okc = rgb_to_oklch(r, g, b)
             if source != "sliders_oklch_L":
@@ -1743,8 +2270,13 @@ class MainWindow(QMainWindow):
             # HSV's behavior where H stays fixed while adjusting S/V.
             if source != "sliders_oklch_C":
                 if self.slider_containers.get("OKLCh", QWidget()).isVisible():
-                    max_c = self._find_oklch_max_chroma(L_okc, self._oklch_target_h)
-                    self.slider_widgets["C_oklch"][0].setValue(round(C_okc / max_c * 100) if max_c > 0.001 else 0)
+                    # Keep C slider at its fraction-based position (proportional)
+                    if hasattr(self, "_oklch_target_frac"):
+                        c_val = int(round(self._oklch_target_frac * _C_RAW_MAX))
+                        c_sl = self.slider_widgets["C_oklch"][0]
+                        c_sl.blockSignals(True)
+                        c_sl.setValue(c_val)
+                        c_sl.blockSignals(False)
         
         for chan in all_chans:
             if chan in self.slider_widgets:
@@ -1753,8 +2285,34 @@ class MainWindow(QMainWindow):
         # Update labels and gradient stylesheets
         for chan in all_chans:
             if chan in self.slider_widgets:
-                self.slider_widgets[chan][1].setText(str(self.slider_widgets[chan][0].value()))
+                val = self.slider_widgets[chan][0].value()
+                if chan == "C_oklch":
+                    if source == "sliders_oklch_L" and self._source_values:
+                        display_c = self._source_values.get("C", 0.0)
+                    else:
+                        # C slider remains normalized to the current boundary.
+                        cur_max = getattr(self, '_cached_max_c', 0.32)
+                        display_c = (val / _C_RAW_MAX) * cur_max
+                    self.slider_widgets[chan][1].setText(f"{display_c:.3f}")
+                else:
+                    self.slider_widgets[chan][1].setText(str(val))
             
+        # ── Gamut-range chromaticity snapshots ─────
+        # L-only drags keep all snapshots unchanged until release.
+        if source != "sliders_oklch_L":
+            _, a_ok, b_ok = rgb_to_oklab(r, g, b)
+            self._gamut_oklab_a = a_ok
+            self._gamut_oklab_b = b_ok
+            _, a_lb, b_lb = rgb_to_lab(r, g, b)
+            self._gamut_lab_a = a_lb
+            self._gamut_lab_b = b_lb
+            if oklch is not None:
+                _, c_ok, h_ok = oklch
+            else:
+                _, c_ok, h_ok = rgb_to_oklch(r, g, b)
+            self._gamut_oklch_C = c_ok
+            self._gamut_oklch_h = h_ok
+
         # Heavy visual-only cosmetics (slider groove gradients + L out-of-gamut
         # masks) are deferred + coalesced so they never block the dragged
         # widget's paint. This is what keeps every slider handle and the color
@@ -1771,7 +2329,51 @@ class MainWindow(QMainWindow):
                         is_dragging = True
                         break
             if not is_dragging:
-                self.sync_thread.write_color(r, g, b)
+                hsv_ov = None
+                if self.sync_thread.software_mode == 'companion':
+                    _U32 = 4294967295
+                    if hsv is not None and len(hsv) == 3:
+                        hsv_ov = (round(hsv[0]/360*_U32),
+                                  round(hsv[1]/100*_U32),
+                                  round(hsv[2]/100*_U32))
+                    else:
+                        # Fallback: wheel HSV was already updated in step 2 above.
+                        # This preserves hue when RGB→HSV would lose it (grayscale).
+                        hsv_ov = (round(self.color_wheel.h/360*_U32),
+                                  round(self.color_wheel.s/100*_U32),
+                                  round(self.color_wheel.v/100*_U32))
+                src_sp, src_v = self._resolve_sync_source()
+                self.sync_thread.write_color(r, g, b, hsv_u32=hsv_ov,
+                                             source_space=src_sp, source_values=src_v)
+
+    def _resolve_sync_source(self):
+        """Return (space_name, values) for CSP memory-mode sync.
+
+        Only spaces in SPACE_ORDER (rgb/cmyk/hsv/hls) are passed directly;
+        lab/oklab/oklch are converted to float RGB.
+        """
+        src = self._source_space
+        vals = self._source_values
+        if not src or not vals:
+            return (None, None)
+        if src in ("rgb", "cmyk", "hsv", "hls"):
+            return (src, vals)
+        # Fallback: convert non-SPACE_ORDER sources to float RGB
+        try:
+            if src == "lab":
+                r, g, b = lab_to_rgb(vals["l"], vals["a"], vals["b"])
+            elif src == "oklab":
+                r, g, b = oklab_to_rgb(vals["L"], vals["a"], vals["b"])
+            elif src == "oklch":
+                r, g, b = oklch_to_rgb(vals["L"], vals["C"], vals["h"])
+            else:
+                return (None, None)
+            rgb = {"r": max(0.0, min(255.0, r)),
+                   "g": max(0.0, min(255.0, g)),
+                   "b": max(0.0, min(255.0, b))}
+            return ("rgb", rgb)
+        except Exception:
+            return (None, None)
 
     def resizeEvent(self, event):
         """Handle resize, preventing DPI-induced size drift when dragged between monitors.
@@ -1872,7 +2474,7 @@ class MainWindow(QMainWindow):
             self.pane_wheel.set_mode_button_metrics(btn_size, btn_margin)
         if hasattr(self, 'pane_lab'):
             self.pane_lab.set_mode_button_metrics(btn_size, btn_margin)
-        
+
         # Position settings sidebar
         if hasattr(self, 'settings_sidebar'):
             self.settings_sidebar.setGeometry(2, title_h, int(w * 0.75), h - title_h - 2)
@@ -1996,6 +2598,8 @@ class MainWindow(QMainWindow):
             cfg["width"] = self.width()
             cfg["height"] = self.height()
             config.save_window_config(cfg)
+            self._manual_height_override = True
+            self._last_auto_height = self.height()
         
         super().mouseReleaseEvent(event)
 
@@ -2339,7 +2943,8 @@ class MainWindow(QMainWindow):
         # Style mode buttons dynamically
         btn_w = int(28 * scale)
         btn_h = int(28 * scale)
-        for btn in [self.btn_mode_wheel, self.btn_mode_lab]:
+        for btn in [self.btn_mode_wheel, self.btn_mode_lab,
+                     getattr(self, 'btn_module', None)]:
             if btn is not None:
                 btn.setFixedSize(btn_w, btn_h)
                 btn.setStyleSheet(f"""
@@ -2383,6 +2988,9 @@ class MainWindow(QMainWindow):
             # If settings sidebar is open, ensure it remains on top!
             if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
                 self.settings_sidebar.raise_()
+
+        if not is_resize_event:
+            self._adjust_content_height()
 
     def init_hotkeys(self):
         # Register global hotkeys from config
@@ -2461,10 +3069,13 @@ class MainWindow(QMainWindow):
     def _on_picker_color_picked(self, r, g, b):
         """Handle color picked from the global magnifier overlay."""
         self.current_rgb = (r, g, b)
+        self._source_space = "rgb"
+        self._source_values = {"r": float(r), "g": float(g), "b": float(b)}
         self._record_color_history()
         self.update_ui_colors(r, g, b)
         if hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
-            self.sync_thread.write_color(r, g, b)
+            self.sync_thread.write_color(r, g, b, source_space="rgb",
+                                         source_values={"r": float(r), "g": float(g), "b": float(b)})
             print(f"[Picker] Picked color RGB({r}, {g}, {b})")
             if self.cfg.get("autoFocusDrawingSoftware", False):
                 self.focus_drawing_software()
@@ -2477,7 +3088,7 @@ class MainWindow(QMainWindow):
         
         # Set active software mode
         mode = self.cfg.get("syncSoftware", "csp")
-        if mode not in ("csp", "sai", "udm", "ps"):
+        if mode not in ("csp", "sai", "udm", "ps", "companion"):
             mode = "csp"
         self.sync_thread.set_software_mode(mode)
         
@@ -2499,15 +3110,35 @@ class MainWindow(QMainWindow):
         # record() collapses consecutive duplicates, so continuous live
         # slider drags in the drawing software won't flood the history.
         self.current_rgb = (r, g, b)
+        hsv_direct = None
+        if hasattr(self, 'sync_thread'):
+            chsv = getattr(self.sync_thread, 'companion_hsv', None)
+            if chsv is not None and self.sync_thread.software_mode == 'companion':
+                hsv_direct = chsv
         self._record_color_history()
-        self.update_ui_colors(r, g, b, source="sync")
+        self.update_ui_colors(r, g, b, source="sync", hsv=hsv_direct)
 
     @pyqtSlot(str, bool)
     def on_sync_status_changed(self, mode, connected):
         print(f"[Sync] Software status changed: {mode} -> connected={connected}")
         # Optionally update title bar text or border to show connection status
-        status_text = f"Colorink ({mode.upper()} {'✓' if connected else '×'})"
+        mode_display = {"csp": "CSP", "sai": "SAI", "udm": "UDM", "ps": "PS", "companion": "手机"}.get(mode, mode.upper())
+        status_text = f"Colorink ({mode_display} {'✓' if connected else '×'})"
         self.title_bar.title_label.setText(status_text)
+        if mode == "companion" and hasattr(self, 'settings_sidebar'):
+            self.settings_sidebar._refresh_companion_status()
+
+    def _setup_companion_connection(self):
+        if not hasattr(self, 'sync_thread'):
+            return
+        from core.csp_companion_sync import CSPCompanionSync
+        ok = CSPCompanionSync.show_setup_dialog(self)
+        if ok:
+            c = self.sync_thread.companion_sync
+            c._load_session()
+            self.title_bar.title_label.setText("Colorink (手机 — 连接中...)")
+        if hasattr(self, 'settings_sidebar'):
+            self.settings_sidebar._refresh_companion_status()
 
     def toggle_settings_sidebar(self):
         vis = not self.settings_sidebar.isVisible()
@@ -2527,6 +3158,35 @@ class MainWindow(QMainWindow):
             self.update_window_flags()
         self.update_no_focus_policies()
 
+    def _apply_module(self, module_name: str):
+        """Apply a color-space module: set wheel mode + refresh sliders."""
+        if module_name not in _MODULE_DEFS:
+            module_name = "hsv"
+        self._current_module = module_name
+        self.cfg["colorSpaceModule"] = module_name
+        # Persist so the settings sidebar sees the update on next refresh
+        from core import config as _cfg
+        _cfg.save_hotkey_config(self.cfg)
+        # Update wheel mode
+        wheel_mode = _MODULE_DEFS[module_name]["wheel"]
+        self.color_wheel.set_wheel_mode(wheel_mode)
+        # Refresh slider visibility respecting the module's slider set
+        self.refresh_slider_visibility_and_order()
+        # Update module button label
+        self._update_module_button_label()
+        # Notify sidebar if it's open
+        if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
+            self.settings_sidebar.notify_module_changed()
+
+    def _next_module(self):
+        """Cycle to the next module in _MODULE_ORDER."""
+        try:
+            idx = _MODULE_ORDER.index(self._current_module)
+        except ValueError:
+            idx = 0
+        next_idx = (idx + 1) % len(_MODULE_ORDER)
+        self._apply_module(_MODULE_ORDER[next_idx])
+
     def refresh_slider_visibility_and_order(self):
         # Remove all from layout
         for group in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh", "History"]:
@@ -2536,19 +3196,28 @@ class MainWindow(QMainWindow):
         groups = ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh", "History"]
         groups.sort(key=lambda g: self.cfg.get(f"orderSliders{g}", 7 if g == "History" else 1))
 
+        # Module-aware filtering: only the current module's slider set is
+        # eligible; force-hide everything outside it.
+        module_key = getattr(self, "_current_module", "hsv")
+        allowed = set(_MODULE_DEFS.get(module_key, _MODULE_DEFS["hsv"])["sliders"])
+
         for g in groups:
             if g == "History":
                 visible = self.cfg.get("showSlidersHistory", True)
+            elif g not in allowed:
+                visible = False  # force-hide: not in this module's set
             else:
-                visible = self.cfg.get(f"showSliders{g}", True if g in ("HSV", "LAB", "OKLab") else False)
+                visible = self.cfg.get(f"showSliders{g}", True)
             self.slider_containers[g].setVisible(visible)
             self.sliders_layout.addWidget(self.slider_containers[g])
 
         # Recalculate layout geometries since height changed
         self.update_geometries()
+        self._adjust_content_height()
 
     def zoom_ui(self, factor):
         self.resize(int(320 * factor), int(710 * factor))
+        self._adjust_content_height()
 
     def show_window_at_cursor(self):
         if self.cfg.get("lockWindowPosition", False):
@@ -2697,10 +3366,17 @@ class MainWindow(QMainWindow):
         
         # Update active software mode in thread
         mode = self.cfg.get("syncSoftware", "csp")
-        if mode not in ("csp", "sai", "udm", "ps"):
+        if mode not in ("csp", "sai", "udm", "ps", "companion"):
             mode = "csp"
         self.sync_thread.set_software_mode(mode)
         
+        # Companion mode: show setup dialog if no saved session
+        if mode == "companion":
+            c = self.sync_thread.companion_sync
+            if not c._connected and not c._has_session():
+                from PyQt6.QtCore import QTimer as _Qt
+                _Qt.singleShot(300, lambda: self._setup_companion_connection())
+
         # Update settings dialog variables in thread
         self.sync_thread.csp_version = self.cfg.get("cspVersion", "auto")
         self.sync_thread.sai2_version = self.cfg.get("sai2Version", "auto")
@@ -2711,30 +3387,29 @@ class MainWindow(QMainWindow):
         # Update follow mouse state
         self.follow_mouse_active = self.cfg.get("followMouseEnabled", False)
         
-        # Update color wheel mode
-        cfg_color_mode = self.cfg.get("colorWheelMode", "hsv")
-        cfg_wheel_mode = self.cfg.get("wheelMode", "hsv-square")
-        if cfg_color_mode == "hls":
-            self.color_wheel.set_wheel_mode("hls-triangle")
-        elif cfg_color_mode == "rgb":
-            self.color_wheel.set_wheel_mode("rgb-slice")
-        elif cfg_color_mode == "oklch":
-            self.color_wheel.set_wheel_mode("oklch-slice")
+        # Apply color-space module (overrides legacy colorWheelMode/wheelMode)
+        module = self.cfg.get("colorSpaceModule", self._current_module)
+        if module != self._current_module:
+            self._apply_module(module)
         else:
-            self.color_wheel.set_wheel_mode(cfg_wheel_mode)
-        
+            # Even if module didn't change, re-apply slider visibility in case
+            # individual toggles were changed
+            self.refresh_slider_visibility_and_order()
+
         self.color_wheel.reload_config()
-        
+
         # Update lab visualizer mode
         viz_mode = self.cfg.get("visualizerMode", "lab")
         if hasattr(self, 'lab_square'):
             self.lab_square.set_render_mode(viz_mode)
-            # Update max_val in config for persistence
             self.cfg["labVisualizerMaxVal"] = 110 if viz_mode == "lab" else 0.4
-        
-        # Apply slider visibility and order
-        self.refresh_slider_visibility_and_order()
-        
+
+        # Update module button visibility
+        if hasattr(self, 'btn_module'):
+            show_btn = self.cfg.get("showModuleSwitchButton", True)
+            self.btn_module.setVisible(show_btn)
+            self._update_module_button_label()
+
         self.preview_box.position_mode = self.cfg.get("previewBoxPosition", "top-left")
         self.apply_theme()
         
@@ -2779,6 +3454,8 @@ class MainWindow(QMainWindow):
                     self.sync_thread.ps_sync._reset()
                 except Exception:
                     pass
+            if hasattr(self.sync_thread, 'companion_sync'):
+                self.sync_thread.companion_sync._disconnect()
             # Signal the thread to stop, but DO NOT join it.
             # If it's blocked in a hung COM RPC call (Photoshop died
             # mid-call), joining would freeze the main thread forever.
