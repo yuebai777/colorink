@@ -1,11 +1,27 @@
+﻿from dataclasses import dataclass
 import math
 import colorsys
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import QPainter, QColor, QImage, QPen, QBrush, QConicalGradient, QPainterPath, QLinearGradient
-from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
-from ui.lab_visualizer import lab_to_rgb, rgb_to_lab
-from ui.oklab_colors import oklch_to_rgb, rgb_to_oklch
+from PyQt6.QtCore import Qt, QPointF, QRectF, QThreadPool, QTimer, pyqtSignal
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from ui.ringless_mode import RinglessLayout
+from ui.color_conversions import (
+    lab_to_rgb, rgb_to_lab,
+    oklch_to_rgb, rgb_to_oklch,
+    find_max_lab_c, find_max_oklch_c,
+)
 from core import config
+from ui.slice_prewarm import SlicePrewarmRequest, SlicePrewarmResult, SlicePrewarmTask
+
+
+@dataclass(frozen=True, slots=True)
+class SliceGeometry:
+    """Immutable geometry for the active colour slice in any mode."""
+    center_x: float
+    center_y: float
+    radius: float
 
 def hsv_to_rgb(h, s, v):
     # h: [0, 360], s: [0, 100], v: [0, 100]
@@ -59,43 +75,6 @@ def project_point_to_triangle(px, py, v0, v1, v2):
         
     return best_p.x(), best_p.y()
 
-def find_max_c(L_val, a_dir, b_dir):
-    low = 0.0
-    high = 150.0
-    for _ in range(16):
-        mid = (low + high) / 2.0
-        r, g, b = lab_to_rgb(L_val, mid * a_dir, mid * b_dir)
-        if 0.0 <= r <= 255.0 and 0.0 <= g <= 255.0 and 0.0 <= b <= 255.0:
-            low = mid
-        else:
-            high = mid
-    return low
-
-def find_max_oklch_c(L, h):
-    """Binary search for max OKLCh chroma at given L, h within sRGB gamut.
-
-    Uses the same gamut test as oklch.com / @colordx/core: accept a colour
-    when every linear-sRGB channel is in [0, 1] (here approximated as
-    [-0.5, 255.5] for the gamma-encoded return of oklch_to_rgb).
-
-    Returns the TRUE mathematical gamut boundary.  Very-dark in-gamut
-    colours at low L are handled by the render loop's alpha blending,
-    mirroring oklch.com's GPU shader where near-black pixels are
-    indistinguishable from the dark page background.
-    """
-    if L <= 0.0:
-        return 0.0
-
-    lo, hi = 0.0, 0.6
-    for _ in range(16):
-        mid = (lo + hi) / 2.0
-        r, g, b = oklch_to_rgb(L, mid, h)
-        if 0.0 <= r <= 255.0 and 0.0 <= g <= 255.0 and 0.0 <= b <= 255.0:
-            lo = mid
-        else:
-            hi = mid
-    return lo
-
 def hls_to_hsv_floats(h, l, s):
     # h: 0-360, l: 0-1, s: 0-1
     v = l + s * min(l, 1.0 - l)
@@ -130,9 +109,23 @@ class ColorWheel(QWidget):
         # Mode
         self.wheel_mode = "hsv-square"
         
+        # Ringless-mode layout (None = full mode / disabled)
+        self._ringless_layout: "RinglessLayout | None" = None
+
         # Cache variables for fast rendering
         self._cached_img = None
         self._cached_img_key = None
+
+        # Full-resolution slice warmups are generated off the GUI thread.
+        # The result is kept per mode so switching modules does not throw away
+        # the other modes' ready-to-paint images.
+        self._prewarmed_slices: dict[str, dict[str, object]] = {}
+        self._prewarm_generation = 0
+        self._prewarm_timer = QTimer(self)
+        self._prewarm_timer.setSingleShot(True)
+        self._prewarm_timer.timeout.connect(self.prewarm_all_slices)
+        self._prewarm_pool = QThreadPool(self)
+        self._prewarm_pool.setMaxThreadCount(1)
 
     def resizeEvent(self, event):
         """Invalidate cached ring image on resize and force a full repaint.
@@ -144,6 +137,7 @@ class ColorWheel(QWidget):
         """
         if hasattr(self, "_cached_ring_key"):
             delattr(self, "_cached_ring_key")
+        self._invalidate_slice_caches()
         super().resizeEvent(event)
         self.update()
 
@@ -153,6 +147,87 @@ class ColorWheel(QWidget):
         if hasattr(self, "_cached_ring_key"):
             delattr(self, "_cached_ring_key")
         self.update()
+
+    _PREWARM_MODES = (
+        "hsv-square", "hls-triangle", "rgb-slice", "oklch-slice",
+    )
+
+    def schedule_slice_prewarm(self, delay_ms: int = 250) -> None:
+        """Warm full-resolution slices after the UI has settled."""
+        self._prewarm_timer.start(max(0, delay_ms))
+
+    def _slice_cache_key(self, mode: str, center_x: float, center_y: float, radius: float) -> tuple[object, ...]:
+        if mode in {"hsv-square", "hsl-square"}:
+            half = int(radius / 1.414) - 2
+            tag = "hsv-square" if mode == "hsv-square" else "square"
+            return (int(self.h), half * 2, half * 2, tag)
+        if mode == "oklch-slice":
+            hue = self._oklch_h if self._oklch_h is not None else self.h
+            return (round(hue, 1), radius, round(center_x, 3), round(center_y, 3), "oklch")
+        tag = "hls" if mode == "hls-triangle" else "rgb"
+        return (self.h, radius, round(center_x, 3), round(center_y, 3), tag)
+
+    def _invalidate_slice_caches(self) -> None:
+        self._prewarm_generation += 1
+        self._prewarmed_slices.clear()
+        self._cached_img_key = None
+        for attr in ("_cached_hls_key", "_cached_rgb_key", "_cached_oklch_key"):
+            if hasattr(self, attr):
+                delattr(self, attr)
+
+    def prewarm_all_slices(self) -> None:
+        """Queue one background full-resolution render for every module slice."""
+        if self.width() < 40 or self.height() < 40:
+            return
+        self._prewarm_generation += 1
+        generation = self._prewarm_generation
+        self._prewarmed_slices.clear()
+        pixel_ratio = max(1.0, float(self.devicePixelRatio()))
+        ordered_modes = (self.wheel_mode,) + tuple(
+            mode for mode in self._PREWARM_MODES if mode != self.wheel_mode
+        )
+        for mode in ordered_modes:
+            if mode not in self._PREWARM_MODES:
+                continue
+            geometry = self.get_slice_geometry(mode)
+            hue = self._oklch_h if mode == "oklch-slice" and self._oklch_h is not None else self.h
+            request = SlicePrewarmRequest(
+                generation=generation, mode=mode, hue=hue,
+                center_x=geometry.center_x, center_y=geometry.center_y,
+                radius=geometry.radius, pixel_ratio=pixel_ratio,
+            )
+            task = SlicePrewarmTask(request)
+            task.signals.finished.connect(self._on_slice_prewarm_finished)
+            task.signals.failed.connect(self._on_slice_prewarm_failed)
+            self._prewarm_pool.start(task)
+
+    def _on_slice_prewarm_finished(self, result: object) -> None:
+        if not isinstance(result, SlicePrewarmResult):
+            return
+        request = result.request
+        if request.generation != self._prewarm_generation:
+            return
+        image = QImage(
+            result.image_bytes, result.image_width, result.image_height,
+            result.image_width * 4, QImage.Format.Format_RGBA8888,
+        ).copy()
+        image.setDevicePixelRatio(request.pixel_ratio)
+        self._prewarmed_slices[request.mode] = {
+            "key": self._slice_cache_key(
+                request.mode, request.center_x, request.center_y, request.radius
+            ),
+            "image": image,
+            "min_x": result.min_x,
+            "min_y": result.min_y,
+            "width": result.width,
+            "height": result.height,
+            "edge_x": result.edge_x,
+        }
+        self.update()
+
+    def _on_slice_prewarm_failed(self, failure: object) -> None:
+        # Prewarming is an optimization only; normal paint remains the fallback.
+        return
 
     def is_active_interaction(self):
         """Return True when wheel is being dragged or an external slider is active."""
@@ -165,21 +240,40 @@ class ColorWheel(QWidget):
                     return True
         return False
 
-    def set_color(self, r, g, b, block_signals=False):
-        self._drag_slice = ""  # external color change, reset indicator mode
+    def _clear_drag_anchor(self) -> None:
+        """Forget the last exact slice coordinate after an external update."""
+        self._drag_slice = ""
+        self._drag_C = None
+        self._drag_L = None
+        self._drag_oklch_h = None
+
+    def set_color(self, r, g, b, block_signals=False, update_widget=True):
+        old_hue = self.h
+        self._clear_drag_anchor()  # external color change, reset indicator mode
         h, s, v = rgb_to_hsv(r, g, b)
         if s > 0.5: self._last_hue = h
         else: h = self._last_hue
         self.h = h; self.s = s; self.v = v
-        self.update()
+        # Slice pixels depend on hue and geometry, not the current S/V point.
+        # Keep the full-resolution cache alive when a page switch restores the
+        # same hue; only a real hue change needs a new image.
+        if abs(h - old_hue) > 0.01:
+            self._invalidate_slice_caches()
+        if update_widget:
+            self.update()
         if not block_signals:
             self.colorChanged.emit(r, g, b)
 
-    def set_hsv(self, h, s, v):
+    def set_hsv(self, h, s, v, update_widget=True):
+        old_hue = self.h
+        self._clear_drag_anchor()
         if s > 0.5: self._last_hue = h
         else: h = self._last_hue
         self.h = h; self.s = s; self.v = v
-        self.update()
+        if abs(h - old_hue) > 0.01:
+            self._invalidate_slice_caches()
+        if update_widget:
+            self.update()
 
     def get_color(self):
         return hsv_to_rgb(self.h, self.s, self.v)
@@ -189,18 +283,113 @@ class ColorWheel(QWidget):
         self.wheel_mode = mode
         self.update()
 
-    def set_oklch(self, L, C, h):
+    def set_ringless_layout(self, layout: "RinglessLayout") -> None:
+        """Apply a ringless layout, invalidating caches only when it changes.
+
+        Idempotent: setting the same layout twice is a no-op.
+        """
+        current = getattr(self, "_ringless_layout", None)
+        if current == layout:
+            return
+
+        # ── invalidate every geometry-dependent cache ──
+        # Ring caches
+        if hasattr(self, "_cached_ring_key"):
+            delattr(self, "_cached_ring_key")
+        if hasattr(self, "_cached_oklch_ring_key"):
+            delattr(self, "_cached_oklch_ring_key")
+
+        # Slice-image caches (square / HLS / RGB / OKLCh)
+        self._cached_img_key = None
+        if hasattr(self, "_cached_hls_key"):
+            delattr(self, "_cached_hls_key")
+        if hasattr(self, "_cached_rgb_key"):
+            delattr(self, "_cached_rgb_key")
+        if hasattr(self, "_cached_oklch_key"):
+            delattr(self, "_cached_oklch_key")
+
+        # OKLCh gamut-boundary cache
+        if hasattr(self, "_bdry_h"):
+            delattr(self, "_bdry_h")
+
+        self._ringless_layout = layout
+        self.update()
+
+    def get_slice_geometry(self, mode: str | None = None) -> SliceGeometry:
+        """Return the centre and radius for the active slice.
+
+        In full mode (no ringless layout) this defers to the legacy
+        wheel-geometry computation.  In ringless mode it computes the
+        largest fitting geometry for the active module independently.
+        """
+        layout = getattr(self, "_ringless_layout", None)
+        if layout is None or not layout.wheel_enabled:
+            cx, cy, _, _, _, tr = self.get_wheel_geometry()
+            return SliceGeometry(center_x=cx, center_y=cy, radius=tr)
+
+        # ── ringless: one available rectangle ──
+        # Margins: left, right, AND bottom.  Top margin sits below
+        # the control bar so the slice does not overlap it.
+        margin = layout.margin
+        available_w = float(self.width() - 2 * margin)
+        reserved_bar_h = layout.control_bar_height if layout.controls_enabled else 0
+        available_h = float(self.height() - reserved_bar_h - 2 * margin)
+
+        if available_w <= 0.0 or available_h <= 0.0:
+            return SliceGeometry(
+                center_x=float(self.width()) / 2.0,
+                center_y=float(self.height()) / 2.0,
+                radius=1.0,
+            )
+
+        available_center_x = float(self.width()) / 2.0
+        top_reserved = reserved_bar_h if layout.control_bar_position == "top" else 0
+        cy = float(top_reserved + margin) + available_h / 2.0
+
+        active_mode = mode or self.wheel_mode
+        match active_mode:
+            case "hsv-square" | "hsl-square":
+                # Largest square: side = min(available_w, available_h)
+                # half = int(r / 1.414) - 2  →  square_side = 2 * half
+                side = min(available_w, available_h)
+                radius = (side / 2.0 + 2.0) * 1.414
+                center_x = available_center_x
+            case "triangle" | "hls-triangle":
+                # Triangle: width = 1.5r, height = 1.732r
+                radius = min(available_w / 1.5, available_h / 1.732)
+                center_x = available_center_x - radius / 4.0
+            case "oklch-slice":
+                # Visible gamut: width = r, height = 1.732r
+                radius = min(available_w, available_h / 1.732)
+                center_x = available_center_x
+            case "rgb-slice":
+                # RGB allocation: width = 2r, height = 1.732r
+                radius = min(available_w / 2.0, available_h / 1.732)
+                center_x = available_center_x - radius / 2.0
+            case _:
+                # Unknown mode — safe fallback to square
+                side = min(available_w, available_h)
+                radius = (side / 2.0 + 2.0) * 1.414
+                center_x = available_center_x
+
+        return SliceGeometry(center_x=center_x, center_y=cy, radius=max(1.0, radius))
+
+    def set_oklch(self, L, C, h, update_widget=True):
         """Direct OKLCh state — avoids HSV→RGB→OKLCh round-trip drift."""
+        old_hue = self._oklch_h
+        self._clear_drag_anchor()
         self._oklch_L = L
         self._oklch_C = C
         self._oklch_h = h
-        # Invalidate OKLCh slice cache and boundary cache so the next
-        # paint redraws at the new hue with the correct boundary line.
-        if hasattr(self, "_cached_oklch_key"):
-            delattr(self, "_cached_oklch_key")
-        if hasattr(self, "_bdry_h"):
-            delattr(self, "_bdry_h")
-        self.update()
+        if old_hue is None or abs(h - old_hue) > 0.01:
+            self._invalidate_slice_caches()
+            # A new hue also needs a new boundary and fallback image.
+            if hasattr(self, "_cached_oklch_key"):
+                delattr(self, "_cached_oklch_key")
+            if hasattr(self, "_bdry_h"):
+                delattr(self, "_bdry_h")
+        if update_widget:
+            self.update()
 
     def _oklch_boundary_data(self, h):
         """Pre-compute gamut boundary curve for a given hue.
@@ -254,7 +443,7 @@ class ColorWheel(QWidget):
         outer_radius = size / 2.0 - 2.0
         ring_width = max(12.0, size * 0.08)
         inner_radius = outer_radius - ring_width
-        triangle_radius = max(1.0, inner_radius - 7.0)
+        triangle_radius = max(1.0, inner_radius - 3.0)
         
         return cx, cy, size, outer_radius, inner_radius, triangle_radius
 
@@ -284,138 +473,152 @@ class ColorWheel(QWidget):
             return w0 / sum_w, w1 / sum_w, w2 / sum_w
         return 0.0, 0.0, 1.0
 
+    def _is_ringless(self) -> bool:
+        layout = getattr(self, "_ringless_layout", None)
+        return layout is not None and layout.wheel_enabled
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        
-        cx, cy, size, outer_radius, inner_radius, triangle_radius = self.get_wheel_geometry()
-        if size <= 20:
-            return
-            
-        # 1) Draw Hue Ring with Caching (skip in oklch-slice mode — it has no ring)
-        if self.wheel_mode != "oklch-slice":
-            flip_h = self.cfg.get("flipColorWheelHorizontally", False)
-            ring_key = (int(cx), int(cy), int(outer_radius), int(inner_radius), flip_h)
-            if not hasattr(self, "_cached_ring_key") or self._cached_ring_key != ring_key or not hasattr(self, "_cached_ring_img") or self._cached_ring_img is None:
-                w = self.width()
-                h = self.height()
-                self._cached_ring_img = QImage(w, h, QImage.Format.Format_ARGB32)
-                self._cached_ring_img.fill(0)
 
-                p = QPainter(self._cached_ring_img)
-                p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        ringless = self._is_ringless()
 
-                if flip_h:
-                    gradient = QConicalGradient(QPointF(cx, cy), 150.0)
-                    for i in range(361):
-                        gradient.setColorAt(i / 360.0, QColor.fromHsvF((360 - i) / 360.0, 1.0, 1.0))
-                else:
-                    gradient = QConicalGradient(QPointF(cx, cy), 30.0)
-                    for i in range(361):
-                        gradient.setColorAt(i / 360.0, QColor.fromHsvF(i / 360.0, 1.0, 1.0))
-
-                # Calculate geometry
-                ring_width = outer_radius - inner_radius
-                r_mid = (outer_radius + inner_radius) / 2.0
-
-                # Draw ring using a thick pen with the conical gradient
-                pen = QPen(QBrush(gradient), ring_width)
-                pen.setCapStyle(Qt.PenCapStyle.FlatCap)
-                p.setPen(pen)
-                p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawEllipse(QPointF(cx, cy), r_mid, r_mid)
-                
-                # Draw thin gray outlines to eliminate aliasing/jagged edges
-                p.setPen(QPen(QColor(128, 128, 128, 90), 1.0))
-                p.drawEllipse(QPointF(cx, cy), outer_radius, outer_radius)
-                p.drawEllipse(QPointF(cx, cy), inner_radius, inner_radius)
-                p.end()
-
-                self._cached_ring_key = ring_key
-
-            painter.drawImage(0, 0, self._cached_ring_img)
+        if ringless:
+            # ── ringless: only the colour slice, no ring, no hue indicator ──
+            sg = self.get_slice_geometry()
+            slice_cx, slice_cy, slice_r = sg.center_x, sg.center_y, sg.radius
+            if slice_r <= 1.0:
+                return
         else:
-            # OKLCh mode: hue ring with fixed L=85%, C=0.4
-            #（色环固定明度和彩度，仅响应色相变化）
-            L_ring = 0.85
-            C_ring = 0.4
-            flip_h = self.cfg.get("flipColorWheelHorizontally", False)
-            ring_key = (int(cx), int(cy), int(outer_radius), int(inner_radius), flip_h)
-            if not hasattr(self, "_cached_oklch_ring_key") or self._cached_oklch_ring_key != ring_key or not hasattr(self, "_cached_oklch_ring_img"):
-                w = self.width()
-                h = self.height()
-                self._cached_oklch_ring_img = QImage(w, h, QImage.Format.Format_ARGB32)
-                self._cached_oklch_ring_img.fill(0)
-                p = QPainter(self._cached_oklch_ring_img)
-                p.setRenderHint(QPainter.RenderHint.Antialiasing)
-                # Build OKLCh conical gradient
-                if flip_h:
-                    gradient = QConicalGradient(QPointF(cx, cy), 150.0)
-                    for i in range(361):
-                        hue = (360 - i) % 360
-                        c_safe = min(C_ring, find_max_oklch_c(L_ring, hue))
-                        rr, gg, bb = oklch_to_rgb(L_ring, c_safe, hue)
-                        gradient.setColorAt(i / 360.0, QColor(
-                            max(0, min(255, int(rr))),
-                            max(0, min(255, int(gg))),
-                            max(0, min(255, int(bb)))))
-                else:
-                    gradient = QConicalGradient(QPointF(cx, cy), 30.0)
-                    for i in range(361):
-                        hue = i
-                        # Gamut-clamp C at this hue so ring colours match the
-                        # in-gamut slice (oklch.com's range strips do the same).
-                        c_safe = min(C_ring, find_max_oklch_c(L_ring, hue))
-                        rr, gg, bb = oklch_to_rgb(L_ring, c_safe, hue)
-                        gradient.setColorAt(i / 360.0, QColor(
-                            max(0, min(255, int(rr))),
-                            max(0, min(255, int(gg))),
-                            max(0, min(255, int(bb)))))
-                ring_width = outer_radius - inner_radius
-                r_mid = (outer_radius + inner_radius) / 2.0
-                pen = QPen(QBrush(gradient), ring_width)
-                pen.setCapStyle(Qt.PenCapStyle.FlatCap)
-                p.setPen(pen)
-                p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawEllipse(QPointF(cx, cy), r_mid, r_mid)
-                p.setPen(QPen(QColor(128, 128, 128, 90), 1.0))
-                p.drawEllipse(QPointF(cx, cy), outer_radius, outer_radius)
-                p.drawEllipse(QPointF(cx, cy), inner_radius, inner_radius)
-                p.end()
-                self._cached_oklch_ring_key = ring_key
-            painter.drawImage(0, 0, self._cached_oklch_ring_img)
-        
-        # 2) Draw SV triangle, HSL square, HSV square, HLS triangle, or RGB slice
+            cx, cy, size, outer_radius, inner_radius, triangle_radius = self.get_wheel_geometry()
+            if size <= 20:
+                return
+            slice_cx, slice_cy, slice_r = cx, cy, triangle_radius
+
+            # 1) Draw Hue Ring with Caching (skip in oklch-slice mode — it has no ring)
+            if self.wheel_mode != "oklch-slice":
+                flip_h = self.cfg.get("flipColorWheelHorizontally", False)
+                ring_key = (int(cx), int(cy), int(outer_radius), int(inner_radius), flip_h)
+                if not hasattr(self, "_cached_ring_key") or self._cached_ring_key != ring_key or not hasattr(self, "_cached_ring_img") or self._cached_ring_img is None:
+                    w = self.width()
+                    h = self.height()
+                    self._cached_ring_img = QImage(w, h, QImage.Format.Format_ARGB32)
+                    self._cached_ring_img.fill(0)
+
+                    p = QPainter(self._cached_ring_img)
+                    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+                    if flip_h:
+                        gradient = QConicalGradient(QPointF(cx, cy), 150.0)
+                        for i in range(361):
+                            gradient.setColorAt(i / 360.0, QColor.fromHsvF((360 - i) / 360.0, 1.0, 1.0))
+                    else:
+                        gradient = QConicalGradient(QPointF(cx, cy), 30.0)
+                        for i in range(361):
+                            gradient.setColorAt(i / 360.0, QColor.fromHsvF(i / 360.0, 1.0, 1.0))
+
+                    # Calculate geometry
+                    ring_width = outer_radius - inner_radius
+                    r_mid = (outer_radius + inner_radius) / 2.0
+
+                    # Draw ring using a thick pen with the conical gradient
+                    pen = QPen(QBrush(gradient), ring_width)
+                    pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+                    p.setPen(pen)
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawEllipse(QPointF(cx, cy), r_mid, r_mid)
+
+                    # Draw thin gray outlines to eliminate aliasing/jagged edges
+                    p.setPen(QPen(QColor(128, 128, 128, 90), 1.0))
+                    p.drawEllipse(QPointF(cx, cy), outer_radius, outer_radius)
+                    p.drawEllipse(QPointF(cx, cy), inner_radius, inner_radius)
+                    p.end()
+
+                    self._cached_ring_key = ring_key
+
+                painter.drawImage(0, 0, self._cached_ring_img)
+            else:
+                # OKLCh mode: hue ring with fixed L=85%, C=0.4
+                #（色环固定明度和彩度，仅响应色相变化）
+                L_ring = 0.85
+                C_ring = 0.4
+                flip_h = self.cfg.get("flipColorWheelHorizontally", False)
+                ring_key = (int(cx), int(cy), int(outer_radius), int(inner_radius), flip_h)
+                if not hasattr(self, "_cached_oklch_ring_key") or self._cached_oklch_ring_key != ring_key or not hasattr(self, "_cached_oklch_ring_img"):
+                    w = self.width()
+                    h = self.height()
+                    self._cached_oklch_ring_img = QImage(w, h, QImage.Format.Format_ARGB32)
+                    self._cached_oklch_ring_img.fill(0)
+                    p = QPainter(self._cached_oklch_ring_img)
+                    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+                    # Build OKLCh conical gradient
+                    if flip_h:
+                        gradient = QConicalGradient(QPointF(cx, cy), 150.0)
+                        for i in range(361):
+                            hue = (360 - i) % 360
+                            c_safe = min(C_ring, find_max_oklch_c(L_ring, hue))
+                            rr, gg, bb = oklch_to_rgb(L_ring, c_safe, hue)
+                            gradient.setColorAt(i / 360.0, QColor(
+                                max(0, min(255, int(rr))),
+                                max(0, min(255, int(gg))),
+                                max(0, min(255, int(bb)))))
+                    else:
+                        gradient = QConicalGradient(QPointF(cx, cy), 30.0)
+                        for i in range(361):
+                            hue = i
+                            # Gamut-clamp C at this hue so ring colours match the
+                            # in-gamut slice (oklch.com's range strips do the same).
+                            c_safe = min(C_ring, find_max_oklch_c(L_ring, hue))
+                            rr, gg, bb = oklch_to_rgb(L_ring, c_safe, hue)
+                            gradient.setColorAt(i / 360.0, QColor(
+                                max(0, min(255, int(rr))),
+                                max(0, min(255, int(gg))),
+                                max(0, min(255, int(bb)))))
+                    ring_width = outer_radius - inner_radius
+                    r_mid = (outer_radius + inner_radius) / 2.0
+                    pen = QPen(QBrush(gradient), ring_width)
+                    pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+                    p.setPen(pen)
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawEllipse(QPointF(cx, cy), r_mid, r_mid)
+                    p.setPen(QPen(QColor(128, 128, 128, 90), 1.0))
+                    p.drawEllipse(QPointF(cx, cy), outer_radius, outer_radius)
+                    p.drawEllipse(QPointF(cx, cy), inner_radius, inner_radius)
+                    p.end()
+                    self._cached_oklch_ring_key = ring_key
+                painter.drawImage(0, 0, self._cached_oklch_ring_img)
+
+            # 3) Draw Hue Indicator on Ring
+            self.draw_hue_indicator(painter, cx, cy, inner_radius, outer_radius)
+
+        # ── 2) Draw colour slice (shared by full and ringless) ──
         if self.wheel_mode == "triangle":
-            self.draw_triangle(painter, cx, cy, triangle_radius)
+            self.draw_triangle(painter, slice_cx, slice_cy, slice_r)
         elif self.wheel_mode == "hsv-square":
-            self.draw_hsv_square(painter, cx, cy, triangle_radius)
+            self.draw_hsv_square(painter, slice_cx, slice_cy, slice_r)
         elif self.wheel_mode == "hls-triangle":
-            self.draw_hls_triangle(painter, cx, cy, triangle_radius)
+            self.draw_hls_triangle(painter, slice_cx, slice_cy, slice_r)
         elif self.wheel_mode == "rgb-slice":
-            self.draw_rgb_slice(painter, cx, cy, triangle_radius)
+            self.draw_rgb_slice(painter, slice_cx, slice_cy, slice_r)
         elif self.wheel_mode == "oklch-slice":
-            self.draw_oklch_slice(painter, cx, cy, triangle_radius)
+            self.draw_oklch_slice(painter, slice_cx, slice_cy, slice_r)
         else:
-            self.draw_hsl_square(painter, cx, cy, triangle_radius)
-            
-        # 3) Draw Hue Indicator on Ring
-        self.draw_hue_indicator(painter, cx, cy, inner_radius, outer_radius)
-        
-        # 4) Draw SV/HSL/HSV Indicator inside
+            self.draw_hsl_square(painter, slice_cx, slice_cy, slice_r)
+
+        # ── 3) Draw internal indicator (shared) ──
         if self.wheel_mode == "triangle":
-            self.draw_sv_indicator(painter, cx, cy, triangle_radius)
+            self.draw_sv_indicator(painter, slice_cx, slice_cy, slice_r)
         elif self.wheel_mode == "hsv-square":
-            self.draw_hsv_square_indicator(painter, cx, cy, triangle_radius)
+            self.draw_hsv_square_indicator(painter, slice_cx, slice_cy, slice_r)
         elif self.wheel_mode == "hls-triangle":
-            self.draw_hls_indicator(painter, cx, cy, triangle_radius)
+            self.draw_hls_indicator(painter, slice_cx, slice_cy, slice_r)
         elif self.wheel_mode == "rgb-slice":
-            self.draw_rgb_indicator(painter, cx, cy, triangle_radius)
+            self.draw_rgb_indicator(painter, slice_cx, slice_cy, slice_r)
         elif self.wheel_mode == "oklch-slice":
-            self.draw_oklch_indicator(painter, cx, cy, triangle_radius)
+            self.draw_oklch_indicator(painter, slice_cx, slice_cy, slice_r)
         else:
-            self.draw_hsl_indicator(painter, cx, cy, triangle_radius)
+            self.draw_hsl_indicator(painter, slice_cx, slice_cy, slice_r)
 
     def draw_triangle(self, painter, cx, cy, r):
         v0, v1, v2 = self.get_triangle_vertices(cx, cy, r)
@@ -465,7 +668,11 @@ class ColorWheel(QWidget):
             return
             
         # Check cache
-        cache_key = (int(self.h), width, height, "square", self.is_active_interaction())
+        cache_key = (int(self.h), width, height, "square")
+        prewarmed = self._prewarmed_slices.get("hsl-square")
+        if prewarmed is not None and prewarmed.get("key") == cache_key:
+            painter.drawImage(int(cx - half), int(cy - half), prewarmed["image"])
+            return
         if self._cached_img_key == cache_key and self._cached_img is not None:
             painter.drawImage(int(cx - half), int(cy - half), self._cached_img)
             return
@@ -510,7 +717,16 @@ class ColorWheel(QWidget):
             return
             
         # Check cache
-        cache_key = (int(self.h), width, height, "hsv-square", self.is_active_interaction())
+        cache_key = (int(self.h), width, height, "hsv-square")
+        prewarmed = self._prewarmed_slices.get("hsv-square")
+        if prewarmed is not None and prewarmed.get("key") == cache_key:
+            painter.drawImage(int(cx - half), int(cy - half), prewarmed["image"])
+            painter.save()
+            painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(int(cx - half), int(cy - half), width, height)
+            painter.restore()
+            return
         if self._cached_img_key == cache_key and self._cached_img is not None:
             painter.drawImage(int(cx - half), int(cy - half), self._cached_img)
             painter.save()
@@ -655,7 +871,12 @@ class ColorWheel(QWidget):
 
     def draw_hls_triangle(self, painter, cx, cy, r):
         v0, v1, v2 = self.get_triangle_vertices(cx, cy, r)
-        cache_key = (self.h, r, "hls", self.is_active_interaction())
+        cache_key = (self.h, r, round(cx, 3), round(cy, 3), "hls")
+        prewarmed = self._prewarmed_slices.get("hls-triangle")
+        if prewarmed is not None and prewarmed.get("key") == cache_key:
+            painter.drawImage(int(prewarmed["min_x"]), int(prewarmed["min_y"]), prewarmed["image"])
+            self._draw_hls_triangle_outline(painter, v0, v1, v2, 1)
+            return
         if hasattr(self, "_cached_hls_key") and self._cached_hls_key == cache_key and hasattr(self, "_cached_hls_img"):
             painter.drawImage(int(self._cached_hls_minx), int(self._cached_hls_miny), self._cached_hls_img)
             is_active = self.is_active_interaction()
@@ -676,9 +897,10 @@ class ColorWheel(QWidget):
         if width <= 0 or height <= 0:
             return
             
-        # Only subsample for hue changes (ring/slider), not internal triangle drag
+        # Keep every active drag responsive; end_drag() invalidates the cache
+        # so the next paint restores the full-quality image.
         is_active = self.is_active_interaction()
-        subsample = 3 if (is_active and self.dragging != "hls-triangle") else 1
+        subsample = 3 if is_active else 1
             
         sub_w = max(1, (width + subsample - 1) // subsample)
         sub_h = max(1, (height + subsample - 1) // subsample)
@@ -747,7 +969,15 @@ class ColorWheel(QWidget):
         self.draw_indicator_ring(painter, pos)
 
     def draw_rgb_slice(self, painter, cx, cy, r):
-        cache_key = (self.h, r, "rgb", self.is_active_interaction())
+        cache_key = (self.h, r, round(cx, 3), round(cy, 3), "rgb")
+        prewarmed = self._prewarmed_slices.get("rgb-slice")
+        if prewarmed is not None and prewarmed.get("key") == cache_key:
+            edge_x = prewarmed.get("edge_x")
+            if edge_x is not None:
+                self._cached_rgb_edge = (edge_x, prewarmed["min_x"], prewarmed["min_y"], prewarmed["min_y"] + prewarmed["height"], prewarmed["height"])
+            painter.drawImage(int(prewarmed["min_x"]), int(prewarmed["min_y"]), prewarmed["image"])
+            self._draw_slice_outline(painter, "rgb")
+            return
         if hasattr(self, "_cached_rgb_key") and self._cached_rgb_key == cache_key and hasattr(self, "_cached_rgb_img"):
             painter.drawImage(int(self._cached_rgb_minx), int(self._cached_rgb_miny), self._cached_rgb_img)
             self._draw_slice_outline(painter, "rgb")
@@ -764,9 +994,10 @@ class ColorWheel(QWidget):
         if width <= 0 or height <= 0:
             return
             
-        # Only subsample for hue changes (ring/slider), not internal slice drag
+        # RGB?Lab conversion is the most expensive slice renderer, so use a
+        # slightly coarser active preview to keep the indicator under one frame.
         is_active = self.is_active_interaction()
-        subsample = 3 if (is_active and self.dragging != "rgb-slice") else 1
+        subsample = 5 if is_active else 1
             
         sub_w = max(1, (width + subsample - 1) // subsample)
         sub_h = max(1, (height + subsample - 1) // subsample)
@@ -782,9 +1013,9 @@ class ColorWheel(QWidget):
 
         # Sample max chroma at multiple L and scale to fill available width
         max_c = max(
-            find_max_c(20, a_dir, b_dir),
-            find_max_c(50, a_dir, b_dir),
-            find_max_c(80, a_dir, b_dir),
+            find_max_lab_c(20, a_dir, b_dir),
+            find_max_lab_c(50, a_dir, b_dir),
+            find_max_lab_c(80, a_dir, b_dir),
         )
         scale = (r * 1.05) / max(max_c, 0.001)
 
@@ -857,7 +1088,7 @@ class ColorWheel(QWidget):
         C_pure = math.sqrt(a_pure * a_pure + b_pure * b_pure)
         a_dir = a_pure / C_pure if C_pure > 0.001 else 0.0
         b_dir = b_pure / C_pure if C_pure > 0.001 else 0.0
-        max_c = max(find_max_c(20, a_dir, b_dir), find_max_c(50, a_dir, b_dir), find_max_c(80, a_dir, b_dir))
+        max_c = max(find_max_lab_c(20, a_dir, b_dir), find_max_lab_c(50, a_dir, b_dir), find_max_lab_c(80, a_dir, b_dir))
         scale = (r * 1.05) / max(max_c, 0.001)
 
         # Use exact drag position if mid-drag, otherwise compute from current color
@@ -876,15 +1107,93 @@ class ColorWheel(QWidget):
         pos = QPointF(px, py)
         self.draw_indicator_ring(painter, pos)
 
+    def _is_point_in_active_slice(self, px: float, py: float, cx: float, cy: float, r: float) -> bool:
+        """Return True when (px, py) is inside the current mode's slice bounds.
+
+        Unknown wheel modes are rejected — a click in an unrecognised mode
+        must never start dragging.
+        """
+        match self.wheel_mode:
+            case "hsv-square" | "hsl-square":
+                half = int(r / 1.414) - 2
+                return abs(px - cx) <= half and abs(py - cy) <= half
+            case "triangle" | "hls-triangle":
+                v0, v1, v2 = self.get_triangle_vertices(cx, cy, r)
+                return self.is_point_in_triangle(px, py, v0, v1, v2)
+            case "oklch-slice":
+                hy = r * 0.866
+                min_x = cx - r * 0.5
+                max_x = cx + r * (0.5 if self._is_ringless() else 1.5)
+                min_y = cy - hy
+                max_y = cy + hy
+                if not (min_x <= px <= max_x and min_y <= py <= max_y):
+                    return False
+                L_coord = (cy + hy - py) / (2.0 * hy)
+                if L_coord < 0.0 or L_coord > 1.0:
+                    return False
+                return px >= min_x
+            case "rgb-slice":
+                hy = r * 0.866
+                min_x = cx - r * 0.5
+                max_x = cx + r * 1.5
+                min_y = cy - hy
+                max_y = cy + hy
+                if not (min_x <= px <= max_x and min_y <= py <= max_y):
+                    return False
+                L_coord = (cy + hy - py) / (2.0 * hy)
+                if L_coord < 0.0 or L_coord > 1.0:
+                    return False
+                return px >= min_x
+            case _:
+                # Unknown mode — reject clicks
+                return False
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_slice = ""  # reset indicator mode on new interaction
+            self._clear_drag_anchor()  # reset indicator mode on new interaction
+            ringless = self._is_ringless()
+
+            if ringless:
+                # ── ringless: no hue ring; only slice-drag possible ──
+                sg = self.get_slice_geometry()
+                pos = event.position()
+                px, py = pos.x(), pos.y()
+                if not self._is_point_in_active_slice(px, py, sg.center_x, sg.center_y, sg.radius):
+                    return  # click outside slice — no drag starts
+
+                # Dispatch to mode-specific handler (same logic as full mode)
+                if self.wheel_mode in ("triangle", "hls-triangle"):
+                    self.dragging = self.wheel_mode
+                    if self.wheel_mode == "triangle":
+                        self.handle_triangle_drag(px, py, sg.center_x, sg.center_y, sg.radius)
+                    else:
+                        self.handle_hls_triangle_drag(px, py, sg.center_x, sg.center_y, sg.radius)
+                elif self.wheel_mode == "rgb-slice":
+                    self.dragging = "rgb-slice"
+                    self.handle_rgb_slice_drag(px, py, sg.center_x, sg.center_y, sg.radius)
+                elif self.wheel_mode == "oklch-slice":
+                    self.dragging = "oklch-slice"
+                    self.handle_oklch_slice_drag(px, py, sg.center_x, sg.center_y, sg.radius)
+                else:
+                    half = int(sg.radius / 1.414) - 2
+                    if self.wheel_mode == "hsv-square":
+                        self.dragging = "hsv-square"
+                        self.handle_hsv_square_drag(px, py, sg.center_x, sg.center_y, half)
+                    else:
+                        self.dragging = "square"
+                        self.handle_square_drag(px, py, sg.center_x, sg.center_y, half)
+
+                if self.dragging:
+                    self.setCursor(Qt.CursorShape.BlankCursor)
+                return
+
+            # ── full mode: legacy flow ──
             cx, cy, _, outer_radius, inner_radius, triangle_radius = self.get_wheel_geometry()
             pos = event.position()
             dx = pos.x() - cx
             dy = pos.y() - cy
             d = math.sqrt(dx*dx + dy*dy)
-            
+
             if inner_radius <= d <= outer_radius + 4:
                 self.dragging = "hue"
                 self.handle_hue_drag(pos.x(), pos.y(), cx, cy)
@@ -909,30 +1218,40 @@ class ColorWheel(QWidget):
                     else:
                         self.dragging = "square"
                         self.handle_square_drag(pos.x(), pos.y(), cx, cy, half)
-            
+
             if self.dragging and self.dragging != "hue":
                 self.setCursor(Qt.CursorShape.BlankCursor)
 
     def mouseMoveEvent(self, event):
         if self.dragging:
-            cx, cy, _, _, _, triangle_radius = self.get_wheel_geometry()
-            pos = event.position()
+            ringless = self._is_ringless()
+            if ringless:
+                sg = self.get_slice_geometry()
+                pos = event.position()
+                px, py = pos.x(), pos.y()
+                cx, cy, r = sg.center_x, sg.center_y, sg.radius
+            else:
+                cx, cy, _, _, _, triangle_radius = self.get_wheel_geometry()
+                pos = event.position()
+                px, py = pos.x(), pos.y()
+                r = triangle_radius
+
             if self.dragging == "hue":
-                self.handle_hue_drag(pos.x(), pos.y(), cx, cy)
+                self.handle_hue_drag(px, py, cx, cy)
             elif self.dragging == "triangle":
-                self.handle_triangle_drag(pos.x(), pos.y(), cx, cy, triangle_radius)
+                self.handle_triangle_drag(px, py, cx, cy, r)
             elif self.dragging == "hls-triangle":
-                self.handle_hls_triangle_drag(pos.x(), pos.y(), cx, cy, triangle_radius)
+                self.handle_hls_triangle_drag(px, py, cx, cy, r)
             elif self.dragging == "rgb-slice":
-                self.handle_rgb_slice_drag(pos.x(), pos.y(), cx, cy, triangle_radius)
+                self.handle_rgb_slice_drag(px, py, cx, cy, r)
             elif self.dragging == "oklch-slice":
-                self.handle_oklch_slice_drag(pos.x(), pos.y(), cx, cy, triangle_radius)
+                self.handle_oklch_slice_drag(px, py, cx, cy, r)
             elif self.dragging == "square":
-                half = int(triangle_radius / 1.414) - 2
-                self.handle_square_drag(pos.x(), pos.y(), cx, cy, half)
+                half = int(r / 1.414) - 2
+                self.handle_square_drag(px, py, cx, cy, half)
             elif self.dragging == "hsv-square":
-                half = int(triangle_radius / 1.414) - 2
-                self.handle_hsv_square_drag(pos.x(), pos.y(), cx, cy, half)
+                half = int(r / 1.414) - 2
+                self.handle_hsv_square_drag(px, py, cx, cy, half)
 
     def mouseReleaseEvent(self, event):
         self.end_drag()
@@ -948,15 +1267,18 @@ class ColorWheel(QWidget):
             delattr(self, "_cached_rgb_key")
         if hasattr(self, "_cached_oklch_key"):
             delattr(self, "_cached_oklch_key")
+        # Keep the last exact slice anchor through the release repaint.
+        # Clearing it here makes the indicator round-trip through quantized
+        # RGB/HSV and visibly jump away from the point the user selected.
         self._drag_scale = None
-        self._drag_oklch_h = None
-        self._drag_slice = ""
-        self._drag_C = None
-        self._drag_L = None
         self.update()
         self.interactionFinished.emit()
 
     def handle_hue_drag(self, px, py, cx, cy):
+        # A hue change changes every prewarmed slice image; invalidate the
+        # current generation so an older worker result cannot be installed
+        # under the new hue key.
+        self._invalidate_slice_caches()
         dy = -(py - cy)
         dx = px - cx
         angle = math.atan2(dy, dx)
@@ -1063,9 +1385,9 @@ class ColorWheel(QWidget):
             C_pure = math.sqrt(a_p * a_p + b_p * b_p)
             self._drag_a_dir = a_p / C_pure if C_pure > 0.001 else 0.0
             self._drag_b_dir = b_p / C_pure if C_pure > 0.001 else 0.0
-            max_c = max(find_max_c(20, self._drag_a_dir, self._drag_b_dir),
-                        find_max_c(50, self._drag_a_dir, self._drag_b_dir),
-                        find_max_c(80, self._drag_a_dir, self._drag_b_dir))
+            max_c = max(find_max_lab_c(20, self._drag_a_dir, self._drag_b_dir),
+                        find_max_lab_c(50, self._drag_a_dir, self._drag_b_dir),
+                        find_max_lab_c(80, self._drag_a_dir, self._drag_b_dir))
             self._drag_scale = (r * 1.05) / max(max_c, 0.001)
         scale = self._drag_scale
         a_dir = self._drag_a_dir
@@ -1074,12 +1396,12 @@ class ColorWheel(QWidget):
         L = max(0.0, min(1.0, (cy + hy - py) / (2.0 * hy)))
         L_val = L * 100.0
         
-        C_max = find_max_c(L_val, a_dir, b_dir)
+        C_max = find_max_lab_c(L_val, a_dir, b_dir)
         C_raw = (px - min_x) / scale
         if C_raw > C_max and C_max > 0:
             # Mouse outside gamut — snap to nearest point on boundary
             L, L_val = self._snap_to_boundary_rgb(L, L_val, C_raw, a_dir, b_dir, scale, px, py, cx, cy, hy, min_x)
-            C_max = find_max_c(L_val, a_dir, b_dir)
+            C_max = find_max_lab_c(L_val, a_dir, b_dir)
         C = max(0.0, min(C_max, (px - min_x) / scale))
         
         a_val = C * a_dir
@@ -1145,7 +1467,7 @@ class ColorWheel(QWidget):
 
         hy = r * 0.866
         min_x = int(math.floor(cx - r * 0.5))
-        max_x = int(math.ceil(cx + r * 1.5))
+        max_x = int(math.ceil(cx + r * 0.5))
         min_y = int(math.floor(cy - hy))
         max_y = int(math.ceil(cy + hy))
         width = max_x - min_x
@@ -1153,15 +1475,20 @@ class ColorWheel(QWidget):
         if width <= 0 or height <= 0:
             return
 
-        cache_key = (round(oklch_h, 1), r, "oklch", self.is_active_interaction())
+        cache_key = (round(oklch_h, 1), r, round(cx, 3), round(cy, 3), "oklch")
+        prewarmed = self._prewarmed_slices.get("oklch-slice")
+        if prewarmed is not None and prewarmed.get("key") == cache_key:
+            painter.drawImage(int(prewarmed["min_x"]), int(prewarmed["min_y"]), prewarmed["image"])
+            return
         img_ready = (hasattr(self, "_cached_oklch_key")
                      and self._cached_oklch_key == cache_key
                      and hasattr(self, "_cached_oklch_img"))
 
         if not img_ready:
-            # Only subsample for hue changes (ring/slider), not internal slice drag
+            # Keep every active drag responsive; end_drag() invalidates the cache
+            # so the next paint restores the full-quality image.
             is_active = self.is_active_interaction()
-            subsample = 3 if (is_active and self.dragging != "oklch-slice") else 1
+            subsample = 3 if is_active else 1
             sub_w = max(1, (width + subsample - 1) // subsample)
             sub_h = max(1, (height + subsample - 1) // subsample)
 
@@ -1336,7 +1663,7 @@ class ColorWheel(QWidget):
         best_L, best_dist = L, float('inf')
         for t in [i / 25.0 for i in range(26)]:
             t_val = t * 100.0
-            Cb = find_max_c(t_val, a_dir, b_dir)
+            Cb = find_max_lab_c(t_val, a_dir, b_dir)
             bx = min_x + Cb * scale
             by = cy + hy * (1.0 - 2.0 * t)
             d = (bx - px) ** 2 + (by - py) ** 2
@@ -1349,7 +1676,7 @@ class ColorWheel(QWidget):
         for i in range(21):
             t = lo + (hi - lo) * i / 20.0
             t_val = t * 100.0
-            Cb = find_max_c(t_val, a_dir, b_dir)
+            Cb = find_max_lab_c(t_val, a_dir, b_dir)
             bx = min_x + Cb * scale
             by = cy + hy * (1.0 - 2.0 * t)
             d = (bx - px) ** 2 + (by - py) ** 2
@@ -1381,3 +1708,4 @@ class ColorWheel(QWidget):
                 best_dist = d
                 best_L = t
         return best_L
+
