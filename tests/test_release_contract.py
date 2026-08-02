@@ -134,3 +134,60 @@ def test_file_version_has_four_components():
 
 def test_companion_debug_logging_is_disabled_for_release_builds():
     assert _DEBUG is False
+
+
+SPEC_FILES = ["Colorink.spec", "Colorink Onefile.spec"]
+SOURCE_DIRS = ["ui", "core"]
+ICON_REF_RE = re.compile(r"icons/([A-Za-z0-9_.\-]+\.(?:png|ico))")
+
+
+def _spec_declared_icons() -> set[str]:
+    declared: set[str] = set()
+    for spec_name in SPEC_FILES:
+        content = (PROJECT_ROOT / spec_name).read_text(encoding="utf-8")
+        for match in re.finditer(r"_add_if_exists\('icons/([^']+)'", content):
+            declared.add(match.group(1))
+    return declared
+
+
+def _source_referenced_icons() -> set[str]:
+    referenced: set[str] = set()
+    for directory in SOURCE_DIRS:
+        for py in (PROJECT_ROOT / directory).glob("*.py"):
+            content = py.read_text(encoding="utf-8")
+            for match in ICON_REF_RE.finditer(content):
+                referenced.add(match.group(1))
+    return referenced
+
+
+def test_declared_icons_cover_source_references():
+    """Every icon referenced from source must be declared in the spec datas.
+
+    PyInstaller only bundles files listed in the spec; a QSS image: url()
+    pointing at an undeclared icon silently renders nothing in the packaged
+    EXE. This test prevents that regression.
+    """
+    declared = _spec_declared_icons()
+    missing = sorted(_source_referenced_icons() - declared)
+    assert not missing, (
+        "Icons referenced in source but missing from spec datas "
+        f"(_add_if_exists): {', '.join(missing)}"
+    )
+
+
+def test_spec_declares_all_icon_files():
+    """Every icon file in icons/ must be declared in the spec datas.
+
+    Catches the case where a new icon is added to icons/ but nobody adds the
+    corresponding spec entry. (.icns is macOS-only and intentionally skipped.)
+    """
+    declared = _spec_declared_icons()
+    existing = {
+        f.name for f in (PROJECT_ROOT / "icons").iterdir()
+        if f.suffix in (".png", ".ico")
+    }
+    undeclared = sorted(existing - declared)
+    assert not undeclared, (
+        "Icon files in icons/ missing from spec datas "
+        f"(_add_if_exists): {', '.join(undeclared)}"
+    )
