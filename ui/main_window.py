@@ -1,25 +1,108 @@
-import sys
+﻿import sys
 import os
 import math
+import re
 import colorsys
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QStackedWidget, QSlider, QLabel, QFrame,
                              QGraphicsDropShadowEffect, QApplication, QStyle, QStyleOptionSlider,
                              QSystemTrayIcon, QMenu)
 from PyQt6.QtCore import Qt, QPoint, QSize, pyqtSlot, QRectF, pyqtSignal, QRect, QPointF, QEvent, QTimer
-from PyQt6.QtGui import QColor, QPalette, QLinearGradient, QPainter, QBrush, QPen, QPixmap, QCursor, QPolygonF, QIcon, QAction
+from PyQt6.QtGui import QColor, QPalette, QLinearGradient, QPainter, QBrush, QPen, QPixmap, QCursor, QPolygonF, QIcon, QAction, QMouseEvent
 
 from core import config
 from core import memory_sync
 from core import global_hotkeys
 from ui.color_wheel import ColorWheel, hsv_to_rgb, rgb_to_hsv, hls_to_hsv_floats
-from ui.lab_visualizer import LabSquare, LabSlider, lab_to_rgb, rgb_to_lab
-from ui.oklab_colors import oklab_to_rgb, rgb_to_oklab, oklch_to_rgb, rgb_to_oklch
+from ui.lab_visualizer import LabSquare, LabSlider
+from ui.color_conversions import (
+    oklab_to_rgb, rgb_to_oklab, oklch_to_rgb, rgb_to_oklch,
+    lab_to_rgb, rgb_to_lab,
+    map_lab_to_gamut, map_oklab_to_gamut, clamp_rgb,
+)
 from ui.slider_themes import get_slider_theme
 from ui.settings_sidebar import SettingsSidebar
 from ui.grayscale_overlay import GrayscaleOverlay
 from ui.color_history import ColorHistoryWidget
 from ui.color_picker_overlay import ColorPickerOverlay
+from ui.color_preview_box import ColorPreviewBox
+from ui.picker_panes import LabPane, PaneWithModeButton, WheelPane
+from ui.ringless_mode import (
+    RINGLESS_ACTIVE_BORDER,
+    RinglessConfig,
+    resolve_ringless_layout,
+)
+
+# Drawing applications recognized by the "only show while the drawing app is
+# in the foreground" tracker (onlyShowInCsp). Process basenames are matched
+# with the ".exe" extension stripped; window titles are lowercased.
+_DRAWING_APP_EXE_MARKERS = (
+    "clipstudiopaint",   # CLIP Studio Paint main + CLIPStudioPaintApp painting process
+    "clipstudio",        # CSP launcher / companion processes
+    "sai",               # PaintTool SAI 1.x / 2.x (sai.exe / sai2.exe)
+    "udmpaint",          # UDM Paint (UDMPaintPro.exe / UDMPaintEx.exe)
+    "photoshop",         # Adobe Photoshop
+)
+
+
+def _exe_matches_drawing_app(exe_name: str) -> bool:
+    """True if a lowercased process basename belongs to a drawing app.
+
+    The extension is stripped first so "sai2.exe" and "sai.exe" both match
+    the same "sai" marker.
+    """
+    stem = exe_name[:-4] if exe_name.lower().endswith(".exe") else exe_name
+    return any(marker in stem for marker in _DRAWING_APP_EXE_MARKERS)
+
+
+def _title_matches_drawing_app(title: str) -> bool:
+    """True if a lowercased window title belongs to a drawing app.
+
+    Latin app names are matched at a word boundary so titles like
+    "Photosai" can't false-positive on the "sai" marker, while real-world
+    titles such as "SAI Ver.2" or "paint tool sai" still match.
+    """
+    if "clip studio paint" in title or "优动漫" in title or "photoshop" in title:
+        return True
+    if re.search(r"(?<![a-z0-9])sai", title):  # SAI / SAI Ver.2 / paint tool sai
+        return True
+    if re.search(r"(?<![a-z0-9])udm", title):  # UDM Paint
+        return True
+    return False
+
+
+def _resolve_process_exe(pid: int) -> str:
+    """Resolve a PID to its executable basename (lowercased).
+
+    psutil first; if it fails (elevated / protected process, antivirus
+    interference) fall back to QueryFullProcessImageNameW via ctypes so the
+    foreground check keeps working for admin-run drawing apps.
+    """
+    try:
+        import psutil
+        exe = psutil.Process(pid).exe()
+        if exe:
+            return os.path.basename(exe).lower()
+    except Exception:
+        pass
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return ""
+        try:
+            buf = ctypes.create_unicode_buffer(32768)
+            size = ctypes.c_ulong(len(buf))
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                return os.path.basename(buf.value).lower()
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+    return ""
+
 
 def bring_process_to_foreground(pid: int) -> bool:
     import ctypes
@@ -77,12 +160,13 @@ def hsv_to_hls_floats(h, s, v):
 # still toggle individual slider groups in settings via the "module
 # default + adjustable" policy).
 _MODULE_DEFS = {
-    "hsv":  {"wheel": "hsv-square",   "sliders": ["HSV", "RGB", "LAB"]},
-    "hls":  {"wheel": "hls-triangle",  "sliders": ["HSL", "RGB", "LAB"]},
+    "hsv":  {"wheel": "hsv-square",   "sliders": ["HSV", "RGB", "LAB", "OKLab", "OKLCh"]},
+    "hls":  {"wheel": "hls-triangle",  "sliders": ["HSL", "RGB", "LAB", "OKLab", "OKLCh"]},
+    "rgb":  {"wheel": "rgb-slice",     "sliders": ["RGB", "HSV", "LAB", "OKLab", "OKLCh"]},
     "lch":  {"wheel": "oklch-slice",   "sliders": ["OKLCh", "OKLab", "RGB"]},
 }
-_MODULE_NAMES = {"hsv": "HSV", "hls": "HLS", "lch": "LCH"}
-_MODULE_ORDER = ["hsv", "hls", "lch"]
+_MODULE_NAMES = {"hsv": "HSV", "hls": "HLS", "rgb": "RGB", "lch": "LCH"}
+_MODULE_ORDER = ["hsv", "hls", "rgb", "lch"]
 
 # ── Normalized chroma scale for the C_oklch slider ────────────────────────
 # The C slider keeps its handle stable while L/H changes by representing a
@@ -98,7 +182,58 @@ class TitleBar(QWidget):
         self.parent = parent
         self.drag_position = None
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
         self.init_ui()
+
+    def _show_context_menu(self, pos):
+        """Quick toggles for the most-used settings."""
+        p = self.parent
+        menu = QMenu(self)
+
+        act_follow = menu.addAction("跟随鼠标")
+        act_follow.setCheckable(True)
+        act_follow.setChecked(p.cfg.get("followMouseEnabled", False))
+        act_follow.triggered.connect(lambda checked: self._toggle_follow_mouse(checked))
+
+        act_no_focus = menu.addAction("无焦点选色模式")
+        act_no_focus.setCheckable(True)
+        act_no_focus.setChecked(p.cfg.get("noFocusMode", False))
+        act_no_focus.triggered.connect(lambda checked: self._toggle_no_focus(checked))
+
+        menu.addSeparator()
+        act_settings = menu.addAction("打开设置")
+        act_settings.triggered.connect(p.toggle_settings_sidebar)
+        menu.exec(self.mapToGlobal(pos))
+
+    def _toggle_follow_mouse(self, checked):
+        p = self.parent
+        p.follow_mouse_active = checked
+        p.cfg["followMouseEnabled"] = checked
+        config.save_hotkey_config(p.cfg)
+        if checked and p.isVisible():
+            p.show_window_at_cursor()
+        sidebar = getattr(p, "settings_sidebar", None)
+        if sidebar is not None and sidebar.isVisible():
+            sidebar.cfg["followMouseEnabled"] = checked
+            sidebar.cb_follow_mouse.blockSignals(True)
+            sidebar.cb_follow_mouse.setChecked(checked)
+            sidebar.cb_follow_mouse.blockSignals(False)
+            sidebar._persist_config()
+
+    def _toggle_no_focus(self, checked):
+        p = self.parent
+        p.cfg["noFocusMode"] = checked
+        config.save_hotkey_config(p.cfg)
+        p.update_window_flags()
+        p.update_no_focus_policies()
+        sidebar = getattr(p, "settings_sidebar", None)
+        if sidebar is not None and sidebar.isVisible():
+            sidebar.cfg["noFocusMode"] = checked
+            sidebar.cb_no_focus.blockSignals(True)
+            sidebar.cb_no_focus.setChecked(checked)
+            sidebar.cb_no_focus.blockSignals(False)
+            sidebar._persist_config()
 
     def init_ui(self):
         self.setFixedHeight(28)
@@ -181,6 +316,94 @@ class TitleBar(QWidget):
 
     def mouseReleaseEvent(self, event):
         self.drag_position = None
+
+
+class SliderValueLabel(QLabel):
+    """Compact slider readout with clear hover-only +/-1 controls."""
+
+    def __init__(self, slider, parent=None):
+        super().__init__("0", parent)
+        self.slider = slider
+        self._hovered = False
+        self._hover_half = 1
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Upper half: +1; lower half: -1")
+
+    def enterEvent(self, event):
+        self._hovered = True
+        local_pos = self.mapFromGlobal(QCursor.pos())
+        self._hover_half = 1 if local_pos.y() < self.height() / 2 else -1
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, a0):
+        self._hovered = False
+        self._hover_half = 0
+        self.update()
+        super().leaveEvent(a0)
+
+    def mouseMoveEvent(self, ev: QMouseEvent):
+        next_half = 1 if ev.position().y() < self.height() / 2 else -1
+        if next_half != self._hover_half:
+            self._hover_half = next_half
+            self.update()
+        super().mouseMoveEvent(ev)
+
+    def mousePressEvent(self, ev: QMouseEvent):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            delta = 1 if ev.position().y() < self.height() / 2 else -1
+            new_value = max(
+                self.slider.minimum(),
+                min(self.slider.maximum(), self.slider.value() + delta),
+            )
+            if new_value != self.slider.value():
+                self.slider.setValue(new_value)
+                self.slider.sliderReleased.emit()
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def paintEvent(self, a0):
+        super().paintEvent(a0)
+        if not self._hovered:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        strip_left = max(0, self.width() - 12)
+        half_height = self.height() / 2
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        # The active half gets a stronger tint so the click target is obvious.
+        for half, center_y in ((1, half_height * 0.5), (-1, half_height * 1.5)):
+            is_active = half == self._hover_half
+            bg = QColor(90, 148, 226, 90 if is_active else 28)
+            painter.setBrush(bg)
+            painter.drawRoundedRect(
+                QRectF(strip_left + 1, center_y - half_height * 0.5 + 1,
+                       self.width() - strip_left - 2, half_height - 2),
+                2, 2,
+            )
+
+            arrow_color = self.palette().color(QPalette.ColorRole.Text)
+            arrow_color.setAlpha(230 if is_active else 115)
+            painter.setBrush(arrow_color)
+            x = self.width() - 6
+            if half == 1:
+                points = [
+                    QPointF(x, center_y - 5),
+                    QPointF(x - 5, center_y + 3),
+                    QPointF(x + 5, center_y + 3),
+                ]
+            else:
+                points = [
+                    QPointF(x, center_y + 5),
+                    QPointF(x - 5, center_y - 3),
+                    QPointF(x + 5, center_y - 3),
+                ]
+            painter.drawPolygon(QPolygonF(points))
+        painter.end()
 
 
 class GradientSlider(QSlider):
@@ -401,272 +624,6 @@ class ClickableFrame(QFrame):
         super().mouseDoubleClickEvent(event)
 
 
-class PaneWithModeButton(QWidget):
-    """Base for stacked panes that own a floating mode-switcher button.
-
-    The primary button sits at the bottom-right of the pane.  An optional
-    *module* button is placed immediately to its left with a small gap.
-
-    Both are repositioned on every resize so they stay anchored regardless
-    of when the parent layout settles.
-    """
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._mode_btn = None
-        self._module_btn = None       # optional second button (left of mode)
-        self._btn_size = 28           # px, updated by MainWindow from uiScale
-        self._btn_margin = 6
-        self._btn_gap = 4
-
-    def set_mode_button(self, btn):
-        self._mode_btn = btn
-
-    def set_module_button(self, btn):
-        """Optional second button placed to the LEFT of the mode button."""
-        self._module_btn = btn
-
-    def set_mode_button_metrics(self, size, margin):
-        self._btn_size = size
-        self._btn_margin = margin
-        self._reposition_mode_button()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._reposition_mode_button()
-
-    def _reposition_mode_button(self):
-        bw = self._btn_size
-        bh = self._btn_size
-        m = self._btn_margin
-        gap = self._btn_gap
-        pw = self.width()
-        ph = self.height()
-
-        # Primary button: bottom-right corner
-        if self._mode_btn is not None:
-            px = pw - m - bw
-            py = ph - m - bh
-            if px >= 0 and py >= 0:
-                self._mode_btn.setFixedSize(bw, bh)
-                self._mode_btn.setGeometry(px, py, bw, bh)
-                self._mode_btn.raise_()
-
-        # Module button: to the left of the mode button
-        if self._module_btn is not None:
-            # Position relative to mode button's left edge; fall back to
-            # bottom-right if mode button isn't set.
-            if self._mode_btn is not None:
-                left_anchor = pw - m - bw
-            else:
-                left_anchor = pw - m
-            mx = left_anchor - gap - bw
-            my = ph - m - bh
-            if mx >= 0 and my >= 0:
-                self._module_btn.setFixedSize(bw, bh)
-                self._module_btn.setGeometry(mx, my, bw, bh)
-                self._module_btn.raise_()
-
-
-class WheelPane(PaneWithModeButton):
-    """Pane hosting the HSV/OKLCh color wheel + its floating mode button."""
-    pass
-
-
-class LabPane(PaneWithModeButton):
-    """Pane for the LAB visualizer; also paints a tiled checkerboard background."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.checker_pixmap = QPixmap(16, 16)
-        self.checker_pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(self.checker_pixmap)
-        painter.fillRect(0, 0, 8, 8, QColor(255, 255, 255, 40))
-        painter.fillRect(8, 8, 8, 8, QColor(255, 255, 255, 40))
-        painter.fillRect(8, 0, 8, 8, QColor(0, 0, 0, 15))
-        painter.fillRect(0, 8, 8, 8, QColor(0, 0, 0, 15))
-        painter.end()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.drawTiledPixmap(self.rect(), self.checker_pixmap)
-        painter.end()
-
-
-class ColorPreviewBox(QWidget):
-    """Overlapping color circles preview widget drawn with QPainter for perfect z-order and anti-aliasing."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.parent = parent
-        self.fg_color = QColor(255, 255, 255)
-        self.bg_color = QColor(128, 128, 128)
-        self.position_mode = "top-left"  # "top-left" | "bottom-left"
-        self.active_slot = "fg"
-        self.fg_size = 40
-        self.bg_size = 26
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-    def set_colors(self, fg, bg):
-        self.fg_color = fg
-        self.bg_color = bg
-        self.update()
-
-    def update_slot_borders(self, active_slot):
-        self.active_slot = active_slot
-        self.update()
-
-    def resize_and_position(self, wheel_size, title_bar_h, window_h, sliders_h, active_slot):
-        # Calculate scale factor relative to default wheel size 304 to dynamically scale with the color wheel width
-        wheel_scale = wheel_size / 304.0
-        
-        self.fg_size = int(46 * wheel_scale)
-        self.bg_size = int(30 * wheel_scale)
-        self.active_slot = active_slot
-        
-        box_dim = int(60 * wheel_scale)
-        self.setFixedSize(box_dim, box_dim)
-        
-        # Position at the top-left corner of the window with clean margins
-        margin_x = int(6 * wheel_scale)
-        spacing = int(4 * wheel_scale)
-        
-        if self.position_mode == "top-left":
-            margin_y = title_bar_h + spacing
-            self.move(margin_x, margin_y)
-        else:
-            self.move(margin_x, window_h - sliders_h - box_dim - int(6 * wheel_scale))
-
-    def draw_circle(self, painter, cx, cy, r, color, active):
-        # Draw shadow
-        painter.setBrush(QBrush(QColor(0, 0, 0, 45)))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(QPointF(cx - 0.5, cy + 1.5), r, r)
-        
-        # Draw fill
-        painter.setBrush(QBrush(color))
-        
-        if active:
-            # Active slot gets a nice distinct blue border
-            painter.setPen(QPen(QColor("#5a94e2"), 2.5))
-        else:
-            # Inactive slot gets a thin light gray border
-            painter.setPen(QPen(QColor("#cccccc"), 1.0))
-            
-        painter.drawEllipse(QPointF(cx, cy), r, r)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        try:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            
-            scale = self.width() / 60.0
-            
-            # Sizes
-            fg_r = (46.0 * scale) / 2.0
-            bg_r = (30.0 * scale) / 2.0
-            
-            box_size = float(self.width())
-            border = 2.0 * scale
-            
-            # Calculate positions
-            if self.position_mode == "top-left":
-                # Foreground (large) at bottom-left
-                fg_cx = fg_r + border
-                fg_cy = box_size - fg_r - border
-                # Background (small) at top-right
-                bg_cx = box_size - bg_r - border
-                bg_cy = bg_r + border
-            else:
-                # Foreground (large) at top-left
-                fg_cx = fg_r + border
-                fg_cy = fg_r + border
-                # Background (small) at bottom-right
-                bg_cx = box_size - bg_r - border
-                bg_cy = box_size - bg_r - border
-
-            # Draw circles in correct z-order (active on top)
-            if self.active_slot == "fg":
-                self.draw_circle(painter, bg_cx, bg_cy, bg_r, self.bg_color, active=False)
-                self.draw_circle(painter, fg_cx, fg_cy, fg_r, self.fg_color, active=True)
-            else:
-                self.draw_circle(painter, fg_cx, fg_cy, fg_r, self.fg_color, active=False)
-                self.draw_circle(painter, bg_cx, bg_cy, bg_r, self.bg_color, active=True)
-        except Exception as e:
-            pass
-        finally:
-            painter.end()
-
-    def _get_clicked_slot(self, px, py):
-        """Return which slot ('fg' or 'bg') was hit, respecting z-order. Returns None if no hit."""
-        scale = self.width() / 53.0
-        fg_r = (40.0 * scale) / 2.0
-        bg_r = (26.0 * scale) / 2.0
-        box_size = float(self.width())
-        border = 2.0 * scale
-
-        if self.position_mode == "top-left":
-            fg_cx = fg_r + border
-            fg_cy = box_size - fg_r - border
-            bg_cx = box_size - bg_r - border
-            bg_cy = bg_r + border
-        else:
-            fg_cx = fg_r + border
-            fg_cy = fg_r + border
-            bg_cx = box_size - bg_r - border
-            bg_cy = box_size - bg_r - border
-
-        d_fg = (px - fg_cx)**2 + (py - fg_cy)**2
-        d_bg = (px - bg_cx)**2 + (py - bg_cy)**2
-
-        r2_fg = fg_r ** 2
-        r2_bg = bg_r ** 2
-
-        if self.active_slot == "fg":
-            if d_fg <= r2_fg:
-                return "fg"
-            elif d_bg <= r2_bg:
-                return "bg"
-        else:
-            if d_bg <= r2_bg:
-                return "bg"
-            elif d_fg <= r2_fg:
-                return "fg"
-        return None
-
-    def _show_color_context_menu(self, color):
-        """Show a right-click context menu to copy RGB or HEX color values."""
-        menu = QMenu()
-        r, g, b = color.red(), color.green(), color.blue()
-
-        menu.addAction(f"Copy RGB: rgb({r}, {g}, {b})",
-                       lambda r=r, g=g, b=b: QApplication.clipboard().setText(f"rgb({r}, {g}, {b})"))
-        menu.addAction(f"Copy HEX: #{r:02X}{g:02X}{b:02X}",
-                       lambda r=r, g=g, b=b: QApplication.clipboard().setText(f"#{r:02X}{g:02X}{b:02X}"))
-
-        menu.exec(QCursor.pos())
-
-    def mousePressEvent(self, event):
-        pos = event.position()
-        px, py = pos.x(), pos.y()
-        clicked_slot = self._get_clicked_slot(px, py)
-
-        if clicked_slot is None:
-            return
-
-        if event.button() == Qt.MouseButton.LeftButton:
-            if clicked_slot == "fg":
-                self.parent.select_fg_slot()
-            else:
-                self.parent.select_bg_slot()
-        elif event.button() == Qt.MouseButton.RightButton:
-            color = self.fg_color if clicked_slot == "fg" else self.bg_color
-            self._show_color_context_menu(color)
-
-    def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            if hasattr(self.parent, 'swap_colors'):
-                self.parent.swap_colors()
-        super().mouseDoubleClickEvent(event)
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -688,7 +645,22 @@ class MainWindow(QMainWindow):
         self._deferred_color_timer.setSingleShot(True)
         self._deferred_color_timer.setInterval(16)
         self._deferred_color_timer.timeout.connect(self._apply_deferred_color_updates)
-        self._deferred_color_pending = None  # latest (r, g, b) awaiting render
+        self._deferred_color_pending: tuple[int, int, int] | None = None  # latest (r, g, b) awaiting render
+        self._lab_gamut_timer: QTimer = QTimer(self)
+        self._lab_gamut_timer.setSingleShot(True)
+        self._lab_gamut_timer.timeout.connect(self._update_lab_slider_gamut_range)
+        self._lab_prerender_timer: QTimer = QTimer(self)
+        self._lab_prerender_timer.setSingleShot(True)
+        self._lab_prerender_timer.timeout.connect(self._prerender_lab)
+        self._module_layout_timer: QTimer = QTimer(self)
+        self._module_layout_timer.setSingleShot(True)
+        self._module_layout_timer.timeout.connect(self._flush_module_layout_refresh)
+        self._module_layout_refresh_pending: bool = False
+        self._module_save_timer: QTimer = QTimer(self)
+        self._module_save_timer.setSingleShot(True)
+        self._module_save_timer.timeout.connect(self._flush_module_config_save)
+        self._module_save_pending: bool = False
+        self._deferred_dynamic_gradients_pending: bool = False
         self._oklch_target_h = 0.0
         self._oklch_target_frac = 0.0
         self._gamut_oklch_C = None
@@ -829,9 +801,9 @@ class MainWindow(QMainWindow):
 
         # Pane 2: LAB Space
         self.pane_lab = LabPane(self)
-        lab_layout = QHBoxLayout(self.pane_lab)
-        lab_layout.setContentsMargins(0, 0, 0, 0)
-        lab_layout.setSpacing(6)
+        self.lab_layout = QHBoxLayout(self.pane_lab)
+        self.lab_layout.setContentsMargins(0, 0, 0, 0)
+        self.lab_layout.setSpacing(6)
         
         self.lab_square = LabSquare()
         self.lab_square.colorChanged.connect(self.on_lab_square_color_changed)
@@ -848,12 +820,12 @@ class MainWindow(QMainWindow):
         slider_col_layout.setSpacing(4)
         
         self.lab_slider = LabSlider()
-        self.lab_slider.lightnessChanged.connect(self.lab_square.set_lightness)
+        self.lab_slider.lightnessChanged.connect(self._on_lab_lightness_changed)
         self.lab_slider.interactionFinished.connect(self.on_interaction_finished)
         slider_col_layout.addWidget(self.lab_slider)
         
-        lab_layout.addWidget(self.lab_square, stretch=1)
-        lab_layout.addWidget(self.lab_slider_column)
+        self.lab_layout.addWidget(self.lab_square, stretch=1)
+        self.lab_layout.addWidget(self.lab_slider_column)
         
         # Floating mode button parented directly to self.pane_lab
         self.btn_mode_lab = QPushButton("△", self.pane_lab)
@@ -899,6 +871,12 @@ class MainWindow(QMainWindow):
         self.refresh_slider_visibility_and_order()
         self.update_mode_buttons_visibility()
         self.update_no_focus_policies()
+
+        # Apply persisted ringless state after all components and button
+        # visibility are known
+        self._sync_ringless_mode()
+        self.color_wheel.schedule_slice_prewarm(350)
+        self._schedule_lab_prerender(100)
 
     def setup_sliders(self):
         # Create standard RGB, HSV, HSL, LAB groups
@@ -1005,13 +983,13 @@ class MainWindow(QMainWindow):
     def create_group_sliders(self, group, channels, layout):
         for chan in channels:
             row = QHBoxLayout()
-            row.setSpacing(8)
+            row.setSpacing(1)
             self.slider_row_layouts.append(row)
             
             # Label
-            label_text = chan.split("_")[0]
-            label = QLabel(f"{label_text}:")
-            label.setFixedWidth(16)
+            label_text = chan.split("_")[0].upper()
+            label = QLabel(label_text)
+            label.setFixedWidth(12)
             label.setObjectName("ChannelLabel")
             self.slider_labels[chan] = label
             
@@ -1033,13 +1011,14 @@ class MainWindow(QMainWindow):
             else:
                 slider.setRange(0, 255)
                 
-            val_label = QLabel("0")
-            val_label.setFixedWidth(24)
+            val_label = SliderValueLabel(slider)
+            val_label.setFixedWidth(27)
             val_label.setObjectName("ValueLabel")
-            val_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            val_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             
             row.addWidget(label)
             row.addWidget(slider)
+            row.addSpacing(1)
             row.addWidget(val_label)
             layout.addLayout(row)
             
@@ -1181,6 +1160,11 @@ class MainWindow(QMainWindow):
 
     def update_mode_buttons_visibility(self):
         idx = self.stack.currentIndex()
+        show_module = self.cfg.get("showModuleSwitchButton", True)
+        if hasattr(self, "pane_wheel"):
+            self.pane_wheel.set_module_slot_reserved(show_module)
+        if hasattr(self, "pane_lab"):
+            self.pane_lab.set_module_slot_reserved(show_module)
         if idx == 0:
             if hasattr(self, 'btn_mode_wheel'):
                 self.btn_mode_wheel.show()
@@ -1189,7 +1173,6 @@ class MainWindow(QMainWindow):
                 self.btn_mode_lab.hide()
             # Module button only visible in wheel pane
             if hasattr(self, 'btn_module'):
-                show_module = self.cfg.get("showModuleSwitchButton", True)
                 self.btn_module.setVisible(show_module)
                 if show_module:
                     self.btn_module.raise_()
@@ -1202,31 +1185,119 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'btn_module'):
                 self.btn_module.hide()
 
+    def _sync_ringless_mode(self, wheel_size: int | None = None,
+                            title_bar_height: int | None = None) -> None:
+        """Parse ringless config and propagate layout to all components.
+
+        The single orchestration entry point: reads ``hideHueRing`` /
+        ``ringlessControlsSide``, resolves a ``RinglessLayout`` via
+        :func:`resolve_ringless_layout` (using ``stack.currentIndex() == 0``
+        for the page gate), and pushes it to ``ColorWheel``,
+        ``ColorPreviewBox``, ``WheelPane``, and ``LabPane``.
+
+        On every page the LAB layout reserves a margin equal to
+        ``control_bar_height`` on the configured top or bottom edge when
+        controls are enabled (ringless active), and zeros it when disabled.
+        This gives LAB the same rectangle controls / mode button bar as the
+        wheel pane.
+
+        In active ringless mode the stack gets a minimum height of
+        ``wheel_size + control_bar_height`` so the slice area stays
+        near-square.  Otherwise the explicit ringless minimum is cleared
+        (``setMinimumHeight(0)``) and the child hints apply.
+        """
+        enabled = self.cfg.get("hideHueRing", False)
+        raw_side = self.cfg.get("ringlessControlsSide", "right")
+        config = RinglessConfig.from_values(
+            enabled, raw_side, self.cfg.get("ringlessControlBarPosition", "top")
+        )
+
+        wheel_page_active = self.stack.currentIndex() == 0
+        scale = self.cfg.get("uiScale", 100) / 100.0
+        layout = resolve_ringless_layout(config, wheel_page_active, scale)
+
+        # ── Push layout to every ringless-aware component ──
+        self.color_wheel.set_ringless_layout(layout)
+
+        _ws = wheel_size if wheel_size is not None else self.width() - int(16 * scale)
+        _tbh = title_bar_height if title_bar_height is not None else self.title_bar.height()
+        self.preview_box.set_ringless_layout(
+            layout, self.width(), _tbh, self.stack.height()
+        )
+
+        self.pane_wheel.set_ringless_layout(layout)
+        self.pane_lab.set_ringless_layout(layout)
+
+        control_margin = layout.control_bar_height if layout.controls_enabled else 0
+        if layout.control_bar_position == "bottom":
+            self.lab_layout.setContentsMargins(0, 0, 0, control_margin)
+        else:
+            self.lab_layout.setContentsMargins(0, control_margin, 0, 0)
+
+        # ── Stack minimum height ──
+        if layout.controls_enabled:
+            self.stack.setMinimumHeight(max(1, _ws + layout.control_bar_height))
+        else:
+            self.stack.setMinimumHeight(0)
+
     def toggle_picker_mode(self):
+        """Switch picker panes without re-running the full theme/layout pass."""
         new_index = (self.stack.currentIndex() + 1) % 2
         self.stack.setCurrentIndex(new_index)
         self.update_mode_buttons_visibility()
-        # Sync the newly-shown visualizer to the current color. While a pane is
-        # hidden in the QStackedWidget, update_ui_colors skips syncing it, so a
-        # freshly-revealed pane would otherwise show a stale cursor position.
+        # Only the page-local ringless geometry needs to move here. Re-running
+        # apply_theme() would rebuild every slider stylesheet and gradient while
+        # the user is only asking for a pane switch.
+        self._sync_ringless_mode()
+        self._update_lab_avoid()
+        self.color_wheel.schedule_slice_prewarm(350)
+
         r, g, b = self.current_rgb
         if new_index == 1:  # LAB pane
-            self._update_lab_avoid()
             self.lab_square.set_color(r, g, b, block_signals=True)
             self.lab_slider.set_lightness(self.lab_square.L)
-            self._update_lab_slider_gamut_range()
+            lab_slider_column = getattr(self, "lab_slider_column", None)
+            if lab_slider_column is not None and lab_slider_column.isVisible():
+                self._schedule_lab_gamut_range(50)
         else:  # Color wheel pane
-            self.color_wheel.set_color(r, g, b, block_signals=True)
+            # The wheel already owns the exact state when the last source was
+            # a wheel interaction. Avoid RGB?HSV re-quantization here: it can
+            # shift hue slightly and evict the resident full-resolution slice.
+            last_source = getattr(self, "_last_update_source", "")
+            wheel_rgb = None
+            get_color = getattr(self.color_wheel, "get_color", None)
+            if callable(get_color):
+                wheel_rgb = get_color()
+            if last_source != "wheel" and wheel_rgb != (r, g, b):
+                self.color_wheel.set_color(r, g, b, block_signals=True)
+            else:
+                self.color_wheel.update()
+            if hasattr(self, "_schedule_lab_prerender"):
+                self._schedule_lab_prerender(50)
         self.update()
 
     def _update_lab_avoid(self):
         """Tell LabSquare how much of its top is covered by the floating
-        preview box, so the ab plane renders below it instead of being hidden."""
+        preview box, so the ab plane renders below it instead of being hidden.
+
+        In ringless mode the top control bar reserves space via the LAB layout
+        margin, so legacy preview-box avoidance is skipped.
+        """
         if not hasattr(self, 'lab_square') or not hasattr(self, 'preview_box'):
             return
         pb = self.preview_box
         ls = self.lab_square
+
+        # ── Ringless mode: layout margin owns the top spacing ──
+        if self.cfg.get("hideHueRing", False):
+            if callable(getattr(ls, "set_avoid_top", None)):
+                ls.set_avoid_top(0)
+            ls.avoid_top = 0
+            return
+
         if pb.position_mode != "top-left" or not pb.isVisible():
+            if callable(getattr(ls, "set_avoid_top", None)):
+                ls.set_avoid_top(0)
             ls.avoid_top = 0
             return
         # Map the preview box corners into LabSquare's local coordinate system.
@@ -1236,15 +1307,22 @@ class MainWindow(QMainWindow):
             top_left = ls.mapFromGlobal(pb.mapToGlobal(pb.rect().topLeft()))
             bottom_right = ls.mapFromGlobal(pb.mapToGlobal(pb.rect().bottomRight()))
         except Exception:
+            if callable(getattr(ls, "set_avoid_top", None)):
+                ls.set_avoid_top(0)
             ls.avoid_top = 0
             return
         # Only avoid if there is horizontal overlap with LabSquare.
         if bottom_right.x() <= 0 or top_left.x() >= ls.width():
+            if callable(getattr(ls, "set_avoid_top", None)):
+                ls.set_avoid_top(0)
             ls.avoid_top = 0
             return
         scale = self.cfg.get("uiScale", 100) / 100.0
         pad = int(4 * scale)
-        ls.avoid_top = max(0, bottom_right.y() + pad)
+        new_avoid_top = max(0, bottom_right.y() + pad)
+        if callable(getattr(ls, "set_avoid_top", None)):
+            ls.set_avoid_top(new_avoid_top)
+        ls.avoid_top = new_avoid_top
 
     def on_wheel_color_changed(self, r, g, b):
         wm = self.color_wheel.wheel_mode
@@ -1306,12 +1384,14 @@ class MainWindow(QMainWindow):
         l_val = self.slider_widgets["L_lab"][0].value()
         a_val = self.slider_widgets["a_lab"][0].value()
         b_val = self.slider_widgets["b_lab"][0].value()
+        # Gamut-map (chroma reduction) instead of hard clipping: L* and hue
+        # stay put while out-of-gamut a/b is pulled onto the sRGB boundary.
+        # The mapped values are what the UI and the sync backends see.
+        l_val, a_val, b_val = map_lab_to_gamut(l_val, a_val, b_val)
         self._source_space = "lab"
         self._source_values = {"l": float(l_val), "a": float(a_val), "b": float(b_val)}
         r, g, b = lab_to_rgb(l_val, a_val, b_val)
-        r_clamped = max(0.0, min(255.0, r))
-        g_clamped = max(0.0, min(255.0, g))
-        b_clamped = max(0.0, min(255.0, b))
+        r_clamped, g_clamped, b_clamped = clamp_rgb(r, g, b)
         h_hsv, s_hsv, v_hsv = rgb_to_hsv(r_clamped, g_clamped, b_clamped)
         if s_hsv < 1.0 and hasattr(self, 'color_wheel'):
             h_hsv = self.color_wheel.h
@@ -1339,24 +1419,24 @@ class MainWindow(QMainWindow):
             self.slider_widgets["L_oklch"][0].setValue(l_raw)
             self.slider_widgets["L_oklch"][0].blockSignals(False)
 
-        self._source_space = "oklab"
-        self._source_values = {"L": l_raw / 100.0, "a": a_raw / 100.0, "b": b_raw / 100.0}
         l_val = l_raw / 100.0
         a_val = a_raw / 100.0
         b_val = b_raw / 100.0
+        # Gamut-map (chroma reduction) instead of hard clipping: L and the
+        # a/b hue ray stay put while out-of-gamut a/b is pulled onto the
+        # sRGB boundary. The mapped values are what the UI/sync use.
+        l_val, a_val, b_val = map_oklab_to_gamut(l_val, a_val, b_val)
+        self._source_space = "oklab"
+        self._source_values = {"L": l_val, "a": a_val, "b": b_val}
         r, g, b = oklab_to_rgb(l_val, a_val, b_val)
-        r_clamped = max(0.0, min(255.0, r))
-        g_clamped = max(0.0, min(255.0, g))
-        b_clamped = max(0.0, min(255.0, b))
+        r_clamped, g_clamped, b_clamped = clamp_rgb(r, g, b)
         h_hsv, s_hsv, v_hsv = rgb_to_hsv(r_clamped, g_clamped, b_clamped)
         if s_hsv < 1.0 and hasattr(self, 'color_wheel'):
             h_hsv = self.color_wheel.h
         self.update_ui_colors(int(r_clamped), int(g_clamped), int(b_clamped),
                               source="sliders_oklab", hsv=(h_hsv, s_hsv, v_hsv),
                               oklab=(l_val, a_val, b_val))
-        # Synchronous gradient refresh — same cadence as OKLCh sliders
-        self._update_oklab_slider_gradients()
-        self._update_oklch_slider_gradients()
+        self._deferred_dynamic_gradients_pending = True
 
     def on_oklch_slider_changed(self):
         # ── Init fraction-based target ──
@@ -1456,9 +1536,7 @@ class MainWindow(QMainWindow):
                               source=source_str, hsv=(h_hsv, s_hsv, v_hsv),
                               oklch=(L, display_C, h_for_color))
 
-        # ── Update slider gradients (no range change — safe during drag) ──
-        self._update_oklch_slider_gradients()
-        self._update_oklab_slider_gradients()
+        self._deferred_dynamic_gradients_pending = True
 
         # 恢复非 source 滑块为原始值——okLch-picker 中拖 L 不会动 C/H
         # C/H handles remain unchanged; L-only mapping only changes the
@@ -1496,7 +1574,7 @@ class MainWindow(QMainWindow):
 
     def _find_oklch_max_chroma(self, L, h):
         """Binary search for max OKLCh chroma at given L, h within sRGB gamut."""
-        from ui.color_wheel import find_max_oklch_c
+        from ui.color_conversions import find_max_oklch_c
         return find_max_oklch_c(L, h)
 
     def _update_oklch_slider_gradients(self):
@@ -1515,7 +1593,7 @@ class MainWindow(QMainWindow):
         L_cur = l_slider_val / 100.0
         h_cur = float(h_slider_val)
 
-        from ui.color_wheel import find_max_oklch_c as _fmc
+        from ui.color_conversions import find_max_oklch_c as _fmc
         # Compute max_c once for the normalized C slider and its label.
         max_c = self._find_oklch_max_chroma(L_cur, h_cur)
         # Proportional chroma: slider value = % of max_c
@@ -1629,13 +1707,18 @@ class MainWindow(QMainWindow):
             (1.0, QColor(int(max(0, min(255, okb1_r))), int(max(0, min(255, okb1_g))), int(max(0, min(255, okb1_b))))),
         ])
 
+    def _on_lab_lightness_changed(self, lightness):
+        """Update LAB state and keep the existing low-quality drag path."""
+        self.lab_square.set_lightness(
+            lightness
+        )
+
     def on_interaction_finished(self):
+        self.color_wheel.schedule_slice_prewarm(350)
+        if not self.lab_square.isVisible():
+            self._schedule_lab_prerender(50)
         self.color_wheel.update()
         self.lab_square.update()
-        # Defer pre-render to avoid blocking mouse release
-        if not self.lab_square.isVisible():
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(50, self._prerender_lab)
         r, g, b = self.current_rgb
         # Sync _oklch_target_frac from the actual (possibly clamped) color so
         # the L-slider mask reflects the real gamut. h is NOT synced here —
@@ -1660,6 +1743,10 @@ class MainWindow(QMainWindow):
         self._deferred_color_timer.stop()
         self._deferred_color_pending = None
         self.update_slider_gradients(r, g, b)
+        if self._deferred_dynamic_gradients_pending:
+            self._update_oklab_slider_gradients()
+            self._update_oklch_slider_gradients()
+            self._deferred_dynamic_gradients_pending = False
         # An L-only release must keep the chromaticity snapshots from before
         # the drag. Recomputing them from the quantized RGB would turn a
         # chromatic OKLCh color into a different (often gray) mask on release.
@@ -1694,8 +1781,6 @@ class MainWindow(QMainWindow):
             src_sp, src_v = self._resolve_sync_source()
             self.sync_thread.write_color(r, g, b, hsv_u32=hsv_override,
                                          source_space=src_sp, source_values=src_v)
-            if self.cfg.get("autoFocusDrawingSoftware", False):
-                self.focus_drawing_software()
 
     def _sync_wheel_source_values(self):
         """If the source space originates from the wheel, pull live h/s/v from it."""
@@ -1721,22 +1806,32 @@ class MainWindow(QMainWindow):
                 L, C, h = rgb_to_oklch(r_f * 255.0, g_f * 255.0, b_f * 255.0)
                 self._source_values = {"L": L, "C": C, "h": h}
 
-    def focus_drawing_software(self):
-        if hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
-            pid = self.sync_thread.get_active_pid()
-            if pid:
-                bring_process_to_foreground(pid)
+    def _schedule_lab_gamut_range(self, delay_ms: int = 50):
+        """Coalesce the expensive LAB gamut-range refresh during fast toggles."""
+        if not hasattr(self, "lab_slider_column") or not self.lab_slider_column.isVisible():
+            return
+        self._lab_gamut_timer.start(delay_ms)
+
+    def _schedule_lab_prerender(self, delay_ms: int = 50):
+        """Coalesce LAB preview warmups without stacking timers."""
+        if self.lab_square.isVisible():
+            return
+        self._lab_prerender_timer.start(delay_ms)
 
     def _prerender_lab(self):
-        """Background pre-render of LAB visualizer."""
-        if not self.lab_square.isVisible() and hasattr(self, 'stack'):
+        """Background pre-render of the LAB visualizer."""
+        if not self.lab_square.isVisible() and hasattr(self, "stack"):
             self.lab_square.resize(self.stack.size())
-            # Sync the visualizer's L/a/b to the current color before prerendering,
-            # otherwise the low-res preview reflects the stale color from when the
-            # pane was last visible (update_ui_colors skips syncing a hidden pane).
             r, g, b = self.current_rgb
             self.lab_square.set_color(r, g, b, block_signals=True)
             self.lab_square.prerender()
+
+    def _is_slider_drag_active(self):
+        """Return True while any channel slider is held by the user."""
+        for slider, _ in getattr(self, "slider_widgets", {}).values():
+            if slider.isSliderDown():
+                return True
+        return bool(getattr(getattr(self, "lab_slider", None), "dragging", False))
 
     def _schedule_deferred_color_updates(self, r, g, b):
         """Schedule the heavy visual-only rendering (slider groove gradients
@@ -1767,6 +1862,10 @@ class MainWindow(QMainWindow):
             return
         r, g, b = pending
         self.update_slider_gradients(r, g, b)
+        if self._deferred_dynamic_gradients_pending:
+            self._update_oklab_slider_gradients()
+            self._update_oklch_slider_gradients()
+            self._deferred_dynamic_gradients_pending = False
         self._update_all_L_gamut_ranges()
 
     def update_slider_gradients(self, r, g, b):
@@ -1961,7 +2060,10 @@ class MainWindow(QMainWindow):
                 self.width(),
                 margins.left(),
                 margins.right(),
-                self.stack.minimumSizeHint().height(),
+                max(
+                    self.stack.minimumSizeHint().height(),
+                    self.stack.minimumHeight(),
+                ),
             )
             required = self._required_content_height(
                 self.title_bar.sizeHint().height(),
@@ -2167,7 +2269,9 @@ class MainWindow(QMainWindow):
                 self.lab_square.set_oklab(L_ok, a_ok, b_ok, block_signals=True)
             else:
                 self.lab_square.set_color(r, g, b, block_signals=True)
-            self.lab_slider.set_lightness(self.lab_square.L)
+            self.lab_slider.set_lightness(
+                self.lab_square.L
+            )
 
         # 4) Sync Sliders
         # Block signals for all sliders during sync
@@ -2452,22 +2556,13 @@ class MainWindow(QMainWindow):
         pane_h = h - 4 - title_h - sliders_h - 2 * spacing
         wheel_size = w - int(16 * dynamic_scale)
         
-        # Dynamic preview box scaling and placement
+        # ── Step 1: legacy preview sizing ALWAYS runs first ──
+        # This restores legacy circle sizing/position when ringless is disabled,
+        # and provides a baseline that ringless may override below.
         self.preview_box.resize_and_position(wheel_size, title_h, h, sliders_h, self.active_slot)
         self.preview_box.raise_()
 
-        # Keep LabSquare's top-avoidance in sync with the preview box position
-        # so the ab plane never renders behind the floating preview box.
-        self._update_lab_avoid()
-        
-        # If settings sidebar is open, ensure it remains on top!
-        if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
-            self.settings_sidebar.raise_()
-        
-        # The floating mode-switcher buttons are owned by their panes and position
-# themselves from the pane's own resizeEvent — so they always sit at the
-# bottom-right of whichever pane geometry the layout actually gave them.
-        # We only push the DPI-scaled metrics down; the panes do the rest.
+        # ── Step 2: push DPI-scaled button metrics down; panes do the rest ──
         btn_size = int(28 * dynamic_scale)
         btn_margin = int(6 * dynamic_scale)
         if hasattr(self, 'pane_wheel'):
@@ -2475,10 +2570,23 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'pane_lab'):
             self.pane_lab.set_mode_button_metrics(btn_size, btn_margin)
 
-        # Position settings sidebar
-        if hasattr(self, 'settings_sidebar'):
-            self.settings_sidebar.setGeometry(2, title_h, int(w * 0.75), h - title_h - 2)
-            self.settings_sidebar.raise_()
+        # ── Step 3: ringless layout sync ──
+        # On wheel page: applies rectangle sizing over the legacy baseline.
+        # On LAB page: same rectangle controls + top bar, with layout margin.
+        # Do NOT call _adjust_content_height() from resize-driven sync.
+        self._sync_ringless_mode(wheel_size=wheel_size, title_bar_height=title_h)
+        self.color_wheel.schedule_slice_prewarm(500)
+
+        # ── Step 4: LAB avoidance observes FINAL preview geometry ──
+        # Must run AFTER ringless sync so it sees the page-appropriate
+        # (ringless rectangles or restored legacy circles) size/position.
+        # In ringless mode the guard inside _update_lab_avoid skips legacy
+        # avoidance because the LAB layout margin owns the top spacing.
+        self._update_lab_avoid()
+
+        # ── Step 5: settings window positioning (independent window) ──
+        if hasattr(self, 'settings_window') and self.settings_window is not None and self.settings_window.isVisible():
+            self.settings_window.position_near_main_window()
 
     def wheelEvent(self, event):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -2724,12 +2832,12 @@ class MainWindow(QMainWindow):
         
         # Adjust row spacings closer to text
         for row in getattr(self, "slider_row_layouts", []):
-            row.setSpacing(int(3 * scale)) # 3px at 1.0 scale
+            row.setSpacing(max(1, int(1 * scale))) # Keep the slider close to its channel label
             
         # Adjust label fixed widths (theme-aware)
         ch_w_factor = float(slider_theme["channel_label_width_factor"])
         for chan, label in getattr(self, "slider_labels", {}).items():
-            label.setFixedWidth(max(8, int(16 * scale * ch_w_factor)))
+            label.setFixedWidth(max(8, int(12 * scale * ch_w_factor)))
 
         theme_name = self.cfg.get("ui-theme", "auto")
         if theme_name == "auto":
@@ -2773,6 +2881,15 @@ class MainWindow(QMainWindow):
         inputBg = "#eaeaea" if is_dark_text else "#2e2e2e"
         borderColor = "#d0d0d0" if is_dark_text else "#555555"
         handle_border_global = "#999999" if is_dark_text else "#b0b0b0"
+
+        if hasattr(self, "preview_box"):
+
+            self.preview_box.set_theme_colors(
+
+                RINGLESS_ACTIVE_BORDER, borderColor
+
+            )
+
         
         # Determine title bar text color and button hover backgrounds
         title_text_color = "#666666" if is_dark_text else "#a0a0a0"
@@ -2859,71 +2976,12 @@ class MainWindow(QMainWindow):
             }}
         """)
         
-        # Propagate custom CSS variables to the settings sidebar if present
-        if hasattr(self, 'settings_sidebar') and self.settings_sidebar is not None:
-            sb_font_size = int(10 * font_factor)
-            sb_header_font_size = int(11 * font_factor)
-            self.settings_sidebar.setStyleSheet(f"""
-                QScrollArea {{
-                    background-color: {barBg};
-                    border: none;
-                }}
-                QWidget {{
-                    background-color: {barBg};
-                    color: {text};
-                    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei";
-                    font-size: {sb_font_size}px;
-                }}
-                QLabel {{
-                    color: {text};
-                }}
-                QLabel#SectionHeader {{
-                    font-weight: bold;
-                    font-size: {sb_header_font_size}px;
-                    margin-top: 5px;
-                    color: {text};
-                    border-bottom: 1px solid rgba(0,0,0,0.15);
-                    padding-bottom: 1px;
-                }}
-                QCheckBox {{
-                    color: {text};
-                }}
-                QComboBox {{
-                    background-color: {bg};
-                    border: 1px solid {borderColor};
-                    color: {text};
-                    border-radius: 2px;
-                    padding: 2px 4px;
-                }}
-                QPushButton {{
-                    background-color: {bg};
-                    border: 1px solid {borderColor};
-                    color: {text};
-                    border-radius: 2px;
-                    padding: 2px 6px;
-                }}
-                QSlider#ScaleSlider::groove:horizontal {{
-                    height: 4px;
-                    background: {bg};
-                    border: 1px solid {borderColor};
-                    border-radius: 2px;
-                }}
-                QSlider#ScaleSlider::handle:horizontal {{
-                    background: {text};
-                    width: 10px;
-                    height: 10px;
-                    margin-top: -3px;
-                    margin-bottom: -3px;
-                    border-radius: 5px;
-                }}
-            """)
-            
         # Style value labels directly for robust rendering (theme-aware)
         val_w_factor = float(slider_theme["value_label_width_factor"])
         val_radius = max(0, int(3 * scale * float(slider_theme["value_label_radius_factor"])))
         val_padding = slider_theme["value_label_padding"]
         for chan, (slider, val_label) in self.slider_widgets.items():
-            val_label.setFixedWidth(max(20, int(34 * val_w_factor)))
+            val_label.setFixedWidth(max(24, int(27 * val_w_factor)))
             val_label.setStyleSheet(f"""
                 background-color: {inputBg};
                 border: 1px solid {borderColor};
@@ -2932,7 +2990,7 @@ class MainWindow(QMainWindow):
                 font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei";
                 font-size: {val_font_size}px;
                 padding: {val_padding};
-                qproperty-alignment: 'AlignCenter';
+                padding-right: 10px;
             """)
             
         # Scale GradientSliders (theme-aware)
@@ -3077,9 +3135,6 @@ class MainWindow(QMainWindow):
             self.sync_thread.write_color(r, g, b, source_space="rgb",
                                          source_values={"r": float(r), "g": float(g), "b": float(b)})
             print(f"[Picker] Picked color RGB({r}, {g}, {b})")
-            if self.cfg.get("autoFocusDrawingSoftware", False):
-                self.focus_drawing_software()
-
     def init_memory_sync(self):
         # Start background memory syncing thread
         self.sync_thread = memory_sync.MemorySyncThread(self)
@@ -3121,12 +3176,15 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str, bool)
     def on_sync_status_changed(self, mode, connected):
         print(f"[Sync] Software status changed: {mode} -> connected={connected}")
+        self._sync_status = (mode, connected)
         # Optionally update title bar text or border to show connection status
         mode_display = {"csp": "CSP", "sai": "SAI", "udm": "UDM", "ps": "PS", "companion": "手机"}.get(mode, mode.upper())
         status_text = f"Colorink ({mode_display} {'✓' if connected else '×'})"
         self.title_bar.title_label.setText(status_text)
         if mode == "companion" and hasattr(self, 'settings_sidebar'):
             self.settings_sidebar._refresh_companion_status()
+        if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
+            self.settings_sidebar._refresh_sync_status()
 
     def _setup_companion_connection(self):
         if not hasattr(self, 'sync_thread'):
@@ -3141,37 +3199,54 @@ class MainWindow(QMainWindow):
             self.settings_sidebar._refresh_companion_status()
 
     def toggle_settings_sidebar(self):
-        vis = not self.settings_sidebar.isVisible()
-        self.settings_sidebar.setVisible(vis)
-        if vis:
-            self.settings_sidebar.refresh_ui()
-            self.settings_sidebar.raise_()
-            
-            # Temporarily remove WindowDoesNotAcceptFocus to allow hotkey recording / settings focus
-            flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
-            if not self.cfg.get("showTaskbarIcon", False):
-                flags |= Qt.WindowType.Tool
-            if self.windowFlags() != flags:
-                self.setWindowFlags(flags)
-                self.show()
+        # Lazy-create the independent settings window on first use
+        if not hasattr(self, 'settings_window') or self.settings_window is None:
+            from ui.settings_window import SettingsWindow
+            self.settings_window = SettingsWindow(self, self.settings_sidebar)
+        if self.settings_window.isVisible():
+            self.settings_window.hide()
         else:
-            self.update_window_flags()
+            self.settings_sidebar.refresh_ui()
+            self.settings_window.show_near_main_window()
         self.update_no_focus_policies()
 
+    def _schedule_module_layout_refresh(self):
+        """Coalesce slider reordering and geometry work during rapid module clicks."""
+        self._module_layout_refresh_pending = True
+        if not self._module_layout_timer.isActive():
+            self._module_layout_timer.start(0)
+
+    def _flush_module_layout_refresh(self):
+        if not self._module_layout_refresh_pending:
+            return
+        self._module_layout_refresh_pending = False
+        self.refresh_slider_visibility_and_order()
+
+    def _schedule_module_config_save(self):
+        """Batch config writes so a click burst performs one disk write."""
+        self._module_save_pending = True
+        self._module_save_timer.start(120)
+
+    def _flush_module_config_save(self):
+        if not self._module_save_pending:
+            return
+        self._module_save_pending = False
+        config.save_hotkey_config(self.cfg)
+
     def _apply_module(self, module_name: str):
-        """Apply a color-space module: set wheel mode + refresh sliders."""
+        """Apply a color-space module without blocking the click handler."""
         if module_name not in _MODULE_DEFS:
             module_name = "hsv"
         self._current_module = module_name
         self.cfg["colorSpaceModule"] = module_name
-        # Persist so the settings sidebar sees the update on next refresh
-        from core import config as _cfg
-        _cfg.save_hotkey_config(self.cfg)
+        # Persist and reflow on coalesced timers: rapid clicks update the wheel
+        # and button immediately, while one final layout pass handles the burst.
+        self._schedule_module_config_save()
         # Update wheel mode
         wheel_mode = _MODULE_DEFS[module_name]["wheel"]
         self.color_wheel.set_wheel_mode(wheel_mode)
-        # Refresh slider visibility respecting the module's slider set
-        self.refresh_slider_visibility_and_order()
+        self.color_wheel.schedule_slice_prewarm(350)
+        self._schedule_module_layout_refresh()
         # Update module button label
         self._update_module_button_label()
         # Notify sidebar if it's open
@@ -3189,12 +3264,12 @@ class MainWindow(QMainWindow):
 
     def refresh_slider_visibility_and_order(self):
         # Remove all from layout
-        for group in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh", "History"]:
+        for group in config.SLIDER_GROUPS:
             self.sliders_layout.removeWidget(self.slider_containers[group])
 
-        # Sort groups by order cfg; History defaults to 7 so it sits last
-        groups = ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh", "History"]
-        groups.sort(key=lambda g: self.cfg.get(f"orderSliders{g}", 7 if g == "History" else 1))
+        # Display order comes from the same shared helper the settings UI
+        # uses, so reordering there always matches this layout.
+        groups = config.sorted_slider_groups(self.cfg)
 
         # Module-aware filtering: only the current module's slider set is
         # eligible; force-hide everything outside it.
@@ -3248,61 +3323,77 @@ class MainWindow(QMainWindow):
         self.foreground_timer = QTimer(self)
         self.foreground_timer.setInterval(400)
         self.foreground_timer.timeout.connect(self.check_foreground_window)
-        self.foreground_timer.start()
+        # Only poll while the feature is enabled; on_settings_saved() starts
+        # or stops the timer when the setting changes.
+        if self.cfg.get("onlyShowInCsp", False):
+            self.foreground_timer.start()
+            self.check_foreground_window()
 
     def check_foreground_window(self):
         # If settings onlyShowInCsp is False, do nothing
         if not self.cfg.get("onlyShowInCsp", False):
             return
-            
+
         try:
             import win32gui
             import win32process
-            import os
-            import psutil
         except ImportError:
             return
-            
+
         hwnd = win32gui.GetForegroundWindow()
         is_drawing_active = False
-        title = ""
-        exe_name = ""
-        
+        pid = 0
+
         if hwnd:
             try:
                 title = (win32gui.GetWindowText(hwnd) or "").lower()
             except Exception:
-                pass
-            
+                title = ""
+
             try:
                 _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                if pid:
-                    p = psutil.Process(pid)
-                    exe_name = os.path.basename(p.exe()).lower()
             except Exception:
                 pass
-                
-            is_drawing_active = (
-                "clipstudiopaint.exe" in exe_name or "clipstudiopaint" in exe_name or 
-                "clip studio paint" in title or "clipstudiopaint" in title or "优动漫" in title or
-                "sai2.exe" in exe_name or "sai2" in exe_name or "sai2" in title or
-                "painttool sai" in title or "paint tool sai" in title or
-                "udmpaintpro.exe" in exe_name or "udmpaintpro" in exe_name or
-                "udmpaintex.exe" in exe_name or "udmpaintex" in exe_name or "udm paint" in title or
-                "photoshop.exe" in exe_name or "photoshop" in exe_name or "adobe photoshop" in title
-            )
-            
-        is_our_focused = self.isActiveWindow()
-        if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
-            if self.settings_sidebar.isActiveWindow():
-                is_our_focused = True
-                
+
+            if pid:
+                # Cache the resolved exe per PID so an unchanged foreground
+                # window doesn't re-query the process on every tick.
+                if getattr(self, "_fg_exe_cache_pid", None) == pid:
+                    exe_name = getattr(self, "_fg_exe_cache", "")
+                else:
+                    exe_name = _resolve_process_exe(pid)
+                    self._fg_exe_cache_pid = pid
+                    self._fg_exe_cache = exe_name
+                if _exe_matches_drawing_app(exe_name):
+                    is_drawing_active = True
+
+            # Title fallback covers localized windows and cases where the
+            # process query was denied.
+            if not is_drawing_active and _title_matches_drawing_app(title):
+                is_drawing_active = True
+
+        # A foreground window owned by this process (main window, settings
+        # window or picker overlay) means the user is interacting with us.
+        # The REAL foreground PID (win32) is the source of truth here:
+        # Qt's isActiveWindow() bookkeeping is unreliable — in no-focus mode
+        # the palette can never become "active", and the separate settings
+        # window's activation state can get stuck (activateWindow() denied
+        # by the OS foreground lock leaves Qt thinking it is active forever).
+        # Trusting that stale state kept the palette visible even when a
+        # non-drawing app took the foreground ("仅在画图软件前台时显示"失效).
+        is_our_focused = bool(pid and pid == os.getpid())
+
         should_be_visible = is_drawing_active or is_our_focused
-        
+
+        # Keep the window up during an active color pick
+        picker = getattr(self, "picker_overlay", None)
+        if picker is not None and picker.is_active:
+            should_be_visible = True
+
         # If follow_mouse_active is enabled and the window is visible, avoid auto-hiding it
         if getattr(self, "follow_mouse_active", False) and self.isVisible():
             should_be_visible = True
-            
+
         if should_be_visible:
             if not self.isVisible():
                 self.show()
@@ -3357,6 +3448,17 @@ class MainWindow(QMainWindow):
         # Update window flags dynamically
         self.update_window_flags()
         self.update_no_focus_policies()
+
+        # Keep the foreground tracker running only while the feature is on,
+        # and apply the new state immediately instead of waiting a tick.
+        fg_timer = getattr(self, "foreground_timer", None)
+        if self.cfg.get("onlyShowInCsp", False):
+            if fg_timer is not None and not fg_timer.isActive():
+                fg_timer.start()
+            self.check_foreground_window()
+        else:
+            if fg_timer is not None:
+                fg_timer.stop()
 
         # Restore visibility if onlyShowInCsp is turned off while auto_hidden
         if not self.cfg.get("onlyShowInCsp", False):
@@ -3420,8 +3522,14 @@ class MainWindow(QMainWindow):
             self.current_ui_scale = target_scale
         else:
             self.update()
+        # Reapply ringless layout after config/settings reload.
+        # Mode OFF restores full ring/circles/bottom-right immediately.
+        self._sync_ringless_mode()
+        self._adjust_content_height()
 
     def close_application(self):
+        # Flush coalesced module state before writing the final window config.
+        self._flush_module_config_save()
         # Save window settings on exit, normalized to 1x DPI for consistency
         dpr = self.devicePixelRatio() if hasattr(self, "devicePixelRatio") else 1.0
         if dpr < 0.1:
@@ -3462,6 +3570,10 @@ class MainWindow(QMainWindow):
             # The OS reclaims all resources on process exit anyway.
             self.sync_thread.running = False
         
+        # Hide settings window before exit
+        if hasattr(self, 'settings_window') and self.settings_window is not None:
+            self.settings_window.hide()
+
         # Hide tray icon before exit
         if hasattr(self, 'tray_icon'):
             self.tray_icon.hide()
