@@ -59,6 +59,9 @@ for _zbar_name in ('libzbar-64.dll', 'libiconv.dll'):
 _datas = []
 _add_if_exists('icons/icon.ico', 'icons', _datas, 'app icon')
 _add_if_exists('icons/checkbox_check.png', 'icons', _datas, 'checkbox check icon')
+_add_if_exists('icons/arrow_down_dark.png', 'icons', _datas, 'arrow down dark icon')
+_add_if_exists('icons/arrow_down_light.png', 'icons', _datas, 'arrow down light icon')
+_add_if_exists('icons/arrow_down_accent.png', 'icons', _datas, 'arrow down accent icon')
 _add_if_exists('dcomp_overlay/build/dcomp_overlay.exe', 'dcomp_overlay/build', _datas, 'DComp overlay')
 _add_if_exists('sc_overlay/build/sc_overlay.exe', 'sc_overlay/build', _datas, 'SC overlay')
 _add_if_exists('core/picker_hook.dll', 'core', _datas, 'picker hook DLL')
