@@ -39,18 +39,32 @@ except ImportError:
     Pymem = None  # type: ignore[assignment]
     module_from_name = None  # type: ignore[assignment]
 
-from brush_color_spaces import (
-    SPACE_ORDER,
-    any_space_has_nonzero_raws,
-    build_space_offsets,
-    decode_space_raws,
-    encode_space_values,
-    encode_space_values_float,
-    format_space_values,
-    resolve_active_rgb,
-    rgb_to_space_values,
-    space_to_rgb_float,
-)
+try:
+    from brush_color_spaces import (
+        SPACE_ORDER,
+        any_space_has_nonzero_raws,
+        build_space_offsets,
+        decode_space_raws,
+        encode_space_values,
+        encode_space_values_float,
+        format_space_values,
+        resolve_active_rgb,
+        rgb_to_space_values,
+        space_to_rgb_float,
+    )
+except ImportError:
+    from core.brush_color_spaces import (
+        SPACE_ORDER,
+        any_space_has_nonzero_raws,
+        build_space_offsets,
+        decode_space_raws,
+        encode_space_values,
+        encode_space_values_float,
+        format_space_values,
+        resolve_active_rgb,
+        rgb_to_space_values,
+        space_to_rgb_float,
+    )
 
 # ---------------------------------------------------------------------------
 # Build-specific technical constants (objective facts from CLIPStudioPaint.exe)

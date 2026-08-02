@@ -58,6 +58,7 @@ for _zbar_name in ('libzbar-64.dll', 'libiconv.dll'):
 # Build data files list (with existence checks for optional overlay EXEs)
 _datas = []
 _add_if_exists('icons/icon.ico', 'icons', _datas, 'app icon')
+_add_if_exists('icons/checkbox_check.png', 'icons', _datas, 'checkbox check icon')
 _add_if_exists('dcomp_overlay/build/dcomp_overlay.exe', 'dcomp_overlay/build', _datas, 'DComp overlay')
 _add_if_exists('sc_overlay/build/sc_overlay.exe', 'sc_overlay/build', _datas, 'SC overlay')
 _add_if_exists('core/picker_hook.dll', 'core', _datas, 'picker hook DLL')

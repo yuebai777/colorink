@@ -31,17 +31,30 @@ from typing import Dict, List, Optional, Tuple
 from pymem import Pymem
 from pymem.process import module_from_name
 
-from brush_color_spaces import (
-    SPACE_ORDER,
-    any_space_has_nonzero_raws,
-    build_space_addresses,
-    build_space_offsets,
-    decode_space_raws,
-    encode_space_values,
-    format_space_values,
-    resolve_active_rgb,
-    rgb_to_space_values,
-)
+try:
+    from brush_color_spaces import (
+        SPACE_ORDER,
+        any_space_has_nonzero_raws,
+        build_space_addresses,
+        build_space_offsets,
+        decode_space_raws,
+        encode_space_values,
+        format_space_values,
+        resolve_active_rgb,
+        rgb_to_space_values,
+    )
+except ImportError:
+    from core.brush_color_spaces import (
+        SPACE_ORDER,
+        any_space_has_nonzero_raws,
+        build_space_addresses,
+        build_space_offsets,
+        decode_space_raws,
+        encode_space_values,
+        format_space_values,
+        resolve_active_rgb,
+        rgb_to_space_values,
+    )
 
 # ---------------------------------------------------------------------------
 # Build-specific technical constants (objective facts from UDMPaint binaries)

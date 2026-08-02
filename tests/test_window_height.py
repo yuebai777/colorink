@@ -96,6 +96,54 @@ class ContentHeightPolicyTests(unittest.TestCase):
         timer.start.assert_called_once_with(0)
         self.assertTrue(window._content_height_adjust_pending)
 
+    def test_explicit_stack_minimum_includes_ringless_control_bar(self):
+        margins = SimpleNamespace(
+            left=MagicMock(return_value=4),
+            right=MagicMock(return_value=4),
+            top=MagicMock(return_value=0),
+            bottom=MagicMock(return_value=8),
+        )
+        window = SimpleNamespace(
+            _adjusting_content_height=False,
+            _content_height_adjust_pending=False,
+            _last_auto_height=None,
+            _manual_height_override=False,
+            isVisible=MagicMock(return_value=True),
+            sliders_layout=MagicMock(),
+            main_layout=MagicMock(
+                contentsMargins=MagicMock(return_value=margins),
+                spacing=MagicMock(return_value=4),
+            ),
+            stack=MagicMock(
+                minimumSizeHint=MagicMock(
+                    return_value=SimpleNamespace(height=MagicMock(return_value=80))
+                ),
+                minimumHeight=MagicMock(return_value=180),
+            ),
+            title_bar=MagicMock(
+                sizeHint=MagicMock(
+                    return_value=SimpleNamespace(height=MagicMock(return_value=28))
+                )
+            ),
+            sliders_container=MagicMock(
+                sizeHint=MagicMock(
+                    return_value=SimpleNamespace(height=MagicMock(return_value=40))
+                )
+            ),
+            _required_visualizer_height=MainWindow._required_visualizer_height,
+            _required_content_height=MainWindow._required_content_height,
+            _resolve_content_height=MainWindow._resolve_content_height,
+            width=MagicMock(return_value=100),
+            height=MagicMock(return_value=240),
+            setMinimumHeight=MagicMock(),
+            resize=MagicMock(),
+        )
+
+        MainWindow._adjust_content_height(window)
+
+        window.setMinimumHeight.assert_called_once_with(264)
+        window.resize.assert_called_once_with(100, 264)
+
 
 if __name__ == "__main__":
     unittest.main()

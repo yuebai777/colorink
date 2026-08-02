@@ -1,0 +1,8 @@
+# Dev-only test dependencies (NOT part of the runtime app).
+#
+# coloraide is used purely as an independent oracle to cross-validate
+# ui/color_conversions against a battle-tested implementation. The app
+# itself stays dependency-free: the per-pixel render loops (colour wheel
+# slices, LAB plane) need flat math, not per-pixel object creation.
+coloraide>=3.0
+pytest>=8.0
