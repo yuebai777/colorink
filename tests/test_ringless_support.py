@@ -8,13 +8,12 @@ import os
 from dataclasses import FrozenInstanceError
 
 import pytest
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import Qt, QPointF, QEvent
+from PyQt6.QtCore import QEvent, QPointF, Qt
 from PyQt6.QtGui import QMouseEvent
+from PyQt6.QtWidgets import QApplication
 
-from ui.ringless_mode import RinglessLayout
 from ui.color_wheel import ColorWheel, SliceGeometry
-
+from ui.ringless_mode import RinglessLayout
 
 # ── Module-level QApplication fixture ────────────────────────────────────
 

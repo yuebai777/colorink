@@ -6,6 +6,7 @@ construction, no OS/thread/tray side effects.
 
 import sys
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock
 
 # ── Pre-populate sys.modules with mocks for external deps ──
@@ -17,7 +18,7 @@ _MOCK_MODS = [
 ]
 for _m in _MOCK_MODS:
     sys.modules[_m] = MagicMock()
-sys.modules["brush_color_spaces"].PSColorSpace = MagicMock()
+setattr(sys.modules["brush_color_spaces"], "PSColorSpace", MagicMock())
 for _a in ("GetForegroundWindow", "GetWindowText", "GetWindowLong", "SetWindowLong",
             "IsWindowVisible", "IsIconic", "ShowWindowAsync", "BringWindowToTop",
             "SetForegroundWindow", "EnumWindows", "GetWindowThreadProcessId",
@@ -25,7 +26,6 @@ for _a in ("GetForegroundWindow", "GetWindowText", "GetWindowLong", "SetWindowLo
     setattr(sys.modules["win32gui"], _a, MagicMock(return_value=False))
 
 from ui.main_window import MainWindow
-
 
 # ── Shared fixture factories ────────────────────────────────────────────────
 
@@ -275,6 +275,6 @@ def test_settings_save_remeasures_height_after_ringless_sync(monkeypatch):
         ),
     )
 
-    MainWindow.on_settings_saved(window)
+    MainWindow.on_settings_saved(cast(MainWindow, window))
 
     assert call_order[-2:] == ["sync", "height"]

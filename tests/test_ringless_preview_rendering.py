@@ -4,6 +4,7 @@ Covers offscreen-rendered border pixel evidence, LAB-state paint path,
 circle-restoration proof via spies, and clipping constraints.
 """
 
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -20,7 +21,6 @@ from .test_ringless_preview_support import (
     qapp,
 )
 
-
 # ── Offscreen rendering: border pixel evidence ────────────────────────────
 
 class TestRinglessRendering:
@@ -36,7 +36,7 @@ class TestRinglessRendering:
         image.fill(Qt.GlobalColor.transparent)
         box.render(image)
 
-        fg_rect, bg_rect = box._ringless_swatch_rects()
+        fg_rect, bg_rect = cast(Any, box._ringless_swatch_rects())
 
         # Sample a 3×3 region centred on the left border of the active FG swatch.
         # The 2.5 px active border (#5a94e2) should tint at least one pixel blue-ish.
@@ -81,7 +81,7 @@ class TestRinglessRendering:
         image.fill(Qt.GlobalColor.transparent)
         box.render(image)
 
-        fg_rect, _ = box._ringless_swatch_rects()
+        fg_rect, _ = cast(Any, box._ringless_swatch_rects())
         cx, cy = int(fg_rect.center().x()), int(fg_rect.center().y())
         pixel = image.pixelColor(cx, cy)
         assert pixel.red() > 200
@@ -98,7 +98,7 @@ class TestRinglessRendering:
         image.fill(Qt.GlobalColor.transparent)
         box.render(image)
 
-        _, bg_rect = box._ringless_swatch_rects()
+        _, bg_rect = cast(Any, box._ringless_swatch_rects())
         cx, cy = int(bg_rect.center().x()), int(bg_rect.center().y())
         pixel = image.pixelColor(cx, cy)
         assert pixel.green() > 200
@@ -106,7 +106,7 @@ class TestRinglessRendering:
     def test_fixed_dimensions_do_not_clip_active_stroke(self, qapp):
         """The widget size accommodates the 2.5px active border without clipping."""
         box = make_preview_box(canonical_layout())
-        fg_rect, bg_rect = box._ringless_swatch_rects()
+        fg_rect, bg_rect = cast(Any, box._ringless_swatch_rects())
 
         # Widget width must be at least bg_rect.right() + _STROKE_PAD
         assert box.width() >= bg_rect.right() + _STROKE_PAD

@@ -2,14 +2,19 @@
 
 import os
 from dataclasses import FrozenInstanceError
+from typing import Any, cast
 
 import pytest
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QPushButton
 
+from ui.picker_panes import (
+    ButtonPositions,
+    LabPane,
+    PaneWithModeButton,
+    ringless_button_positions,
+)
 from ui.ringless_mode import RinglessLayout
-from ui.picker_panes import ButtonPositions, LabPane, PaneWithModeButton, ringless_button_positions
-
 
 # ── QApplication fixture ──────────────────────────────────────────────────
 
@@ -31,7 +36,7 @@ def _layout(**overrides) -> RinglessLayout:
         swatch_width=43, swatch_height=24, swatch_gap=5,
         corner_radius=4, button_gap=4,
     )
-    return RinglessLayout(**(defaults | overrides))
+    return RinglessLayout(**cast(Any, defaults | overrides))
 
 
 def _disabled_layout() -> RinglessLayout:

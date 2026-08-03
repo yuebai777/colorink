@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """Photoshop colour sync via COM automation (DoJavaScript).
 
 Uses the Photoshop COM automation interface to execute ExtendScript
@@ -12,13 +11,13 @@ Matches the CSPSync / UDMSync interface for drop-in compatibility
 with MemorySyncThread.
 """
 
-import sys
-import os
-from typing import Dict, Optional
-
 import ctypes
-import pythoncom
+import os
+import sys
+from typing import Any, Dict, Optional, cast
+
 import psutil
+import pythoncom
 
 try:
     import win32com.client as _w32
@@ -78,10 +77,10 @@ class PhotoshopSync:
     """
 
     def __init__(self) -> None:
-        self._app: object = None       # CDispatch for Photoshop.Application
-        self._disp: object = None      # raw IDispatch pointer
+        self._app: Any = None       # CDispatch for Photoshop.Application
+        self._disp: Any = None      # raw IDispatch pointer
         self._dispid_js: int = 0       # cached DISPID for DoJavaScript
-        self._pid: Optional[int] = None
+        self._pid: int | None = None
         self._proc_handle: int = 0     # Win32 process handle for fast alive check
         self.current_version: str = "auto"
         self.process_name: str = PROCESS_NAME
@@ -118,7 +117,7 @@ class PhotoshopSync:
         # Try each ProgID in order
         for progid in _PROGIDS:
             try:
-                self._app = _w32.dynamic.Dispatch(progid)
+                self._app = cast(Any, _w32).dynamic.Dispatch(progid)
                 self._disp = self._app._oleobj_
                 self._dispid_js = self._disp.GetIDsOfNames("DoJavaScript")
                 self._pid = self._find_process()
@@ -177,14 +176,16 @@ class PhotoshopSync:
         # WAIT_OBJECT_0 (0) = process exited; anything else = still alive
         return self.K32.WaitForSingleObject(self._proc_handle, 0) != 0
 
-    def get_color(self) -> Optional[Dict[str, int]]:
+    def get_color(self) -> dict[str, int] | None:
         """Read the current Photoshop foreground colour via COM properties.
 
         COM property reads do NOT invoke the ExtendScript engine, so they
         never trigger Photoshop's busy cursor — safe for 10 Hz polling.
         """
-        if self._app is None and not self.connect():
-            return None
+        if self._app is None:
+            if not self.connect():
+                return None
+        assert self._app is not None  # connect() sets _app on success
 
         # Bail early if Photoshop has died — avoids hung COM RPC call
         if not self._is_process_alive():
@@ -211,8 +212,10 @@ class PhotoshopSync:
         is preserved across channel assignments, so in-place mutation
         works reliably — no ExtendScript needed, no busy cursor.
         """
-        if self._app is None and not self.connect():
-            return False
+        if self._app is None:
+            if not self.connect():
+                return False
+        assert self._app is not None  # connect() sets _app on success
 
         # Bail early if Photoshop died since connect
         if not self._is_process_alive():
@@ -242,7 +245,7 @@ class PhotoshopSync:
 
     # -- status / meta -----------------------------------------------------------
 
-    def status(self) -> Dict[str, object]:
+    def status(self) -> dict[str, object]:
         connected = self._disp is not None
         if not connected:
             self.connect()
@@ -264,7 +267,7 @@ class PhotoshopSync:
         log(f"Version changed to {version}")
         return True
 
-    def dump(self) -> Dict[str, object]:
+    def dump(self) -> dict[str, object]:
         color = self.get_color()
         if color is None:
             return {"error": "not connected"}
@@ -287,7 +290,7 @@ class PhotoshopSync:
         self._pid = None
 
     @staticmethod
-    def _find_process() -> Optional[int]:
+    def _find_process() -> int | None:
         for proc in psutil.process_iter(["pid", "name"]):
             try:
                 if proc.info["name"] == PROCESS_NAME:

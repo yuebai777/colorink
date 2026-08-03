@@ -1,6 +1,7 @@
 import sys
 import unittest
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock
 
 # Pre-populate sys.modules with mocks for every external dependency touched
@@ -18,21 +19,21 @@ for _m in _MODS:
     sys.modules[_m] = _mock
 
 # Convenience attributes that code under test dereferences
-sys.modules["brush_color_spaces"].PSColorSpace = MagicMock()
-sys.modules["win32gui"].GetForegroundWindow = MagicMock(return_value=0)
-sys.modules["win32gui"].GetWindowText = MagicMock(return_value="")
-sys.modules["win32gui"].GetWindowLong = MagicMock(return_value=0)
-sys.modules["win32gui"].SetWindowLong = MagicMock()
-sys.modules["win32gui"].IsWindowVisible = MagicMock(return_value=False)
-sys.modules["win32gui"].IsIconic = MagicMock(return_value=False)
-sys.modules["win32gui"].ShowWindowAsync = MagicMock()
-sys.modules["win32gui"].BringWindowToTop = MagicMock()
-sys.modules["win32gui"].SetForegroundWindow = MagicMock()
-sys.modules["win32gui"].EnumWindows = MagicMock()
-sys.modules["win32gui"].GetWindowThreadProcessId = MagicMock(return_value=(0, 0))
-sys.modules["win32gui"].GetParent = MagicMock(return_value=0)
-sys.modules["win32gui"].GetWindow = MagicMock(return_value=0)
-sys.modules["win32gui"].GetWindowTextLengthW = MagicMock(return_value=0)
+setattr(sys.modules["brush_color_spaces"], "PSColorSpace", MagicMock())
+setattr(sys.modules["win32gui"], "GetForegroundWindow", MagicMock(return_value=0))
+setattr(sys.modules["win32gui"], "GetWindowText", MagicMock(return_value=""))
+setattr(sys.modules["win32gui"], "GetWindowLong", MagicMock(return_value=0))
+setattr(sys.modules["win32gui"], "SetWindowLong", MagicMock())
+setattr(sys.modules["win32gui"], "IsWindowVisible", MagicMock(return_value=False))
+setattr(sys.modules["win32gui"], "IsIconic", MagicMock(return_value=False))
+setattr(sys.modules["win32gui"], "ShowWindowAsync", MagicMock())
+setattr(sys.modules["win32gui"], "BringWindowToTop", MagicMock())
+setattr(sys.modules["win32gui"], "SetForegroundWindow", MagicMock())
+setattr(sys.modules["win32gui"], "EnumWindows", MagicMock())
+setattr(sys.modules["win32gui"], "GetWindowThreadProcessId", MagicMock(return_value=(0, 0)))
+setattr(sys.modules["win32gui"], "GetParent", MagicMock(return_value=0))
+setattr(sys.modules["win32gui"], "GetWindow", MagicMock(return_value=0))
+setattr(sys.modules["win32gui"], "GetWindowTextLengthW", MagicMock(return_value=0))
 
 from ui.main_window import MainWindow
 
@@ -91,7 +92,7 @@ class ContentHeightPolicyTests(unittest.TestCase):
             isVisible=MagicMock(return_value=False),
         )
 
-        MainWindow._adjust_content_height(window)
+        MainWindow._adjust_content_height(cast(MainWindow, window))
 
         timer.start.assert_called_once_with(0)
         self.assertTrue(window._content_height_adjust_pending)
@@ -139,7 +140,7 @@ class ContentHeightPolicyTests(unittest.TestCase):
             resize=MagicMock(),
         )
 
-        MainWindow._adjust_content_height(window)
+        MainWindow._adjust_content_height(cast(MainWindow, window))
 
         window.setMinimumHeight.assert_called_once_with(264)
         window.resize.assert_called_once_with(100, 264)

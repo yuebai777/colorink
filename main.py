@@ -1,10 +1,11 @@
-import sys
-import os
 import ctypes
+import os
 import struct
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QIcon
+import sys
+
 from PyQt6.QtCore import QSharedMemory
+from PyQt6.QtGui import QIcon
+from PyQt6.QtWidgets import QApplication
 
 # Ensure working directory is set to script directory
 script_dir = os.path.dirname(os.path.abspath(__file__))

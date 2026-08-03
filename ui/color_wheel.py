@@ -1,18 +1,32 @@
-﻿from dataclasses import dataclass
+﻿import colorsys
 import math
-import colorsys
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, TypedDict, cast
+
+from PyQt6.QtCore import QPointF, QRectF, Qt, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtGui import (
+    QBrush,
+    QColor,
+    QConicalGradient,
+    QImage,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtGui import QPainter, QColor, QImage, QPen, QBrush, QConicalGradient, QPainterPath, QLinearGradient
-from PyQt6.QtCore import Qt, QPointF, QRectF, QThreadPool, QTimer, pyqtSignal
-from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from ui.ringless_mode import RinglessLayout
-from ui.color_conversions import (
-    lab_to_rgb, rgb_to_lab,
-    oklch_to_rgb, rgb_to_oklch,
-    find_max_lab_c, find_max_oklch_c,
-)
 from core import config
+from ui.color_conversions import (
+    find_max_lab_c,
+    find_max_oklch_c,
+    lab_to_rgb,
+    oklch_to_rgb,
+    rgb_to_lab,
+    rgb_to_oklch,
+)
 from ui.slice_prewarm import SlicePrewarmRequest, SlicePrewarmResult, SlicePrewarmTask
 
 
@@ -81,6 +95,18 @@ def hls_to_hsv_floats(h, l, s):
     hsv_s = 2.0 * (1.0 - l / v) if v > 0.0001 else 0.0
     return h, hsv_s * 100.0, v * 100.0
 
+
+class _PrewarmedSlice(TypedDict):
+    """Payload stored per mode in ``_prewarmed_slices`` by the worker result."""
+    key: tuple[object, ...]
+    image: QImage
+    min_x: int
+    min_y: int
+    width: int
+    height: int
+    edge_x: tuple[int, ...] | None
+
+
 class ColorWheel(QWidget):
     # Emits (r, g, b)
     colorChanged = pyqtSignal(int, int, int)
@@ -110,7 +136,7 @@ class ColorWheel(QWidget):
         self.wheel_mode = "hsv-square"
         
         # Ringless-mode layout (None = full mode / disabled)
-        self._ringless_layout: "RinglessLayout | None" = None
+        self._ringless_layout: RinglessLayout | None = None
 
         # Cache variables for fast rendering
         self._cached_img = None
@@ -119,7 +145,7 @@ class ColorWheel(QWidget):
         # Full-resolution slice warmups are generated off the GUI thread.
         # The result is kept per mode so switching modules does not throw away
         # the other modes' ready-to-paint images.
-        self._prewarmed_slices: dict[str, dict[str, object]] = {}
+        self._prewarmed_slices: dict[str, _PrewarmedSlice] = {}
         self._prewarm_generation = 0
         self._prewarm_timer = QTimer(self)
         self._prewarm_timer.setSingleShot(True)
@@ -234,10 +260,12 @@ class ColorWheel(QWidget):
         if self.dragging:
             return True
         win = self.window()
-        if win is not None and hasattr(win, "slider_widgets"):
-            for chan, (slider, _) in win.slider_widgets.items():
-                if slider.isSliderDown():
-                    return True
+        if win is not None:
+            slider_widgets = getattr(win, "slider_widgets", None)
+            if isinstance(slider_widgets, dict):
+                for chan, (slider, _) in slider_widgets.items():
+                    if slider.isSliderDown():
+                        return True
         return False
 
     def _clear_drag_anchor(self) -> None:
@@ -1092,7 +1120,9 @@ class ColorWheel(QWidget):
         scale = (r * 1.05) / max(max_c, 0.001)
 
         # Use exact drag position if mid-drag, otherwise compute from current color
-        if getattr(self, '_drag_slice', '') == "rgb" and hasattr(self, '_drag_C'):
+        if (getattr(self, '_drag_slice', '') == "rgb"
+                and hasattr(self, '_drag_C') and self._drag_C is not None
+                and hasattr(self, '_drag_L') and self._drag_L is not None):
             C = self._drag_C
             L = self._drag_L
         else:
@@ -1299,9 +1329,10 @@ class ColorWheel(QWidget):
             self._drag_oklch_h = None
 
             # Derive ring L, C to compute the colour at this hue
-            if hasattr(self, '_drag_L') and self._drag_L is not None:
+            if (hasattr(self, '_drag_L') and self._drag_L is not None
+                    and hasattr(self, '_drag_C') and self._drag_C is not None):
                 L_ring, C_ring = self._drag_L, self._drag_C
-            elif self._oklch_L is not None:
+            elif self._oklch_L is not None and self._oklch_C is not None:
                 L_ring, C_ring = self._oklch_L, self._oklch_C
             else:
                 cr, cg, cb = self.get_color()
@@ -1581,7 +1612,9 @@ class ColorWheel(QWidget):
 
         scale = self._oklch_scale_for_hue(oklch_h, r)
 
-        if getattr(self, '_drag_slice', '') == "oklch" and hasattr(self, '_drag_C'):
+        if (getattr(self, '_drag_slice', '') == "oklch"
+                and hasattr(self, '_drag_C') and self._drag_C is not None
+                and hasattr(self, '_drag_L') and self._drag_L is not None):
             C = self._drag_C
             L = self._drag_L
         elif self._oklch_C is not None and self._oklch_L is not None:
@@ -1614,6 +1647,11 @@ class ColorWheel(QWidget):
             self._drag_oklch_h = oklch_h
         scale = self._drag_scale
         oklch_h = self._drag_oklch_h
+        if oklch_h is None:
+            oklch_h = self._oklch_h
+            if oklch_h is None:
+                cr, cg, cb = self.get_color()
+                _, _, oklch_h = rgb_to_oklch(cr, cg, cb)
 
         L = max(0.0, min(1.0, (cy + hy - py) / (2.0 * hy)))
         C_max = find_max_oklch_c(L, oklch_h)

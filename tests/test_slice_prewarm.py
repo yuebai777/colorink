@@ -1,11 +1,11 @@
 ﻿"""Regression coverage for background full-resolution slice warmups."""
 
+import os
 from unittest.mock import patch
 
-import os
 import pytest
-from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QImage, QPainter
+from PyQt6.QtWidgets import QApplication
 
 import ui.color_wheel as color_wheel
 from ui.color_wheel import ColorWheel

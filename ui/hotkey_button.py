@@ -1,8 +1,8 @@
 """Hotkey capture button shared by the settings UI."""
 
-from PyQt6.QtWidgets import QPushButton
-from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QKeyEvent
+from PyQt6.QtWidgets import QPushButton
 
 
 class HotkeyButton(QPushButton):

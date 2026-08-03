@@ -5,10 +5,18 @@ so the user can tweak settings while watching the main picker react in
 real time — no more overlay blocking the main window.
 """
 
-from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-                             QWidget, QApplication, QScrollArea)
+from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QColor
-from PyQt6.QtCore import Qt, QPoint, QTimer
+from PyQt6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 class SettingsWindow(QDialog):
@@ -32,11 +40,13 @@ class SettingsWindow(QDialog):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setFixedWidth(360)
+        # Rail (112px) + gap + content panel
+        self.setFixedWidth(560)
 
         self._build_ui()
         self._connect_signals()
         self._apply_window_theme()
+        self._apply_fixed_size()
 
     # ── UI construction ───────────────────────────────────────────────────
 
@@ -67,9 +77,35 @@ class SettingsWindow(QDialog):
         s.settingChanged.connect(self._apply_window_theme)
         # Hide during eyedropper theme-point pick, restore after
         s.pickingThemePoint.connect(self._on_picking_theme_point)
-        # Re-fit the window height when the active tab changes — page content
-        # lengths vary a lot (short hotkeys page vs. long picker page).
-        s.tabs.currentChanged.connect(lambda _i: QTimer.singleShot(0, self._clamp_height))
+
+    # ── Sizing ────────────────────────────────────────────────────────────
+
+    def _apply_fixed_size(self):
+        """Fixed window height: no per-page adaptation.
+
+        Sized once from the tallest page's content (capped at a compact
+        height); pages that exceed it scroll internally.
+        """
+        try:
+            screen = QApplication.screenAt(self.pos())
+            if screen is None:
+                screen = QApplication.primaryScreen()
+        except Exception:
+            screen = QApplication.primaryScreen()
+        max_h = 560
+        if screen is not None:
+            max_h = min(560, screen.availableGeometry().height() - 40)
+
+        content_hint = 0
+        for i in range(self.sidebar.stack.count()):
+            page_widget = self.sidebar.stack.widget(i)
+            if isinstance(page_widget, QScrollArea):
+                page = page_widget.widget()
+                if page is not None:
+                    content_hint = max(content_hint, page.sizeHint().height())
+        # 8px sidebar layout margins above and below the content
+        content_h = self._title_bar.height() + 8 + content_hint + 8
+        self.setFixedHeight(min(max_h, max(content_h, 320)))
 
     def _on_picking_theme_point(self, active: bool):
         if active:
@@ -107,42 +143,13 @@ class SettingsWindow(QDialog):
         """)
         self._title_bar.apply_theme(bg, text, border, bar_bg)
 
-    # ── Sizing ────────────────────────────────────────────────────────────
-
-    def _clamp_height(self):
-        try:
-            screen = QApplication.screenAt(self.pos())
-            if screen is None:
-                screen = QApplication.primaryScreen()
-        except Exception:
-            screen = QApplication.primaryScreen()
-        if screen is not None:
-            avail = screen.availableGeometry()
-            max_h = min(620, avail.height())
-        else:
-            max_h = 620
-        # Prefer a snug height over a fixed one: content-driven, scrollable.
-        # QTabWidget.sizeHint() reports the *tallest* page, so measure the
-        # active page's content instead — short pages get a compact window
-        # and long pages grow up to `max_h` and scroll internally.
-        content_hint = 0
-        scroll = self.sidebar.tabs.currentWidget()
-        if isinstance(scroll, QScrollArea):
-            page = scroll.widget()
-            if page is not None:
-                content_hint = page.sizeHint().height()
-        tab_h = self.sidebar.tabs.tabBar().sizeHint().height()
-        # 8px sidebar layout margins above and below the tab widget
-        content_h = self._title_bar.height() + 8 + tab_h + 8 + content_hint
-        self.setFixedHeight(min(max_h, max(content_h, 240)))
-
     # ── Positioning ───────────────────────────────────────────────────────
 
     def show_near_main_window(self):
         """Show the settings window beside the main window, clamping to screen."""
         mw = self._main_window
-        if hasattr(self.sidebar, "tabs") and hasattr(self.sidebar, "_last_settings_tab"):
-            self.sidebar.tabs.setCurrentIndex(self.sidebar._last_settings_tab)
+        if hasattr(self.sidebar, "nav") and hasattr(self.sidebar, "_last_settings_tab"):
+            self.sidebar.nav.setCurrentRow(self.sidebar._last_settings_tab)
         if mw.isVisible():
             mw_geo = mw.frameGeometry()
             target_x = mw_geo.right() + 8
@@ -168,7 +175,7 @@ class SettingsWindow(QDialog):
             target_y = self.y()
 
         self.move(target_x, target_y)
-        self._clamp_height()
+        self._apply_fixed_size()
         self.show()
         self.raise_()
         self.activateWindow()

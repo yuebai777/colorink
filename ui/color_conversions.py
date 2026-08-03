@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 
 """Single source of truth for UI-layer colour-space conversions.
 

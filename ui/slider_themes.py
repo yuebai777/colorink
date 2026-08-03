@@ -18,9 +18,9 @@ needs to change for the data to be picked up.
 from typing import Dict, List, Tuple
 
 # Type alias for clarity; keep it loose so callers don't need to import.
-SliderTheme = Dict[str, object]
+SliderTheme = dict[str, object]
 
-SLIDER_THEMES: Dict[str, SliderTheme] = {
+SLIDER_THEMES: dict[str, SliderTheme] = {
     # ── 默认：与软件原本外观一致 ──────────────────────────────
     "default": {
         "display_name": "默认",
@@ -142,6 +142,6 @@ def get_slider_theme(name) -> SliderTheme:
     return SLIDER_THEMES.get(name, SLIDER_THEMES[DEFAULT_SLIDER_THEME])
 
 
-def list_slider_theme_names() -> List[Tuple[str, str]]:
+def list_slider_theme_names() -> list[tuple[str, str]]:
     """Return (key, display_name) pairs in insertion order — for settings UI."""
-    return [(key, theme["display_name"]) for key, theme in SLIDER_THEMES.items()]
+    return [(key, str(theme["display_name"])) for key, theme in SLIDER_THEMES.items()]

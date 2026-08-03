@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """CSP Companion Mode (TCP-based) color sync backend.
 
@@ -28,8 +27,8 @@ from __future__ import annotations
 import json
 import os
 import socket
-import time
 import sys
+import time
 from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
@@ -1000,9 +999,15 @@ class CSPCompanionSync:
         Returns ``True`` if connection was established, ``False`` if
         user cancelled or connection failed.
         """
-        from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
-                                      QLabel, QPushButton, QLineEdit)
         from PyQt6.QtCore import Qt, QTimer
+        from PyQt6.QtWidgets import (
+            QDialog,
+            QHBoxLayout,
+            QLabel,
+            QLineEdit,
+            QPushButton,
+            QVBoxLayout,
+        )
 
         dlg = QDialog(parent)
         dlg.setWindowTitle("CSP 智能手机连接")

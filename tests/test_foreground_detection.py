@@ -7,6 +7,7 @@ without a live Windows session.
 
 import os
 import sys
+from typing import cast
 
 from ui.main_window import _exe_matches_drawing_app, _title_matches_drawing_app
 
@@ -114,7 +115,7 @@ class TestCheckForegroundWindow:
             cfg = {"onlyShowInCsp": True}
             _fg_exe_cache_pid = None
             _fg_exe_cache = ""
-            settings_window = None
+            settings_window: object = None
             settings_sidebar = None
             picker_overlay = None
             follow_mouse_active = False
@@ -150,7 +151,7 @@ class TestCheckForegroundWindow:
         self._stub_win32(monkeypatch, "not a drawing app", os.getpid())
         fs = self._make_self()
         fs.visible = False
-        mw.MainWindow.check_foreground_window(fs)
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
         assert fs.visible is True, "own-process foreground must stay visible"
         assert fs.auto_hidden is False
 
@@ -161,7 +162,7 @@ class TestCheckForegroundWindow:
         self._stub_win32(monkeypatch, "chrome - google chrome", 424242)
         fs = self._make_self()
         fs.visible = True
-        mw.MainWindow.check_foreground_window(fs)
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
         assert fs.visible is False, "non-drawing foreground must hide"
         assert fs.auto_hidden is True
 
@@ -172,7 +173,7 @@ class TestCheckForegroundWindow:
         self._stub_win32(monkeypatch, "clip studio paint", 424242)
         fs = self._make_self()
         fs.visible = False
-        mw.MainWindow.check_foreground_window(fs)
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
         assert fs.visible is True
 
     def test_stuck_settings_active_does_not_keep_visible(self, monkeypatch):
@@ -196,7 +197,7 @@ class TestCheckForegroundWindow:
         fs = self._make_self()
         fs.visible = True
         fs.settings_window = StuckSettings()
-        mw.MainWindow.check_foreground_window(fs)
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
         assert fs.visible is False, (
             "stale settings-window activation must not keep the palette visible"
         )
@@ -211,6 +212,6 @@ class TestCheckForegroundWindow:
         self._stub_win32(monkeypatch, "设置", os.getpid())
         fs = self._make_self()
         fs.visible = False
-        mw.MainWindow.check_foreground_window(fs)
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
         assert fs.visible is True
         assert fs.auto_hidden is False

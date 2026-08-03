@@ -1,7 +1,8 @@
-import subprocess
-import sys
 import os
 import shutil
+import subprocess
+import sys
+
 
 def _strip_dist(dist_dir: str):
     """Remove unnecessary bloat from the built distribution folder."""

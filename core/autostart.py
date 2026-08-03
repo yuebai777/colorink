@@ -1,5 +1,6 @@
 import sys
 
+
 def apply_autostart(enabled: bool):
     import sys
     if sys.platform != 'win32':

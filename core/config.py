@@ -1,5 +1,5 @@
-import os
 import json
+import os
 
 CFG_NAME = "window-config.json"
 HOTKEY_CFG_NAME = "hotkey-config.json"
@@ -34,7 +34,7 @@ def sorted_slider_groups(cfg):
 
 
 def get_user_data_dir():
-    appdata = os.getenv("APPDATA")
+    appdata = os.getenv("APPDATA") or os.path.expanduser("~")
     path = os.path.join(appdata, "Colorink")
     os.makedirs(path, exist_ok=True)
     return path

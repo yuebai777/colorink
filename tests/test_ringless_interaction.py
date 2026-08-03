@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 from PyQt6.QtCore import QPointF
-from PyQt6.QtGui import QImage, QPaintEvent, QPainter
+from PyQt6.QtGui import QImage, QPainter, QPaintEvent
 
 import ui.color_wheel as color_wheel
 
@@ -20,7 +20,6 @@ from .test_ringless_support import (
     mouse_press,
     qapp,
 )
-
 
 # ── Interaction guards ───────────────────────────────────────────────────
 

@@ -96,7 +96,7 @@ def render_lab_plane(request: LabPrewarmRequest) -> LabPrewarmResult:
     y = np.linspace(request.max_b, request.min_b, image_size, dtype=np.float32)
     aa, bb = np.meshgrid(x, y)
     if request.render_mode == "oklab":
-        red, green, blue = _oklab_to_rgb(request.lightness / 100.0, aa, bb)
+        red, green, blue = _oklab_to_rgb(np.full_like(aa, request.lightness / 100.0), aa, bb)
     else:
         red, green, blue = _lab_to_rgb(np.full_like(aa, request.lightness), aa, bb)
     mask = (red >= 0.0) & (red <= 255.0) & (green >= 0.0) & (green <= 255.0) & (blue >= 0.0) & (blue <= 255.0)

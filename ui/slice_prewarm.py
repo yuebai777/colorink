@@ -5,10 +5,13 @@ from typing import Any
 
 import numpy as np
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
+
 from ui.color_conversions import (
+    find_max_lab_c,
+    find_max_oklch_c,
+    lab_to_rgb_array,
+    oklab_to_rgb_array,
     rgb_to_lab,
-    lab_to_rgb_array, oklab_to_rgb_array,
-    find_max_lab_c, find_max_oklch_c,
 )
 
 

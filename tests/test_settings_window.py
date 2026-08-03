@@ -6,13 +6,12 @@ signal integration all work.
 """
 
 import os
-
-import pytest
 from unittest.mock import patch
 
-from core.config import load_hotkey_config
+import pytest
 from PyQt6.QtWidgets import QPushButton
 
+from core.config import load_hotkey_config
 
 # ── Fixtures ────────────────────────────────────────────────────────────
 
@@ -91,8 +90,8 @@ class TestSettingsWindowConstruction:
     """SettingsWindow builds and contains the sidebar."""
 
     def test_sidebar_is_child(self, settings_window, sidebar):
-        # sidebar Python attribute 'parent' is the stub main window
-        assert sidebar.parent is settings_window._main_window
+        # sidebar Python attribute '_parent' is the stub main window
+        assert sidebar._parent is settings_window._main_window
         assert settings_window.sidebar is sidebar
 
     def test_title_bar_has_settings_label(self, settings_window):
@@ -178,37 +177,43 @@ class TestPickingThemePoint:
 
 
 class TestTabStructure:
-    """Verify the new 5-tab QTabWidget structure after refactor."""
+    """Verify the CSP-style rail + stacked-page structure after redesign."""
 
-    def test_tabs_exist(self, sidebar):
-        assert hasattr(sidebar, "tabs")
-        assert sidebar.tabs is not None
-        assert sidebar.tabs.count() == 5
+    def test_pages_exist(self, sidebar):
+        assert hasattr(sidebar, "stack")
+        assert sidebar.stack is not None
+        assert sidebar.stack.count() == 5
 
-    def test_tab_labels(self, sidebar):
+    def test_nav_labels(self, sidebar):
         expected = ["快捷键", "界面", "取色器", "软件", "关于"]
         for i, text in enumerate(expected):
-            assert sidebar.tabs.tabText(i) == text
+            assert sidebar.nav.item(i).text() == text
 
-    def test_each_tab_page_is_scroll_area(self, sidebar):
+    def test_each_page_is_scroll_area(self, sidebar):
         from PyQt6.QtWidgets import QScrollArea
-        for i in range(sidebar.tabs.count()):
-            assert isinstance(sidebar.tabs.widget(i), QScrollArea)
+        for i in range(sidebar.stack.count()):
+            assert isinstance(sidebar.stack.widget(i), QScrollArea)
 
-    def test_combo_module_in_picker_tab(self, sidebar):
-        # Tab index 2 = "取色器"
-        picker_tab = sidebar.tabs.widget(2)
-        assert picker_tab.isAncestorOf(sidebar.combo_module)
+    def test_combo_module_in_picker_page(self, sidebar):
+        # Page index 2 = "取色器"
+        picker_page = sidebar.stack.widget(2)
+        assert picker_page.isAncestorOf(sidebar.combo_module)
 
-    def test_combo_theme_in_interface_tab(self, sidebar):
-        # Tab index 1 = "界面"
-        interface_tab = sidebar.tabs.widget(1)
-        assert interface_tab.isAncestorOf(sidebar.combo_theme)
+    def test_combo_theme_in_interface_page(self, sidebar):
+        # Page index 1 = "界面"
+        interface_page = sidebar.stack.widget(1)
+        assert interface_page.isAncestorOf(sidebar.combo_theme)
 
-    def test_btn_pick_in_hotkeys_tab(self, sidebar):
-        # Tab index 0 = "快捷键"
-        hotkeys_tab = sidebar.tabs.widget(0)
-        assert hotkeys_tab.isAncestorOf(sidebar.btn_pick)
+    def test_btn_pick_in_hotkeys_page(self, sidebar):
+        # Page index 0 = "快捷键"
+        hotkeys_page = sidebar.stack.widget(0)
+        assert hotkeys_page.isAncestorOf(sidebar.btn_pick)
+
+    def test_nav_selects_page(self, sidebar):
+        """Rail selection switches the stacked page and is remembered."""
+        sidebar.nav.setCurrentRow(3)
+        assert sidebar.stack.currentIndex() == 3
+        assert sidebar._last_settings_tab == 3
 
 
 class TestCleanupAndHistoryOptions:
@@ -237,6 +242,7 @@ class TestCleanupAndHistoryOptions:
     def test_auto_focus_removed_from_main_window_source(self):
         """MainWindow source must not contain autoFocusDrawingSoftware or focus_drawing_software."""
         import inspect
+
         import ui.main_window as mw
         src = inspect.getsource(mw)
         assert "autoFocusDrawingSoftware" not in src
@@ -245,6 +251,7 @@ class TestCleanupAndHistoryOptions:
     def test_auto_focus_removed_from_settings_sidebar_source(self):
         """SettingsSidebar source must not contain autoFocusDrawingSoftware or on_auto_focus_clicked."""
         import inspect
+
         import ui.settings_sidebar as ss
         src = inspect.getsource(ss)
         assert "autoFocusDrawingSoftware" not in src
@@ -258,37 +265,44 @@ class TestReorganizedSettings:
         assert not hasattr(sidebar, "combo_lang")
 
     def test_follow_mouse_hotkey_and_toggle_in_same_card(self, sidebar):
-        hotkeys_tab = sidebar.tabs.widget(0)
-        assert hotkeys_tab.isAncestorOf(sidebar.btn_follow)
-        assert hotkeys_tab.isAncestorOf(sidebar.cb_follow_mouse)
+        hotkeys_page = sidebar.stack.widget(0)
+        assert hotkeys_page.isAncestorOf(sidebar.btn_follow)
+        assert hotkeys_page.isAncestorOf(sidebar.cb_follow_mouse)
 
-    def test_picker_zoom_in_picker_tab(self, sidebar):
-        picker_tab = sidebar.tabs.widget(2)
-        assert picker_tab.isAncestorOf(sidebar.btn_zoom_dec)
+    def test_picker_zoom_in_picker_page(self, sidebar):
+        picker_page = sidebar.stack.widget(2)
+        assert picker_page.isAncestorOf(sidebar.btn_zoom_dec)
 
     def test_history_settings_merged(self, sidebar):
         assert "History" not in sidebar.slider_rows
         assert hasattr(sidebar, "cb_history")
-        picker_tab = sidebar.tabs.widget(2)
-        assert picker_tab.isAncestorOf(sidebar.cb_history)
-        assert picker_tab.isAncestorOf(sidebar.combo_history_cols)
-        assert picker_tab.isAncestorOf(sidebar.combo_history_rows)
+        picker_page = sidebar.stack.widget(2)
+        assert picker_page.isAncestorOf(sidebar.cb_history)
+        assert picker_page.isAncestorOf(sidebar.combo_history_cols)
+        assert picker_page.isAncestorOf(sidebar.combo_history_rows)
 
     def test_slider_rows_have_move_buttons(self, sidebar):
         cb, btn_up, btn_down, _ = sidebar.slider_rows["HSV"]
         assert btn_up.text() == "▲"
         assert btn_down.text() == "▼"
 
-    def test_advanced_card_is_collapsible(self, sidebar):
-        picker_tab = sidebar.tabs.widget(2)
-        found = any(
-            btn.objectName() == "CollapseHeader" and "高级" in btn.text()
-            for btn in picker_tab.findChildren(QPushButton)
-        )
-        assert found
+    def test_advanced_is_regular_section(self, sidebar):
+        """高级 is a plain section (no collapse toggle) with its controls."""
+        from PyQt6.QtWidgets import QLabel
+        picker_page = sidebar.stack.widget(2)
+        headers = [
+            lbl.text() for lbl in picker_page.findChildren(QLabel)
+            if lbl.objectName() == "SectionHeader"
+        ]
+        assert "高级" in headers
+        assert picker_page.isAncestorOf(sidebar.btn_scroll_dec)
+        assert picker_page.isAncestorOf(sidebar.lbl_same_space)
+        assert picker_page.isAncestorOf(sidebar.lbl_diff_space)
+        # No collapsible headers remain anywhere
+        assert not picker_page.findChildren(QPushButton, "CollapseHeader")
 
     def test_last_tab_is_remembered(self, sidebar):
-        sidebar.tabs.setCurrentIndex(3)
+        sidebar.stack.setCurrentIndex(3)
         assert sidebar._last_settings_tab == 3
 
     def test_move_slider_order_swaps_values(self, sidebar):
@@ -343,9 +357,9 @@ class TestReorganizedSettings:
         assert sidebar.btn_hist_down.isEnabled() is False   # bottom of the list
 
     def test_sync_and_versions_share_one_card(self, sidebar):
-        software_tab = sidebar.tabs.widget(3)
-        assert software_tab.isAncestorOf(sidebar.combo_software)
-        assert software_tab.isAncestorOf(sidebar.combo_csp)
+        software_page = sidebar.stack.widget(3)
+        assert software_page.isAncestorOf(sidebar.combo_software)
+        assert software_page.isAncestorOf(sidebar.combo_csp)
 
     def test_config_management_buttons_exist(self, sidebar):
         assert hasattr(sidebar, "btn_export_config")

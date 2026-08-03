@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """SAI2 color synchronization via direct process memory access.
 
@@ -11,11 +10,11 @@ the cached handle stops being readable.
 """
 
 import ctypes
-from ctypes import wintypes
 import os
-import sys
 import struct
-from typing import Dict, List, Optional, Tuple
+import sys
+from ctypes import wintypes
+from typing import Any, Dict, List, Optional, Tuple
 
 # Windows API constants for process memory access
 PROCESS_VM_READ = 0x0010
@@ -35,7 +34,7 @@ TH32CS_SNAPMODULE32 = 0x10
 # after-2024: E8 ?? ?? ?? ?? B9 01 00 00 00 88 05 ?? ?? ?? ??
 DEFAULT_VERSION = "pre-2024-sai2"
 
-SIGNATURES: Dict[str, Dict[str, object]] = {
+SIGNATURES: dict[str, dict[str, Any]] = {
     "pre-2024-sai2": {
         "pattern": [0xB9, 0x03, 0x00, 0x00, 0x00, 0x88, 0x05, None, None, None, None],
         "disp_offset": 7,        # first byte of the [rip+disp32] operand
@@ -49,7 +48,7 @@ SIGNATURES: Dict[str, Dict[str, object]] = {
 }
 
 # Fallback fixed offsets for known builds, used only when pattern scan fails
-KNOWN_OFFSETS: Dict[str, int] = {
+KNOWN_OFFSETS: dict[str, int] = {
     "default": 0x303DC0,  # 2021.5.28 build
 }
 
@@ -61,7 +60,7 @@ def _log(msg: str) -> None:
         print(f"[SAI2Sync] {msg}", file=sys.stderr, flush=True)
 
 
-def _normalize_version(version: Optional[str]) -> str:
+def _normalize_version(version: str | None) -> str:
     s = str(version or "").strip().lower()
     if s in (
         "after-2024-sai2",
@@ -111,7 +110,7 @@ class MODULEENTRY32(ctypes.Structure):
 _kernel32 = ctypes.windll.kernel32
 
 
-def _find_process(name: str) -> Optional[int]:
+def _find_process(name: str) -> int | None:
     """Locate a process id by image name."""
     name_lower = name.lower().encode("utf-8")
     snapshot = _kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
@@ -121,7 +120,7 @@ def _find_process(name: str) -> Optional[int]:
     pe = PROCESSENTRY32()
     pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
 
-    pid: Optional[int] = None
+    pid: int | None = None
     if _kernel32.Process32First(snapshot, ctypes.byref(pe)):
         while True:
             if pe.szExeFile.lower() == name_lower:
@@ -134,7 +133,7 @@ def _find_process(name: str) -> Optional[int]:
     return pid
 
 
-def _get_module_info(pid: int, module_name: str) -> Tuple[Optional[int], Optional[int]]:
+def _get_module_info(pid: int, module_name: str) -> tuple[int | None, int | None]:
     """Return (base_addr, module_size) for the named module inside the process."""
     name_lower = module_name.lower().encode("utf-8")
     snapshot = _kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid)
@@ -144,8 +143,8 @@ def _get_module_info(pid: int, module_name: str) -> Tuple[Optional[int], Optiona
     me = MODULEENTRY32()
     me.dwSize = ctypes.sizeof(MODULEENTRY32)
 
-    base_addr: Optional[int] = None
-    mod_size: Optional[int] = None
+    base_addr: int | None = None
+    mod_size: int | None = None
     if _kernel32.Module32First(snapshot, ctypes.byref(me)):
         while True:
             if me.szModule.lower() == name_lower:
@@ -159,7 +158,7 @@ def _get_module_info(pid: int, module_name: str) -> Tuple[Optional[int], Optiona
     return base_addr, mod_size
 
 
-def _read_memory(handle, address: int, size: int) -> Optional[bytes]:
+def _read_memory(handle, address: int, size: int) -> bytes | None:
     buffer = ctypes.create_string_buffer(size)
     bytes_read = ctypes.c_size_t()
     if _kernel32.ReadProcessMemory(handle, ctypes.c_void_p(address), buffer, size, ctypes.byref(bytes_read)):
@@ -174,7 +173,7 @@ def _write_memory(handle, address: int, data) -> bool:
     return result != 0
 
 
-def _scan_pattern_masked(handle, base: int, size: int, pattern: List[Optional[int]]) -> Optional[int]:
+def _scan_pattern_masked(handle, base: int, size: int, pattern: list[int | None]) -> int | None:
     """Scan a memory region for a byte pattern that allows wildcard bytes (None)."""
     CHUNK_SIZE = 0x100000  # 1MB
     pattern_len = len(pattern)
@@ -186,6 +185,7 @@ def _scan_pattern_masked(handle, base: int, size: int, pattern: List[Optional[in
         return None
     anchor_idx = fixed_indices[0]
     anchor_byte = pattern[anchor_idx]
+    assert anchor_byte is not None  # anchor position is a fixed byte in every signature
     step = max(1, CHUNK_SIZE - pattern_len)
 
     for offset in range(0, size, step):
@@ -229,13 +229,13 @@ class SAI2Sync:
 
     PROCESS_NAME = "sai2.exe"
 
-    def __init__(self, version: Optional[str] = None) -> None:
+    def __init__(self, version: str | None = None) -> None:
         self.version: str = _normalize_version(version or os.environ.get("SAI2_SYNC_VERSION", DEFAULT_VERSION))
         self._handle = None
-        self._pid: Optional[int] = None
-        self._color_addr: Optional[int] = None
-        self._base: Optional[int] = None
-        self._size: Optional[int] = None
+        self._pid: int | None = None
+        self._color_addr: int | None = None
+        self._base: int | None = None
+        self._size: int | None = None
 
     def set_version(self, version: str) -> bool:
         """Switch SAI2 signature mode. Returns True if the version changed."""
@@ -283,7 +283,7 @@ class SAI2Sync:
             return False
 
         base, size = _get_module_info(pid, self.PROCESS_NAME)
-        if not base:
+        if not base or size is None:
             _kernel32.CloseHandle(handle)
             return False
 
@@ -324,10 +324,11 @@ class SAI2Sync:
         _log(f"Connected to SAI2 (PID: {pid}, Version: {self.version}, Color: 0x{color_addr:X})")
         return True
 
-    def get_color(self) -> Optional[Dict[str, int]]:
+    def get_color(self) -> dict[str, int] | None:
         if not self._handle or not self._color_addr:
             if not self._connect():
                 return None
+        assert self._handle is not None and self._color_addr is not None
 
         try:
             data = _read_memory(self._handle, self._color_addr, 3)
@@ -344,6 +345,7 @@ class SAI2Sync:
         if not self._handle or not self._color_addr:
             if not self._connect():
                 return False
+        assert self._handle is not None and self._color_addr is not None
 
         r = _clamp8(r)
         g = _clamp8(g)
@@ -356,7 +358,7 @@ class SAI2Sync:
             self._color_addr = None
             return False
 
-    def status(self) -> Dict[str, object]:
+    def status(self) -> dict[str, object]:
         if not self._handle or not self._color_addr:
             self._connect()
 
