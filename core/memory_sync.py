@@ -1,13 +1,17 @@
-import time
 import sys
-from PyQt6.QtCore import QThread, pyqtSignal, QObject
+import time
+
+from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
 # Import native modules
-from core import csp_brush_link
-from core import csp_companion_sync
-from core import sai2_brush_link
-from core import udm_brush_link
-from core import photoshop_color_sync
+from core import (
+    csp_brush_link,
+    csp_companion_sync,
+    photoshop_color_sync,
+    sai2_brush_link,
+    udm_brush_link,
+)
+
 
 class MemorySyncSignals(QObject):
     # Emitted when the drawing software color changes: (r, g, b)

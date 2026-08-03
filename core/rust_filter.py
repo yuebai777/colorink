@@ -68,7 +68,7 @@ class RustFilterController:
         return "all"
 
     @staticmethod
-    def available_screens() -> list:
+    def available_screens() -> list[str]:
         return ["all"]
 
     # ── 进程管理 ──────────────────────────────────────────
@@ -100,11 +100,13 @@ class RustFilterController:
     def _send(self, cmd: str):
         """向 Rust 进程 stdin 写入一行指令。"""
         if self._proc and self._proc.poll() is None:
-            try:
-                self._proc.stdin.write(f"{cmd}\n".encode())
-                self._proc.stdin.flush()
-            except (BrokenPipeError, OSError):
-                pass
+            stdin = self._proc.stdin
+            if stdin is not None:
+                try:
+                    stdin.write(f"{cmd}\n".encode())
+                    stdin.flush()
+                except (BrokenPipeError, OSError):
+                    pass
 
     # ── 公共接口（与 DCompOverlayController / GrayscaleOverlay 兼容）──
 

@@ -6,6 +6,8 @@ Extracted from ui.main_window so the preview widget can evolve independently
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QBrush, QColor, QCursor, QPainter, QPen
 from PyQt6.QtWidgets import QApplication, QMenu, QWidget
@@ -29,13 +31,12 @@ class ColorPreviewBox(QWidget):
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.parent = parent
+        self._parent: object = parent
         self.fg_color = QColor(255, 255, 255)
         self.bg_color = QColor(128, 128, 128)
         self.position_mode = "top-left"  # "top-left" | "bottom-left"
         self.active_slot = "fg"
-        self.active_border_color = QColor(RINGLESS_ACTIVE_BORDER)
-        self.inactive_border_color = QColor(RINGLESS_INACTIVE_BORDER)
+        self.active_border_color = QColor(RINGLESS_ACTIVE_BORDER); self.inactive_border_color = QColor(RINGLESS_INACTIVE_BORDER)
         self.fg_size = 40
         self.bg_size = 26
         self._ringless_layout: RinglessLayout | None = None
@@ -303,9 +304,9 @@ class ColorPreviewBox(QWidget):
         r, g, b = color.red(), color.green(), color.blue()
 
         menu.addAction(f"Copy RGB: rgb({r}, {g}, {b})",
-                       lambda r=r, g=g, b=b: QApplication.clipboard().setText(f"rgb({r}, {g}, {b})"))
+                       lambda r=r, g=g, b=b: (cb := QApplication.clipboard()) is not None and cb.setText(f"rgb({r}, {g}, {b})"))
         menu.addAction(f"Copy HEX: #{r:02X}{g:02X}{b:02X}",
-                       lambda r=r, g=g, b=b: QApplication.clipboard().setText(f"#{r:02X}{g:02X}{b:02X}"))
+                       lambda r=r, g=g, b=b: (cb := QApplication.clipboard()) is not None and cb.setText(f"#{r:02X}{g:02X}{b:02X}"))
 
         menu.exec(QCursor.pos())
 
@@ -321,16 +322,16 @@ class ColorPreviewBox(QWidget):
 
         if event.button() == Qt.MouseButton.LeftButton:
             if clicked_slot == "fg":
-                self.parent.select_fg_slot()
+                cast(Any, self._parent).select_fg_slot()
             else:
-                self.parent.select_bg_slot()
+                cast(Any, self._parent).select_bg_slot()
         elif event.button() == Qt.MouseButton.RightButton:
             color = self.fg_color if clicked_slot == "fg" else self.bg_color
             self._show_color_context_menu(color)
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            if hasattr(self.parent, 'swap_colors'):
-                self.parent.swap_colors()
+            if hasattr(self._parent, 'swap_colors'):
+                cast(Any, self._parent).swap_colors()
         super().mouseDoubleClickEvent(event)
 

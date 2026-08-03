@@ -5,6 +5,7 @@ legacy circle rendering, and module size check.
 """
 
 import os
+from typing import Any, cast
 from unittest.mock import patch
 
 from PyQt6.QtCore import Qt
@@ -18,7 +19,6 @@ from .test_ringless_preview_support import (
     qapp,
 )
 
-
 # ── Interaction semantics ────────────────────────────────────────────────
 
 class TestRinglessInteractionSemantics:
@@ -27,7 +27,7 @@ class TestRinglessInteractionSemantics:
 
     def test_left_click_selects_fg_when_hit(self, qapp):
         box = make_preview_box(canonical_layout())
-        fg_rect, _ = box._ringless_swatch_rects()
+        fg_rect, _ = cast(Any, box._ringless_swatch_rects())
         assert fg_rect is not None
 
         calls = []
@@ -37,14 +37,14 @@ class TestRinglessInteractionSemantics:
             def select_bg_slot(self): calls.append("bg_selected")
             def swap_colors(self): calls.append("swapped")
 
-        box.parent = FakeParent()
+        box._parent = FakeParent()
         cx, cy = fg_rect.center().x(), fg_rect.center().y()
         box.mousePressEvent(mouse_press_event(cx, cy, Qt.MouseButton.LeftButton))
         assert calls == ["fg_selected"]
 
     def test_left_click_selects_bg_when_hit(self, qapp):
         box = make_preview_box(canonical_layout())
-        _, bg_rect = box._ringless_swatch_rects()
+        _, bg_rect = cast(Any, box._ringless_swatch_rects())
         assert bg_rect is not None
 
         calls = []
@@ -54,7 +54,7 @@ class TestRinglessInteractionSemantics:
             def select_bg_slot(self): calls.append("bg_selected")
             def swap_colors(self): calls.append("swapped")
 
-        box.parent = FakeParent()
+        box._parent = FakeParent()
         cx, cy = bg_rect.center().x(), bg_rect.center().y()
         box.mousePressEvent(mouse_press_event(cx, cy, Qt.MouseButton.LeftButton))
         assert calls == ["bg_selected"]
@@ -63,7 +63,7 @@ class TestRinglessInteractionSemantics:
         """Right-click calls _show_color_context_menu with the correct color."""
         box = make_preview_box(canonical_layout())
         box.fg_color = QColor(10, 20, 30)
-        fg_rect, _ = box._ringless_swatch_rects()
+        fg_rect, _ = cast(Any, box._ringless_swatch_rects())
         assert fg_rect is not None
 
         with patch.object(box, "_show_color_context_menu") as spy_menu:
@@ -77,7 +77,7 @@ class TestRinglessInteractionSemantics:
 
     def test_double_click_calls_swap(self, qapp):
         box = make_preview_box(canonical_layout())
-        fg_rect, _ = box._ringless_swatch_rects()
+        fg_rect, _ = cast(Any, box._ringless_swatch_rects())
         assert fg_rect is not None
 
         calls = []
@@ -87,7 +87,7 @@ class TestRinglessInteractionSemantics:
             def select_bg_slot(self): pass
             def swap_colors(self): calls.append("swapped")
 
-        box.parent = FakeParent()
+        box._parent = FakeParent()
         cx, cy = fg_rect.center().x(), fg_rect.center().y()
         box.mouseDoubleClickEvent(double_click_event(cx, cy))
         assert calls == ["swapped"]

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """CLIP STUDIO PAINT active brush-color synchronization.
 
@@ -22,13 +21,14 @@ from __future__ import annotations
 
 import configparser
 import ctypes
-from ctypes import wintypes
 import glob
 import os
 import sqlite3
 import sys
+from collections.abc import Mapping
+from ctypes import wintypes
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 try:
     from pymem import Pymem
@@ -78,7 +78,7 @@ _AOB_CSP5_0     = "0F 10 42 1C 0F 11 41 1C F2 0F 10 42 10 F2 0F 11 41 10 8B 42 1
 
 # Public mapping used by external AOB scanning tools that need to resolve
 # a legacy per-build key (e.g. "csp4.2.7-ex") to its exact signature.
-AOB_MAP: Dict[str, str] = {
+AOB_MAP: dict[str, str] = {
     "csp4.0":      _AOB_CSP4_0,
     "csp4.2.7-ex": _AOB_CSP4_2_7EX,
     "csp5.0":      _AOB_CSP5_0,
@@ -112,16 +112,16 @@ class _CSPBuildProfile:
     process_name: str
     base_offset: int
     aob_signature: str
-    intermediate_offset: Optional[int] = None
+    intermediate_offset: int | None = None
     aob_offset: int = 0
 
 
-_PROFILES: Tuple[_CSPBuildProfile, ...] = (
+_PROFILES: tuple[_CSPBuildProfile, ...] = (
     _CSPBuildProfile("csp4.x", "CLIPStudioPaint.exe", 0x0518C2C0, _AOB_CSP4_0),
     _CSPBuildProfile("csp5.x", "CLIPStudioPaint.exe", 0x05449DB0, _AOB_CSP5_0,
                      aob_offset=0x0D),
 )
-_PROFILE_INDEX: Dict[str, _CSPBuildProfile] = {p.key: p for p in _PROFILES}
+_PROFILE_INDEX: dict[str, _CSPBuildProfile] = {p.key: p for p in _PROFILES}
 
 
 def _normalize_version_key(raw: object) -> str:
@@ -233,7 +233,7 @@ class _ProcessVersionQuery:
     _ver_query_value.restype = wintypes.BOOL
 
     @classmethod
-    def image_path(cls, process_handle) -> Optional[str]:
+    def image_path(cls, process_handle) -> str | None:
         size = wintypes.DWORD(32768)
         buffer = ctypes.create_unicode_buffer(size.value)
         if not cls._query_image_name(
@@ -243,7 +243,7 @@ class _ProcessVersionQuery:
         return buffer.value
 
     @classmethod
-    def exe_version(cls, path: str) -> Optional[Tuple[int, int, int, int]]:
+    def exe_version(cls, path: str) -> tuple[int, int, int, int] | None:
         """Return the four-component file version of the exe at ``path``."""
         scratch = wintypes.DWORD(0)
         size = cls._version_info_size(path, ctypes.byref(scratch))
@@ -265,7 +265,7 @@ class _ProcessVersionQuery:
         )
 
 
-def _detect_build_from_image_path(path: Optional[str]) -> Optional[str]:
+def _detect_build_from_image_path(path: str | None) -> str | None:
     """Map an exe's on-disk file version to a simplified profile key."""
     if not path:
         return None
@@ -298,7 +298,7 @@ def _u32_to_signed(value: int) -> int:
     return value - 0x100000000 if value > 0x7FFFFFFF else value
 
 
-def _decode_u16x2_duplicate(raw: int) -> Optional[int]:
+def _decode_u16x2_duplicate(raw: int) -> int | None:
     """Decode a u32 that stores a single 8-bit value as two copies of the
     same 16-bit pattern (low 16 == high 16).  Used by CSP to pad an 8-bit
     channel into a 32-bit slot.
@@ -331,10 +331,10 @@ class CSPSync:
 
     def __init__(self) -> None:
         # Live process attachment — None when not connected.
-        self.pm: Optional[Pymem] = None
-        self.pid: Optional[int] = None
-        self.module_base: Optional[int] = None
-        self.target: Optional[int] = None
+        self.pm: Any | None = None
+        self.pid: int | None = None
+        self.module_base: int | None = None
+        self.target: int | None = None
 
         # Currently selected build profile + the per-channel layout we
         # resolved from config.ini (or the defaults).
@@ -342,7 +342,7 @@ class CSPSync:
         self.current_version: str = self._profile.key
         self.process_name: str = self._profile.process_name
         self.base_offset: int = self._profile.base_offset
-        self.intermediate_offset: Optional[int] = self._profile.intermediate_offset
+        self.intermediate_offset: int | None = self._profile.intermediate_offset
         self.aob_signature: str = self._profile.aob_signature
 
         self.r_off: int = _DEFAULT_RED_OFFSET
@@ -429,10 +429,15 @@ class CSPSync:
         the pointer is read against the new base offset.
         """
         try:
+            if Pymem is None or module_from_name is None:
+                raise ValueError("pymem not available")
             self.pm = Pymem(self.process_name)
             self.pid = self.pm.process_id
             mod = module_from_name(self.pm.process_handle, self.process_name)
-            self.module_base = mod.lpBaseOfDll
+            if mod is None:
+                raise ValueError("module not found")
+            module_base = mod.lpBaseOfDll
+            self.module_base = module_base
 
             image_path = _ProcessVersionQuery.image_path(self.pm.process_handle)
             detected = _detect_build_from_image_path(image_path)
@@ -444,8 +449,8 @@ class CSPSync:
                     f"(requested={requested}, path={image_path})"
                 )
 
-            ptr_addr = self.module_base + self.base_offset
-            dereferenced = self.pm.read_longlong(ptr_addr)
+            ptr_addr = module_base + self.base_offset
+            dereferenced = int(self.pm.read_longlong(ptr_addr))
             if self.intermediate_offset is not None:
                 self.target = dereferenced + self.intermediate_offset
             else:
@@ -482,8 +487,8 @@ class CSPSync:
         assert self.pm is not None
         self.pm.write_int(address, _u32_to_signed(value))
 
-    def _snapshot_color_slot(self, base_addr: int) -> Dict[str, Dict[str, object]]:
-        snapshots: Dict[str, Dict[str, object]] = {}
+    def _snapshot_color_slot(self, base_addr: int) -> dict[str, dict[str, Any]]:
+        snapshots: dict[str, dict[str, Any]] = {}
         for space_name, offsets in self.space_offsets.items():
             raws = tuple(self._read_u32(base_addr + off) for off in offsets)
             snapshots[space_name] = {
@@ -493,7 +498,7 @@ class CSPSync:
             }
         return snapshots
 
-    def _resolve_space_addresses(self) -> Optional[Dict[str, Tuple[int, ...]]]:
+    def _resolve_space_addresses(self) -> dict[str, tuple[int, ...]] | None:
         """Re-resolve the color slot pointer and build per-space address tuples.
 
         CSP moves the color slot across host-side allocations; we re-read
@@ -538,7 +543,7 @@ class CSPSync:
         }
 
     # ----- public color access -------------------------------------------
-    def get_color(self) -> Optional[Dict[str, int]]:
+    def get_color(self) -> dict[str, int] | None:
         if self.pm is None and not self.connect():
             return None
 
@@ -547,7 +552,7 @@ class CSPSync:
             _log("get_color: target not ready")
             return None
 
-        snapshots: Dict[str, Dict[str, object]] = {}
+        snapshots: dict[str, dict[str, Any]] = {}
         for space_name, addresses in space_addrs.items():
             raws = tuple(self._read_u32(addr) for addr in addresses)
             snapshots[space_name] = {
@@ -577,7 +582,8 @@ class CSPSync:
         )
         return rgb
 
-    def set_color(self, r: int, g: int, b: int, source_space: str = None, source_values=None) -> bool:
+    def set_color(self, r: int, g: int, b: int, source_space: str | None = None,
+                  source_values: Mapping[str, float] | None = None) -> bool:
         """Write color to CSP memory, optionally preserving native source-space precision.
 
         *source_space* / *source_values* (the space the user last interacted
@@ -611,7 +617,7 @@ class CSPSync:
                 source_rgb = rgb
                 source_space = None
 
-            hsv_vals = rgb_to_space_values("hsv", source_rgb)
+            hsv_vals: dict[str, Any] = rgb_to_space_values("hsv", source_rgb)
             if hsv_vals["s"] < 1:
                 hsv_vals["h"] = self._last_hsv_h
             else:
@@ -622,7 +628,7 @@ class CSPSync:
                 self._last_hsv_s = hsv_vals["s"]
 
             for space_name in SPACE_ORDER:
-                if source_space and space_name == source_space:
+                if source_space and space_name == source_space and source_values is not None:
                     # Source space: encode directly from float values — no
                     # RGB → source round-trip precision loss.
                     encoded = encode_space_values_float(space_name, source_values)
@@ -646,7 +652,7 @@ class CSPSync:
             return False
 
     # ----- introspection ---------------------------------------------------
-    def status(self) -> Dict[str, object]:
+    def status(self) -> dict[str, object]:
         if self.pm is None:
             self.connect()
         space_addrs = self._resolve_space_addresses() if self.pm is not None else None
@@ -665,7 +671,7 @@ class CSPSync:
             "processName": self.process_name,
         }
 
-    def dump(self) -> Dict[str, object]:
+    def dump(self) -> dict[str, object]:
         """Diagnostic snapshot of the color slot for debugging.
 
         Walks the first 0x60 bytes of the slot in 4-byte steps, decoding
@@ -708,7 +714,7 @@ class CSPSync:
 # ---------------------------------------------------------------------------
 # CSP desktop theme reader
 # ---------------------------------------------------------------------------
-def get_csp_theme() -> dict:
+def get_csp_theme() -> dict[str, str]:
     """Read CSP's UI theme preferences from its sidecar SQLite config.
 
     Returns a small dict describing the background / text / scrollbar
@@ -805,7 +811,7 @@ _GRAY_FALLBACK = {
 }
 
 
-def _theme_fallback(error: Optional[str] = None) -> dict:
+def _theme_fallback(error: str | None = None) -> dict[str, str]:
     if error is not None:
         return {"error": error, **_GRAY_FALLBACK}
     return dict(_GRAY_FALLBACK)

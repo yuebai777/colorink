@@ -6,18 +6,21 @@ hook thread → no GIL contention → smooth + click interception.
 """
 
 import ctypes
-from PyQt6.QtWidgets import QWidget, QApplication
-from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, pyqtSignal
-from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QCursor, QImage
-import win32api, win32con
 import os
+from typing import Any, cast
+
+import win32api
+import win32con
+from PyQt6.QtCore import QPoint, QRect, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QCursor, QImage, QPainter, QPen
+from PyQt6.QtWidgets import QApplication, QWidget
 
 _ZOOM=6; _RADIUS=7; _PREVIEW=32; _PAD=6; _BR=8
 # Fixed magnifier display area in px (at default zoom × radius)
 _GRID_PX = (2*_RADIUS+1) * _ZOOM  # 90
 
 def _read_zoom():
-    try: from core import config; return config.load_hotkey_config().get("pickerZoom",6)
+    try: from core import config; return cast(int, config.load_hotkey_config().get("pickerZoom",6))
     except: return 6
 
 def _nearest_odd(v):
@@ -102,7 +105,7 @@ class ColorPickerOverlay(QWidget):
             dpr=sc.devicePixelRatio()
             if dpr<0.1: dpr=1.0
             try:
-                pix=sc.grabWindow(0)
+                pix=sc.grabWindow(cast(Any, 0))
                 if pix is None or pix.isNull(): continue
                 img=pix.toImage().convertToFormat(QImage.Format.Format_RGB32)
                 if img.isNull(): continue

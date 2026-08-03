@@ -3,6 +3,9 @@ offscreen widgets (ColorPreviewBox, WheelPane, QPushButtons, QStackedWidget).
 """
 
 import os
+
+# ── Pre-populate mocks so MainWindow imports cleanly ─────────────────────
+import sys as _s
 import types
 from dataclasses import replace
 from unittest.mock import MagicMock
@@ -15,13 +18,11 @@ from ui.color_preview_box import ColorPreviewBox
 from ui.picker_panes import PaneWithModeButton, WheelPane
 from ui.ringless_mode import RinglessLayout
 
-# ── Pre-populate mocks so MainWindow imports cleanly ─────────────────────
-import sys as _s
 for _m in ("brush_color_spaces","win32gui","win32api","win32con","win32process",
            "psutil","win32com","win32com.client","win32com.client.dynamic",
            "win32com.client.gencache","win32com.client.CLSIDToClass","pythoncom"):
     _s.modules[_m] = MagicMock()
-_s.modules["brush_color_spaces"].PSColorSpace = MagicMock()
+setattr(_s.modules["brush_color_spaces"], "PSColorSpace", MagicMock())
 for _a in ("GetForegroundWindow","GetWindowText","GetWindowLong","SetWindowLong",
             "IsWindowVisible","IsIconic","ShowWindowAsync","BringWindowToTop",
             "SetForegroundWindow","EnumWindows","GetWindowThreadProcessId",

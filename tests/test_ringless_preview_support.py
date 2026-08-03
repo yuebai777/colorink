@@ -12,8 +12,7 @@ from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import QApplication
 
 from ui.color_preview_box import ColorPreviewBox
-from ui.ringless_mode import RinglessLayout, ControlsSide
-
+from ui.ringless_mode import ControlsSide, RinglessLayout
 
 # ── Module-level QApplication fixture ────────────────────────────────────
 

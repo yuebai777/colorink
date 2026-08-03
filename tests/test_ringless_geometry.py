@@ -8,8 +8,8 @@ origin after equal-radius resizes.
 
 import pytest
 
-from ui.ringless_mode import RinglessLayout
 from ui.color_wheel import SliceGeometry
+from ui.ringless_mode import RinglessLayout
 
 from .test_ringless_support import (
     canonical_layout,
@@ -18,7 +18,6 @@ from .test_ringless_support import (
     mouse_press,
     qapp,
 )
-
 
 # ── Module import / interface tests ──────────────────────────────────────
 

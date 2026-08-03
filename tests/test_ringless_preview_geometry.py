@@ -1,11 +1,13 @@
 """Tests for ColorPreviewBox ringless geometry: swatch sizing, placement, hit-test."""
 
+from typing import Any, cast
+
 import pytest
 from PyQt6.QtCore import Qt
 
-from ui.color_preview_box import ColorPreviewBox, _STROKE_PAD
-from ui.ringless_mode import RinglessLayout
+from ui.color_preview_box import _STROKE_PAD, ColorPreviewBox
 from ui.picker_panes import ringless_button_positions
+from ui.ringless_mode import RinglessLayout
 
 from .test_ringless_preview_support import (
     canonical_layout,
@@ -18,7 +20,6 @@ from .test_ringless_preview_support import (
     qapp,
     right_side_layout,
 )
-
 
 # ── Import / API surface ─────────────────────────────────────────────────
 
@@ -36,7 +37,7 @@ class TestRinglessSwatchGeometry:
 
     def test_both_swatches_are_43x24_at_default_scale(self, qapp):
         box = make_preview_box(canonical_layout())
-        fg_rect, bg_rect = box._ringless_swatch_rects()
+        fg_rect, bg_rect = cast(Any, box._ringless_swatch_rects())
 
         assert fg_rect.width() == pytest.approx(43.0)
         assert fg_rect.height() == pytest.approx(24.0)
@@ -45,7 +46,7 @@ class TestRinglessSwatchGeometry:
 
     def test_gap_between_swatches_is_5px(self, qapp):
         box = make_preview_box(canonical_layout())
-        fg_rect, bg_rect = box._ringless_swatch_rects()
+        fg_rect, bg_rect = cast(Any, box._ringless_swatch_rects())
 
         gap = bg_rect.left() - fg_rect.right()
         assert gap == pytest.approx(5.0)
@@ -54,7 +55,7 @@ class TestRinglessSwatchGeometry:
         """FG swatch is always left of BG regardless of controls_side."""
         for layout in (left_side_layout(), right_side_layout()):
             box = make_preview_box(layout)
-            fg_rect, bg_rect = box._ringless_swatch_rects()
+            fg_rect, bg_rect = cast(Any, box._ringless_swatch_rects())
             assert fg_rect.center().x() < bg_rect.center().x()
 
     def test_returns_none_when_ringless_not_set(self, qapp):
@@ -102,17 +103,17 @@ class TestRinglessHitTesting:
 
     def test_click_on_fg_rect_returns_fg(self, qapp):
         box = make_preview_box(canonical_layout())
-        fg_rect, _ = box._ringless_swatch_rects()
+        fg_rect, _ = cast(Any, box._ringless_swatch_rects())
         assert box._get_clicked_slot(fg_rect.center().x(), fg_rect.center().y()) == "fg"
 
     def test_click_on_bg_rect_returns_bg(self, qapp):
         box = make_preview_box(canonical_layout())
-        _, bg_rect = box._ringless_swatch_rects()
+        _, bg_rect = cast(Any, box._ringless_swatch_rects())
         assert box._get_clicked_slot(bg_rect.center().x(), bg_rect.center().y()) == "bg"
 
     def test_click_outside_both_rects_returns_none(self, qapp):
         box = make_preview_box(canonical_layout())
-        fg_rect, bg_rect = box._ringless_swatch_rects()
+        fg_rect, bg_rect = cast(Any, box._ringless_swatch_rects())
 
         # Above both
         assert box._get_clicked_slot(fg_rect.center().x(), 0) is None

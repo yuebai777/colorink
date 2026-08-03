@@ -1,12 +1,29 @@
+from typing import Any, cast
+
 import numpy as np
+from PyQt6.QtCore import QPointF, QRectF, Qt, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtGui import (
+    QBrush,
+    QColor,
+    QImage,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtGui import QPainter, QColor, QImage, QPen, QBrush, QLinearGradient, QPixmap, QPainterPath
-from PyQt6.QtCore import Qt, QPointF, QRectF, QThreadPool, QTimer, pyqtSignal
+
 from ui.color_conversions import (
-    oklab_to_rgb, rgb_to_oklab, rgb_to_lab, lab_to_rgb,
-    lab_to_rgb_array, oklab_to_rgb_array,
+    lab_to_rgb,
+    lab_to_rgb_array,
+    oklab_to_rgb,
+    oklab_to_rgb_array,
+    rgb_to_lab,
+    rgb_to_oklab,
 )
 from ui.lab_prewarm import LabPrewarmRequest, LabPrewarmResult, LabPrewarmTask
+
 
 class LabSquare(QWidget):
     # Emits (r, g, b)
@@ -147,9 +164,9 @@ class LabSquare(QWidget):
     def set_color(self, r, g, b, block_signals=False, update_widget=True):
         old_l_bucket = int(self.L * 2)
         if self.render_mode == "oklab":
-            L, a, b_val = rgb_to_oklab(r, g, b)
+            l, a, b_val = rgb_to_oklab(r, g, b)
             # Scale OKLab L from [0,1] to [0,100] for internal storage consistency
-            self.L = L * 100.0
+            self.L = l * 100.0
             self.a = a
             self.b = b_val
         else:
@@ -328,7 +345,7 @@ class LabSquare(QWidget):
         is_active = False
         win = self.window()
         if win is not None and hasattr(win, "slider_widgets"):
-            for chan, (slider, _) in win.slider_widgets.items():
+            for chan, (slider, _) in cast(Any, win).slider_widgets.items():
                 if slider.isSliderDown():
                     is_active = True
                     break
@@ -336,7 +353,7 @@ class LabSquare(QWidget):
         # not part of slider_widgets, so it would otherwise never trigger the
         # low-quality rendering path.
         if not is_active and win is not None and hasattr(win, "lab_slider"):
-            if win.lab_slider.dragging:
+            if cast(Any, win).lab_slider.dragging:
                 is_active = True
 
         cache_key = (int(self.L * 2), size, is_active, self.render_mode)
