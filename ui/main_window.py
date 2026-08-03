@@ -2605,10 +2605,13 @@ class MainWindow(QMainWindow):
         title_h = self.title_bar.height()
         sliders_h = self.sliders_container.sizeHint().height()
         
-        # Calculate visualizer wheel size solely based on width, leaving a small margin
+        # Calculate visualizer wheel size from the width, but never taller
+        # than the visualizer pane: a short/wide window (manual resize)
+        # shrinks the wheel instead of clipping its lower arc.  Mirrors the
+        # clamp in ColorWheel.get_wheel_geometry().
         spacing = int(4 * dynamic_scale)
         pane_h = h - 4 - title_h - sliders_h - 2 * spacing
-        wheel_size = w - int(16 * dynamic_scale)
+        wheel_size = min(w - int(16 * dynamic_scale), max(16, pane_h - 6))
         
         # ── Step 1: legacy preview sizing ALWAYS runs first ──
         # This restores legacy circle sizing/position when ringless is disabled,

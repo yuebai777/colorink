@@ -55,7 +55,10 @@ class TestOklchVisibleBoundsCentering:
         assert right >= -1.0
         assert abs(left - right) <= 1.0
 
-    def test_rendered_oklch_gamut_is_horizontally_centered(self, qapp):
+    def test_rendered_oklch_gamut_fills_widened_box(self, qapp):
+        """The OKLCh slice adapts its C axis per hue: every hue's gamut is
+        stretched to fill the (widened) slice box, so the coloured region
+        spans the box from the C=0 edge to the right edge."""
         wheel = make_wheel(300, 339, canonical_layout())
         wheel.set_wheel_mode("oklch-slice")
         geometry = wheel.get_slice_geometry()
@@ -78,8 +81,13 @@ class TestOklchVisibleBoundsCentering:
             if image.pixelColor(x, y).alpha() > 0
         ]
         assert colored_x
-        visible_center = (min(colored_x) + max(colored_x)) / 2.0
-        assert visible_center == pytest.approx(wheel.width() / 2.0, abs=2.0)
+        box_w = wheel._oklch_slice_box_width(geometry.radius)
+        min_x = math.floor(geometry.center_x - 0.5 * box_w)
+        max_x = math.ceil(geometry.center_x + 0.5 * box_w)
+        # C=0 sits at the box's left edge.
+        assert min(colored_x) == pytest.approx(min_x, abs=2.0)
+        # Per-hue adaptation: the gamut fills the whole box width.
+        assert max(colored_x) >= max_x - 3
 
 
 class TestRgbAllocationCentering:
