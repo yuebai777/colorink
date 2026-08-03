@@ -24,6 +24,10 @@ class SlicePrewarmRequest:
     center_y: float
     radius: float
     pixel_ratio: float
+    # Horizontal extent of the OKLCh slice box; None falls back to radius.
+    # The box can be wider than the radius in ringless mode so the gamut
+    # region has more pixels to pick from.
+    width: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,8 +226,9 @@ def _render_rgb_slice(request: SlicePrewarmRequest) -> SlicePrewarmResult:
 def _render_oklch_slice(request: SlicePrewarmRequest) -> SlicePrewarmResult:
     radius = request.radius
     hy = radius * 0.866
-    min_x = int(np.floor(request.center_x - radius * 0.5))
-    max_x = int(np.ceil(request.center_x + radius * 0.5))
+    box_w = request.width or radius
+    min_x = int(np.floor(request.center_x - box_w * 0.5))
+    max_x = int(np.ceil(request.center_x + box_w * 0.5))
     min_y = int(np.floor(request.center_y - hy))
     max_y = int(np.ceil(request.center_y + hy))
     width = max(1, max_x - min_x)
@@ -232,8 +237,11 @@ def _render_oklch_slice(request: SlicePrewarmRequest) -> SlicePrewarmResult:
     image_width = max(1, int(round(width * ratio)))
     image_height = max(1, int(round(height * ratio)))
     hue = request.hue % 360.0
-    max_c = max(find_max_oklch_c(v, hue) for v in np.linspace(0.0, 1.0, 21))
-    scale = radius / max(max_c, 0.001)
+    # Per-hue scale (same 201-point C_max scan as ColorWheel.
+    # _oklch_boundary_data): each hue's gamut fills the box width, and the
+    # prewarmed image matches the widget's outline and indicator exactly.
+    max_c = max(find_max_oklch_c(v, hue) for v in np.linspace(0.0, 1.0, 201))
+    scale = box_w / max(max_c, 0.001)
     x = np.linspace(min_x, min_x + width, image_width, endpoint=False, dtype=np.float32)[None, :]
     y = np.linspace(min_y, min_y + height, image_height, endpoint=False, dtype=np.float32)[:, None]
     lightness = np.clip((request.center_y + hy - y) / (2.0 * hy), 0.0, 1.0)

@@ -40,8 +40,8 @@ class SettingsWindow(QDialog):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        # Rail (112px) + gap + content panel
-        self.setFixedWidth(560)
+        # Rail (96px) + gap + content panel
+        self.setFixedWidth(460)
 
         self._build_ui()
         self._connect_signals()
