@@ -1,20 +1,39 @@
 import json
+import math
 import os
 import webbrowser
+from typing import TYPE_CHECKING, cast
 
-from PyQt6.QtWidgets import (QScrollArea, QWidget, QVBoxLayout, QHBoxLayout,
-                             QLabel, QCheckBox, QComboBox, QPushButton, QSlider, QFrame,
-                             QTabWidget, QGridLayout, QMessageBox, QApplication, QFileDialog)
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint, QThread
-from PyQt6.QtGui import QColor, QCursor
+from PyQt6.QtCore import QPoint, QPointF, QSize, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QCursor, QIcon, QPainter, QPen, QPixmap, QPolygonF
+from PyQt6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSlider,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
-from core import config
-from core import updater
-from core import autostart
+from core import autostart, config, updater
 from ui.hotkey_button import HotkeyButton
 from ui.ringless_mode import RinglessConfig
 from ui.ringless_settings import RinglessSettingsWidget
 from ui.slider_themes import list_slider_theme_names
+
+if TYPE_CHECKING:
+    from ui.main_window import MainWindow
 
 # Resolve resource paths relative to the repo root so packaged builds
 # (PyInstaller) work regardless of the current working directory.
@@ -22,7 +41,6 @@ _ICONS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 _CHECKBOX_CHECK_ICON = os.path.join(_ICONS_DIR, "checkbox_check.png").replace("\\", "/")
 _ARROW_DOWN_DARK = os.path.join(_ICONS_DIR, "arrow_down_dark.png").replace("\\", "/")
 _ARROW_DOWN_LIGHT = os.path.join(_ICONS_DIR, "arrow_down_light.png").replace("\\", "/")
-_ARROW_DOWN_ACCENT = os.path.join(_ICONS_DIR, "arrow_down_accent.png").replace("\\", "/")
 
 class NonScrollComboBox(QComboBox):
     def wheelEvent(self, event):
@@ -39,7 +57,7 @@ class SettingsSidebar(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.parent = parent
+        self._parent = cast("MainWindow", parent)
         self.cfg = config.load_hotkey_config()
         self._last_persisted = ""
         self._last_settings_tab = 0
@@ -47,28 +65,59 @@ class SettingsSidebar(QWidget):
         self.refresh_ui()
         
     def init_ui(self):
-        # Main layout: QVBoxLayout wrapping the QTabWidget
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(8, 8, 8, 8)
-        self.layout.setSpacing(0)
-        self.tabs = QTabWidget()
-        self.layout.addWidget(self.tabs)
-        self.tabs.currentChanged.connect(self._remember_settings_tab)
+        # Main layout: CSP-style left rail navigation + stacked pages
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(8, 8, 8, 8)
+        self._layout.setSpacing(0)
+
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(8)
+
+        # ── Left rail: category navigation (like CSP 環境設定) ──
+        self.nav = QListWidget()
+        self.nav.setObjectName("NavRail")
+        self.nav.setFixedWidth(112)
+        self.nav.setIconSize(QSize(18, 18))
+        self.nav.setUniformItemSizes(True)
+        self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.nav.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.nav.setFrameShape(QFrame.Shape.NoFrame)
+        self._nav_icons = {}
+        for text, kind in [
+            ("快捷键", "hotkeys"),
+            ("界面", "interface"),
+            ("取色器", "picker"),
+            ("软件", "software"),
+            ("关于", "about"),
+        ]:
+            item = QListWidgetItem(text)
+            item.setSizeHint(QSize(0, 28))
+            self.nav.addItem(item)
+            self._nav_icons[text] = kind
+        self.nav.currentRowChanged.connect(self._on_nav_changed)
+        body.addWidget(self.nav)
+
+        # ── Right: stacked pages ──
+        self.stack = QStackedWidget()
+        body.addWidget(self.stack, 1)
+        self._layout.addLayout(body)
+        self.stack.currentChanged.connect(self._on_page_changed)
 
         self._page_layouts = {}
 
-        # Create all 5 tab pages
+        # Create all 5 pages
         page_hotkeys   = self._make_page("快捷键")
         page_interface = self._make_page("界面")
         page_picker    = self._make_page("取色器")
         page_software  = self._make_page("软件")
         page_about     = self._make_page("关于")
 
-        # ═══════════════════ Tab 1: 快捷键 ═══════════════════
+        # ═══════════════════ Page 1: 快捷键 ═══════════════════
         card_hk, cl_hk = self._begin_card(page_hotkeys, "全局热键")
 
         grid_hotkeys = QGridLayout()
-        grid_hotkeys.setSpacing(8)
+        grid_hotkeys.setSpacing(6)
         grid_hotkeys.setColumnMinimumWidth(0, 84)
         grid_hotkeys.setColumnStretch(1, 1)
 
@@ -102,62 +151,48 @@ class SettingsSidebar(QWidget):
         cl_hk.addLayout(grid_hotkeys)
         page_hotkeys.addWidget(card_hk)
 
-        # ═══════════════════ Tab 2: 界面 ═══════════════════
-        card_bg, cl_bg = self._begin_card(page_interface, "背景")
-        self._card_layout_interface_bg = cl_bg  # stored for _make_eyedropper_row
-
-        grid_bg = QGridLayout()
-        grid_bg.setSpacing(8)
-        grid_bg.setColumnMinimumWidth(0, 84)
-        grid_bg.setColumnStretch(1, 1)
-        grid_bg.addWidget(QLabel("背景"), 0, 0)
-        self.combo_theme = NonScrollComboBox()
-        self.combo_theme.addItems(["背景 自动（匹配CSP）", "背景 取色", "背景 灰", "背景 白", "背景 黑"])
-        self.combo_theme.currentTextChanged.connect(self.save_settings)
-        grid_bg.addWidget(self.combo_theme, 0, 1)
-        cl_bg.addLayout(grid_bg)
-        self.lbl_theme_status = QLabel("")
-        self.lbl_theme_status.setObjectName("StatusHint")
-        cl_bg.addWidget(self.lbl_theme_status)
-        page_interface.addWidget(card_bg)
-
-        # Eyedropper control rows (visible only when "取色" theme is selected)
-        self._make_eyedropper_row("bar", "框色", "绘画软件标题栏/边框的深色")
-        self._make_eyedropper_row("bg",  "底色", "绘画软件画布区域的浅色")
-
+        # ═══════════════════ Page 2: 界面 ═══════════════════
         card_appear, cl_appear = self._begin_card(page_interface, "外观")
+        self._card_layout_interface_bg = cl_appear  # stored for _make_eyedropper_row
 
         grid_appear = QGridLayout()
-        grid_appear.setSpacing(8)
+        grid_appear.setSpacing(6)
         grid_appear.setColumnMinimumWidth(0, 84)
         grid_appear.setColumnStretch(1, 1)
 
+        # Background theme
+        grid_appear.addWidget(QLabel("背景主题"), 0, 0)
+        self.combo_theme = NonScrollComboBox()
+        self.combo_theme.addItems(["背景 自动（匹配CSP）", "背景 取色", "背景 灰", "背景 白", "背景 黑"])
+        self.combo_theme.currentTextChanged.connect(self.save_settings)
+        grid_appear.addWidget(self.combo_theme, 0, 1)
+
         # Slider visual theme
-        grid_appear.addWidget(QLabel("滑条样式"), 0, 0)
+        grid_appear.addWidget(QLabel("滑条样式"), 1, 0)
         self.combo_slider_style = NonScrollComboBox()
         for _key, _display in list_slider_theme_names():
             self.combo_slider_style.addItem(_display, _key)
         self.combo_slider_style.currentIndexChanged.connect(self.save_settings)
-        grid_appear.addWidget(self.combo_slider_style, 0, 1)
+        grid_appear.addWidget(self.combo_slider_style, 1, 1)
 
         # Font size controls (- / +)
-        grid_appear.addWidget(QLabel("字体大小"), 1, 0)
+        grid_appear.addWidget(QLabel("字体大小"), 2, 0)
         row_font_size = QHBoxLayout()
         row_font_size.setSpacing(4)
         self.btn_font_dec = self._make_step_button("-")
         self.btn_font_dec.clicked.connect(self.font_decrease)
         self.lbl_font_size = QLabel("100%")
         self.lbl_font_size.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_font_size.setFixedSize(45, 22)
+        self.lbl_font_size.setFixedSize(45, 20)
         self.btn_font_inc = self._make_step_button("+")
         self.btn_font_inc.clicked.connect(self.font_increase)
         row_font_size.addWidget(self.btn_font_dec)
         row_font_size.addWidget(self.lbl_font_size)
         row_font_size.addWidget(self.btn_font_inc)
-        grid_appear.addLayout(row_font_size, 1, 1)
+        grid_appear.addLayout(row_font_size, 2, 1)
 
         # UI Scale controls (Slider)
-        grid_appear.addWidget(QLabel("界面缩放"), 2, 0)
+        grid_appear.addWidget(QLabel("界面缩放"), 3, 0)
         row_zoom = QHBoxLayout()
         self.zoom_slider = NonScrollSlider(Qt.Orientation.Horizontal)
         self.zoom_slider.setObjectName("ScaleSlider")
@@ -171,15 +206,24 @@ class SettingsSidebar(QWidget):
         self.lbl_zoom.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         row_zoom.addWidget(self.zoom_slider)
         row_zoom.addWidget(self.lbl_zoom)
-        grid_appear.addLayout(row_zoom, 2, 1)
+        grid_appear.addLayout(row_zoom, 3, 1)
 
         cl_appear.addLayout(grid_appear)
+
+        self.lbl_theme_status = QLabel("")
+        self.lbl_theme_status.setObjectName("StatusHint")
+        cl_appear.addWidget(self.lbl_theme_status)
+
+        # Eyedropper control rows (visible only when "取色" theme is selected)
+        self._make_eyedropper_row("bar", "框色", "绘画软件标题栏/边框的深色")
+        self._make_eyedropper_row("bg",  "底色", "绘画软件画布区域的浅色")
+
         page_interface.addWidget(card_appear)
 
         card_gray, cl_gray = self._begin_card(page_interface, "灰度滤镜")
 
         grid_gray = QGridLayout()
-        grid_gray.setSpacing(8)
+        grid_gray.setSpacing(6)
         grid_gray.setColumnMinimumWidth(0, 84)
         grid_gray.setColumnStretch(1, 1)
 
@@ -243,44 +287,48 @@ class SettingsSidebar(QWidget):
         cl_behavior.addLayout(grid_behavior)
         page_interface.addWidget(card_behavior)
 
-        # ═══════════════════ Tab 3: 取色器 ═══════════════════
+        # ═══════════════════ Page 3: 取色器 ═══════════════════
         card_pz, cl_pz = self._begin_card(page_picker, "取色器")
+        grid_pz = QGridLayout()
+        grid_pz.setSpacing(6)
+        grid_pz.setColumnMinimumWidth(0, 84)
+        grid_pz.setColumnStretch(1, 1)
+
+        grid_pz.addWidget(QLabel("取色放大倍率"), 0, 0)
         row_picker_zoom = QHBoxLayout()
         row_picker_zoom.setSpacing(4)
-        row_picker_zoom.addWidget(QLabel("取色放大倍率"))
         self.btn_zoom_dec = self._make_step_button("-")
         self.btn_zoom_dec.clicked.connect(self.zoom_decrease)
         self.lbl_picker_zoom = QLabel("6×")
         self.lbl_picker_zoom.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_picker_zoom.setFixedSize(30, 22)
+        self.lbl_picker_zoom.setFixedSize(30, 20)
         self.btn_zoom_inc = self._make_step_button("+")
         self.btn_zoom_inc.clicked.connect(self.zoom_increase)
         row_picker_zoom.addWidget(self.btn_zoom_dec)
         row_picker_zoom.addWidget(self.lbl_picker_zoom)
         row_picker_zoom.addWidget(self.btn_zoom_inc)
-        cl_pz.addLayout(row_picker_zoom)
-        page_picker.addWidget(card_pz)
+        grid_pz.addLayout(row_picker_zoom, 0, 1)
 
-        card_cspace, cl_cspace = self._begin_card(page_picker, "色彩空间")
+        grid_pz.addWidget(QLabel("前背景色位置"), 1, 0)
+        self.combo_pos = NonScrollComboBox()
+        self.combo_pos.addItems(["左上角", "左下角"])
+        self.combo_pos.currentTextChanged.connect(self.save_settings)
+        grid_pz.addWidget(self.combo_pos, 1, 1)
 
-        # Color-space module selector
-        grid_cspace = QGridLayout()
-        grid_cspace.setSpacing(8)
-        grid_cspace.setColumnMinimumWidth(0, 84)
-        grid_cspace.setColumnStretch(1, 1)
-        grid_cspace.addWidget(QLabel("色彩空间模块"), 0, 0)
+        grid_pz.addWidget(QLabel("色彩空间模块"), 2, 0)
         self.combo_module = NonScrollComboBox()
         self.combo_module.addItems(["HSV", "HLS", "RGB", "LCH"])
         self.combo_module.currentTextChanged.connect(self.save_settings)
-        grid_cspace.addWidget(self.combo_module, 0, 1)
-        cl_cspace.addLayout(grid_cspace)
+        grid_pz.addWidget(self.combo_module, 2, 1)
+
+        cl_pz.addLayout(grid_pz)
 
         self.cb_show_module_btn = QCheckBox("显示模块切换按钮")
         self.cb_show_module_btn.setToolTip("在色环区域显示色彩空间模块切换按钮")
         self.cb_show_module_btn.stateChanged.connect(self.save_settings)
-        cl_cspace.addWidget(self.cb_show_module_btn)
+        cl_pz.addWidget(self.cb_show_module_btn)
 
-        page_picker.addWidget(card_cspace)
+        page_picker.addWidget(card_pz)
 
         card_sl_order, cl_sl_order = self._begin_card(page_picker, "滑块显示与顺序")
 
@@ -333,7 +381,7 @@ class SettingsSidebar(QWidget):
 
         # History grid shape — columns × rows (2×2 grid for label alignment)
         grid_hist = QGridLayout()
-        grid_hist.setSpacing(8)
+        grid_hist.setSpacing(6)
         grid_hist.setColumnMinimumWidth(0, 84)
         grid_hist.setColumnStretch(1, 1)
 
@@ -362,7 +410,7 @@ class SettingsSidebar(QWidget):
         cl_wheel.addWidget(self.ringless_settings)
 
         grid_wheel = QGridLayout()
-        grid_wheel.setSpacing(8)
+        grid_wheel.setSpacing(6)
         grid_wheel.setColumnMinimumWidth(0, 84)
         grid_wheel.setColumnStretch(1, 1)
 
@@ -371,12 +419,6 @@ class SettingsSidebar(QWidget):
         self.combo_viz_mode.addItems(["LAB 色彩空间", "OKLab 色彩空间"])
         self.combo_viz_mode.currentTextChanged.connect(self.save_settings)
         grid_wheel.addWidget(self.combo_viz_mode, 0, 1)
-
-        grid_wheel.addWidget(QLabel("前背景色位置"), 1, 0)
-        self.combo_pos = NonScrollComboBox()
-        self.combo_pos.addItems(["左上角", "左下角"])
-        self.combo_pos.currentTextChanged.connect(self.save_settings)
-        grid_wheel.addWidget(self.combo_pos, 1, 1)
 
         cl_wheel.addLayout(grid_wheel)
 
@@ -390,10 +432,10 @@ class SettingsSidebar(QWidget):
 
         page_picker.addWidget(card_wheel)
 
-        card_sp, cl_sp, _ = self._begin_collapsible_card(page_picker, "高级", expanded=True)
+        card_sp, cl_sp = self._begin_card(page_picker, "高级")
 
         grid_sp = QGridLayout()
-        grid_sp.setSpacing(8)
+        grid_sp.setSpacing(6)
         grid_sp.setColumnMinimumWidth(0, 84)
         grid_sp.setColumnStretch(1, 1)
 
@@ -405,7 +447,7 @@ class SettingsSidebar(QWidget):
         self.btn_scroll_dec.clicked.connect(self.scroll_step_decrease)
         self.lbl_scroll_step = QLabel("1")
         self.lbl_scroll_step.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_scroll_step.setFixedSize(45, 22)
+        self.lbl_scroll_step.setFixedSize(45, 20)
         self.btn_scroll_inc = self._make_step_button("+")
         self.btn_scroll_inc.clicked.connect(self.scroll_step_increase)
         row_scroll.addWidget(self.btn_scroll_dec)
@@ -421,7 +463,7 @@ class SettingsSidebar(QWidget):
         self.btn_same_dec.clicked.connect(self.same_space_decrease)
         self.lbl_same_space = QLabel("6")
         self.lbl_same_space.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_same_space.setFixedSize(45, 22)
+        self.lbl_same_space.setFixedSize(45, 20)
         self.btn_same_inc = self._make_step_button("+")
         self.btn_same_inc.clicked.connect(self.same_space_increase)
         row_same.addWidget(self.btn_same_dec)
@@ -437,7 +479,7 @@ class SettingsSidebar(QWidget):
         self.btn_diff_dec.clicked.connect(self.diff_space_decrease)
         self.lbl_diff_space = QLabel("8")
         self.lbl_diff_space.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_diff_space.setFixedSize(45, 22)
+        self.lbl_diff_space.setFixedSize(45, 20)
         self.btn_diff_inc = self._make_step_button("+")
         self.btn_diff_inc.clicked.connect(self.diff_space_increase)
         row_diff.addWidget(self.btn_diff_dec)
@@ -448,7 +490,7 @@ class SettingsSidebar(QWidget):
         cl_sp.addLayout(grid_sp)
         page_picker.addWidget(card_sp)
 
-        # ═══════════════════ Tab 4: 软件 ═══════════════════
+        # ═══════════════════ Page 4: 软件 ═══════════════════
         card_sync, cl_sync = self._begin_card(page_software, "同步与版本")
 
         self.lbl_sync_status = QLabel("")
@@ -456,7 +498,7 @@ class SettingsSidebar(QWidget):
         cl_sync.addWidget(self.lbl_sync_status)
 
         grid_sync = QGridLayout()
-        grid_sync.setSpacing(8)
+        grid_sync.setSpacing(6)
         grid_sync.setColumnMinimumWidth(0, 84)
         grid_sync.setColumnStretch(1, 1)
         grid_sync.addWidget(QLabel("同步软件"), 0, 0)
@@ -529,7 +571,7 @@ class SettingsSidebar(QWidget):
 
         page_software.addWidget(card_sync)
 
-        # ═══════════════════ Tab 5: 关于 ═══════════════════
+        # ═══════════════════ Page 5: 关于 ═══════════════════
         card_about, cl_about = self._begin_card(page_about, "关于")
 
         row_version = QHBoxLayout()
@@ -571,13 +613,18 @@ class SettingsSidebar(QWidget):
         row_config_actions.addWidget(self.btn_reset_config)
         cl_config.addLayout(row_config_actions)
         page_about.addWidget(card_config)
+
+        # Keep section cards at their natural size, top-aligned: one trailing
+        # stretch absorbs the fixed window's leftover height on short pages.
+        for page_layout in self._page_layouts.values():
+            page_layout.addStretch(1)
         
     @staticmethod
     def _make_step_button(text, tooltip="", width=22):
         """Compact step/arrow button (-, +, ▲, ▼) with a uniform 22px hit area."""
         btn = QPushButton(text)
         btn.setObjectName("StepButton")
-        btn.setFixedSize(width, 22)
+        btn.setFixedSize(width, 20)
         if tooltip:
             btn.setToolTip(tooltip)
         return btn
@@ -607,59 +654,118 @@ class SettingsSidebar(QWidget):
 
         page = QWidget()
         page_layout = QVBoxLayout(page)
-        page_layout.setSpacing(12)
+        page_layout.setSpacing(6)
         page_layout.setContentsMargins(0, 0, 0, 0)
 
         scroll.setWidget(page)
-        self.tabs.addTab(scroll, title)
+        self.stack.addWidget(scroll)
 
         self._page_layouts[title] = page_layout
         return page_layout
 
     def _begin_card(self, page_layout, header_text):
-        """Create a themed SettingsCard QFrame with header, return (card, content_layout)."""
+        """Create a flat settings section with header, return (card, content_layout)."""
         card = QFrame()
         card.setObjectName("SettingsCard")
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(10, 8, 10, 8)
-        card_layout.setSpacing(8)
+        card_layout.setContentsMargins(0, 1, 0, 1)
+        card_layout.setSpacing(6)
         card_layout.addWidget(self.create_header(header_text))
         return card, card_layout
 
-    def _begin_collapsible_card(self, page_layout, header_text, expanded=False):
-        """Create a SettingsCard with a toggleable content area."""
-        card = QFrame()
-        card.setObjectName("SettingsCard")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(10, 8, 10, 8)
-        card_layout.setSpacing(8)
+    # ── Rail / page navigation ───────────────────────────────────────────
 
-        btn = QPushButton(("▾ " if expanded else "▸ ") + header_text)
-        btn.setObjectName("CollapseHeader")
-        btn.setCheckable(True)
-        btn.setChecked(expanded)
-        btn.setProperty("baseTitle", header_text)
-        btn.toggled.connect(self._update_collapse_arrow)
+    def _on_nav_changed(self, row):
+        """Rail selection → switch the stacked page."""
+        self._last_settings_tab = row
+        if 0 <= row < self.stack.count() and self.stack.currentIndex() != row:
+            self.stack.setCurrentIndex(row)
+        self._refresh_nav_icons()
 
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(6)
-        content.setVisible(expanded)
-        btn.toggled.connect(content.setVisible)
-
-        card_layout.addWidget(btn)
-        card_layout.addWidget(content)
-        return card, content_layout, btn
-
-    def _update_collapse_arrow(self, checked):
-        btn = self.sender()
-        if isinstance(btn, QPushButton):
-            base = str(btn.property("baseTitle") or "")
-            btn.setText(("▾ " if checked else "▸ ") + base)
-
-    def _remember_settings_tab(self, index):
+    def _on_page_changed(self, index):
+        """Programmatic page switch (e.g. restoring last page on open)."""
         self._last_settings_tab = index
+        if 0 <= index < self.nav.count() and self.nav.currentRow() != index:
+            self.nav.setCurrentRow(index)
+
+    # ── Rail icons ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _nav_icon(kind: str, color: str) -> QIcon:
+        """Draw a crisp monochrome 18px rail glyph with QPainter.
+
+        ``kind`` is one of: hotkeys, interface, picker, software, about.
+        Drawn at 2× device pixels so the glyph stays sharp on HiDPI.
+        """
+        pm = QPixmap(36, 36)
+        pm.setDevicePixelRatio(2.0)  # 18×18 logical size
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        c = QColor(color)
+        pen = QPen(c)
+        pen.setWidthF(2.0)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        cx, cy = 18.0, 18.0
+
+        if kind == "hotkeys":
+            # Keyboard
+            p.drawRoundedRect(4, 8, 28, 16, 3, 3)
+            p.setBrush(c)
+            for row_y in (12.0, 19.0):
+                for x in (8.0, 12.0, 16.0, 20.0, 24.0):
+                    p.drawEllipse(QPointF(x, row_y), 1.2, 1.2)
+        elif kind == "interface":
+            # Monitor
+            p.drawRoundedRect(4, 5, 28, 17, 2, 2)
+            p.drawLine(QPointF(18, 22), QPointF(18, 27))
+            p.drawLine(QPointF(11, 30), QPointF(25, 30))
+        elif kind == "picker":
+            # Color wheel (ring + inner ring + hue dot)
+            p.drawEllipse(QPointF(cx, cy), 16, 16)
+            p.drawEllipse(QPointF(cx, cy), 6, 6)
+            p.setBrush(c)
+            p.drawEllipse(QPointF(cx - 11, cy), 2.1, 2.1)
+        elif kind == "software":
+            # Circular sync arrows
+            r = 11.0
+            p.drawArc(int(cx - r), int(cy - r), int(2 * r), int(2 * r), 225 * 16, -200 * 16)
+            p.drawArc(int(cx - r), int(cy - r), int(2 * r), int(2 * r), 45 * 16, 200 * 16)
+            p.setBrush(c)
+            for start, sweep in ((225, -200), (45, 200)):
+                end = math.radians(start + sweep)
+                ex, ey = cx + r * math.cos(end), cy + r * math.sin(end)
+                t = math.radians(start + sweep - 90)  # travel direction
+                dx, dy = math.cos(t), math.sin(t)
+                tip = QPointF(ex + dx * 6.0, ey + dy * 6.0)
+                b1 = QPointF(ex - dy * 3.0, ey + dx * 3.0)
+                b2 = QPointF(ex + dy * 3.0, ey - dx * 3.0)
+                p.drawPolygon(QPolygonF([tip, b1, b2]))
+        elif kind == "about":
+            # Info circle
+            p.drawEllipse(QPointF(cx, cy), 15, 15)
+            p.setBrush(c)
+            p.drawEllipse(QPointF(cx, cy - 7), 1.8, 1.8)
+            p.drawLine(QPointF(cx, cy - 2), QPointF(cx, cy + 9))
+        p.end()
+        return QIcon(pm)
+
+    def _refresh_nav_icons(self):
+        """Re-render rail glyphs in the current theme (white when selected)."""
+        if not hasattr(self, "nav"):
+            return
+        colors = self.theme_colors()
+        text = colors["text"]
+        selected = self.nav.currentRow()
+        for i in range(self.nav.count()):
+            item = self.nav.item(i)
+            if item is None:
+                continue
+            kind = self._nav_icons.get(item.text(), "about")
+            item.setIcon(self._nav_icon(kind, "#ffffff" if i == selected else text))
 
     def create_header(self, text):
         lbl = QLabel(text)
@@ -939,8 +1045,8 @@ class SettingsSidebar(QWidget):
         status labels stay legible in both light and dark chrome.
         """
         bg, text, border_color, barBg = "#b2b2b2", "#222222", "#787878", "#787878"
-        if hasattr(self, "parent") and self.parent is not None:
-            p = self.parent
+        if hasattr(self, "_parent") and self._parent is not None:
+            p = self._parent
             theme_name = p.cfg.get("ui-theme", "auto")
             if theme_name == "auto":
                 try:
@@ -1006,22 +1112,18 @@ class SettingsSidebar(QWidget):
 
         is_dark_text = QColor(text).lightness() < 128
         borderColor = "#d0d0d0" if is_dark_text else "#555555"
-        card_bg = "rgba(255, 255, 255, 0.04)" if not is_dark_text else "rgba(0, 0, 0, 0.04)"
 
         # Srgb components for semi-transparent derivations
         tc = QColor(text)
         text_r, text_g, text_b = tc.red(), tc.green(), tc.blue()
 
-        # Separator colour for SectionHeader bottom border
         if is_dark_text:
-            header_divider = "rgba(0,0,0,0.10)"
             hover_bg = "rgba(0,0,0,0.06)"
             pressed_bg = "rgba(0,0,0,0.10)"
             disabled_color = f"rgba({text_r},{text_g},{text_b},0.40)"
             scroll_handle = f"rgba({text_r},{text_g},{text_b},0.25)"
             scroll_handle_hover = f"rgba({text_r},{text_g},{text_b},0.45)"
         else:
-            header_divider = "rgba(255,255,255,0.10)"
             hover_bg = "rgba(255,255,255,0.08)"
             pressed_bg = "rgba(255,255,255,0.04)"
             disabled_color = f"rgba({text_r},{text_g},{text_b},0.30)"
@@ -1050,39 +1152,35 @@ class SettingsSidebar(QWidget):
             QScrollArea > QWidget > QWidget {{
                 background-color: transparent;
             }}
-            QTabWidget {{
+            QStackedWidget {{
                 background-color: transparent;
             }}
-            QTabWidget::pane {{
+            /* Left rail: quiet flat panel with solid selection */
+            QListWidget#NavRail {{
+                background-color: {barBg};
                 border: 1px solid {borderColor};
-                background: {barBg};
-                border-radius: 0 0 4px 4px;
+                border-radius: 3px;
+                outline: none;
+                padding: 3px;
             }}
-            QTabBar {{
-                background: {bg};
-            }}
-            QTabBar::tab {{
-                background: transparent;
+            QListWidget#NavRail::item {{
                 color: {muted};
-                padding: 6px 12px;
-                border: none;
-                border-bottom: 2px solid transparent;
-                margin-right: 2px;
+                border-radius: 3px;
+                padding: 0 8px;
+                margin: 1px 0;
             }}
-            QTabBar::tab:selected {{
+            QListWidget#NavRail::item:hover {{
+                background-color: {hover_bg};
                 color: {text};
-                border-bottom: 2px solid {accent};
             }}
-            QTabBar::tab:hover:!selected {{
-                color: {text};
-                background: {hover_bg};
-                border-top-left-radius: 3px;
-                border-top-right-radius: 3px;
+            QListWidget#NavRail::item:selected {{
+                background-color: {accent};
+                color: white;
             }}
+            /* Flat content sections (no card boxes) */
             QFrame#SettingsCard {{
-                background-color: {card_bg};
-                border: 1px solid {borderColor};
-                border-radius: 4px;
+                background-color: transparent;
+                border: none;
             }}
             QWidget {{
                 color: {text};
@@ -1096,10 +1194,9 @@ class SettingsSidebar(QWidget):
             QLabel#SectionHeader {{
                 font-weight: bold;
                 font-size: {header_font_size}px;
-                margin-top: 5px;
+                margin-top: 2px;
+                margin-bottom: 1px;
                 color: {text};
-                border-bottom: 1px solid {header_divider};
-                padding-bottom: 2px;
             }}
             QLabel#StatusHint {{
                 color: {muted};
@@ -1118,27 +1215,13 @@ class SettingsSidebar(QWidget):
                 color: {danger};
                 background: transparent;
             }}
-            QPushButton#CollapseHeader {{
-                background: transparent;
-                border: none;
-                color: {text};
-                font-weight: bold;
-                font-size: {header_font_size}px;
-                text-align: left;
-                padding: 0;
-            }}
-            QPushButton#CollapseHeader:hover {{
-                color: {accent};
-                background: transparent;
-                border: none;
-            }}
             QCheckBox {{
                 color: {text};
                 spacing: 6px;
             }}
             QCheckBox::indicator {{
-                width: 16px;
-                height: 16px;
+                width: 14px;
+                height: 14px;
                 border: 1px solid {borderColor};
                 background-color: {bg};
                 border-radius: 3px;
@@ -1155,24 +1238,21 @@ class SettingsSidebar(QWidget):
                 background-color: {bg};
                 border: 1px solid {borderColor};
                 color: {text};
-                border-radius: 4px;
-                padding: 3px 8px;
-                min-height: 26px;
+                border-radius: 3px;
+                padding: 2px 6px;
+                min-height: 22px;
             }}
             QComboBox:hover {{
                 border-color: {accent};
             }}
             QComboBox::drop-down {{
                 border: none;
-                width: 22px;
+                width: 20px;
             }}
             QComboBox::down-arrow {{
                 image: url("{arrow_normal}");
-                width: 14px;
-                height: 14px;
-            }}
-            QComboBox:hover::down-arrow {{
-                image: url("{_ARROW_DOWN_ACCENT}");
+                width: 12px;
+                height: 12px;
             }}
             QComboBox QAbstractItemView {{
                 background-color: {bg};
@@ -1187,9 +1267,9 @@ class SettingsSidebar(QWidget):
                 background-color: {bg};
                 border: 1px solid {borderColor};
                 color: {text};
-                border-radius: 4px;
-                padding: 3px 10px;
-                min-height: 26px;
+                border-radius: 3px;
+                padding: 2px 8px;
+                min-height: 22px;
             }}
             QPushButton:hover {{
                 border-color: {accent};
@@ -1209,7 +1289,7 @@ class SettingsSidebar(QWidget):
                 min-height: 0;
                 min-width: 0;
                 border-radius: 3px;
-                font-size: 13px;
+                font-size: 12px;
             }}
             QSlider::groove:horizontal {{
                 height: 6px;
@@ -1273,6 +1353,7 @@ class SettingsSidebar(QWidget):
                 background: transparent;
             }}
         """)
+        self._refresh_nav_icons()
 
     def font_decrease(self):
         val = int(self.lbl_font_size.text().replace("%", ""))
@@ -1320,8 +1401,8 @@ class SettingsSidebar(QWidget):
             self.zoom_slider.blockSignals(False)
         self.lbl_zoom.setText(f"{snapped}%")
         # Apply zoom immediately (heavy op — done once on release, not during drag)
-        self.parent.zoom_ui(snapped / 100.0)
-        self.parent.current_ui_scale = snapped
+        self._parent.zoom_ui(snapped / 100.0)
+        self._parent.current_ui_scale = snapped
         # Persist to config; on_settings_saved will see scale already matches → cheap update()
         self.save_settings()
 
@@ -1584,8 +1665,8 @@ class SettingsSidebar(QWidget):
         }
         name = software_names.get(selected, selected)
         connected = None
-        if self.parent is not None:
-            status = getattr(self.parent, "_sync_status", None)
+        if self._parent is not None:
+            status = getattr(self._parent, "_sync_status", None)
             if status and len(status) == 2 and status[0] == self.cfg.get("syncSoftware"):
                 connected = status[1]
         if connected is True:
@@ -1710,8 +1791,8 @@ class SettingsSidebar(QWidget):
         btn_set = getattr(self, f"_eye_btn_set_{target}")
         btn_set.setEnabled(False)
         btn_set.setText("3...")
-        if self.parent is not None:
-            self.parent.hide()
+        if self._parent is not None:
+            self._parent.hide()
         self._eye_countdown_timer = QTimer(self)
         self._eye_countdown_timer.timeout.connect(self._on_countdown_tick)
         self._eye_countdown_timer.start(1000)
@@ -1726,8 +1807,8 @@ class SettingsSidebar(QWidget):
             self._eye_countdown_timer.stop()
             btn_set.setText("设定")
             btn_set.setEnabled(True)
-            if self.parent is not None:
-                self.parent.show()
+            if self._parent is not None:
+                self._parent.show()
             self.pickingThemePoint.emit(False)
             pos = QCursor.pos()
             self._on_eyedropper_point_picked(pos.x(), pos.y())
@@ -1838,9 +1919,9 @@ class SettingsSidebar(QWidget):
 
     # ── Companion helpers ──────────────────────────────────────────────
     def _refresh_companion_status(self):
-        if not hasattr(self, 'parent') or self.parent is None: return
-        if not hasattr(self.parent, 'sync_thread'): return
-        c = self.parent.sync_thread.companion_sync
+        if not hasattr(self, 'parent') or self._parent is None: return
+        if not hasattr(self._parent, 'sync_thread'): return
+        c = self._parent.sync_thread.companion_sync
         connected = getattr(c, '_connected', False)
         if connected:
             self.lbl_companion_status.setText("● 已连接")
@@ -1860,14 +1941,14 @@ class SettingsSidebar(QWidget):
             self.btn_companion_disconnect.setVisible(False)
 
     def _on_companion_reconnect(self):
-        if hasattr(self, 'parent') and self.parent is not None:
-            self.parent._setup_companion_connection()
+        if hasattr(self, 'parent') and self._parent is not None:
+            self._parent._setup_companion_connection()
             self._refresh_companion_status()
 
     def _on_companion_disconnect(self):
-        if hasattr(self, 'parent') and self.parent is not None:
-            if hasattr(self.parent, 'sync_thread'):
-                self.parent.sync_thread.companion_sync._disconnect()
+        if hasattr(self, 'parent') and self._parent is not None:
+            if hasattr(self._parent, 'sync_thread'):
+                self._parent.sync_thread.companion_sync._disconnect()
             self._refresh_companion_status()
 
 class _UpdateWorker(QThread):

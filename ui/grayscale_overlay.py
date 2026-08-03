@@ -11,22 +11,27 @@ GPU time <0.1 ms per frame.
 
 Requires: dxcam, numpy, PyQt6
 """
-import ctypes
 import array
+import ctypes
 import os
 import sys
 import time
 import traceback
-import numpy as np
-from PyQt6.QtWidgets import QWidget, QApplication
-from PyQt6.QtOpenGLWidgets import QOpenGLWidget
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QScreen, QSurfaceFormat
-from PyQt6.QtOpenGL import (QOpenGLShader, QOpenGLShaderProgram,
-                            QOpenGLBuffer, QOpenGLTexture,
-                            QOpenGLFunctions_2_0,
-                            QOpenGLVertexArrayObject)
+from typing import Any, cast
 
+import numpy as np
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QGuiApplication, QScreen, QSurfaceFormat
+from PyQt6.QtOpenGL import (
+    QOpenGLBuffer,
+    QOpenGLFunctions_2_0,
+    QOpenGLShader,
+    QOpenGLShaderProgram,
+    QOpenGLTexture,
+    QOpenGLVertexArrayObject,
+)
+from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+from PyQt6.QtWidgets import QApplication, QWidget
 
 # ---------------------------------------------------------------------------
 # Debug log — writes to %TEMP%\colorink_grayscale.log so errors are
@@ -74,8 +79,9 @@ def _exclude_from_capture(hwnd: int):
 def _build_oklch_lut():
     """Return a flat uint8 array [256*256*256] mapping sRGB→OKLCh gray.
     Caches result to disk — first run ~3s, subsequent runs <100ms."""
-    import numpy as np
     import os
+
+    import numpy as np
     cache_path = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "oklch_lut.npy")
     if os.path.exists(cache_path):
         print("[GrayscaleOverlay] Loading cached LUT...")
@@ -323,7 +329,7 @@ class _ShaderOverlay(QOpenGLWidget):
         self._vbo = QOpenGLBuffer()
         self._vbo.create()
         self._vbo.bind()
-        self._vbo.allocate(data.tobytes(), len(data) * 4)
+        self._vbo.allocate(cast(Any, data.tobytes()), len(data) * 4)
 
         pos_loc = self._program.attributeLocation("aPos")
         tex_loc = self._program.attributeLocation("aTexCoord")
@@ -391,7 +397,7 @@ class _ShaderOverlay(QOpenGLWidget):
                     0,
                     QOpenGLTexture.PixelFormat.BGR,
                     QOpenGLTexture.PixelType.UInt8,
-                    frame,  # numpy (H, W, 3) uint8 — zero-copy
+                    cast(Any, frame),  # numpy (H, W, 3) uint8 — zero-copy
                 )
                 self._texture.setMinificationFilter(
                     QOpenGLTexture.Filter.Linear)
@@ -452,6 +458,7 @@ class GrayscaleOverlay:
         self._active = False
         self._target = "all"
         self._mode = mode
+        self._health_failed = False
         self._overlays: list[_ShaderOverlay] = []
 
     # -- Screen enumeration ---------------------------------------------
@@ -459,7 +466,7 @@ class GrayscaleOverlay:
     @staticmethod
     def available_screens() -> list[str]:
         app = QApplication.instance()
-        if not app:
+        if not isinstance(app, QGuiApplication):
             return ["all"]
         result = ["all"]
         for i, screen in enumerate(app.screens()):
@@ -529,7 +536,7 @@ class GrayscaleOverlay:
 
     def _get_target_screens(self) -> list[tuple[int, QScreen]]:
         app = QApplication.instance()
-        if not app:
+        if not isinstance(app, QGuiApplication):
             return []
         screens = app.screens()
         if not screens:

@@ -1,37 +1,80 @@
-﻿import sys
-import os
+﻿import colorsys
 import math
+import os
 import re
-import colorsys
-from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QPushButton, QStackedWidget, QSlider, QLabel, QFrame,
-                             QGraphicsDropShadowEffect, QApplication, QStyle, QStyleOptionSlider,
-                             QSystemTrayIcon, QMenu)
-from PyQt6.QtCore import Qt, QPoint, QSize, pyqtSlot, QRectF, pyqtSignal, QRect, QPointF, QEvent, QTimer
-from PyQt6.QtGui import QColor, QPalette, QLinearGradient, QPainter, QBrush, QPen, QPixmap, QCursor, QPolygonF, QIcon, QAction, QMouseEvent
+import sys
+from typing import cast
 
-from core import config
-from core import memory_sync
-from core import global_hotkeys
-from ui.color_wheel import ColorWheel, hsv_to_rgb, rgb_to_hsv, hls_to_hsv_floats
-from ui.lab_visualizer import LabSquare, LabSlider
-from ui.color_conversions import (
-    oklab_to_rgb, rgb_to_oklab, oklch_to_rgb, rgb_to_oklch,
-    lab_to_rgb, rgb_to_lab,
-    map_lab_to_gamut, map_oklab_to_gamut, clamp_rgb,
+from PyQt6.QtCore import (
+    QEvent,
+    QPoint,
+    QPointF,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    pyqtSignal,
+    pyqtSlot,
 )
-from ui.slider_themes import get_slider_theme
-from ui.settings_sidebar import SettingsSidebar
-from ui.grayscale_overlay import GrayscaleOverlay
+from PyQt6.QtGui import (
+    QAction,
+    QBrush,
+    QColor,
+    QCursor,
+    QIcon,
+    QLinearGradient,
+    QMouseEvent,
+    QPainter,
+    QPalette,
+    QPen,
+    QPixmap,
+    QPolygonF,
+)
+from PyQt6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMenu,
+    QPushButton,
+    QSlider,
+    QStackedWidget,
+    QStyle,
+    QStyleOptionSlider,
+    QSystemTrayIcon,
+    QVBoxLayout,
+    QWidget,
+)
+
+from core import config, global_hotkeys, memory_sync
+from ui.color_conversions import (
+    clamp_rgb,
+    lab_to_rgb,
+    map_lab_to_gamut,
+    map_oklab_to_gamut,
+    oklab_to_rgb,
+    oklch_to_rgb,
+    rgb_to_lab,
+    rgb_to_oklab,
+    rgb_to_oklch,
+)
 from ui.color_history import ColorHistoryWidget
 from ui.color_picker_overlay import ColorPickerOverlay
 from ui.color_preview_box import ColorPreviewBox
+from ui.color_wheel import ColorWheel, hls_to_hsv_floats, hsv_to_rgb, rgb_to_hsv
+from ui.grayscale_overlay import GrayscaleOverlay
+from ui.lab_visualizer import LabSlider, LabSquare
 from ui.picker_panes import LabPane, PaneWithModeButton, WheelPane
 from ui.ringless_mode import (
     RINGLESS_ACTIVE_BORDER,
     RinglessConfig,
     resolve_ringless_layout,
 )
+from ui.settings_sidebar import SettingsSidebar
+from ui.slider_themes import get_slider_theme
 
 # Drawing applications recognized by the "only show while the drawing app is
 # in the foreground" tracker (onlyShowInCsp). Process basenames are matched
@@ -179,7 +222,7 @@ _C_RAW_MAX = 100         # slider range → 0..100% of max chroma
 class TitleBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.parent = parent
+        self._parent = cast("MainWindow", parent)
         self.drag_position = None
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -188,26 +231,29 @@ class TitleBar(QWidget):
 
     def _show_context_menu(self, pos):
         """Quick toggles for the most-used settings."""
-        p = self.parent
+        p = self._parent
         menu = QMenu(self)
 
         act_follow = menu.addAction("跟随鼠标")
-        act_follow.setCheckable(True)
-        act_follow.setChecked(p.cfg.get("followMouseEnabled", False))
-        act_follow.triggered.connect(lambda checked: self._toggle_follow_mouse(checked))
+        if act_follow is not None:
+            act_follow.setCheckable(True)
+            act_follow.setChecked(cast(bool, p.cfg.get("followMouseEnabled", False)))
+            act_follow.triggered.connect(lambda checked: self._toggle_follow_mouse(checked))
 
         act_no_focus = menu.addAction("无焦点选色模式")
-        act_no_focus.setCheckable(True)
-        act_no_focus.setChecked(p.cfg.get("noFocusMode", False))
-        act_no_focus.triggered.connect(lambda checked: self._toggle_no_focus(checked))
+        if act_no_focus is not None:
+            act_no_focus.setCheckable(True)
+            act_no_focus.setChecked(cast(bool, p.cfg.get("noFocusMode", False)))
+            act_no_focus.triggered.connect(lambda checked: self._toggle_no_focus(checked))
 
         menu.addSeparator()
         act_settings = menu.addAction("打开设置")
-        act_settings.triggered.connect(p.toggle_settings_sidebar)
+        if act_settings is not None:
+            act_settings.triggered.connect(p.toggle_settings_sidebar)
         menu.exec(self.mapToGlobal(pos))
 
     def _toggle_follow_mouse(self, checked):
-        p = self.parent
+        p = self._parent
         p.follow_mouse_active = checked
         p.cfg["followMouseEnabled"] = checked
         config.save_hotkey_config(p.cfg)
@@ -222,7 +268,7 @@ class TitleBar(QWidget):
             sidebar._persist_config()
 
     def _toggle_no_focus(self, checked):
-        p = self.parent
+        p = self._parent
         p.cfg["noFocusMode"] = checked
         config.save_hotkey_config(p.cfg)
         p.update_window_flags()
@@ -276,7 +322,7 @@ class TitleBar(QWidget):
                 border-radius: 2px;
             }
         """)
-        self.btn_min.clicked.connect(self.parent.showMinimized)
+        self.btn_min.clicked.connect(self._parent.showMinimized)
         
         # Close Button
         self.btn_close = QPushButton("×")
@@ -304,14 +350,14 @@ class TitleBar(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            if not self.parent.cfg.get("lockWindowPosition", False):
-                self.drag_position = event.globalPosition().toPoint() - self.parent.frameGeometry().topLeft()
+            if not self._parent.cfg.get("lockWindowPosition", False):
+                self.drag_position = event.globalPosition().toPoint() - self._parent.frameGeometry().topLeft()
             event.accept()
 
     def mouseMoveEvent(self, event):
         if event.buttons() == Qt.MouseButton.LeftButton and self.drag_position is not None:
-            if not self.parent.cfg.get("lockWindowPosition", False):
-                self.parent.move(event.globalPosition().toPoint() - self.drag_position)
+            if not self._parent.cfg.get("lockWindowPosition", False):
+                self._parent.move(event.globalPosition().toPoint() - self.drag_position)
             event.accept()
 
     def mouseReleaseEvent(self, event):
@@ -435,8 +481,10 @@ class GradientSlider(QSlider):
         # Read the step size from configuration or parent window
         step = 1
         win = self.window()
-        if win is not None and hasattr(win, "cfg"):
-            step = win.cfg.get("sliderScrollStep", 1)
+        if win is not None:
+            win_cfg = getattr(win, "cfg", None)
+            if win_cfg is not None:
+                step = win_cfg.get("sliderScrollStep", 1)
         
         delta = event.angleDelta().y()
         if delta == 0:
@@ -457,12 +505,12 @@ class GradientSlider(QSlider):
         t = self._theme
         handle_shape = str(t.get("handle_shape", "rect"))
         self.scale = scale
-        self.groove_h = max(2, int(16 * scale * float(t["groove_h_factor"])))
-        self.groove_radius = 3.0 * scale * float(t["groove_radius_factor"])
-        handle_w = max(2, int(5 * scale * float(t["handle_w_factor"])))
-        handle_h = max(4, int(24 * scale * float(t["handle_h_factor"])))
-        margin_y = -max(1, int(4 * scale * float(t["handle_margin_y_factor"])))
-        border_radius = max(0, int(1 * scale * float(t["handle_radius_factor"])))
+        self.groove_h = max(2, int(16 * scale * float(cast(float, t["groove_h_factor"]))))
+        self.groove_radius = 3.0 * scale * float(cast(float, t["groove_radius_factor"]))
+        handle_w = max(2, int(5 * scale * float(cast(float, t["handle_w_factor"]))))
+        handle_h = max(4, int(24 * scale * float(cast(float, t["handle_h_factor"]))))
+        margin_y = -max(1, int(4 * scale * float(cast(float, t["handle_margin_y_factor"]))))
+        border_radius = max(0, int(1 * scale * float(cast(float, t["handle_radius_factor"]))))
 
         if handle_shape == "triangle-below":
             # Native handle is invisible (but kept at standard hit size so
@@ -482,8 +530,8 @@ class GradientSlider(QSlider):
                 }}
             """)
             # Triangle needs extra vertical space below the groove
-            tri_off = int(float(t.get("handle_tri_offset_y", 2)) * scale)
-            tri_h = int(float(t.get("handle_tri_size_h", 6)) * scale)
+            tri_off = int(float(cast(float, t.get("handle_tri_offset_y", 2))) * scale)
+            tri_h = int(float(cast(float, t.get("handle_tri_size_h", 6))) * scale)
             pad = max(2, int(2 * scale))
             self.setMinimumHeight(self.groove_h + tri_off + tri_h + pad)
         else:
@@ -561,9 +609,9 @@ class GradientSlider(QSlider):
 
             tri_color = QColor(t.get("handle_tri_color", t["handle_bg"]))
             tri_border_color = QColor(t.get("handle_tri_border", t["handle_border"]))
-            tri_size_w = float(t.get("handle_tri_size_w", 5)) * self.scale
-            tri_size_h = float(t.get("handle_tri_size_h", 6)) * self.scale
-            tri_offset_y = int(float(t.get("handle_tri_offset_y", 2)) * self.scale)
+            tri_size_w = float(cast(float, t.get("handle_tri_size_w", 5))) * self.scale
+            tri_size_h = float(cast(float, t.get("handle_tri_size_h", 6))) * self.scale
+            tri_offset_y = int(float(cast(float, t.get("handle_tri_offset_y", 2))) * self.scale)
             tri_base_y = groove_y + self.groove_h + tri_offset_y
 
             triangle = QPolygonF([
@@ -582,13 +630,17 @@ class GradientSlider(QSlider):
             # so it always matches pixel-for-pixel.
             opt = QStyleOptionSlider()
             self.initStyleOption(opt)
-            hr_q = self.style().subControlRect(
-                QStyle.ComplexControl.CC_Slider, opt,
-                QStyle.SubControl.SC_SliderHandle, self
-            )
+            _style = self.style()
+            if _style is None:
+                hr_q = QRect()
+            else:
+                hr_q = _style.subControlRect(
+                    QStyle.ComplexControl.CC_Slider, opt,
+                    QStyle.SubControl.SC_SliderHandle, self
+                )
             is_active = bool(opt.activeSubControls & QStyle.SubControl.SC_SliderHandle)
             hx, hy, hw, hh = float(hr_q.x()), float(hr_q.y()), float(hr_q.width()), float(hr_q.height())
-            hr = max(0, int(1 * self.scale * float(t["handle_radius_factor"])))
+            hr = max(0, int(1 * self.scale * float(cast(float, t["handle_radius_factor"]))))
             hf = QRectF(hx, hy, hw, hh)
 
             bw = max(1, int(1 * self.scale))
@@ -719,7 +771,9 @@ class MainWindow(QMainWindow):
         self.init_foreground_tracker()
         self.apply_theme()
         self.init_tray()
-        QApplication.instance().installEventFilter(self)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
     def init_ui(self):
         # Frameless, transparent, stays on top, taskbar icon based on config
@@ -2654,21 +2708,28 @@ class MainWindow(QMainWindow):
         if not self.cfg.get("lockWindowSize", False):
             pos = event.position()
             if getattr(self, "resizing", False):
-                delta = event.globalPosition().toPoint() - self.resize_start_pos
+                start_pos = self.resize_start_pos
                 geom = self.resize_start_geometry
+                if start_pos is None or geom is None:
+                    return
+                delta = event.globalPosition().toPoint() - start_pos
                 new_geom = QRect(geom)
                 
                 min_w = 200
                 min_h = 300
                 
-                if "right" in self.resize_dir:
+                resize_dir = self.resize_dir
+                if resize_dir is None:
+                    return
+                
+                if "right" in resize_dir:
                     new_w = max(min_w, geom.width() + delta.x())
                     new_geom.setWidth(new_w)
-                elif "left" in self.resize_dir:
+                elif "left" in resize_dir:
                     new_w = max(min_w, geom.width() - delta.x())
                     new_geom.setLeft(geom.right() - new_w)
                     
-                if "bottom" in self.resize_dir:
+                if "bottom" in resize_dir:
                     new_h = max(min_h, geom.height() + delta.y())
                     new_geom.setHeight(new_h)
                 
@@ -2835,7 +2896,7 @@ class MainWindow(QMainWindow):
             row.setSpacing(max(1, int(1 * scale))) # Keep the slider close to its channel label
             
         # Adjust label fixed widths (theme-aware)
-        ch_w_factor = float(slider_theme["channel_label_width_factor"])
+        ch_w_factor = float(cast(float, slider_theme["channel_label_width_factor"]))
         for chan, label in getattr(self, "slider_labels", {}).items():
             label.setFixedWidth(max(8, int(12 * scale * ch_w_factor)))
 
@@ -2977,8 +3038,8 @@ class MainWindow(QMainWindow):
         """)
         
         # Style value labels directly for robust rendering (theme-aware)
-        val_w_factor = float(slider_theme["value_label_width_factor"])
-        val_radius = max(0, int(3 * scale * float(slider_theme["value_label_radius_factor"])))
+        val_w_factor = float(cast(float, slider_theme["value_label_width_factor"]))
+        val_radius = max(0, int(3 * scale * float(cast(float, slider_theme["value_label_radius_factor"]))))
         val_padding = slider_theme["value_label_padding"]
         for chan, (slider, val_label) in self.slider_widgets.items():
             val_label.setFixedWidth(max(24, int(27 * val_w_factor)))
@@ -3057,10 +3118,10 @@ class MainWindow(QMainWindow):
 
     def update_hotkey_bindings(self):
         global_hotkeys.unbind_all()
-        global_hotkeys.bind_hotkey("pickKey", self.cfg.get("pickKey"))
-        global_hotkeys.bind_hotkey("hideWindowKey", self.cfg.get("hideWindowKey"))
-        global_hotkeys.bind_hotkey("followMouseKey", self.cfg.get("followMouseKey"))
-        global_hotkeys.bind_hotkey("grayscaleFilterKey", self.cfg.get("grayscaleFilterKey"))
+        global_hotkeys.bind_hotkey("pickKey", cast(str, self.cfg.get("pickKey")))
+        global_hotkeys.bind_hotkey("hideWindowKey", cast(str, self.cfg.get("hideWindowKey")))
+        global_hotkeys.bind_hotkey("followMouseKey", cast(str, self.cfg.get("followMouseKey")))
+        global_hotkeys.bind_hotkey("grayscaleFilterKey", cast(str, self.cfg.get("grayscaleFilterKey")))
 
     @pyqtSlot(str)
     def on_hotkey_triggered(self, hotkey_type):
@@ -3099,7 +3160,7 @@ class MainWindow(QMainWindow):
                 result = self.grayscale_overlay.toggle()
                 # DWM backend returns False on failure
                 if result is False and hasattr(self.grayscale_overlay, 'last_error'):
-                    err = self.grayscale_overlay.last_error
+                    err = getattr(self.grayscale_overlay, "last_error", "")
                     if err:
                         from PyQt6.QtWidgets import QMessageBox
                         QMessageBox.warning(self, "黑白滤镜", err)
@@ -3150,7 +3211,7 @@ class MainWindow(QMainWindow):
         self.sync_thread.csp_version = self.cfg.get("cspVersion", "auto")
         self.sync_thread.sai2_version = self.cfg.get("sai2Version", "auto")
         self.sync_thread.udm_version = self.cfg.get("udmVersion", "auto")
-        self.sync_thread.ps_version = self.cfg.get("psVersion", "auto")
+        setattr(self.sync_thread, "ps_version", self.cfg.get("psVersion", "auto"))
         self.sync_thread.update_versions()
         
         # Start syncing
@@ -3304,6 +3365,8 @@ class MainWindow(QMainWindow):
         screen = QApplication.screenAt(cursor_pos)
         if not screen:
             screen = QApplication.primaryScreen()
+        if screen is None:
+            return
         geom = screen.availableGeometry()
         
         # Center the window around the cursor
@@ -3423,8 +3486,9 @@ class MainWindow(QMainWindow):
         if new_backend != current_backend:
             # Backend changed — tear down old, create new
             self.grayscale_overlay.set_active(False)
-            if hasattr(self.grayscale_overlay, 'close'):
-                self.grayscale_overlay.close()
+            close_fn = getattr(self.grayscale_overlay, "close", None)
+            if callable(close_fn):
+                close_fn()
             mode = self.cfg.get("grayscaleFilterMode", "oklch")
             if new_backend == "rust":
                 from core.rust_filter import RustFilterController
@@ -3483,7 +3547,7 @@ class MainWindow(QMainWindow):
         self.sync_thread.csp_version = self.cfg.get("cspVersion", "auto")
         self.sync_thread.sai2_version = self.cfg.get("sai2Version", "auto")
         self.sync_thread.udm_version = self.cfg.get("udmVersion", "auto")
-        self.sync_thread.ps_version = self.cfg.get("psVersion", "auto")
+        setattr(self.sync_thread, "ps_version", self.cfg.get("psVersion", "auto"))
         self.sync_thread.update_versions()
         
         # Update follow mouse state
@@ -3551,8 +3615,9 @@ class MainWindow(QMainWindow):
             self.picker_overlay.close()
         if hasattr(self, 'grayscale_overlay'):
             self.grayscale_overlay.set_active(False)
-            if hasattr(self.grayscale_overlay, 'close'):
-                self.grayscale_overlay.close()
+            close_fn = getattr(self.grayscale_overlay, "close", None)
+            if callable(close_fn):
+                close_fn()
         if hasattr(self, 'sync_thread'):
             # Disable sync & reset PS COM ref so the polling loop
             # won't try to make new COM calls to a dead Photoshop.
@@ -3591,7 +3656,9 @@ class MainWindow(QMainWindow):
         if os.path.exists(icon_path):
             self.tray_icon.setIcon(QIcon(icon_path))
         else:
-            self.tray_icon.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
+            _style = QApplication.style()
+            if _style is not None:
+                self.tray_icon.setIcon(_style.standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
         
         self.tray_icon.setToolTip("Colorink")
 
@@ -3654,8 +3721,8 @@ class MainWindow(QMainWindow):
         # Double safety: Force WS_EX_NOACTIVATE via Win32 API
         if no_focus:
             try:
-                import win32gui
                 import win32con
+                import win32gui
                 hwnd = int(self.winId())
                 ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
                 if not (ex_style & win32con.WS_EX_NOACTIVATE):

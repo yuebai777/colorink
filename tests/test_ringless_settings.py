@@ -10,12 +10,16 @@ import pytest
 
 from core.config import HOTKEY_CFG_NAME, load_hotkey_config
 
-
 # ── Module import tests (should fail in RED because modules don't exist) ──
 
 
 def test_ringless_mode_module_is_importable():
-    from ui.ringless_mode import ControlsSide, RinglessConfig, RinglessLayout, resolve_ringless_layout
+    from ui.ringless_mode import (
+        ControlsSide,
+        RinglessConfig,
+        RinglessLayout,
+        resolve_ringless_layout,
+    )
 
     assert ControlsSide is not None
     assert RinglessConfig is not None
@@ -175,8 +179,10 @@ class TestRinglessSettingsWidget:
         from ui.ringless_settings import RinglessSettingsWidget
 
         widget = RinglessSettingsWidget()
-        assert widget.layout().indexOf(widget.control_bar_position_row) == (
-            widget.layout().indexOf(widget.enabled_checkbox) + 1
+        layout = widget.layout()
+        assert layout is not None
+        assert layout.indexOf(widget.control_bar_position_row) == (
+            layout.indexOf(widget.enabled_checkbox) + 1
         )
 
     def test_rgb_slice_module_option_is_available(self, qapp):

@@ -1,6 +1,7 @@
 import keyboard
 from PyQt6.QtCore import QObject, pyqtSignal
 
+
 class HotkeySignals(QObject):
     # Emits the configuration key name, e.g. "pickKey", "hideWindowKey", "followMouseKey"
     triggered = pyqtSignal(str)

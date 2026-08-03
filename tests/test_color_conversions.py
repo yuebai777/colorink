@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 
 """Tests for ui.color_conversions — the single source of truth for the
 UI-layer colour-space math.
@@ -21,7 +20,6 @@ import pytest
 
 from ui import color_conversions as cc
 from ui import oklab_colors  # compatibility shim must keep working
-
 
 # ── Anchors (computed with coloraide 8.10, independent implementation) ──
 ANCHORS = [

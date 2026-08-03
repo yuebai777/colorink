@@ -1,5 +1,8 @@
 """DirectComposition OKLCh overlay — C++ EXE via subprocess."""
-import os, subprocess, time
+import os
+import subprocess
+import time
+from typing import Optional
 
 _CTRL_FILE = os.path.join(os.environ.get("SYSTEMROOT", r"C:\Windows"), "Temp", "dcomp_overlay_mode.txt")
 MODE_DISABLED, MODE_OKLCH, MODE_LUMA = 0, 1, 2
@@ -40,7 +43,7 @@ class DCompOverlayController:
         if self._active or mode == "disabled":
             self._write_mode(_MODE_MAP[mode])
 
-    def set_active(self, active: bool, mode: str = None):
+    def set_active(self, active: bool, mode: str | None = None):
         if mode is None:
             mode = self._mode
         if active:

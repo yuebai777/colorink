@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """UDM Paint active brush-color synchronization.
 
@@ -26,7 +25,7 @@ import os
 import struct
 import sys
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from pymem import Pymem
 from pymem.process import module_from_name
@@ -86,11 +85,11 @@ class _UDMBuildProfile:
     base_offset: int
 
 
-_PROFILES: Tuple[_UDMBuildProfile, ...] = (
+_PROFILES: tuple[_UDMBuildProfile, ...] = (
     _UDMBuildProfile("udm4.0",    "UDMPaintPRO.exe", 0x04AE73B0),
     _UDMBuildProfile("udm4.0-ex", "UDMPaintEX.exe",  0x04CD03B0),
 )
-_PROFILE_INDEX: Dict[str, _UDMBuildProfile] = {p.key: p for p in _PROFILES}
+_PROFILE_INDEX: dict[str, _UDMBuildProfile] = {p.key: p for p in _PROFILES}
 
 
 def _normalize_version_key(raw: object) -> str:
@@ -152,7 +151,7 @@ def _u32_to_signed(value: int) -> int:
     return value - 0x100000000 if value > 0x7FFFFFFF else value
 
 
-def _decode_u16x2_duplicate(raw: int) -> Optional[int]:
+def _decode_u16x2_duplicate(raw: int) -> int | None:
     """Decode a u32 that stores an 8-bit channel as two copies of a 16-bit value.
 
     UDM pads an 8-bit channel into a 32-bit slot by writing the same 16-bit
@@ -166,7 +165,7 @@ def _decode_u16x2_duplicate(raw: int) -> Optional[int]:
     return _clamp_byte(round((low / 65535.0) * 255.0))
 
 
-def _decode_u8x4_duplicate(raw: int) -> Optional[int]:
+def _decode_u8x4_duplicate(raw: int) -> int | None:
     """Decode a u32 that stores an 8-bit channel as four copies of one byte.
 
     All four bytes must agree; otherwise the encoding isn't this form.
@@ -180,7 +179,7 @@ def _decode_u8x4_duplicate(raw: int) -> Optional[int]:
     return None
 
 
-def _decode_float32(raw: int, scale: str) -> Optional[int]:
+def _decode_float32(raw: int, scale: str) -> int | None:
     """Interpret a u32 bit pattern as a single-precision float and scale to 0..255.
 
     ``scale="unit"`` accepts values in roughly ``[0, 1]`` (with a small
@@ -203,23 +202,23 @@ def _decode_float32(raw: int, scale: str) -> Optional[int]:
     return None
 
 
-def _detect_encoding(raws: List[int]) -> Tuple[str, str, List[int]]:
+def _detect_encoding(raws: list[int]) -> tuple[str, str, list[int]]:
     """Best-effort guess at how a triple of u32 raws encodes an RGB triple."""
     u16_attempt = [_decode_u16x2_duplicate(v) for v in raws]
     if all(v is not None for v in u16_attempt):
-        return "u16x2_dup", "byte", [int(v) for v in u16_attempt]
+        return "u16x2_dup", "byte", [int(v) for v in u16_attempt if v is not None]
 
     u8_attempt = [_decode_u8x4_duplicate(v) for v in raws]
     if all(v is not None for v in u8_attempt):
-        return "u8x4_dup", "byte", [int(v) for v in u8_attempt]
+        return "u8x4_dup", "byte", [int(v) for v in u8_attempt if v is not None]
 
     f_unit = [_decode_float32(v, "unit") for v in raws]
     if all(v is not None for v in f_unit):
-        return "float32", "unit", [int(v) for v in f_unit]
+        return "float32", "unit", [int(v) for v in f_unit if v is not None]
 
     f_byte = [_decode_float32(v, "byte") for v in raws]
     if all(v is not None for v in f_byte):
-        return "float32", "byte", [int(v) for v in f_byte]
+        return "float32", "byte", [int(v) for v in f_byte if v is not None]
 
     return "unknown", "byte", [0, 0, 0]
 
@@ -240,10 +239,10 @@ class UDMSync:
 
     def __init__(self) -> None:
         # Live process attachment — None when not connected.
-        self.pm: Optional[Pymem] = None
-        self.pid: Optional[int] = None
-        self.module_base: Optional[int] = None
-        self.target: Optional[int] = None
+        self.pm: Pymem | None = None
+        self.pid: int | None = None
+        self.module_base: int | None = None
+        self.target: int | None = None
 
         # Currently selected build profile.
         self._profile: _UDMBuildProfile = _PROFILE_INDEX[DEFAULT_VERSION_KEY]
@@ -358,9 +357,12 @@ class UDMSync:
             self.pm = Pymem(profile.process_name)
             self.pid = self.pm.process_id
             mod = module_from_name(self.pm.process_handle, profile.process_name)
-            self.module_base = mod.lpBaseOfDll
-            ptr_addr = self.module_base + profile.base_offset
-            self.target = self.pm.read_longlong(ptr_addr)
+            if mod is None:
+                raise ValueError("module not found")
+            module_base = mod.lpBaseOfDll
+            self.module_base = module_base
+            ptr_addr = module_base + profile.base_offset
+            self.target = int(self.pm.read_longlong(ptr_addr))
             return True
         except Exception as exc:
             if self.pm is not None:
@@ -405,7 +407,7 @@ class UDMSync:
     # ----- memory accessors ----------------------------------------------
     def _read_u32(self, address: int) -> int:
         assert self.pm is not None
-        return self.pm.read_int(address) & 0xFFFFFFFF
+        return int(self.pm.read_int(address)) & 0xFFFFFFFF
 
     def _write_u32(self, address: int, value: int) -> None:
         assert self.pm is not None
@@ -421,8 +423,8 @@ class UDMSync:
         raw = struct.pack("<f", float(value))
         self.pm.write_bytes(address, raw, 4)
 
-    def _snapshot_color_slot(self, base_addr: int) -> Dict[str, Dict[str, object]]:
-        snapshots: Dict[str, Dict[str, object]] = {}
+    def _snapshot_color_slot(self, base_addr: int) -> dict[str, dict[str, Any]]:
+        snapshots: dict[str, dict[str, Any]] = {}
         for space_name, offsets in self.space_offsets.items():
             raws = tuple(self._read_u32(base_addr + off) for off in offsets)
             snapshots[space_name] = {
@@ -432,7 +434,7 @@ class UDMSync:
             }
         return snapshots
 
-    def _resolve_space_addresses(self) -> Optional[Dict[str, Tuple[int, ...]]]:
+    def _resolve_space_addresses(self) -> dict[str, tuple[int, ...]] | None:
         """Re-resolve the color slot pointer (or honor absolute-address mode).
 
         Pointer mode re-reads the anchor pointer on every call and only
@@ -454,7 +456,7 @@ class UDMSync:
             return None
 
         try:
-            fresh_pointer = self.pm.read_longlong(self.module_base + self.base_offset)
+            fresh_pointer = int(self.pm.read_longlong(self.module_base + self.base_offset))
             if fresh_pointer:
                 try:
                     probe = self._snapshot_color_slot(fresh_pointer)
@@ -482,7 +484,7 @@ class UDMSync:
         }
 
     # ----- public color access -------------------------------------------
-    def get_color(self) -> Optional[Dict[str, int]]:
+    def get_color(self) -> dict[str, int] | None:
         if self.pm is None and not self.connect():
             return None
 
@@ -491,7 +493,7 @@ class UDMSync:
             _log("get_color: no usable addresses resolved")
             return None
 
-        snapshots: Dict[str, Dict[str, object]] = {}
+        snapshots: dict[str, dict[str, Any]] = {}
         for space_name, addresses in space_addrs.items():
             raws = tuple(self._read_u32(addr) for addr in addresses)
             if self.target is not None and not self.use_abs:
@@ -532,7 +534,7 @@ class UDMSync:
 
         rgb = {"r": _clamp_byte(r), "g": _clamp_byte(g), "b": _clamp_byte(b)}
         try:
-            hsv_vals = rgb_to_space_values("hsv", rgb)
+            hsv_vals: dict[str, Any] = rgb_to_space_values("hsv", rgb)
             if hsv_vals["s"] < 1: hsv_vals["h"] = self._last_hsv_h
             else: self._last_hsv_h = hsv_vals["h"]
             if hsv_vals["v"] < 1: hsv_vals["s"] = self._last_hsv_s
@@ -554,7 +556,7 @@ class UDMSync:
             return False
 
     # ----- introspection --------------------------------------------------
-    def status(self) -> Dict[str, object]:
+    def status(self) -> dict[str, object]:
         if self.pm is None:
             self.connect()
         space_addrs = self._resolve_space_addresses() if self.pm is not None else None
@@ -572,7 +574,7 @@ class UDMSync:
             "processName": self.process_name,
         }
 
-    def dump(self) -> Dict[str, object]:
+    def dump(self) -> dict[str, object]:
         """Diagnostic snapshot of the color slot for debugging.
 
         Walks the first 0x60 bytes of the slot in 8-byte strides,
@@ -648,7 +650,7 @@ class UDMSync:
         b: int,
         scan_size: int = 0x800,
         max_results: int = 10,
-    ) -> Dict[str, object]:
+    ) -> dict[str, object]:
         """Scan the first ``scan_size`` bytes of the slot for trio offsets
         that decode to a color near the requested one.
 

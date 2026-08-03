@@ -39,9 +39,9 @@ The color list is mirrored to config so it survives restarts. The maximum
 in-memory list is `cols * rows`; older entries are dropped FIFO.
 """
 
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRectF
-from PyQt6.QtGui import QColor, QPainter, QPen, QBrush, QAction, QCursor
-from PyQt6.QtWidgets import QWidget, QMenu, QApplication
+from PyQt6.QtCore import QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QAction, QBrush, QColor, QCursor, QPainter, QPen
+from PyQt6.QtWidgets import QApplication, QMenu, QWidget
 
 # Maximum grid extent. The settings sidebar caps the configuration at these
 # values (cols ≤ 16, rows ≤ 8), so we pre-allocate a cell pool of this size
@@ -137,9 +137,9 @@ class _SwatchCell(QWidget):
         r, g, b = color.red(), color.green(), color.blue()
 
         menu.addAction(f"Copy RGB: rgb({r}, {g}, {b})",
-                       lambda r=r, g=g, b=b: QApplication.clipboard().setText(f"rgb({r}, {g}, {b})"))
+                       lambda r=r, g=g, b=b: (cb := QApplication.clipboard()) is not None and cb.setText(f"rgb({r}, {g}, {b})"))
         menu.addAction(f"Copy HEX: #{r:02X}{g:02X}{b:02X}",
-                       lambda r=r, g=g, b=b: QApplication.clipboard().setText(f"#{r:02X}{g:02X}{b:02X}"))
+                       lambda r=r, g=g, b=b: (cb := QApplication.clipboard()) is not None and cb.setText(f"#{r:02X}{g:02X}{b:02X}"))
 
         menu.exec(QCursor.pos())
 

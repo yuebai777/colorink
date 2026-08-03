@@ -17,7 +17,6 @@ from .test_ringless_support import (
     qapp,
 )
 
-
 # ── Idempotency and repaint ──────────────────────────────────────────────
 
 class TestSetRinglessLayoutIdempotency:
@@ -33,10 +32,10 @@ class TestSetRinglessLayoutIdempotency:
         )
         w = make_wheel(300, 300, layout)
         # Populate caches with sentinel values (no paintEvent needed)
-        w._cached_img_key = "before"
-        w._cached_hls_key = "before"
-        w._cached_rgb_key = "before"
-        w._cached_oklch_key = "before"
+        setattr(w, "_cached_img_key", "before")
+        setattr(w, "_cached_hls_key", "before")
+        setattr(w, "_cached_rgb_key", "before")
+        setattr(w, "_cached_oklch_key", "before")
         w._bdry_h = 180.0
         sg1 = w.get_slice_geometry()
 
@@ -72,7 +71,7 @@ class TestCacheInvalidation:
     def test_layout_change_invalidates_ring_cache(self, qapp):
         """Seed _cached_ring_key, assert precondition, change layout, assert removal."""
         w = make_wheel(300, 300, disabled_layout())
-        w._cached_ring_key = ("dummy",)  # sentinel
+        setattr(w, "_cached_ring_key", ("dummy",))  # sentinel
         assert hasattr(w, "_cached_ring_key"), "precondition"
 
         w.set_ringless_layout(canonical_layout())
@@ -80,10 +79,10 @@ class TestCacheInvalidation:
 
     def test_layout_change_invalidates_slice_caches(self, qapp):
         w = make_wheel(300, 300)
-        w._cached_img_key = "dummy"
-        w._cached_hls_key = "dummy"
-        w._cached_rgb_key = "dummy"
-        w._cached_oklch_key = "dummy"
+        setattr(w, "_cached_img_key", "dummy")
+        setattr(w, "_cached_hls_key", "dummy")
+        setattr(w, "_cached_rgb_key", "dummy")
+        setattr(w, "_cached_oklch_key", "dummy")
 
         w.set_ringless_layout(canonical_layout())
 

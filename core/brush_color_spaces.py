@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """Color-space math and on-disk layout for the host brush-color struct.
 
@@ -24,26 +23,27 @@ from __future__ import annotations
 
 import colorsys
 import math
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Callable, Dict, Mapping, Sequence, Tuple
+from typing import Any, Dict, Tuple
 
 # ---------------------------------------------------------------------------
 # Fixed struct layout
 # ---------------------------------------------------------------------------
 # Offsets are relative to the start of the color slot and are dictated by
 # the host applications; we mirror them, we do not choose them.
-_RGB_OFFS: Tuple[int, ...] = (0x00, 0x04, 0x08)
-_CMYK_OFFS: Tuple[int, ...] = (0x0C, 0x10, 0x14, 0x18)
-_HSV_OFFS: Tuple[int, ...] = (0x1C, 0x20, 0x24)
-_HLS_OFFS: Tuple[int, ...] = (0x28, 0x2C, 0x30)
+_RGB_OFFS: tuple[int, ...] = (0x00, 0x04, 0x08)
+_CMYK_OFFS: tuple[int, ...] = (0x0C, 0x10, 0x14, 0x18)
+_HSV_OFFS: tuple[int, ...] = (0x1C, 0x20, 0x24)
+_HLS_OFFS: tuple[int, ...] = (0x28, 0x2C, 0x30)
 
-_RGB_MAX: Tuple[float, ...] = (255.0, 255.0, 255.0)
-_CMYK_MAX: Tuple[float, ...] = (100.0, 100.0, 100.0, 100.0)
-_HSV_MAX: Tuple[float, ...] = (360.0, 100.0, 100.0)
-_HLS_MAX: Tuple[float, ...] = (360.0, 100.0, 100.0)
+_RGB_MAX: tuple[float, ...] = (255.0, 255.0, 255.0)
+_CMYK_MAX: tuple[float, ...] = (100.0, 100.0, 100.0, 100.0)
+_HSV_MAX: tuple[float, ...] = (360.0, 100.0, 100.0)
+_HLS_MAX: tuple[float, ...] = (360.0, 100.0, 100.0)
 
 # Iteration order used when scanning snapshots for a "live" space.
-SPACE_ORDER: Tuple[str, ...] = ("rgb", "cmyk", "hsv", "hls")
+SPACE_ORDER: tuple[str, ...] = ("rgb", "cmyk", "hsv", "hls")
 
 # A 32-bit slot can represent values in [0, 2**32 - 1].
 _U32_LIMIT = 0xFFFFFFFF
@@ -154,27 +154,27 @@ class ColorSpaceSpec:
     """
 
     name: str
-    channels: Tuple[str, ...]
-    maxima: Tuple[float, ...]
-    relative_offsets: Tuple[int, ...]
+    channels: tuple[str, ...]
+    maxima: tuple[float, ...]
+    relative_offsets: tuple[int, ...]
 
-    def channel_offsets(self, anchor: int) -> Tuple[int, ...]:
+    def channel_offsets(self, anchor: int) -> tuple[int, ...]:
         """Per-channel offsets anchored at ``anchor`` (an offset from struct base)."""
         base = int(anchor)
         return tuple(base + off for off in self.relative_offsets)
 
-    def channel_addresses(self, anchor: int) -> Tuple[int, ...]:
+    def channel_addresses(self, anchor: int) -> tuple[int, ...]:
         """Per-channel absolute addresses anchored at ``anchor`` (a base address)."""
         base = int(anchor)
         return tuple(base + off for off in self.relative_offsets)
 
-    def decode(self, raws: Sequence[int]) -> Dict[str, int]:
+    def decode(self, raws: Sequence[int]) -> dict[str, int]:
         return {
             ch: decode_scaled_u32(raw, mx)
             for ch, raw, mx in zip(self.channels, raws, self.maxima)
         }
 
-    def encode(self, values: Mapping[str, int]) -> Tuple[int, ...]:
+    def encode(self, values: Mapping[str, int]) -> tuple[int, ...]:
         return tuple(
             encode_scaled_u32(values[ch], mx)
             for ch, mx in zip(self.channels, self.maxima)
@@ -191,7 +191,7 @@ _CMYK = ColorSpaceSpec("cmyk", ("c", "m", "y", "k"),  _CMYK_MAX, _CMYK_OFFS)
 _HSV = ColorSpaceSpec("hsv",  ("h", "s", "v"),       _HSV_MAX,  _HSV_OFFS)
 _HLS = ColorSpaceSpec("hls",  ("h", "l", "s"),       _HLS_MAX,  _HLS_OFFS)
 
-_REGISTRY: Dict[str, ColorSpaceSpec] = {
+_REGISTRY: dict[str, ColorSpaceSpec] = {
     spec.name: spec for spec in (_RGB, _CMYK, _HSV, _HLS)
 }
 
@@ -207,25 +207,25 @@ def _lookup(name: str) -> ColorSpaceSpec:
 # Public offset / address / codec entry points (kept as module functions
 # so external importers do not have to know about the descriptor class).
 # ---------------------------------------------------------------------------
-def build_space_offsets(rgb_base_offset: int) -> Dict[str, Tuple[int, ...]]:
+def build_space_offsets(rgb_base_offset: int) -> dict[str, tuple[int, ...]]:
     """Per-space per-channel offsets anchored at ``rgb_base_offset``."""
     return {name: spec.channel_offsets(rgb_base_offset) for name, spec in _REGISTRY.items()}
 
 
-def build_space_addresses(rgb_base_address: int) -> Dict[str, Tuple[int, ...]]:
+def build_space_addresses(rgb_base_address: int) -> dict[str, tuple[int, ...]]:
     """Per-space per-channel absolute addresses anchored at ``rgb_base_address``."""
     return {name: spec.channel_addresses(rgb_base_address) for name, spec in _REGISTRY.items()}
 
 
-def decode_space_raws(space_name: str, raws: Sequence[int]) -> Dict[str, int]:
+def decode_space_raws(space_name: str, raws: Sequence[int]) -> dict[str, int]:
     return _lookup(space_name).decode(raws)
 
 
-def encode_space_values(space_name: str, values: Mapping[str, int]) -> Tuple[int, ...]:
+def encode_space_values(space_name: str, values: Mapping[str, int]) -> tuple[int, ...]:
     return _lookup(space_name).encode(values)
 
 
-def encode_space_values_float(space_name: str, values: Mapping[str, float]) -> Tuple[int, ...]:
+def encode_space_values_float(space_name: str, values: Mapping[str, float]) -> tuple[int, ...]:
     """Like :func:`encode_space_values` but accepts float values for direct uint32 encoding.
 
     Float values are passed straight to :func:`encode_scaled_u32` without
@@ -252,7 +252,7 @@ def space_has_nonzero_raws(raws: Sequence[int]) -> bool:
 
 
 def any_space_has_nonzero_raws(
-    snapshots: Mapping[str, Mapping[str, object]]
+    snapshots: Mapping[str, Mapping[str, Any]]
 ) -> bool:
     """True if any per-space snapshot in ``snapshots`` carries non-zero raws.
 
@@ -270,7 +270,7 @@ def any_space_has_nonzero_raws(
 # ---------------------------------------------------------------------------
 # Direct space conversions
 # ---------------------------------------------------------------------------
-def rgb_to_hsv_values(rgb: Mapping[str, int]) -> Dict[str, int]:
+def rgb_to_hsv_values(rgb: Mapping[str, int]) -> dict[str, int]:
     r = _byte(rgb["r"]) / 255.0
     g = _byte(rgb["g"]) / 255.0
     b = _byte(rgb["b"]) / 255.0
@@ -278,7 +278,7 @@ def rgb_to_hsv_values(rgb: Mapping[str, int]) -> Dict[str, int]:
     return {"h": _hue(h * 360.0), "s": _percent(s * 100.0), "v": _percent(v * 100.0)}
 
 
-def hsv_to_rgb_values(values: Mapping[str, int]) -> Dict[str, int]:
+def hsv_to_rgb_values(values: Mapping[str, int]) -> dict[str, int]:
     r, g, b = colorsys.hsv_to_rgb(
         normalize_hue_for_colorsys(values["h"]),
         _percent(values["s"]) / 100.0,
@@ -287,7 +287,7 @@ def hsv_to_rgb_values(values: Mapping[str, int]) -> Dict[str, int]:
     return {"r": _byte(r * 255.0), "g": _byte(g * 255.0), "b": _byte(b * 255.0)}
 
 
-def rgb_to_hls_values(rgb: Mapping[str, int]) -> Dict[str, int]:
+def rgb_to_hls_values(rgb: Mapping[str, int]) -> dict[str, int]:
     r = _byte(rgb["r"]) / 255.0
     g = _byte(rgb["g"]) / 255.0
     b = _byte(rgb["b"]) / 255.0
@@ -295,7 +295,7 @@ def rgb_to_hls_values(rgb: Mapping[str, int]) -> Dict[str, int]:
     return {"h": _hue(h * 360.0), "l": _percent(l * 100.0), "s": _percent(s * 100.0)}
 
 
-def hls_to_rgb_values(values: Mapping[str, int]) -> Dict[str, int]:
+def hls_to_rgb_values(values: Mapping[str, int]) -> dict[str, int]:
     r, g, b = colorsys.hls_to_rgb(
         normalize_hue_for_colorsys(values["h"]),
         _percent(values["l"]) / 100.0,
@@ -322,7 +322,7 @@ def _clip_float_255(value: float) -> float:
     return float(value)
 
 
-def rgb_to_hsv_float(rgb: Mapping[str, object]) -> Dict[str, float]:
+def rgb_to_hsv_float(rgb: Mapping[str, Any]) -> dict[str, float]:
     """RGB → HSV with full float precision.
 
     Returns ``{"h": 0-360, "s": 0-100, "v": 0-100}`` as floats (no rounding).
@@ -338,7 +338,7 @@ def rgb_to_hsv_float(rgb: Mapping[str, object]) -> Dict[str, float]:
     return {"h": h_deg, "s": s * 100.0, "v": v * 100.0}
 
 
-def hsv_to_rgb_float(values: Mapping[str, object]) -> Dict[str, float]:
+def hsv_to_rgb_float(values: Mapping[str, Any]) -> dict[str, float]:
     """HSV → RGB with full float precision.
 
     Returns ``{"r": 0-255, "g": 0-255, "b": 0-255}`` as floats (no rounding).
@@ -351,7 +351,7 @@ def hsv_to_rgb_float(values: Mapping[str, object]) -> Dict[str, float]:
     return {"r": r * 255.0, "g": g * 255.0, "b": b * 255.0}
 
 
-def rgb_to_hls_float(rgb: Mapping[str, object]) -> Dict[str, float]:
+def rgb_to_hls_float(rgb: Mapping[str, Any]) -> dict[str, float]:
     """RGB → HLS with full float precision.
 
     Returns ``{"h": 0-360, "l": 0-100, "s": 0-100}`` as floats.
@@ -366,7 +366,7 @@ def rgb_to_hls_float(rgb: Mapping[str, object]) -> Dict[str, float]:
     return {"h": h_deg, "l": l * 100.0, "s": s * 100.0}
 
 
-def hls_to_rgb_float(values: Mapping[str, object]) -> Dict[str, float]:
+def hls_to_rgb_float(values: Mapping[str, Any]) -> dict[str, float]:
     """HLS → RGB with full float precision.
 
     Returns ``{"r": 0-255, "g": 0-255, "b": 0-255}`` as floats.
@@ -412,12 +412,12 @@ def _mat3_vec3(m, v):
     )
 
 
-def _linear_rgb_to_xyz_d65(r: float, g: float, b: float) -> Tuple[float, float, float]:
+def _linear_rgb_to_xyz_d65(r: float, g: float, b: float) -> tuple[float, float, float]:
     x, y, z = _mat3_vec3(_LINEAR_TO_XYZ_D65, (r, g, b))
     return x * 100.0, y * 100.0, z * 100.0
 
 
-def _xyz_d65_to_d50(x: float, y: float, z: float) -> Tuple[float, float, float]:
+def _xyz_d65_to_d50(x: float, y: float, z: float) -> tuple[float, float, float]:
     return _mat3_vec3(_XYZ_D65_TO_D50, (x, y, z))
 
 
@@ -434,7 +434,7 @@ def _lab_nonlinear(t: float) -> float:
 _D50_X, _D50_Y, _D50_Z = 96.422, 100.0, 82.521
 
 
-def _xyz_d50_to_lab(x: float, y: float, z: float) -> Tuple[float, float, float]:
+def _xyz_d50_to_lab(x: float, y: float, z: float) -> tuple[float, float, float]:
     fx = _lab_nonlinear(x / _D50_X)
     fy = _lab_nonlinear(y / _D50_Y)
     fz = _lab_nonlinear(z / _D50_Z)
@@ -449,7 +449,7 @@ def _xyz_d50_to_lab(x: float, y: float, z: float) -> Tuple[float, float, float]:
     )
 
 
-def rgb_to_lab_values(rgb: Mapping[str, int]) -> Dict[str, float]:
+def rgb_to_lab_values(rgb: Mapping[str, int]) -> dict[str, float]:
     r = _srgb_to_linear(_byte(rgb["r"]) / 255.0)
     g = _srgb_to_linear(_byte(rgb["g"]) / 255.0)
     b = _srgb_to_linear(_byte(rgb["b"]) / 255.0)
@@ -478,7 +478,7 @@ def _gcr_k_fraction(rgb: Mapping[str, int]) -> float:
     return min(1.0, max(0.0, lightness_factor * max(chroma_suppress, saturation_suppress)))
 
 
-def rgb_to_cmyk_values(rgb: Mapping[str, int]) -> Dict[str, int]:
+def rgb_to_cmyk_values(rgb: Mapping[str, int]) -> dict[str, int]:
     r = _byte(rgb["r"])
     g = _byte(rgb["g"])
     b = _byte(rgb["b"])
@@ -510,7 +510,7 @@ def rgb_to_cmyk_values(rgb: Mapping[str, int]) -> Dict[str, int]:
     }
 
 
-def cmyk_to_rgb_values(values: Mapping[str, int]) -> Dict[str, int]:
+def cmyk_to_rgb_values(values: Mapping[str, int]) -> dict[str, int]:
     c = _percent(values["c"]) / 100.0
     m = _percent(values["m"]) / 100.0
     y = _percent(values["y"]) / 100.0
@@ -522,7 +522,7 @@ def cmyk_to_rgb_values(values: Mapping[str, int]) -> Dict[str, int]:
     }
 
 
-def _gcr_k_fraction_float(rgb: Mapping[str, object]) -> float:
+def _gcr_k_fraction_float(rgb: Mapping[str, Any]) -> float:
     """Float version of :func:`_gcr_k_fraction` — uses float HSV for saturation."""
     lab = rgb_to_lab_values(rgb)  # already returns float
     chroma = math.sqrt(lab["a"] * lab["a"] + lab["b"] * lab["b"])
@@ -539,7 +539,7 @@ def _gcr_k_fraction_float(rgb: Mapping[str, object]) -> float:
     return min(1.0, max(0.0, lightness_factor * max(chroma_suppress, saturation_suppress)))
 
 
-def rgb_to_cmyk_float(rgb: Mapping[str, object]) -> Dict[str, float]:
+def rgb_to_cmyk_float(rgb: Mapping[str, Any]) -> dict[str, float]:
     """RGB → CMYK with full float precision. Returns c/m/y/k: 0-100 (float)."""
     r = _clip_float_255(float(rgb["r"]))
     g = _clip_float_255(float(rgb["g"]))
@@ -564,7 +564,7 @@ def rgb_to_cmyk_float(rgb: Mapping[str, object]) -> Dict[str, float]:
     return {"c": c * 100.0, "m": m * 100.0, "y": y * 100.0, "k": k * 100.0}
 
 
-def cmyk_to_rgb_float(values: Mapping[str, object]) -> Dict[str, float]:
+def cmyk_to_rgb_float(values: Mapping[str, Any]) -> dict[str, float]:
     """CMYK → RGB with full float precision. Returns r/g/b: 0-255 (float)."""
     c = _clip_float(float(values["c"]), 100.0) / 100.0
     m = _clip_float(float(values["m"]), 100.0) / 100.0
@@ -580,14 +580,14 @@ def cmyk_to_rgb_float(values: Mapping[str, object]) -> Dict[str, float]:
 # ---------------------------------------------------------------------------
 # RGB <-> any-space dispatch tables
 # ---------------------------------------------------------------------------
-_RGB_TO_SPACE: Dict[str, Callable[[Mapping[str, int]], Dict[str, int]]] = {
+_RGB_TO_SPACE: dict[str, Callable[[Mapping[str, int]], dict[str, int]]] = {
     "rgb": lambda rgb: {"r": _byte(rgb["r"]), "g": _byte(rgb["g"]), "b": _byte(rgb["b"])},
     "cmyk": rgb_to_cmyk_values,
     "hsv": rgb_to_hsv_values,
     "hls": rgb_to_hls_values,
 }
 
-_SPACE_TO_RGB: Dict[str, Callable[[Mapping[str, int]], Dict[str, int]]] = {
+_SPACE_TO_RGB: dict[str, Callable[[Mapping[str, int]], dict[str, int]]] = {
     "rgb": lambda v: {"r": _byte(v["r"]), "g": _byte(v["g"]), "b": _byte(v["b"])},
     "cmyk": cmyk_to_rgb_values,
     "hsv": hsv_to_rgb_values,
@@ -595,14 +595,14 @@ _SPACE_TO_RGB: Dict[str, Callable[[Mapping[str, int]], Dict[str, int]]] = {
 }
 
 
-def rgb_to_space_values(space_name: str, rgb: Mapping[str, int]) -> Dict[str, int]:
+def rgb_to_space_values(space_name: str, rgb: Mapping[str, int]) -> dict[str, int]:
     try:
         return _RGB_TO_SPACE[space_name](rgb)
     except KeyError:
         raise KeyError(f"unknown color space: {space_name!r}") from None
 
 
-def space_to_rgb_values(space_name: str, values: Mapping[str, int]) -> Dict[str, int]:
+def space_to_rgb_values(space_name: str, values: Mapping[str, int]) -> dict[str, int]:
     try:
         return _SPACE_TO_RGB[space_name](values)
     except KeyError:
@@ -612,14 +612,14 @@ def space_to_rgb_values(space_name: str, values: Mapping[str, int]) -> Dict[str,
 # ---------------------------------------------------------------------------
 # Float-precision dispatch tables (NO int rounding)
 # ---------------------------------------------------------------------------
-_RGB_TO_SPACE_FLOAT: Dict[str, Callable[[Mapping[str, object]], Dict[str, float]]] = {
+_RGB_TO_SPACE_FLOAT: dict[str, Callable[[Mapping[str, Any]], dict[str, float]]] = {
     "rgb": lambda rgb: {"r": float(rgb["r"]), "g": float(rgb["g"]), "b": float(rgb["b"])},
     "cmyk": rgb_to_cmyk_float,
     "hsv": rgb_to_hsv_float,
     "hls": rgb_to_hls_float,
 }
 
-_SPACE_TO_RGB_FLOAT: Dict[str, Callable[[Mapping[str, object]], Dict[str, float]]] = {
+_SPACE_TO_RGB_FLOAT: dict[str, Callable[[Mapping[str, Any]], dict[str, float]]] = {
     "rgb": lambda v: {"r": float(v["r"]), "g": float(v["g"]), "b": float(v["b"])},
     "cmyk": cmyk_to_rgb_float,
     "hsv": hsv_to_rgb_float,
@@ -627,7 +627,7 @@ _SPACE_TO_RGB_FLOAT: Dict[str, Callable[[Mapping[str, object]], Dict[str, float]
 }
 
 
-def rgb_to_space_float(space_name: str, rgb: Mapping[str, object]) -> Dict[str, float]:
+def rgb_to_space_float(space_name: str, rgb: Mapping[str, Any]) -> dict[str, float]:
     """RGB → *space_name* with full float precision (no int rounding).
 
     Same interface as :func:`rgb_to_space_values` but returns floats.
@@ -638,7 +638,7 @@ def rgb_to_space_float(space_name: str, rgb: Mapping[str, object]) -> Dict[str, 
         raise KeyError(f"unknown color space: {space_name!r}") from None
 
 
-def space_to_rgb_float(space_name: str, values: Mapping[str, object]) -> Dict[str, float]:
+def space_to_rgb_float(space_name: str, values: Mapping[str, Any]) -> dict[str, float]:
     """*space_name* → RGB with full float precision (no int rounding).
 
     Same interface as :func:`space_to_rgb_values` but returns floats.
@@ -653,8 +653,8 @@ def space_to_rgb_float(space_name: str, values: Mapping[str, object]) -> Dict[st
 # Snapshot resolution
 # ---------------------------------------------------------------------------
 def resolve_active_rgb(
-    snapshots: Mapping[str, Mapping[str, object]]
-) -> Tuple[str, Dict[str, int], Dict[str, int]]:
+    snapshots: Mapping[str, Mapping[str, Any]]
+) -> tuple[str, dict[str, int], dict[str, int]]:
     """Find the first space in :data:`SPACE_ORDER` whose snapshot carries data.
 
     Returns ``(space_name, rgb_dict, source_values_dict)``.  Falls back to
