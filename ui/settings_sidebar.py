@@ -77,7 +77,7 @@ class SettingsSidebar(QWidget):
         # ── Left rail: category navigation (like CSP 環境設定) ──
         self.nav = QListWidget()
         self.nav.setObjectName("NavRail")
-        self.nav.setFixedWidth(112)
+        self.nav.setFixedWidth(96)
         self.nav.setIconSize(QSize(18, 18))
         self.nav.setUniformItemSizes(True)
         self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -692,13 +692,15 @@ class SettingsSidebar(QWidget):
 
     @staticmethod
     def _nav_icon(kind: str, color: str) -> QIcon:
-        """Draw a crisp monochrome 18px rail glyph with QPainter.
+        """Draw a crisp monochrome rail glyph with QPainter.
 
         ``kind`` is one of: hotkeys, interface, picker, software, about.
-        Drawn at 2× device pixels so the glyph stays sharp on HiDPI.
+        The canvas is 36×36 logical units on a 72×72 device pixmap
+        (devicePixelRatio 2.0), so the painter coordinates below match
+        the drawing code exactly while the glyph stays sharp on HiDPI.
         """
-        pm = QPixmap(36, 36)
-        pm.setDevicePixelRatio(2.0)  # 18×18 logical size
+        pm = QPixmap(72, 72)
+        pm.setDevicePixelRatio(2.0)  # logical 36×36 canvas → painter coords = drawing units
         pm.fill(Qt.GlobalColor.transparent)
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)

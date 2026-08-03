@@ -182,14 +182,16 @@ class ColorWheel(QWidget):
         """Warm full-resolution slices after the UI has settled."""
         self._prewarm_timer.start(max(0, delay_ms))
 
-    def _slice_cache_key(self, mode: str, center_x: float, center_y: float, radius: float) -> tuple[object, ...]:
+    def _slice_cache_key(self, mode: str, center_x: float, center_y: float, radius: float,
+                         width: float | None = None) -> tuple[object, ...]:
         if mode in {"hsv-square", "hsl-square"}:
             half = int(radius / 1.414) - 2
             tag = "hsv-square" if mode == "hsv-square" else "square"
             return (int(self.h), half * 2, half * 2, tag)
         if mode == "oklch-slice":
             hue = self._oklch_h if self._oklch_h is not None else self.h
-            return (round(hue, 1), radius, round(center_x, 3), round(center_y, 3), "oklch")
+            return (round(hue, 1), radius, round(center_x, 3), round(center_y, 3),
+                    round(width or radius, 3), "oklch")
         tag = "hls" if mode == "hls-triangle" else "rgb"
         return (self.h, radius, round(center_x, 3), round(center_y, 3), tag)
 
@@ -217,10 +219,12 @@ class ColorWheel(QWidget):
                 continue
             geometry = self.get_slice_geometry(mode)
             hue = self._oklch_h if mode == "oklch-slice" and self._oklch_h is not None else self.h
+            box_w = self._oklch_slice_box_width(geometry.radius) if mode == "oklch-slice" else None
             request = SlicePrewarmRequest(
                 generation=generation, mode=mode, hue=hue,
                 center_x=geometry.center_x, center_y=geometry.center_y,
                 radius=geometry.radius, pixel_ratio=pixel_ratio,
+                width=box_w,
             )
             task = SlicePrewarmTask(request)
             task.signals.finished.connect(self._on_slice_prewarm_finished)
@@ -240,7 +244,8 @@ class ColorWheel(QWidget):
         image.setDevicePixelRatio(request.pixel_ratio)
         self._prewarmed_slices[request.mode] = {
             "key": self._slice_cache_key(
-                request.mode, request.center_x, request.center_y, request.radius
+                request.mode, request.center_x, request.center_y, request.radius,
+                request.width,
             ),
             "image": image,
             "min_x": result.min_x,
@@ -419,13 +424,34 @@ class ColorWheel(QWidget):
         if update_widget:
             self.update()
 
+    def _oklch_slice_box_width(self, r: float) -> float:
+        """Horizontal extent of the OKLCh slice box (the C axis).
+
+        Full mode: the box height (1.732r) is fixed by the L axis and the
+        ring's inner circle (radius r + 3) caps the corners, so the box is
+        widened horizontally to that circle limit — the slice graphic gets
+        as wide as the ring allows without touching the ring itself.  The
+        C axis stays fixed, so colour VALUES are unaffected — only the
+        pixel scale grows.
+        Ringless: the box uses the full available width, making the gamut
+        region as wide as possible for easier colour picking.
+        """
+        layout = getattr(self, "_ringless_layout", None)
+        if layout is not None and layout.wheel_enabled:
+            return max(1.0, float(self.width() - 2 * layout.margin))
+        # Circle limit: (0.5*box_w)^2 + (0.866*r)^2 <= (r + 3)^2
+        half_w = math.sqrt(max(0.0, (r + 3.0) ** 2 - (0.866 * r) ** 2))
+        return max(float(r), 2.0 * half_w)
+
     def _oklch_boundary_data(self, h):
         """Pre-compute gamut boundary curve for a given hue.
 
         Returns (scale, boundary_points) where *boundary_points* is a list
         of 201 (C_max, L) pairs (L from 0 to 1, step 0.005) and *scale*
-        maps chroma to pixels so the widest part fills the slice width.
-        The result is cached so repeated calls at the same hue are free.
+        maps chroma to pixels so the widest part of THIS hue's gamut fills
+        the slice box width — each hue is adapted separately, so the
+        coloured region is always as wide as the box.  The result is
+        cached so repeated calls at the same hue are free.
         """
         cache_h = getattr(self, '_bdry_h', None)
         if cache_h is not None and abs(cache_h - h) < 0.05:
@@ -442,28 +468,37 @@ class ColorWheel(QWidget):
 
         self._bdry_h = h
         self._bdry_points = points
-        # Scale: widest chroma fills the triangle radius (100 %, not 95 % —
-        # the boundary line itself marks the gamut edge precisely).
+        # Per-hue scale: this hue's widest chroma fills the slice box.
         r = getattr(self, '_bdry_slice_r', None)
         if r is None:
             r = 130  # sensible default before first layout
-        self._bdry_scale = (r * 1.0) / max(max_c, 0.001)
+        self._bdry_scale = (self._oklch_slice_box_width(r) * 1.0) / max(max_c, 0.001)
         return self._bdry_scale, points
 
     def _oklch_scale_for_hue(self, h, r):
-        """Compute the C→pixel scale used by slice, indicator, and drag."""
-        scale, _ = self._oklch_boundary_data(h)
-        # Update the cached slice radius so boundary_data's scale stays accurate
+        """Compute the C→pixel scale used by slice, indicator, and drag.
+
+        Per-hue: every hue's gamut is stretched to fill the slice box
+        width, so the coloured region is always as wide as possible (the
+        indicator therefore slides horizontally when the hue changes —
+        the tradeoff for the wide slice).
+        """
+        _, points = self._oklch_boundary_data(h)
         self._bdry_slice_r = r
-        self._bdry_scale = (r * 1.0) / max(
-            max((c for c, _ in self._bdry_points), default=0.001), 0.001)
+        box_w = self._oklch_slice_box_width(r)
+        self._bdry_scale = (box_w * 1.0) / max(
+            max((c for c, _ in points), default=0.001), 0.001)
         return self._bdry_scale
 
     def get_wheel_geometry(self):
         w = self.width()
         h = self.height()
-        # Enlarge the wheel to touch the sides as much as possible
-        size = w - 16
+        # Enlarge the wheel to touch the sides as much as possible, but never
+        # let the ring overflow the widget height (the ring bottom edge sits
+        # at cy + outer_radius = size + 4).  A short/wide widget (manual
+        # resize, low screen space) shrinks the wheel instead of clipping
+        # the lower arc off-screen.
+        size = min(w - 16, max(16, h - 6))
         cx = w / 2.0
         # Position near the top with a constant offset to align closely with the preview circles
         cy = size / 2.0 + 6.0
@@ -1152,8 +1187,9 @@ class ColorWheel(QWidget):
                 return self.is_point_in_triangle(px, py, v0, v1, v2)
             case "oklch-slice":
                 hy = r * 0.866
-                min_x = cx - r * 0.5
-                max_x = cx + r * (0.5 if self._is_ringless() else 1.5)
+                box_w = self._oklch_slice_box_width(r)
+                min_x = cx - box_w * 0.5
+                max_x = cx + box_w * (0.5 if self._is_ringless() else 1.5)
                 min_y = cy - hy
                 max_y = cy + hy
                 if not (min_x <= px <= max_x and min_y <= py <= max_y):
@@ -1497,8 +1533,9 @@ class ColorWheel(QWidget):
             _, _, oklch_h = rgb_to_oklch(rgb_r, rgb_g, rgb_b)
 
         hy = r * 0.866
-        min_x = int(math.floor(cx - r * 0.5))
-        max_x = int(math.ceil(cx + r * 0.5))
+        box_w = self._oklch_slice_box_width(r)
+        min_x = int(math.floor(cx - box_w * 0.5))
+        max_x = int(math.ceil(cx + box_w * 0.5))
         min_y = int(math.floor(cy - hy))
         max_y = int(math.ceil(cy + hy))
         width = max_x - min_x
@@ -1506,10 +1543,14 @@ class ColorWheel(QWidget):
         if width <= 0 or height <= 0:
             return
 
-        cache_key = (round(oklch_h, 1), r, round(cx, 3), round(cy, 3), "oklch")
+        cache_key = (round(oklch_h, 1), r, round(cx, 3), round(cy, 3), round(box_w, 3), "oklch")
         prewarmed = self._prewarmed_slices.get("oklch-slice")
         if prewarmed is not None and prewarmed.get("key") == cache_key:
             painter.drawImage(int(prewarmed["min_x"]), int(prewarmed["min_y"]), prewarmed["image"])
+            # The prewarmed image replaces the fallback render, but the gamut
+            # outline must still be drawn (mirrors draw_rgb_slice).  Without
+            # it the stroke vanishes after a hue change once prewarming lands.
+            self._draw_oklch_outline(painter, min_x, cy, hy, r, oklch_h)
             return
         img_ready = (hasattr(self, "_cached_oklch_key")
                      and self._cached_oklch_key == cache_key
@@ -1565,11 +1606,15 @@ class ColorWheel(QWidget):
                           self._cached_oklch_img)
 
         # ── sRGB gamut boundary outline ──
-        # Trace the max-C curve rightward, then close along C=0 (the
-        # neutral axis).  201-point boundary gives a sharp peak.
-        scale = getattr(self, '_bdry_scale', None)
-        if scale is None:
-            scale = self._oklch_scale_for_hue(oklch_h, r)
+        self._draw_oklch_outline(painter, min_x, cy, hy, r, oklch_h)
+
+    def _draw_oklch_outline(self, painter, min_x, cy, hy, r, oklch_h):
+        """Draw the sRGB gamut boundary around the OKLCh slice.
+
+        Traces the max-C curve rightward, then closes along C=0 (the
+        neutral axis).  The 201-point boundary gives a sharp peak.
+        """
+        scale = self._oklch_scale_for_hue(oklch_h, r)
         _, bdry = self._oklch_boundary_data(oklch_h)
 
         path = QPainterPath()
@@ -1599,7 +1644,8 @@ class ColorWheel(QWidget):
 
     def draw_oklch_indicator(self, painter, cx, cy, r):
         hy = r * 0.866
-        min_x = int(math.floor(cx - r * 0.5))
+        box_w = self._oklch_slice_box_width(r)
+        min_x = int(math.floor(cx - box_w * 0.5))
 
         # Hue from drag cache or stored OKLCh state (avoids round-trip drift)
         oklch_h = getattr(self, '_drag_oklch_h', None)
@@ -1627,6 +1673,12 @@ class ColorWheel(QWidget):
             C = min(C_ok, find_max_oklch_c(L_ok, oklch_h))
             L = L_ok
 
+        # Keep the indicator inside the gamut at the current hue.  After a
+        # hue change the stored (L, C) can exceed the new hue's max chroma
+        # (the hue ring keeps L/C fixed and clamps the colour instead), so
+        # without this the dot would float outside the coloured region.
+        C = min(C, find_max_oklch_c(L, oklch_h))
+
         px = min_x + C * scale
         py = cy + hy * (1.0 - 2.0 * L)
 
@@ -1634,7 +1686,8 @@ class ColorWheel(QWidget):
 
     def handle_oklch_slice_drag(self, px, py, cx, cy, r):
         hy = r * 0.866
-        min_x = int(math.floor(cx - r * 0.5))
+        box_w = self._oklch_slice_box_width(r)
+        min_x = int(math.floor(cx - box_w * 0.5))
         if not hasattr(self, '_drag_scale') or self._drag_scale is None:
             # Lock in OKLCh hue from stored state — avoids RGB→OKLCh
             # round-trip drift (~0.2° per interaction). Fall back to

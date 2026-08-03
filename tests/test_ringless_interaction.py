@@ -75,9 +75,12 @@ class TestRinglessInteractionGuards:
         w = make_wheel(300, 339, canonical_layout())
         w.set_wheel_mode("oklch-slice")
         sg = w.get_slice_geometry()
+        box_w = w._oklch_slice_box_width(sg.radius)
 
+        # The ringless box uses the full available width (wider than the
+        # radius), so the far right of the box is still draggable.
         assert w._is_point_in_active_slice(
-            sg.center_x + 0.5 * sg.radius - 1.0,
+            sg.center_x + 0.5 * box_w - 1.0,
             sg.center_y,
             sg.center_x,
             sg.center_y,
@@ -88,9 +91,10 @@ class TestRinglessInteractionGuards:
         w = make_wheel(300, 339, canonical_layout())
         w.set_wheel_mode("oklch-slice")
         sg = w.get_slice_geometry()
+        box_w = w._oklch_slice_box_width(sg.radius)
 
         assert not w._is_point_in_active_slice(
-            sg.center_x + 0.5 * sg.radius + 1.0,
+            sg.center_x + 0.5 * box_w + 1.0,
             sg.center_y,
             sg.center_x,
             sg.center_y,
