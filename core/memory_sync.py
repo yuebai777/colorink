@@ -18,6 +18,13 @@ class MemorySyncSignals(QObject):
     color_changed = pyqtSignal(int, int, int)
     # Emitted when the connection status changes: (software_mode, connected_bool)
     status_changed = pyqtSignal(str, bool)
+    # Emitted when the connection failure reason changes:
+    # (software_mode, error_text, permission_issue)
+    # error_text is empty when the backend is connected / healthy.
+    # permission_issue hints the failure is a UAC privilege mismatch
+    # (e.g. Photoshop elevated, Colorink not) — the UI can offer a
+    # one-click "relaunch as administrator".
+    error_changed = pyqtSignal(str, str, bool)
 
 class MemorySyncThread(QThread):
     def __init__(self, parent=None):
@@ -44,6 +51,7 @@ class MemorySyncThread(QThread):
         self.companion_hsv = None
         self._last_companion_hsv = (0.0, 0.0, 0.0)
         self.last_write_time = 0.0
+        self._last_error_text = ("", False)
         
         # Instantiate per-software sync backends
         self.csp_sync = csp_brush_link.CSPSync()
@@ -185,7 +193,18 @@ class MemorySyncThread(QThread):
                 if status_key != last_status:
                     self.signals.status_changed.emit(self.software_mode, connected)
                     last_status = status_key
-                    
+
+                # Notify failure reason changes (Photoshop COM etc.) so the
+                # UI can show *why* the backend is not connected.
+                err_text = ""
+                perm_issue = False
+                if not connected and self.software_mode == 'ps':
+                    err_text = getattr(self.ps_sync, "last_error", "") or ""
+                    perm_issue = bool(getattr(self.ps_sync, "permission_issue", False))
+                if (err_text, perm_issue) != self._last_error_text:
+                    self._last_error_text = (err_text, perm_issue)
+                    self.signals.error_changed.emit(self.software_mode, err_text, perm_issue)
+
                 if not connected or color is None:
                     continue
                     

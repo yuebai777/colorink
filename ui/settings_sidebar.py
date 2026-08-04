@@ -242,9 +242,11 @@ class SettingsSidebar(QWidget):
 
         grid_gray.addWidget(QLabel("渲染后端 (高级)"), 2, 0)
         self.combo_grayscale_backend = NonScrollComboBox()
-        self.combo_grayscale_backend.addItems(["OpenGL Overlay", "DComp 直通", "Rust D3D11"])
-        self.combo_grayscale_backend.setToolTip("不同系统的兼容性不同，默认 OpenGL Overlay；Rust 后端仅支持 OKLCh")
-        self.combo_grayscale_backend.currentTextChanged.connect(self.save_settings)
+        self.combo_grayscale_backend.addItems(["OpenGL Overlay", "DComp 直通", "Rust D3D11", "系统级 (Mag)"])
+        self.combo_grayscale_backend.setToolTip(
+            "不同系统的兼容性不同，默认 OpenGL Overlay；Rust 后端仅支持 OKLCh；"
+            "系统级 (Mag) 与 Windows 自带滤镜同路径，最流畅（不捕获屏幕、不改显示器配置文件）")
+        self.combo_grayscale_backend.currentTextChanged.connect(self._on_grayscale_backend_changed)
         grid_gray.addWidget(self.combo_grayscale_backend, 2, 1)
 
         cl_gray.addLayout(grid_gray)
@@ -809,6 +811,34 @@ class SettingsSidebar(QWidget):
         setattr(self, f"_eye_btn_set_{target}", btn_set)
         setattr(self, f"_eye_btn_sync_{target}", btn_sync)
         
+    def _update_grayscale_mode_options(self, backend):
+        """按渲染后端重建黑白模式选项：只显示该后端支持的模式（Rust 仅 OKLCh；Mag 仅 Luma）"""
+        self.combo_grayscale_mode.blockSignals(True)
+        self.combo_grayscale_mode.clear()
+        if backend == "rust":
+            self.combo_grayscale_mode.addItems(["OKLCh (感知均匀)"])
+            self.combo_grayscale_mode.setEnabled(False)
+        elif backend == "mag":
+            self.combo_grayscale_mode.addItems(["Luma (BT.709 标准)"])
+            self.combo_grayscale_mode.setEnabled(False)
+        else:
+            self.combo_grayscale_mode.addItems(["OKLCh (感知均匀)", "Luma (BT.709 标准)"])
+            self.combo_grayscale_mode.setEnabled(True)
+        self.combo_grayscale_mode.blockSignals(False)
+
+    def _on_grayscale_backend_changed(self, text):
+        """切换渲染后端时重建黑白模式选项，再保存设置"""
+        if "D3D11" in text:
+            backend = "rust"
+        elif "DComp" in text:
+            backend = "dwm"
+        elif "Mag" in text:
+            backend = "mag"
+        else:
+            backend = "overlay"
+        self._update_grayscale_mode_options(backend)
+        self.save_settings()
+
     def refresh_ui(self):
         self.cfg = config.load_hotkey_config()
         
@@ -848,12 +878,9 @@ class SettingsSidebar(QWidget):
         self.combo_grayscale_mode.blockSignals(True)
         mode = self.cfg.get("grayscaleFilterMode", "oklch")
         backend = self.cfg.get("grayscaleFilterBackend", "overlay")
-        # Rust 后端仅支持 OkLab
-        if backend == "rust":
-            self.combo_grayscale_mode.setEnabled(False)
-            self.combo_grayscale_mode.setCurrentIndex(0)
-        else:
-            self.combo_grayscale_mode.setEnabled(True)
+        # 只显示后端支持的模式：Rust 仅 OKLCh；Mag 仅 Luma
+        self._update_grayscale_mode_options(backend)
+        if backend not in ("rust", "mag"):
             self.combo_grayscale_mode.setCurrentIndex(1 if mode == "luma" else 0)
         self.combo_grayscale_mode.blockSignals(False)
 
@@ -862,6 +889,8 @@ class SettingsSidebar(QWidget):
             self.combo_grayscale_backend.setCurrentIndex(2)
         elif backend == "dwm":
             self.combo_grayscale_backend.setCurrentIndex(1)
+        elif backend == "mag":
+            self.combo_grayscale_backend.setCurrentIndex(3)
         else:
             self.combo_grayscale_backend.setCurrentIndex(0)
         self.combo_grayscale_backend.blockSignals(False)
@@ -1486,10 +1515,12 @@ class SettingsSidebar(QWidget):
         # Grayscale filter screen target
         screen_text = self.combo_grayscale_screen.currentText()
         self.cfg["grayscaleFilterScreen"] = screen_text.split(":")[0].strip() if ":" in screen_text else screen_text
-        # Grayscale filter mode (Rust 后端强制 OkLab)
+        # Grayscale filter mode (组合框已按后端只显示支持的模式；此处再兜底强制)
         backend_text = self.combo_grayscale_backend.currentText()
         if "D3D11" in backend_text:
             self.cfg["grayscaleFilterMode"] = "oklch"
+        elif "Mag" in backend_text:
+            self.cfg["grayscaleFilterMode"] = "luma"
         else:
             mode_text = self.combo_grayscale_mode.currentText()
             self.cfg["grayscaleFilterMode"] = "luma" if "Luma" in mode_text else "oklch"
@@ -1499,6 +1530,8 @@ class SettingsSidebar(QWidget):
             self.cfg["grayscaleFilterBackend"] = "rust"
         elif "DComp" in backend_text:
             self.cfg["grayscaleFilterBackend"] = "dwm"
+        elif "Mag" in backend_text:
+            self.cfg["grayscaleFilterBackend"] = "mag"
         else:
             self.cfg["grayscaleFilterBackend"] = "overlay"
 
@@ -1675,7 +1708,18 @@ class SettingsSidebar(QWidget):
             self.lbl_sync_status.setText(f"{name} 已连接")
             self._set_label_state(self.lbl_sync_status, "success")
         elif connected is False:
-            self.lbl_sync_status.setText(f"{name} 未连接")
+            text = f"{name} 未连接"
+            parent = self._parent
+            sync_err = getattr(parent, "_sync_error", None) if parent is not None else None
+            if sync_err and len(sync_err) >= 2 and sync_err[0] == self.cfg.get("syncSoftware"):
+                err = sync_err[1]
+                if err:
+                    text += f" — {err}"
+                    # Keep the label compact; full reason lives in the tooltip.
+                    if len(text) > 90:
+                        text = text[:90] + "…"
+            self.lbl_sync_status.setText(text)
+            self.lbl_sync_status.setToolTip(text)
             self._set_label_state(self.lbl_sync_status, "danger")
         else:
             mode = self.cfg.get("syncSoftware", "csp")

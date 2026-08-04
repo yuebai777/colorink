@@ -11,22 +11,23 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_application_version_is_current_release():
-    assert APP_VERSION == "1.5.2"
-    assert _normalize_version(APP_VERSION) == [1, 5, 2]
+    assert APP_VERSION == "1.6.0"
+    # _normalize_version strips trailing zeros: "1.6.0" → [1, 6]
+    assert _normalize_version(APP_VERSION) == [1, 6]
 
 
 def test_windows_file_version_matches_application_version():
     content = (PROJECT_ROOT / "file_version_info.txt").read_text(encoding="utf-8")
 
-    assert "filevers=(1, 5, 2, 0)" in content
-    assert "prodvers=(1, 5, 2, 0)" in content
-    assert "StringStruct('FileVersion', '1.5.2.0')" in content
-    assert "StringStruct('ProductVersion', '1.5.2.0')" in content
+    assert "filevers=(1, 6, 0, 0)" in content
+    assert "prodvers=(1, 6, 0, 0)" in content
+    assert "StringStruct('FileVersion', '1.6.0.0')" in content
+    assert "StringStruct('ProductVersion', '1.6.0.0')" in content
 
 
 def test_release_notes_start_with_current_release():
     content = (PROJECT_ROOT / "release_notes.md").read_text(encoding="utf-8")
-    assert content.startswith("## v1.5.2\n")
+    assert content.startswith("## v1.6.0\n")
 
 
 def test_first_run_defaults_are_compact_and_discoverable():
@@ -138,6 +139,18 @@ def test_companion_debug_logging_is_disabled_for_release_builds():
 SPEC_FILES = ["Colorink.spec", "Colorink Onefile.spec"]
 SOURCE_DIRS = ["ui", "core"]
 ICON_REF_RE = re.compile(r"icons/([A-Za-z0-9_.\-]+\.(?:png|ico))")
+BINARY_RESOURCE_RE = re.compile(r'"([A-Za-z0-9_.\-]+\.(?:exe|dll|slang|slangp))"')
+# Directories where bundled binary resources live (source of truth for
+# "does a referenced file name exist on disk" — avoids walking venv/).
+_BINARY_SEARCH_DIRS = [
+    PROJECT_ROOT,
+    PROJECT_ROOT / "core",
+    PROJECT_ROOT / "dcomp_overlay" / "build",
+    PROJECT_ROOT / "sc_overlay" / "build",
+    PROJECT_ROOT / "mag_overlay" / "build",
+    PROJECT_ROOT / "mhc2_overlay" / "build",
+    PROJECT_ROOT / "shaderglass",
+]
 
 
 def _spec_declared_icons() -> set[str]:
@@ -189,4 +202,79 @@ def test_spec_declares_all_icon_files():
     assert not undeclared, (
         "Icon files in icons/ missing from spec datas "
         f"(_add_if_exists): {', '.join(undeclared)}"
+    )
+
+
+def _spec_declared_resources() -> list[set[str]]:
+    """Per-spec _add_if_exists declaration sets (in SPEC_FILES order)."""
+    sets = []
+    for spec_name in SPEC_FILES:
+        content = (PROJECT_ROOT / spec_name).read_text(encoding="utf-8")
+        sets.append(set(re.findall(r"_add_if_exists\('([^']+)'", content)))
+    return sets
+
+
+def test_specs_declare_identical_resource_sets():
+    """Both specs must declare exactly the same resources.
+
+    The icon contract tests take the union across specs, so a resource
+    declared in only one spec would pass them while shipping a different
+    payload per build flavour (Onedir vs Onefile).
+    """
+    sets = _spec_declared_resources()
+    assert sets[0] == sets[1], (
+        "Spec resource sets drifted between Colorink.spec and "
+        f"Colorink Onefile.spec:\n"
+        f"  only in {SPEC_FILES[0]}: {sorted(sets[0] - sets[1])}\n"
+        f"  only in {SPEC_FILES[1]}: {sorted(sets[1] - sets[0])}"
+    )
+
+
+def test_spec_declared_binary_resources_exist_on_disk():
+    """Every non-icon resource declared in the specs must exist.
+
+    _add_if_exists silently skips missing files at build time — the packaged
+    EXE then ships without the resource while the build log looks clean.
+    """
+    for spec_name, declared in zip(SPEC_FILES, _spec_declared_resources()):
+        missing = []
+        for rel in sorted(declared):
+            if rel.endswith((".exe", ".dll", ".slang", ".slangp")):
+                if not (PROJECT_ROOT / rel).is_file():
+                    missing.append(rel)
+        assert not missing, (
+            f"{spec_name} declares binary resources missing from disk: "
+            f"{', '.join(missing)}"
+        )
+
+
+def test_spec_declared_binaries_cover_source_references():
+    """Every bundled binary referenced from source must be declared in the
+    specs.
+
+    Only file names that actually exist on disk (in the known resource
+    directories) count — process names like "Photoshop.exe" are not
+    bundled resources.
+    """
+    referenced: set[str] = set()
+    for directory in SOURCE_DIRS:
+        for py in (PROJECT_ROOT / directory).glob("*.py"):
+            content = py.read_text(encoding="utf-8")
+            for match in BINARY_RESOURCE_RE.finditer(content):
+                name = match.group(1)
+                if any(
+                    (d / name).is_file() for d in _BINARY_SEARCH_DIRS
+                ):
+                    referenced.add(name)
+    declared = set()
+    for content in (
+        (PROJECT_ROOT / s).read_text(encoding="utf-8") for s in SPEC_FILES
+    ):
+        for match in re.finditer(r"_add_if_exists\('([^']+)'", content):
+            if match.group(1).endswith((".exe", ".dll", ".slang", ".slangp")):
+                declared.add(Path(match.group(1)).name)
+    missing = sorted(referenced - declared)
+    assert not missing, (
+        "Binary resources referenced in source but missing from spec datas "
+        f"(_add_if_exists): {', '.join(missing)}"
     )

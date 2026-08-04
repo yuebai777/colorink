@@ -43,6 +43,23 @@ _PROGIDS = (
     "Photoshop.Application.140",
 )
 
+# HRESULTs that typically mean a UAC integrity-level mismatch:
+# Photoshop runs elevated (as administrator) while Colorink does not,
+# or vice versa. Cross-integrity COM calls are refused by the OS.
+_PERMISSION_HRESULTS = {
+    0x80070005,   # E_ACCESSDENIED
+    0x8001011B,   # RPC_E_ACCESS_DENIED — the classic elevated-server refusal
+    0x800706BA,   # RPC_S_SERVER_UNAVAILABLE
+}
+
+
+def _com_hresult(exc: Exception) -> int | None:
+    """Extract the COM HRESULT from a pywintypes.com_error / pythoncom error."""
+    hres = getattr(exc, "hresult", None)
+    if isinstance(hres, int):
+        return hres & 0xFFFFFFFF
+    return None
+
 DEBUG = False
 
 
@@ -84,6 +101,15 @@ class PhotoshopSync:
         self._proc_handle: int = 0     # Win32 process handle for fast alive check
         self.current_version: str = "auto"
         self.process_name: str = PROCESS_NAME
+        # User-facing reason for the last failed connect / read / write.
+        # Empty string means no error. Exposed via status()["lastError"] so
+        # the UI can tell the user WHY Photoshop sync is not connected
+        # (PS not running / COM not registered / permission mismatch...).
+        self.last_error: str = ""
+        # True when the last failure looks like a UAC integrity-level
+        # mismatch (e.g. Photoshop running as admin, Colorink not).
+        # The UI uses this to offer a one-click "relaunch as admin".
+        self.permission_issue: bool = False
 
     # -- connect -----------------------------------------------------------------
 
@@ -94,6 +120,7 @@ class PhotoshopSync:
         if self._app is not None and self._disp is not None:
             # Bail early if Photoshop died — avoids hung COM RPC
             if not self._is_process_alive():
+                self.last_error = "Photoshop 进程已退出，请重新启动 Photoshop 后再试"
                 self._reset()
                 return False
             try:
@@ -104,6 +131,7 @@ class PhotoshopSync:
                 self._reset()
 
         if _w32 is None:
+            self.last_error = "pywin32 组件不可用（打包异常或未安装 pywin32）"
             _print_error("connect: win32com / pywin32 not available")
             return False
 
@@ -112,6 +140,7 @@ class PhotoshopSync:
         # Photoshop if it's not running — which is NOT what we want.
         # Check first whether the process exists at all.
         if not self._find_process():
+            self.last_error = "未检测到 Photoshop 进程，请先启动 Photoshop"
             return False
 
         # Try each ProgID in order
@@ -126,12 +155,26 @@ class PhotoshopSync:
                     self.K32.CloseHandle(self._proc_handle)
                     self._proc_handle = 0
                 log(f"Connected via ProgID='{progid}'  PID={self._pid}")
+                self.last_error = ""
+                self.permission_issue = False
                 return True
-            except Exception:
-                continue
+            except Exception as exc:
+                hres = _com_hresult(exc)
+                if hres in _PERMISSION_HRESULTS:
+                    self.permission_issue = True
+                self.last_error = f"COM 连接 {progid} 失败:{exc}"
 
         _print_error("connect: all ProgIDs failed — is Photoshop running?")
         self._reset()
+        if self.permission_issue:
+            self.last_error += (
+                "（可能是权限不足:请让 Photoshop 与 Colorink 都"
+                "以管理员身份运行）"
+            )
+        elif self.last_error:
+            self.last_error += "（可能为绿色版 / 未正常安装，COM 接口未注册）"
+        else:
+            self.last_error = "Photoshop COM 接口不可用（可能为绿色版 / 未正常安装）"
         return False
 
     # -- colour I/O --------------------------------------------------------------
@@ -202,6 +245,9 @@ class PhotoshopSync:
             return {"r": r, "g": g, "b": b}
         except Exception as exc:
             _print_error(f"get_color: {exc}")
+            if _com_hresult(exc) in _PERMISSION_HRESULTS:
+                self.permission_issue = True
+            self.last_error = f"读取 Photoshop 前景色失败：{exc}"
             self._reset()
             return None
 
@@ -240,6 +286,9 @@ class PhotoshopSync:
             return True
         except Exception as exc:
             _print_error(f"set_color: {exc}")
+            if _com_hresult(exc) in _PERMISSION_HRESULTS:
+                self.permission_issue = True
+            self.last_error = f"写入 Photoshop 前景色失败：{exc}"
             self._reset()
             return False
 
@@ -256,6 +305,7 @@ class PhotoshopSync:
             "pid": self._pid if connected else None,
             "version": self.current_version,
             "processName": self.process_name,
+            "lastError": self.last_error,
         }
 
     def set_version(self, version: str) -> bool:
@@ -276,6 +326,7 @@ class PhotoshopSync:
             "version": self.current_version,
             "processName": self.process_name,
             "color": color,
+            "lastError": self.last_error,
         }
 
     # -- internal helpers --------------------------------------------------------
