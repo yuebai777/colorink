@@ -742,19 +742,21 @@ class MainWindow(QMainWindow):
         self._last_dpr = None       # Previous screen devicePixelRatio
         self._dpi_locked_size = None  # (w, h) logical size frozen during DPI transition
 
-        # Fullscreen grayscale overlay — choose backend from config
+        # Fullscreen grayscale overlay — choose backend from config.
+        # NO silent fallback: the selected backend is kept as-is, so the user
+        # always knows which mode is active. If it can't run, toggle() reports
+        # a clear error (last_error) instead of silently switching to OpenGL.
         mode = self.cfg.get("grayscaleFilterMode", "oklch")
         backend = self.cfg.get("grayscaleFilterBackend", "overlay")
         if backend == "rust":
             from core.rust_filter import RustFilterController
             self.grayscale_overlay = RustFilterController(mode=mode)
-            if not self.grayscale_overlay.is_available:
-                self.grayscale_overlay = GrayscaleOverlay(mode=mode)
         elif backend == "dwm":
             from core.dcomp_grayscale import DCompOverlayController
             self.grayscale_overlay = DCompOverlayController()
-            if not self.grayscale_overlay.is_available:
-                self.grayscale_overlay = GrayscaleOverlay(mode=mode)
+        elif backend == "mag":
+            from core.mag_grayscale import MagFilterController
+            self.grayscale_overlay = MagFilterController(mode=mode)
         else:
             self.grayscale_overlay = GrayscaleOverlay(mode=mode)
         # Apply saved screen target (no-op for DWM backend)
@@ -3161,28 +3163,23 @@ class MainWindow(QMainWindow):
             print("[Hotkeys] Grayscale Filter toggled")
             try:
                 result = self.grayscale_overlay.toggle()
-                # DWM backend returns False on failure
+                # Backends return False + last_error on failure — show it
+                # clearly instead of silently switching modes.
                 if result is False and hasattr(self.grayscale_overlay, 'last_error'):
                     err = getattr(self.grayscale_overlay, "last_error", "")
                     if err:
                         from PyQt6.QtWidgets import QMessageBox
                         QMessageBox.warning(self, "黑白滤镜", err)
-                # Auto-fallback: if OpenGL overlay is broken, switch to DComp
+                # No auto-fallback: if the OpenGL overlay is broken, tell the
+                # user to switch backends manually — never switch silently.
                 elif (isinstance(self.grayscale_overlay, GrayscaleOverlay)
                       and self.grayscale_overlay.is_active
                       and not self.grayscale_overlay.is_healthy):
-                    print("[Hotkeys] OpenGL overlay unhealthy, falling back to DComp")
-                    self.grayscale_overlay.set_active(False)
-                    from core.dcomp_grayscale import DCompOverlayController
-                    self.grayscale_overlay = DCompOverlayController()
-                    if self.grayscale_overlay.is_available:
-                        self.cfg["grayscaleFilterBackend"] = "dwm"
-                        self.grayscale_overlay.set_active(True)
-                    else:
-                        from PyQt6.QtWidgets import QMessageBox
-                        QMessageBox.warning(self, "黑白滤镜",
-                            "OpenGL 滤镜初始化失败（缺少 Qt OpenGL 组件）。\n\n"
-                            "建议：切换到 DComp 直通后端，或重新安装 PyQt6 完整包。")
+                    print("[Hotkeys] OpenGL overlay unhealthy")
+                    from PyQt6.QtWidgets import QMessageBox
+                    QMessageBox.warning(self, "黑白滤镜",
+                        "OpenGL 滤镜初始化失败（缺少 Qt OpenGL 组件）。\n\n"
+                        "请在设置中手动切换到 DComp 直通后端，或重新安装 PyQt6 完整包。")
             except Exception as e:
                 print(f"[Hotkeys] Grayscale toggle error: {e}")
                 from PyQt6.QtWidgets import QMessageBox
@@ -3204,6 +3201,9 @@ class MainWindow(QMainWindow):
         self.sync_thread = memory_sync.MemorySyncThread(self)
         self.sync_thread.signals.color_changed.connect(self.on_external_color_changed)
         self.sync_thread.signals.status_changed.connect(self.on_sync_status_changed)
+        self.sync_thread.signals.error_changed.connect(self.on_sync_error_changed)
+        self._sync_error = None
+        self._ps_perm_prompted = False
         
         # Set active software mode
         mode = self.cfg.get("syncSoftware", "csp")
@@ -3249,6 +3249,56 @@ class MainWindow(QMainWindow):
             self.settings_sidebar._refresh_companion_status()
         if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
             self.settings_sidebar._refresh_sync_status()
+
+    @pyqtSlot(str, str, bool)
+    def on_sync_error_changed(self, mode, error, permission_issue):
+        """Show *why* the sync backend failed to connect (e.g. Photoshop)."""
+        self._sync_error = (mode, error, permission_issue) if error else None
+        if hasattr(self, 'title_bar'):
+            self.title_bar.title_label.setToolTip(error if error else "")
+        if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
+            self.settings_sidebar._refresh_sync_status()
+        # A UAC integrity mismatch is self-fixable: offer to relaunch
+        # Colorink elevated. Prompt once per session to avoid nagging.
+        if mode == 'ps' and permission_issue and not self._ps_perm_prompted:
+            self._ps_perm_prompted = True
+            self._prompt_relaunch_as_admin()
+
+    def _prompt_relaunch_as_admin(self):
+        from PyQt6.QtWidgets import QMessageBox
+        ret = QMessageBox.question(
+            self, "需要管理员权限",
+            "检测到 Photoshop 可能以管理员身份运行，而 Colorink 权限不足，"
+            "无法通过 COM 连接。\n\n"
+            "是否以管理员身份重启 Colorink？\n"
+            "（如果 Photoshop 是绿色版 / 未正常安装，提权也无法解决）",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if ret == QMessageBox.StandardButton.Yes:
+            self._relaunch_as_admin()
+
+    def _relaunch_as_admin(self):
+        """Restart the app elevated via ShellExecute(runas); exit current."""
+        import ctypes
+        exe = sys.executable
+        args = " ".join(
+            f'"{a}"' if " " in a else a for a in sys.argv[1:]
+        )
+        try:
+            ret = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", exe, args, os.getcwd(), 1
+            )
+        except Exception as exc:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "提权失败", f"无法以管理员身份启动: {exc}")
+            return
+        if ret <= 32:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "提权失败", f"无法以管理员身份启动 (错误码 {ret})")
+            return
+        # ShellExecute returned OK — this instance hands over and exits.
+        os._exit(0)
 
     def _setup_companion_connection(self):
         if not hasattr(self, 'sync_thread'):
@@ -3485,6 +3535,8 @@ class MainWindow(QMainWindow):
             current_backend = "rust"
         elif cls_name == "DCompOverlayController":
             current_backend = "dwm"
+        elif cls_name == "MagFilterController":
+            current_backend = "mag"
 
         if new_backend != current_backend:
             # Backend changed — tear down old, create new
@@ -3496,13 +3548,12 @@ class MainWindow(QMainWindow):
             if new_backend == "rust":
                 from core.rust_filter import RustFilterController
                 self.grayscale_overlay = RustFilterController(mode=mode)
-                if not self.grayscale_overlay.is_available:
-                    self.grayscale_overlay = GrayscaleOverlay(mode=mode)
             elif new_backend == "dwm":
                 from core.dcomp_grayscale import DCompOverlayController
                 self.grayscale_overlay = DCompOverlayController()
-                if not self.grayscale_overlay.is_available:
-                    self.grayscale_overlay = GrayscaleOverlay(mode=mode)
+            elif new_backend == "mag":
+                from core.mag_grayscale import MagFilterController
+                self.grayscale_overlay = MagFilterController(mode=mode)
             else:
                 self.grayscale_overlay = GrayscaleOverlay(mode=mode)
 
