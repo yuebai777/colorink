@@ -1,4 +1,4 @@
-# -*- mode: python ; coding: utf-8 -*-
+﻿# -*- mode: python ; coding: utf-8 -*-
 # Onefile spec — single EXE, no external folder needed
 import os
 import sys
@@ -61,6 +61,9 @@ _add_if_exists('dcomp_overlay/build/dcomp_overlay.exe', 'dcomp_overlay/build', _
 _add_if_exists('sc_overlay/build/sc_overlay.exe', 'sc_overlay/build', _datas, 'SC overlay')
 _add_if_exists('core/picker_hook.dll', 'core', _datas, 'picker hook DLL')
 _add_if_exists('screen_filter.exe', '.', _datas, 'Rust filter EXE')
+_add_if_exists('mag_overlay/build/mag_filter.exe', 'mag_overlay/build', _datas, 'Mag filter')
+_add_if_exists('shaderglass/colorink_grayscale.slang', 'shaderglass', _datas, 'ShaderGlass grayscale shader')
+_add_if_exists('shaderglass/colorink_grayscale.slangp', 'shaderglass', _datas, 'ShaderGlass shader preset')
 
 a = Analysis(
     ['main.py'],
