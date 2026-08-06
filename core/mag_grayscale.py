@@ -1,6 +1,6 @@
 """MagSetFullscreenColorEffect 灰度后端 — C++ EXE via control file.
 
-与 DCompOverlayController / RustFilterController 接口兼容。
+与 NativeGrayscaleController 接口兼容。
 
 Mag 后端在 DWM 合成级应用 5x5 颜色矩阵（与 Windows 自带颜色滤镜同路径）：
 - 零捕获、零覆盖窗口、无额外 GPU 开销，与 Win 自带滤镜一样流畅

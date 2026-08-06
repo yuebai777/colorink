@@ -8,7 +8,7 @@
 - **多色域滑块** — RGB、HSV、HSL、CIELAB、OKLab、OKLCh，全部可调节
 - **前景 / 背景双色槽** — 一键交换、复制、对比
 - **取色历史** — 持久化色板，行列和色块大小可调
-- **全屏灰度滤镜** — 一键切换感知型（OKLCh）或 BT.709 亮度灰度滤镜，覆盖整个屏幕（支持 DirectComposition / GDI）
+- **全屏灰度滤镜** — 原生 D3D11 + DirectComposition 的 OKLCh 感知灰度，覆盖全部屏幕与 ColorInk 自身；另保留 Windows Mag 的低延迟 Luma 备用模式
 - **全局热键** — 无需切换窗口即可取色或开关滤镜
 - **CSP Companion 同步** — 支持 CLIP STUDIO PAINT 智能手机连接协议，无需内存扫描即可同步颜色
 - **Photoshop 桥接** — 通过 JSX 脚本直接发送颜色到 PS 前景 / 背景色
@@ -49,6 +49,10 @@ python main.py
 | 切换跟随鼠标 | `Ctrl + R` |
 | 显示 / 隐藏窗口 | `Ctrl + H` |
 | 切换灰度滤镜 | `Ctrl + G` |
+| 切换 LAB 视图（鼠标悬停色轮 / LAB 区域） | `Space`（也可设为鼠标侧键 / 中键） |
+| 切换 LAB 视图（全局） | `Ctrl + L` |
+
+所有快捷键均可绑定鼠标按键（侧键 / 中键等）。全局快捷键绑定鼠标按键时，点击不会被拦截，画画软件仍会收到该点击。
 
 ## 打包（独立 EXE）
 

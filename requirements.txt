@@ -1,6 +1,7 @@
 PyQt6==6.7.1
 pywin32>=306
 keyboard>=0.13.5
+mouse>=0.7.1
 psutil>=5.9.8
 dxcam>=0.3.0
 numpy>=2.0
@@ -9,3 +10,4 @@ numpy>=2.0
 pyzbar>=0.1.9
 Pillow>=10.0.0
 mss>=9.0.0
+
