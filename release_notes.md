@@ -1,4 +1,4 @@
-## v1.7.0
+## v1.6.1
 
 原生 OKLCh 灰度后端与 LAB 视图快速切换发布。
 
@@ -18,7 +18,7 @@
 
 - **灰度后端选项收敛**：设置中仅保留「OKLCh (GPU兼容)」与「系统 Luma (Mag)」两项，移除 DComp 直通、Rust D3D11、OpenGL Overlay 等旧后端及其原生程序（`dcomp_overlay` / `sc_overlay` / `mhc2_overlay` / `shaderglass` / `screen_filter.exe`）
 - **默认后端切换为 native**：`grayscaleFilterBackend` 默认值由 `overlay` 改为 `native`，旧配置中引用已移除后端时自动迁移到 `native`
-- **版本号**：应用内更新检查版本与 Windows 文件版本统一到 `1.7.0` / `1.7.0.0`
+- **版本号**：应用内更新检查版本与 Windows 文件版本统一到 `1.6.1` / `1.6.1.0`
 
 ---
 
