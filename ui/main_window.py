@@ -1,4 +1,4 @@
-﻿import colorsys
+import colorsys
 import math
 import os
 import re
@@ -37,14 +37,17 @@ from PyQt6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
+    QPlainTextEdit,
     QPushButton,
     QSlider,
     QStackedWidget,
     QStyle,
     QStyleOptionSlider,
     QSystemTrayIcon,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -65,7 +68,12 @@ from ui.color_history import ColorHistoryWidget
 from ui.color_picker_overlay import ColorPickerOverlay
 from ui.color_preview_box import ColorPreviewBox
 from ui.color_wheel import ColorWheel, hls_to_hsv_floats, hsv_to_rgb, rgb_to_hsv
-from ui.grayscale_overlay import GrayscaleOverlay
+from ui.hotkey_button import (
+    MOUSE_BUTTON_NAME_BY_QT,
+    capture_active,
+    is_mouse_hotkey,
+    parse_key_event,
+)
 from ui.lab_visualizer import LabSlider, LabSquare
 from ui.picker_panes import LabPane, PaneWithModeButton, WheelPane
 from ui.ringless_mode import (
@@ -291,6 +299,9 @@ class TitleBar(QWidget):
         self.btn_settings = QPushButton("☰")
         self.btn_settings.setFixedSize(9, 9)
         self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
+        # Never keep keyboard focus — otherwise Space (the default LAB-toggle
+        # hotkey) would re-click the focused button and toggle the settings.
+        self.btn_settings.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_settings.setStyleSheet("""
             QPushButton {
                 background: transparent;
@@ -311,6 +322,7 @@ class TitleBar(QWidget):
         self.btn_min = QPushButton("—")
         self.btn_min.setFixedSize(9, 9)
         self.btn_min.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_min.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_min.setStyleSheet("""
             QPushButton {
                 background: transparent;
@@ -328,6 +340,7 @@ class TitleBar(QWidget):
         self.btn_close = QPushButton("×")
         self.btn_close.setFixedSize(9, 9)
         self.btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_close.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_close.setStyleSheet("""
             QPushButton {
                 background: transparent;
@@ -742,26 +755,36 @@ class MainWindow(QMainWindow):
         self._last_dpr = None       # Previous screen devicePixelRatio
         self._dpi_locked_size = None  # (w, h) logical size frozen during DPI transition
 
-        # Fullscreen grayscale overlay — choose backend from config.
-        # NO silent fallback: the selected backend is kept as-is, so the user
-        # always knows which mode is active. If it can't run, toggle() reports
-        # a clear error (last_error) instead of silently switching to OpenGL.
+        # Fullscreen grayscale: one native OKLCh path plus the Windows Mag
+        # Luma fallback. Legacy capture/render backends are migrated to native.
         mode = self.cfg.get("grayscaleFilterMode", "oklch")
-        backend = self.cfg.get("grayscaleFilterBackend", "overlay")
-        if backend == "rust":
-            from core.rust_filter import RustFilterController
-            self.grayscale_overlay = RustFilterController(mode=mode)
-        elif backend == "dwm":
-            from core.dcomp_grayscale import DCompOverlayController
-            self.grayscale_overlay = DCompOverlayController()
-        elif backend == "mag":
+        backend = self.cfg.get("grayscaleFilterBackend", "native")
+        if backend == "mag":
             from core.mag_grayscale import MagFilterController
-            self.grayscale_overlay = MagFilterController(mode=mode)
+            self.grayscale_overlay = MagFilterController(mode="luma")
         else:
-            self.grayscale_overlay = GrayscaleOverlay(mode=mode)
-        # Apply saved screen target (no-op for DWM backend)
-        screen_target = self.cfg.get("grayscaleFilterScreen", "all")
-        self.grayscale_overlay.set_target(screen_target)
+            from core.native_grayscale import NativeGrayscaleController
+            self.grayscale_overlay = NativeGrayscaleController(mode="oklch")
+        self.grayscale_overlay.set_target("all")
+        # Warm the OKLCh capture/OpenGL/PBO chain off-screen so Ctrl+G only
+        # reveals a prepared frame instead of paying initialization latency.
+        if backend != "mag":
+            prepare = getattr(self.grayscale_overlay, "prepare", None)
+            if callable(prepare):
+                # grayscale_overlay.prepare runs once the window is up:
+                # it warms the OKLCh GL overlay off-screen (light preheat).
+                QTimer.singleShot(800, prepare)
+            # Pre-import dxcam off the GUI thread so the first Ctrl+G does not
+            # pay the one-time ~0.4s module/D3D11/comtypes import cost.
+            if sys.modules.get("dxcam") is None:
+                import importlib as _importlib
+                import threading as _threading
+                _threading.Thread(
+                    target=_importlib.import_module,
+                    args=("dxcam",),
+                    daemon=True,
+                    name="colorink-dxcam-preload",
+                ).start()
 
         # Global color picker overlay (magnifier + click-to-pick)
         self.picker_overlay = ColorPickerOverlay(None)
@@ -851,6 +874,9 @@ class MainWindow(QMainWindow):
         self.btn_mode_wheel.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_mode_wheel.setToolTip("切换模式 (色轮 / LAB)")
         self.btn_mode_wheel.clicked.connect(self.toggle_picker_mode)
+        # Never keep keyboard focus: otherwise Space (the default LAB-toggle
+        # hotkey) would "click" the focused button from anywhere in the window.
+        self.btn_mode_wheel.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.pane_wheel.set_mode_button(self.btn_mode_wheel)
         
         self.stack.addWidget(self.pane_wheel)
@@ -888,6 +914,7 @@ class MainWindow(QMainWindow):
         self.btn_mode_lab.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_mode_lab.setToolTip("切换模式 (色轮 / LAB)")
         self.btn_mode_lab.clicked.connect(self.toggle_picker_mode)
+        self.btn_mode_lab.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.pane_lab.set_mode_button(self.btn_mode_lab)
         
         self.stack.addWidget(self.pane_lab)
@@ -1203,6 +1230,9 @@ class MainWindow(QMainWindow):
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setToolTip("切换色彩空间模块 (HSV / HLS / LCH)")
         btn.clicked.connect(self._next_module)
+        # Never keep keyboard focus — Space (the default LAB-toggle hotkey)
+        # must not re-activate this button from anywhere in the window.
+        btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn.setVisible(self.cfg.get("showModuleSwitchButton", True))
         btn.setObjectName("ModuleButton")
         self.pane_wheel.set_module_button(btn)
@@ -1217,14 +1247,16 @@ class MainWindow(QMainWindow):
     def update_mode_buttons_visibility(self):
         idx = self.stack.currentIndex()
         show_module = self.cfg.get("showModuleSwitchButton", True)
+        show_lab_toggle = self.cfg.get("showLabToggleButton", True)
         if hasattr(self, "pane_wheel"):
             self.pane_wheel.set_module_slot_reserved(show_module)
         if hasattr(self, "pane_lab"):
             self.pane_lab.set_module_slot_reserved(show_module)
         if idx == 0:
             if hasattr(self, 'btn_mode_wheel'):
-                self.btn_mode_wheel.show()
-                self.btn_mode_wheel.raise_()
+                self.btn_mode_wheel.setVisible(show_lab_toggle)
+                if show_lab_toggle:
+                    self.btn_mode_wheel.raise_()
             if hasattr(self, 'btn_mode_lab'):
                 self.btn_mode_lab.hide()
             # Module button only visible in wheel pane
@@ -1234,8 +1266,9 @@ class MainWindow(QMainWindow):
                     self.btn_module.raise_()
         else:
             if hasattr(self, 'btn_mode_lab'):
-                self.btn_mode_lab.show()
-                self.btn_mode_lab.raise_()
+                self.btn_mode_lab.setVisible(show_lab_toggle)
+                if show_lab_toggle:
+                    self.btn_mode_lab.raise_()
             if hasattr(self, 'btn_mode_wheel'):
                 self.btn_mode_wheel.hide()
             if hasattr(self, 'btn_module'):
@@ -2777,8 +2810,84 @@ class MainWindow(QMainWindow):
         
         super().mouseReleaseEvent(event)
 
+    def _is_lab_toggle_zone(self) -> bool:
+        """True when the cursor is inside the visible picker pane.
+
+        Covers the color wheel (the ring AND every position inside it) plus
+        the LAB visualizer pane, so the local shortcut toggles in both
+        directions without moving the mouse.
+        """
+        try:
+            if self.stack.currentIndex() == 0 and self.color_wheel.isVisible():
+                pos = self.color_wheel.mapFromGlobal(QCursor.pos())
+                return self.color_wheel.rect().contains(pos)
+            if self.stack.currentIndex() == 1 and self.pane_lab.isVisible():
+                pos = self.pane_lab.mapFromGlobal(QCursor.pos())
+                return self.pane_lab.rect().contains(pos)
+        except Exception:
+            pass
+        return False
+
+    def _maybe_handle_lab_toggle_key(self, event) -> bool:
+        """Handle the configured local LAB-toggle shortcut.
+
+        Toggles wheel/LAB when the cursor is over the picker pane. When the
+        cursor is elsewhere the key is still consumed (unless a text field
+        has focus), so the toggle key can never re-activate a previously
+        focused button/checkbox — clicking ☰ once used to make Space toggle
+        the settings panel.
+
+        Only covers key events Qt delivers to this app (i.e. a Colorink
+        window has focus). Without focus — 无焦点选色模式, drawing in the
+        painting app — the system-wide hook registered in
+        ``update_hotkey_bindings`` takes over (see ``on_hotkey_triggered``).
+
+        Returns True when the event was consumed, False to pass it through
+        (non-matching key, or a text field has focus). The event filter
+        skips this entirely while a settings hotkey capture is active.
+        """
+        pressed = parse_key_event(event)
+        if not pressed:
+            return False
+        expected = str(self.cfg.get("toggleLabKey", "")).lower().replace(" ", "")
+        if pressed.lower().replace(" ", "") != expected:
+            return False
+        # Never steal the key from a text field (e.g. the Companion URL input).
+        focus_widget = QApplication.focusWidget()
+        if isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit)):
+            return False
+        if self._is_lab_toggle_zone():
+            self.toggle_picker_mode()
+        return True
+
+    def _maybe_handle_lab_toggle_mouse(self, event) -> bool:
+        """Toggle wheel/LAB view when the configured local shortcut is a
+        mouse button pressed over the picker pane.
+
+        Mouse events follow the cursor, not keyboard focus, so this path
+        works even in 无焦点选色模式 while the painting app holds focus.
+        """
+        if not self._is_lab_toggle_zone():
+            return False
+        name = MOUSE_BUTTON_NAME_BY_QT.get(event.button())
+        if not name:
+            return False
+        expected = str(self.cfg.get("toggleLabKey", "")).lower().replace(" ", "")
+        if name.lower() != expected:
+            return False
+        self.toggle_picker_mode()
+        return True
+
     def eventFilter(self, watched, event):
         try:
+            # Local LAB-toggle shortcuts (keyboard or mouse button) fire while
+            # the cursor is over the color wheel / LAB pane. Skipped while a
+            # settings hotkey capture is active so the recorded press wins.
+            if not capture_active():
+                if event.type() == QEvent.Type.KeyPress and self._maybe_handle_lab_toggle_key(event):
+                    return True
+                if event.type() == QEvent.Type.MouseButtonPress and self._maybe_handle_lab_toggle_mouse(event):
+                    return True
             # Intercept MouseMove events globally for this window's child widgets
             # to ensure the cursor correctly resets when leaving the 8px border zone
             if event.type() == QEvent.Type.MouseMove and isinstance(watched, QWidget) and self.window() == watched.window():
@@ -3123,10 +3232,23 @@ class MainWindow(QMainWindow):
 
     def update_hotkey_bindings(self):
         global_hotkeys.unbind_all()
-        global_hotkeys.bind_hotkey("pickKey", cast(str, self.cfg.get("pickKey")))
-        global_hotkeys.bind_hotkey("hideWindowKey", cast(str, self.cfg.get("hideWindowKey")))
-        global_hotkeys.bind_hotkey("followMouseKey", cast(str, self.cfg.get("followMouseKey")))
-        global_hotkeys.bind_hotkey("grayscaleFilterKey", cast(str, self.cfg.get("grayscaleFilterKey")))
+        # Global hotkeys may be bound to a keyboard key or a mouse button —
+        # route each value to the matching system hook (mouse hotkeys are
+        # not suppressed, so the app under the cursor still gets the click).
+        for hotkey_type in ("pickKey", "hideWindowKey", "followMouseKey",
+                            "grayscaleFilterKey", "toggleLabGlobalKey"):
+            value = cast(str, self.cfg.get(hotkey_type))
+            if is_mouse_hotkey(value):
+                global_hotkeys.bind_mouse_hotkey(hotkey_type, value)
+            else:
+                global_hotkeys.bind_hotkey(hotkey_type, value)
+        # The local LAB-toggle key is bound as a system-wide hook too, so it
+        # works while focus is in the drawing app (无焦点选色模式). Mouse
+        # buttons need no hook — the event filter sees them by cursor
+        # position — so only keyboard values are bound here.
+        lab_toggle_key = cast(str, self.cfg.get("toggleLabKey"))
+        if not is_mouse_hotkey(lab_toggle_key):
+            global_hotkeys.bind_hotkey("toggleLabKey", lab_toggle_key)
 
     @pyqtSlot(str)
     def on_hotkey_triggered(self, hotkey_type):
@@ -3153,6 +3275,19 @@ class MainWindow(QMainWindow):
                 self.settings_sidebar.cb_follow_mouse.blockSignals(True)
                 self.settings_sidebar.cb_follow_mouse.setChecked(self.follow_mouse_active)
                 self.settings_sidebar.cb_follow_mouse.blockSignals(False)
+        elif hotkey_type == "toggleLabKey":
+            # System-wide hook path: the Qt event filter already consumed the
+            # key when a Colorink window has focus. Without focus — e.g. while
+            # drawing in CSP with 无焦点选色模式 — this hook is the only path,
+            # and the mouse-over-wheel gate still applies.
+            if QApplication.activeWindow() is not None:
+                return  # handled by the Qt key path
+            if self._is_lab_toggle_zone():
+                print("[Hotkeys] Toggle LAB view (local, no-focus)")
+                self.toggle_picker_mode()
+        elif hotkey_type == "toggleLabGlobalKey":
+            print("[Hotkeys] Toggle LAB view (global)")
+            self.toggle_picker_mode()
         elif hotkey_type == "pickKey":
             if self.picker_overlay.is_active:
                 self.picker_overlay.stop()
@@ -3170,16 +3305,6 @@ class MainWindow(QMainWindow):
                     if err:
                         from PyQt6.QtWidgets import QMessageBox
                         QMessageBox.warning(self, "黑白滤镜", err)
-                # No auto-fallback: if the OpenGL overlay is broken, tell the
-                # user to switch backends manually — never switch silently.
-                elif (isinstance(self.grayscale_overlay, GrayscaleOverlay)
-                      and self.grayscale_overlay.is_active
-                      and not self.grayscale_overlay.is_healthy):
-                    print("[Hotkeys] OpenGL overlay unhealthy")
-                    from PyQt6.QtWidgets import QMessageBox
-                    QMessageBox.warning(self, "黑白滤镜",
-                        "OpenGL 滤镜初始化失败（缺少 Qt OpenGL 组件）。\n\n"
-                        "请在设置中手动切换到 DComp 直通后端，或重新安装 PyQt6 完整包。")
             except Exception as e:
                 print(f"[Hotkeys] Grayscale toggle error: {e}")
                 from PyQt6.QtWidgets import QMessageBox
@@ -3525,43 +3650,27 @@ class MainWindow(QMainWindow):
         self.cfg = config.load_hotkey_config()
         self.update_hotkey_bindings()
 
-        # Update grayscale overlay — check if backend changed
-        new_backend = self.cfg.get("grayscaleFilterBackend", "overlay")
-
-        # Detect current backend by controller class name
-        current_backend = "overlay"
-        cls_name = type(self.grayscale_overlay).__name__
-        if cls_name == "RustFilterController":
-            current_backend = "rust"
-        elif cls_name == "DCompOverlayController":
-            current_backend = "dwm"
-        elif cls_name == "MagFilterController":
-            current_backend = "mag"
-
+        # Update grayscale controller and migrate all removed backends to the
+        # validated OKLCh implementation. Mag remains the Luma fallback.
+        new_backend = self.cfg.get("grayscaleFilterBackend", "native")
+        new_backend = "mag" if new_backend == "mag" else "native"
+        current_backend = (
+            "mag" if type(self.grayscale_overlay).__name__ == "MagFilterController"
+            else "native"
+        )
         if new_backend != current_backend:
-            # Backend changed — tear down old, create new
             self.grayscale_overlay.set_active(False)
             close_fn = getattr(self.grayscale_overlay, "close", None)
             if callable(close_fn):
                 close_fn()
-            mode = self.cfg.get("grayscaleFilterMode", "oklch")
-            if new_backend == "rust":
-                from core.rust_filter import RustFilterController
-                self.grayscale_overlay = RustFilterController(mode=mode)
-            elif new_backend == "dwm":
-                from core.dcomp_grayscale import DCompOverlayController
-                self.grayscale_overlay = DCompOverlayController()
-            elif new_backend == "mag":
+            if new_backend == "mag":
                 from core.mag_grayscale import MagFilterController
-                self.grayscale_overlay = MagFilterController(mode=mode)
+                self.grayscale_overlay = MagFilterController(mode="luma")
             else:
-                self.grayscale_overlay = GrayscaleOverlay(mode=mode)
-
-        # Update grayscale overlay target and mode
-        screen_target = self.cfg.get("grayscaleFilterScreen", "all")
-        self.grayscale_overlay.set_target(screen_target)
-        mode = self.cfg.get("grayscaleFilterMode", "oklch")
-        self.grayscale_overlay.set_mode(mode)
+                from core.native_grayscale import NativeGrayscaleController
+                self.grayscale_overlay = NativeGrayscaleController(mode="oklch")
+        self.grayscale_overlay.set_target("all")
+        self.grayscale_overlay.set_mode("luma" if new_backend == "mag" else "oklch")
 
         # Update window flags dynamically
         self.update_window_flags()

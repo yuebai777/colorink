@@ -19,16 +19,6 @@ def _add_if_exists(path_rel, dest_dir, datas_list, label=""):
             return
     print(f"  WARNING: {path_rel} not found — skipping{' (' + label + ')' if label else ''}")
 
-def _find_dxcam_pyd():
-    for sp in site.getsitepackages():
-        pyd = os.path.join(sp, 'dxcam', 'processor', '_numpy_kernels.cp314-win_amd64.pyd')
-        if os.path.exists(pyd):
-            return pyd
-    usp = site.getusersitepackages()
-    pyd = os.path.join(usp, 'dxcam', 'processor', '_numpy_kernels.cp314-win_amd64.pyd')
-    if os.path.exists(pyd):
-        return pyd
-    return None
 
 def _find_site_file(package, filename):
     for sp in site.getsitepackages() + [site.getusersitepackages()]:
@@ -37,11 +27,7 @@ def _find_site_file(package, filename):
             return path
     return None
 
-_dxcam_pyd = _find_dxcam_pyd()
 _binaries = []
-if _dxcam_pyd:
-    _binaries.append((_dxcam_pyd, 'dxcam/processor'))
-
 for _zbar_name in ('libzbar-64.dll', 'libiconv.dll'):
     _zbar_path = _find_site_file('pyzbar', _zbar_name)
     if _zbar_path:
@@ -50,20 +36,15 @@ for _zbar_name in ('libzbar-64.dll', 'libiconv.dll'):
     else:
         print(f"  WARNING: {_zbar_name} not found — QR scanning may be unavailable")
 
-# Build data files list (with existence checks for optional overlay EXEs)
 _datas = []
 _add_if_exists('icons/icon.ico', 'icons', _datas, 'app icon')
 _add_if_exists('icons/checkbox_check.png', 'icons', _datas, 'checkbox check icon')
 _add_if_exists('icons/arrow_down_dark.png', 'icons', _datas, 'arrow down dark icon')
 _add_if_exists('icons/arrow_down_light.png', 'icons', _datas, 'arrow down light icon')
 _add_if_exists('icons/arrow_down_accent.png', 'icons', _datas, 'arrow down accent icon')
-_add_if_exists('dcomp_overlay/build/dcomp_overlay.exe', 'dcomp_overlay/build', _datas, 'DComp overlay')
-_add_if_exists('sc_overlay/build/sc_overlay.exe', 'sc_overlay/build', _datas, 'SC overlay')
 _add_if_exists('core/picker_hook.dll', 'core', _datas, 'picker hook DLL')
-_add_if_exists('screen_filter.exe', '.', _datas, 'Rust filter EXE')
 _add_if_exists('mag_overlay/build/mag_filter.exe', 'mag_overlay/build', _datas, 'Mag filter')
-_add_if_exists('shaderglass/colorink_grayscale.slang', 'shaderglass', _datas, 'ShaderGlass grayscale shader')
-_add_if_exists('shaderglass/colorink_grayscale.slangp', 'shaderglass', _datas, 'ShaderGlass shader preset')
+_add_if_exists('native_grayscale/runtime/grayscale_overlay.pyc', 'native_grayscale/runtime', _datas, 'Native grayscale base runtime')
 
 a = Analysis(
     ['main.py'],
@@ -73,29 +54,9 @@ a = Analysis(
     hiddenimports=[
         'dxcam',
         'dxcam.core',
-        'dxcam.core.backend',
-        'dxcam.core.capture_loop',
-        'dxcam.core.capture_runtime',
         'dxcam.core.device',
-        'dxcam.core.display_recovery',
-        'dxcam.core.duplicator',
-        'dxcam.core.dxgi_duplicator',
-        'dxcam.core.dxgi_errors',
         'dxcam.core.output',
-        'dxcam.core.output_recovery',
-        'dxcam.core.stagesurf',
-        'dxcam.core.winrt_duplicator',
-        'dxcam.processor',
-        'dxcam.processor.base',
-        'dxcam.processor.cv2_processor',
-        'dxcam.processor.numpy_processor',
-        'dxcam.util',
-        'dxcam.util.io',
-        'dxcam.util.timer',
-        'dxcam._libs',
-        'dxcam._libs.d3d11',
-        'dxcam._libs.dxgi',
-        'dxcam._libs.user32',
+        'dxcam.core.capture',
         'comtypes',
         'comtypes.client',
         # CSP Companion QR scanning uses delayed imports.

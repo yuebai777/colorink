@@ -64,9 +64,14 @@ def default_hotkey_config():
         "followMouseKey": "Ctrl+R",
         "hideWindowKey": "Ctrl+H",
         "grayscaleFilterKey": "Ctrl+G",
+        "toggleLabKey": "Space",          # 本地快捷键: 鼠标悬停色轮/LAB区域时切换视图
+        "toggleLabGlobalKey": "Ctrl+L",   # 全局快捷键: 任意位置切换色轮/LAB视图
+        "showLabToggleButton": True,      # 显示/隐藏色轮与LAB之间的浮动切换按钮
         "grayscaleFilterScreen": "all",
         "grayscaleFilterMode": "oklch",
-        "grayscaleFilterBackend": "overlay",
+        # native = DXGI Desktop Duplication + D3D11 OKLCh + DirectComposition；
+        # mag = Windows 系统颜色矩阵（仅 Luma，最流畅的备用路径）
+        "grayscaleFilterBackend": "native",
         "showTaskbarIcon": False,
         "lockWindowSize": False,
         "lockWindowPosition": False,
@@ -167,3 +172,4 @@ def save_hotkey_config(cfg):
             json.dump(cfg, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+

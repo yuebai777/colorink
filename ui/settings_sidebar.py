@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core import autostart, config, updater
-from ui.hotkey_button import HotkeyButton
+from ui.hotkey_button import HotkeyButton, display_hotkey
 from ui.ringless_mode import RinglessConfig
 from ui.ringless_settings import RinglessSettingsWidget
 from ui.slider_themes import list_slider_theme_names
@@ -122,17 +122,17 @@ class SettingsSidebar(QWidget):
         grid_hotkeys.setColumnStretch(1, 1)
 
         grid_hotkeys.addWidget(QLabel("全局取色"), 0, 0)
-        self.btn_pick = HotkeyButton("pickKey", self.cfg.get("pickKey", "F11"))
+        self.btn_pick = HotkeyButton("pickKey", self.cfg.get("pickKey", "F11"), allow_mouse=True)
         self.btn_pick.hotkeyChanged.connect(self.save_hotkeys)
         grid_hotkeys.addWidget(self.btn_pick, 0, 1)
 
         grid_hotkeys.addWidget(QLabel("隐藏界面"), 1, 0)
-        self.btn_hide = HotkeyButton("hideWindowKey", self.cfg.get("hideWindowKey", "Ctrl+H"))
+        self.btn_hide = HotkeyButton("hideWindowKey", self.cfg.get("hideWindowKey", "Ctrl+H"), allow_mouse=True)
         self.btn_hide.hotkeyChanged.connect(self.save_hotkeys)
         grid_hotkeys.addWidget(self.btn_hide, 1, 1)
 
         grid_hotkeys.addWidget(QLabel("随鼠标移动"), 2, 0)
-        self.btn_follow = HotkeyButton("followMouseKey", self.cfg.get("followMouseKey", "Ctrl+R"))
+        self.btn_follow = HotkeyButton("followMouseKey", self.cfg.get("followMouseKey", "Ctrl+R"), allow_mouse=True)
         self.btn_follow.hotkeyChanged.connect(self.save_hotkeys)
         row_follow = QHBoxLayout()
         row_follow.setSpacing(6)
@@ -144,9 +144,21 @@ class SettingsSidebar(QWidget):
         grid_hotkeys.addLayout(row_follow, 2, 1)
 
         grid_hotkeys.addWidget(QLabel("黑白滤镜"), 3, 0)
-        self.btn_grayscale = HotkeyButton("grayscaleFilterKey", self.cfg.get("grayscaleFilterKey", "Ctrl+G"))
+        self.btn_grayscale = HotkeyButton("grayscaleFilterKey", self.cfg.get("grayscaleFilterKey", "Ctrl+G"), allow_mouse=True)
         self.btn_grayscale.hotkeyChanged.connect(self.save_hotkeys)
         grid_hotkeys.addWidget(self.btn_grayscale, 3, 1)
+
+        grid_hotkeys.addWidget(QLabel("LAB切换(色轮)"), 4, 0)
+        self.btn_lab_toggle = HotkeyButton("toggleLabKey", self.cfg.get("toggleLabKey", "Space"), allow_mouse=True)
+        self.btn_lab_toggle.setToolTip("鼠标悬停在色轮或LAB区域时，按此键/鼠标键切换色轮/LAB视图；支持键盘或鼠标按键（建议侧键/中键，左键会与色轮操作冲突）；无需聚焦本窗口，无焦点选色模式下也可用")
+        self.btn_lab_toggle.hotkeyChanged.connect(self.save_hotkeys)
+        grid_hotkeys.addWidget(self.btn_lab_toggle, 4, 1)
+
+        grid_hotkeys.addWidget(QLabel("LAB切换(全局)"), 5, 0)
+        self.btn_lab_global = HotkeyButton("toggleLabGlobalKey", self.cfg.get("toggleLabGlobalKey", "Ctrl+L"), allow_mouse=True)
+        self.btn_lab_global.setToolTip("任意位置全局切换色轮/LAB视图，无需聚焦本窗口；支持键盘或鼠标按键（鼠标按键作为全局快捷键时不拦截点击，画画软件仍会收到）")
+        self.btn_lab_global.hotkeyChanged.connect(self.save_hotkeys)
+        grid_hotkeys.addWidget(self.btn_lab_global, 5, 1)
 
         cl_hk.addLayout(grid_hotkeys)
         page_hotkeys.addWidget(card_hk)
@@ -242,10 +254,11 @@ class SettingsSidebar(QWidget):
 
         grid_gray.addWidget(QLabel("渲染后端 (高级)"), 2, 0)
         self.combo_grayscale_backend = NonScrollComboBox()
-        self.combo_grayscale_backend.addItems(["OpenGL Overlay", "DComp 直通", "Rust D3D11", "系统级 (Mag)"])
+        self.combo_grayscale_backend.addItems(
+            ["OKLCh (GPU兼容)", "系统 Luma (Mag)"])
         self.combo_grayscale_backend.setToolTip(
-            "不同系统的兼容性不同，默认 OpenGL Overlay；Rust 后端仅支持 OKLCh；"
-            "系统级 (Mag) 与 Windows 自带滤镜同路径，最流畅（不捕获屏幕、不改显示器配置文件）")
+            "OKLCh (GPU兼容)：感知均匀的全屏黑白，覆盖 ColorInk；"
+            "系统 Luma (Mag)：延迟最低的备用模式。")
         self.combo_grayscale_backend.currentTextChanged.connect(self._on_grayscale_backend_changed)
         grid_gray.addWidget(self.combo_grayscale_backend, 2, 1)
 
@@ -329,6 +342,11 @@ class SettingsSidebar(QWidget):
         self.cb_show_module_btn.setToolTip("在色环区域显示色彩空间模块切换按钮")
         self.cb_show_module_btn.stateChanged.connect(self.save_settings)
         cl_pz.addWidget(self.cb_show_module_btn)
+
+        self.cb_show_lab_toggle = QCheckBox("显示LAB切换按钮")
+        self.cb_show_lab_toggle.setToolTip("在色轮/LAB区域显示色轮与LAB之间的切换按钮")
+        self.cb_show_lab_toggle.stateChanged.connect(self.save_settings)
+        cl_pz.addWidget(self.cb_show_lab_toggle)
 
         page_picker.addWidget(card_pz)
 
@@ -812,52 +830,51 @@ class SettingsSidebar(QWidget):
         setattr(self, f"_eye_btn_sync_{target}", btn_sync)
         
     def _update_grayscale_mode_options(self, backend):
-        """按渲染后端重建黑白模式选项：只显示该后端支持的模式（Rust 仅 OKLCh；Mag 仅 Luma）"""
+        """The selected engine determines the only valid grayscale algorithm."""
         self.combo_grayscale_mode.blockSignals(True)
         self.combo_grayscale_mode.clear()
-        if backend == "rust":
-            self.combo_grayscale_mode.addItems(["OKLCh (感知均匀)"])
-            self.combo_grayscale_mode.setEnabled(False)
-        elif backend == "mag":
+        if backend == "mag":
             self.combo_grayscale_mode.addItems(["Luma (BT.709 标准)"])
-            self.combo_grayscale_mode.setEnabled(False)
         else:
-            self.combo_grayscale_mode.addItems(["OKLCh (感知均匀)", "Luma (BT.709 标准)"])
-            self.combo_grayscale_mode.setEnabled(True)
+            self.combo_grayscale_mode.addItems(["OKLCh (感知均匀)"])
+        self.combo_grayscale_mode.setEnabled(False)
         self.combo_grayscale_mode.blockSignals(False)
 
     def _on_grayscale_backend_changed(self, text):
-        """切换渲染后端时重建黑白模式选项，再保存设置"""
-        if "D3D11" in text:
-            backend = "rust"
-        elif "DComp" in text:
-            backend = "dwm"
-        elif "Mag" in text:
-            backend = "mag"
-        else:
-            backend = "overlay"
+        backend = "mag" if "Mag" in text else "native"
         self._update_grayscale_mode_options(backend)
         self.save_settings()
-
     def refresh_ui(self):
         self.cfg = config.load_hotkey_config()
         
         # 1. Hotkeys
-        self.btn_pick.setText(self.cfg.get("pickKey", "F11") if self.cfg.get("pickKey") else "未绑定")
-        self.btn_pick.val = self.cfg.get("pickKey", "F11")
-        
-        self.btn_hide.setText(self.cfg.get("hideWindowKey", "Ctrl+H") if self.cfg.get("hideWindowKey") else "未绑定")
-        self.btn_hide.val = self.cfg.get("hideWindowKey", "Ctrl+H")
-        
-        self.btn_follow.setText(self.cfg.get("followMouseKey", "Ctrl+R") if self.cfg.get("followMouseKey") else "未绑定")
-        self.btn_follow.val = self.cfg.get("followMouseKey", "Ctrl+R")
-        
-        self.btn_grayscale.setText(self.cfg.get("grayscaleFilterKey", "Ctrl+G") if self.cfg.get("grayscaleFilterKey") else "未绑定")
-        self.btn_grayscale.val = self.cfg.get("grayscaleFilterKey", "Ctrl+G")
+        _pick = self.cfg.get("pickKey", "F11")
+        self.btn_pick.setText(display_hotkey(_pick) if _pick else "未绑定")
+        self.btn_pick.val = _pick
+
+        _hide = self.cfg.get("hideWindowKey", "Ctrl+H")
+        self.btn_hide.setText(display_hotkey(_hide) if _hide else "未绑定")
+        self.btn_hide.val = _hide
+
+        _follow = self.cfg.get("followMouseKey", "Ctrl+R")
+        self.btn_follow.setText(display_hotkey(_follow) if _follow else "未绑定")
+        self.btn_follow.val = _follow
+
+        _gray = self.cfg.get("grayscaleFilterKey", "Ctrl+G")
+        self.btn_grayscale.setText(display_hotkey(_gray) if _gray else "未绑定")
+        self.btn_grayscale.val = _gray
+
+        _lab_key = self.cfg.get("toggleLabKey", "Space")
+        self.btn_lab_toggle.setText(display_hotkey(_lab_key) if _lab_key else "未绑定")
+        self.btn_lab_toggle.val = _lab_key
+
+        _lab_global = self.cfg.get("toggleLabGlobalKey", "Ctrl+L")
+        self.btn_lab_global.setText(display_hotkey(_lab_global) if _lab_global else "未绑定")
+        self.btn_lab_global.val = _lab_global
         
         # Screen selector for grayscale filter
-        from ui.grayscale_overlay import GrayscaleOverlay
-        screens = GrayscaleOverlay.available_screens()
+        # Both supported engines intentionally cover every monitor.
+        screens = ["all"]
         self.combo_grayscale_screen.blockSignals(True)
         self.combo_grayscale_screen.clear()
         self.combo_grayscale_screen.addItems(screens)
@@ -876,23 +893,13 @@ class SettingsSidebar(QWidget):
         self.combo_grayscale_screen.blockSignals(False)
 
         self.combo_grayscale_mode.blockSignals(True)
-        mode = self.cfg.get("grayscaleFilterMode", "oklch")
-        backend = self.cfg.get("grayscaleFilterBackend", "overlay")
-        # 只显示后端支持的模式：Rust 仅 OKLCh；Mag 仅 Luma
+        backend = self.cfg.get("grayscaleFilterBackend", "native")
+        backend = "mag" if backend == "mag" else "native"
         self._update_grayscale_mode_options(backend)
-        if backend not in ("rust", "mag"):
-            self.combo_grayscale_mode.setCurrentIndex(1 if mode == "luma" else 0)
         self.combo_grayscale_mode.blockSignals(False)
 
         self.combo_grayscale_backend.blockSignals(True)
-        if backend == "rust":
-            self.combo_grayscale_backend.setCurrentIndex(2)
-        elif backend == "dwm":
-            self.combo_grayscale_backend.setCurrentIndex(1)
-        elif backend == "mag":
-            self.combo_grayscale_backend.setCurrentIndex(3)
-        else:
-            self.combo_grayscale_backend.setCurrentIndex(0)
+        self.combo_grayscale_backend.setCurrentIndex(1 if backend == "mag" else 0)
         self.combo_grayscale_backend.blockSignals(False)
         
         self.cb_follow_mouse.blockSignals(True)
@@ -989,6 +996,10 @@ class SettingsSidebar(QWidget):
         self.cb_show_module_btn.blockSignals(True)
         self.cb_show_module_btn.setChecked(self.cfg.get("showModuleSwitchButton", True))
         self.cb_show_module_btn.blockSignals(False)
+
+        self.cb_show_lab_toggle.blockSignals(True)
+        self.cb_show_lab_toggle.setChecked(self.cfg.get("showLabToggleButton", True))
+        self.cb_show_lab_toggle.blockSignals(False)
 
         viz_mode_map = {"lab": "LAB 色彩空间", "oklab": "OKLab 色彩空间"}
         self.combo_viz_mode.blockSignals(True)
@@ -1442,6 +1453,8 @@ class SettingsSidebar(QWidget):
         self.cfg["hideWindowKey"] = self.btn_hide.val
         self.cfg["followMouseKey"] = self.btn_follow.val
         self.cfg["grayscaleFilterKey"] = self.btn_grayscale.val
+        self.cfg["toggleLabKey"] = self.btn_lab_toggle.val
+        self.cfg["toggleLabGlobalKey"] = self.btn_lab_global.val
         self._persist_and_emit()
 
     def save_settings(self):
@@ -1486,6 +1499,7 @@ class SettingsSidebar(QWidget):
         module_val_map = {"HSV": "hsv", "HLS": "hls", "RGB": "rgb", "LCH": "lch"}
         self.cfg["colorSpaceModule"] = module_val_map.get(self.combo_module.currentText(), "hsv")
         self.cfg["showModuleSwitchButton"] = self.cb_show_module_btn.isChecked()
+        self.cfg["showLabToggleButton"] = self.cb_show_lab_toggle.isChecked()
         viz_val_map = {"LAB 色彩空间": "lab", "OKLab 色彩空间": "oklab"}
         self.cfg["visualizerMode"] = viz_val_map.get(self.combo_viz_mode.currentText(), "lab")
         self.cfg["showLabLightnessSlider"] = self.cb_show_lab_lightness.isChecked()
@@ -1515,25 +1529,11 @@ class SettingsSidebar(QWidget):
         # Grayscale filter screen target
         screen_text = self.combo_grayscale_screen.currentText()
         self.cfg["grayscaleFilterScreen"] = screen_text.split(":")[0].strip() if ":" in screen_text else screen_text
-        # Grayscale filter mode (组合框已按后端只显示支持的模式；此处再兜底强制)
+        # The engine and grayscale algorithm are intentionally coupled.
         backend_text = self.combo_grayscale_backend.currentText()
-        if "D3D11" in backend_text:
-            self.cfg["grayscaleFilterMode"] = "oklch"
-        elif "Mag" in backend_text:
-            self.cfg["grayscaleFilterMode"] = "luma"
-        else:
-            mode_text = self.combo_grayscale_mode.currentText()
-            self.cfg["grayscaleFilterMode"] = "luma" if "Luma" in mode_text else "oklch"
-        # Grayscale filter backend
-        backend_text = self.combo_grayscale_backend.currentText()
-        if "D3D11" in backend_text:
-            self.cfg["grayscaleFilterBackend"] = "rust"
-        elif "DComp" in backend_text:
-            self.cfg["grayscaleFilterBackend"] = "dwm"
-        elif "Mag" in backend_text:
-            self.cfg["grayscaleFilterBackend"] = "mag"
-        else:
-            self.cfg["grayscaleFilterBackend"] = "overlay"
+        use_mag = "Mag" in backend_text
+        self.cfg["grayscaleFilterMode"] = "luma" if use_mag else "oklch"
+        self.cfg["grayscaleFilterBackend"] = "mag" if use_mag else "native"
 
         try:
             self.cfg["sliderScrollStep"] = int(self.lbl_scroll_step.text())
@@ -1870,27 +1870,33 @@ class SettingsSidebar(QWidget):
         self.do_eyedropper_sync(target)
 
     @staticmethod
-    def _grab_median_color(x, y):
-        """Grab 3×3 median color from screen at logical coords (x, y) via GDI."""
+    def _grab_pixel_color(x, y):
+        """Grab the exact pixel color from screen at logical coords (x, y) via GDI.
+
+        Reads only the single pixel under the cursor (no 3×3 median averaging),
+        so the result matches the on-screen color at that point as closely as
+        the framebuffer allows.
+        """
         import ctypes
-        # Convert logical → physical pixels (Qt uses logical, GDI needs physical)
+        # Convert logical → physical pixels (Qt uses logical, GDI needs physical);
+        # round() instead of int() avoids off-by-one drift on fractional DPI.
         screen = QApplication.screenAt(QPoint(x, y))
         dpr = screen.devicePixelRatio() if screen is not None else 1.0
         if dpr < 0.1:
             dpr = 1.0
-        px, py = int(x * dpr), int(y * dpr)
+        px, py = round(x * dpr), round(y * dpr)
 
         hdc = ctypes.windll.gdi32.CreateDCW("DISPLAY", None, None, None)
-        rs, gs, bs = [], [], []
-        for dy in (-1, 0, 1):
-            for dx in (-1, 0, 1):
-                pixel = ctypes.windll.gdi32.GetPixel(hdc, px + dx, py + dy)
-                rs.append(pixel & 0xFF)
-                gs.append((pixel >> 8) & 0xFF)
-                bs.append((pixel >> 16) & 0xFF)
-        ctypes.windll.gdi32.DeleteDC(hdc)
-        rs.sort(); gs.sort(); bs.sort()
-        return f"#{rs[4]:02x}{gs[4]:02x}{bs[4]:02x}"
+        try:
+            pixel = ctypes.windll.gdi32.GetPixel(hdc, px, py)
+        finally:
+            ctypes.windll.gdi32.DeleteDC(hdc)
+        if pixel == -1:  # CLR_INVALID — GetPixel failed (e.g. off-screen)
+            raise OSError("GetPixel failed")
+        r = pixel & 0xFF
+        g = (pixel >> 8) & 0xFF
+        b = (pixel >> 16) & 0xFF
+        return f"#{r:02x}{g:02x}{b:02x}"
 
     def do_eyedropper_sync(self, target):
         """Sync color from the fixed pick point for 'bar' or 'bg'."""
@@ -1900,7 +1906,7 @@ class SettingsSidebar(QWidget):
         if not pt or not isinstance(pt, dict) or "x" not in pt or "y" not in pt:
             return
         try:
-            hex_color = self._grab_median_color(pt["x"], pt["y"])
+            hex_color = self._grab_pixel_color(pt["x"], pt["y"])
             self.cfg[color_key] = hex_color
             self._persist_and_emit()
         except Exception:
