@@ -11,23 +11,23 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_application_version_is_current_release():
-    assert APP_VERSION == "1.6.0"
-    # _normalize_version strips trailing zeros: "1.6.0" → [1, 6]
-    assert _normalize_version(APP_VERSION) == [1, 6]
+    assert APP_VERSION == "1.7.0"
+    # _normalize_version strips trailing zeros: "1.7.0" → [1, 7]
+    assert _normalize_version(APP_VERSION) == [1, 7]
 
 
 def test_windows_file_version_matches_application_version():
     content = (PROJECT_ROOT / "file_version_info.txt").read_text(encoding="utf-8")
 
-    assert "filevers=(1, 6, 0, 0)" in content
-    assert "prodvers=(1, 6, 0, 0)" in content
-    assert "StringStruct('FileVersion', '1.6.0.0')" in content
-    assert "StringStruct('ProductVersion', '1.6.0.0')" in content
+    assert "filevers=(1, 7, 0, 0)" in content
+    assert "prodvers=(1, 7, 0, 0)" in content
+    assert "StringStruct('FileVersion', '1.7.0.0')" in content
+    assert "StringStruct('ProductVersion', '1.7.0.0')" in content
 
 
 def test_release_notes_start_with_current_release():
     content = (PROJECT_ROOT / "release_notes.md").read_text(encoding="utf-8")
-    assert content.startswith("## v1.6.0\n")
+    assert content.startswith("## v1.7.0\n")
 
 
 def test_first_run_defaults_are_compact_and_discoverable():
@@ -38,6 +38,9 @@ def test_first_run_defaults_are_compact_and_discoverable():
     assert config["hideWindowKey"] == "Ctrl+H"
     assert config["followMouseKey"] == "Ctrl+R"
     assert config["grayscaleFilterKey"] == "Ctrl+G"
+    assert config["toggleLabKey"] == "Space"
+    assert config["toggleLabGlobalKey"] == "Ctrl+L"
+    assert config["showLabToggleButton"] is True
     assert config["colorSpaceModule"] == "hsv"
     assert config["showModuleSwitchButton"] is True
     assert config["showSlidersHSV"] is True
@@ -121,6 +124,8 @@ def test_existing_config_values_survive_missing_key_merge(tmp_path):
     assert config["pickKey"] == "F2"
     assert config["colorSpaceModule"] == "lch"
     assert config["showModuleSwitchButton"] is True
+    assert config["showLabToggleButton"] is True
+    assert config["toggleLabGlobalKey"] == "Ctrl+L"
     assert config["hideHueRing"] is False
     assert config["ringlessControlsSide"] == "right"
 
@@ -139,17 +144,14 @@ def test_companion_debug_logging_is_disabled_for_release_builds():
 SPEC_FILES = ["Colorink.spec", "Colorink Onefile.spec"]
 SOURCE_DIRS = ["ui", "core"]
 ICON_REF_RE = re.compile(r"icons/([A-Za-z0-9_.\-]+\.(?:png|ico))")
-BINARY_RESOURCE_RE = re.compile(r'"([A-Za-z0-9_.\-]+\.(?:exe|dll|slang|slangp))"')
+BINARY_RESOURCE_RE = re.compile(r'"([A-Za-z0-9_.\-]+\.(?:exe|dll|slang|slangp|pyc))"')
 # Directories where bundled binary resources live (source of truth for
 # "does a referenced file name exist on disk" — avoids walking venv/).
 _BINARY_SEARCH_DIRS = [
     PROJECT_ROOT,
     PROJECT_ROOT / "core",
-    PROJECT_ROOT / "dcomp_overlay" / "build",
-    PROJECT_ROOT / "sc_overlay" / "build",
     PROJECT_ROOT / "mag_overlay" / "build",
-    PROJECT_ROOT / "mhc2_overlay" / "build",
-    PROJECT_ROOT / "shaderglass",
+    PROJECT_ROOT / "native_grayscale" / "runtime",
 ]
 
 
@@ -239,7 +241,7 @@ def test_spec_declared_binary_resources_exist_on_disk():
     for spec_name, declared in zip(SPEC_FILES, _spec_declared_resources()):
         missing = []
         for rel in sorted(declared):
-            if rel.endswith((".exe", ".dll", ".slang", ".slangp")):
+            if rel.endswith((".exe", ".dll", ".slang", ".slangp", ".pyc")):
                 if not (PROJECT_ROOT / rel).is_file():
                     missing.append(rel)
         assert not missing, (
@@ -271,7 +273,7 @@ def test_spec_declared_binaries_cover_source_references():
         (PROJECT_ROOT / s).read_text(encoding="utf-8") for s in SPEC_FILES
     ):
         for match in re.finditer(r"_add_if_exists\('([^']+)'", content):
-            if match.group(1).endswith((".exe", ".dll", ".slang", ".slangp")):
+            if match.group(1).endswith((".exe", ".dll", ".slang", ".slangp", ".pyc")):
                 declared.add(Path(match.group(1)).name)
     missing = sorted(referenced - declared)
     assert not missing, (
