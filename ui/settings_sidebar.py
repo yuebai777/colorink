@@ -150,7 +150,7 @@ class SettingsSidebar(QWidget):
 
         grid_hotkeys.addWidget(QLabel("LAB切换(色轮)"), 4, 0)
         self.btn_lab_toggle = HotkeyButton("toggleLabKey", self.cfg.get("toggleLabKey", "Space"), allow_mouse=True)
-        self.btn_lab_toggle.setToolTip("鼠标悬停在色轮或LAB区域时，按此键/鼠标键切换色轮/LAB视图；支持键盘或鼠标按键（建议侧键/中键，左键会与色轮操作冲突）；无需聚焦本窗口，无焦点选色模式下也可用")
+        self.btn_lab_toggle.setToolTip("鼠标悬停在色轮或LAB区域时，按此键/鼠标键切换色轮/LAB视图；支持键盘、鼠标按键或数位板笔按键（建议侧键/中键，左键会与色轮操作冲突）；无需聚焦本窗口，无焦点选色模式下也可用")
         self.btn_lab_toggle.hotkeyChanged.connect(self.save_hotkeys)
         grid_hotkeys.addWidget(self.btn_lab_toggle, 4, 1)
 
@@ -258,7 +258,8 @@ class SettingsSidebar(QWidget):
             ["OKLCh (GPU兼容)", "系统 Luma (Mag)"])
         self.combo_grayscale_backend.setToolTip(
             "OKLCh (GPU兼容)：感知均匀的全屏黑白，覆盖 ColorInk；"
-            "系统 Luma (Mag)：延迟最低的备用模式。")
+            "系统 Luma (Mag)：延迟最低、仅作用于全部屏幕的备用模式；"
+            "需要按屏目标时请在 Native 后端选择 Luma。")
         self.combo_grayscale_backend.currentTextChanged.connect(self._on_grayscale_backend_changed)
         grid_gray.addWidget(self.combo_grayscale_backend, 2, 1)
 
@@ -830,19 +831,76 @@ class SettingsSidebar(QWidget):
         setattr(self, f"_eye_btn_sync_{target}", btn_sync)
         
     def _update_grayscale_mode_options(self, backend):
-        """The selected engine determines the only valid grayscale algorithm."""
+        """Mag only offers Luma; native supports both OKLCh and Luma."""
         self.combo_grayscale_mode.blockSignals(True)
         self.combo_grayscale_mode.clear()
         if backend == "mag":
             self.combo_grayscale_mode.addItems(["Luma (BT.709 标准)"])
         else:
-            self.combo_grayscale_mode.addItems(["OKLCh (感知均匀)"])
-        self.combo_grayscale_mode.setEnabled(False)
+            self.combo_grayscale_mode.addItems(
+                ["OKLCh (感知均匀)", "Luma (BT.709 标准)"]
+            )
+            saved_mode = self.cfg.get("grayscaleFilterMode", "oklch")
+            self.combo_grayscale_mode.setCurrentText(
+                "Luma (BT.709 标准)" if saved_mode == "luma"
+                else "OKLCh (感知均匀)"
+            )
+        self.combo_grayscale_mode.setEnabled(backend != "mag")
         self.combo_grayscale_mode.blockSignals(False)
+
+    def _update_grayscale_screen_options(self, backend):
+        """Native can target one screen; Mag is always system-wide."""
+        if backend == "mag":
+            screens = ["all"]
+        else:
+            screens = self._grayscale_screen_items()
+        saved_target = self.cfg.get("grayscaleFilterScreen", "all")
+        self.combo_grayscale_screen.blockSignals(True)
+        self.combo_grayscale_screen.clear()
+        self.combo_grayscale_screen.addItems(screens)
+        if saved_target == "all":
+            self.combo_grayscale_screen.setCurrentText("all")
+        else:
+            for item in screens:
+                if item != "all" and item.startswith(f"{saved_target}:"):
+                    self.combo_grayscale_screen.setCurrentText(item)
+                    break
+            else:
+                self.combo_grayscale_screen.setCurrentText("all")
+        if backend == "mag":
+            self.combo_grayscale_screen.setEnabled(False)
+            self.combo_grayscale_screen.setToolTip(
+                "系统 Luma (Mag) 作用于全部屏幕"
+            )
+        else:
+            self.combo_grayscale_screen.setEnabled(True)
+            self.combo_grayscale_screen.setToolTip(
+                "选择黑白滤镜作用在哪个屏幕，默认作用于全部屏幕"
+            )
+        self.combo_grayscale_screen.blockSignals(False)
+
+    @staticmethod
+    def _grayscale_screen_items() -> list[str]:
+        """Return the same screen labels the native runtime uses."""
+        items = ["all"]
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                for i, screen in enumerate(app.screens()):
+                    geo = screen.geometry()
+                    dpr = screen.devicePixelRatio()
+                    name = screen.name().replace("\\\\.\\", "")
+                    pw = int(geo.width() * dpr)
+                    ph = int(geo.height() * dpr)
+                    items.append(f"{i}: {name} ({pw}x{ph})")
+            except Exception:
+                pass
+        return items
 
     def _on_grayscale_backend_changed(self, text):
         backend = "mag" if "Mag" in text else "native"
         self._update_grayscale_mode_options(backend)
+        self._update_grayscale_screen_options(backend)
         self.save_settings()
     def refresh_ui(self):
         self.cfg = config.load_hotkey_config()
@@ -872,29 +930,10 @@ class SettingsSidebar(QWidget):
         self.btn_lab_global.setText(display_hotkey(_lab_global) if _lab_global else "未绑定")
         self.btn_lab_global.val = _lab_global
         
-        # Screen selector for grayscale filter
-        # Both supported engines intentionally cover every monitor.
-        screens = ["all"]
-        self.combo_grayscale_screen.blockSignals(True)
-        self.combo_grayscale_screen.clear()
-        self.combo_grayscale_screen.addItems(screens)
-        saved_target = self.cfg.get("grayscaleFilterScreen", "all")
-        # Map "all" to display, and index to display format
-        if saved_target == "all":
-            self.combo_grayscale_screen.setCurrentText("all")
-        else:
-            # Find matching entry
-            for item in screens:
-                if item != "all" and item.startswith(f"{saved_target}:"):
-                    self.combo_grayscale_screen.setCurrentText(item)
-                    break
-            else:
-                self.combo_grayscale_screen.setCurrentText("all")
-        self.combo_grayscale_screen.blockSignals(False)
-
         self.combo_grayscale_mode.blockSignals(True)
         backend = self.cfg.get("grayscaleFilterBackend", "native")
         backend = "mag" if backend == "mag" else "native"
+        self._update_grayscale_screen_options(backend)
         self._update_grayscale_mode_options(backend)
         self.combo_grayscale_mode.blockSignals(False)
 
@@ -1457,6 +1496,25 @@ class SettingsSidebar(QWidget):
         self.cfg["toggleLabGlobalKey"] = self.btn_lab_global.val
         self._persist_and_emit()
 
+    def _grayscale_filter_config(self) -> dict:
+        """Map the grayscale controls to persisted config values."""
+        screen_text = self.combo_grayscale_screen.currentText()
+        mode_text = self.combo_grayscale_mode.currentText()
+        backend_text = self.combo_grayscale_backend.currentText()
+        use_mag = "Mag" in backend_text
+        return {
+            "grayscaleFilterScreen": (
+                "all"
+                if use_mag
+                else (screen_text.split(":")[0].strip()
+                      if ":" in screen_text else screen_text)
+            ),
+            "grayscaleFilterMode": (
+                "luma" if ("Luma" in mode_text or use_mag) else "oklch"
+            ),
+            "grayscaleFilterBackend": "mag" if use_mag else "native",
+        }
+
     def save_settings(self):
         theme_val_map = {"背景 自动（匹配CSP）": "auto", "背景 取色": "eyedropper", "背景 灰": "gray", "背景 白": "white", "背景 黑": "black"}
         self.cfg["ui-theme"] = theme_val_map.get(self.combo_theme.currentText(), "auto")
@@ -1526,14 +1584,7 @@ class SettingsSidebar(QWidget):
         self.cfg["uiScale"] = self.zoom_slider.value()
         self.cfg["flipColorWheelHorizontally"] = self.cb_flip_wheel.isChecked()
         
-        # Grayscale filter screen target
-        screen_text = self.combo_grayscale_screen.currentText()
-        self.cfg["grayscaleFilterScreen"] = screen_text.split(":")[0].strip() if ":" in screen_text else screen_text
-        # The engine and grayscale algorithm are intentionally coupled.
-        backend_text = self.combo_grayscale_backend.currentText()
-        use_mag = "Mag" in backend_text
-        self.cfg["grayscaleFilterMode"] = "luma" if use_mag else "oklch"
-        self.cfg["grayscaleFilterBackend"] = "mag" if use_mag else "native"
+        self.cfg.update(self._grayscale_filter_config())
 
         try:
             self.cfg["sliderScrollStep"] = int(self.lbl_scroll_step.text())
