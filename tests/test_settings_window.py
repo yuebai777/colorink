@@ -365,3 +365,87 @@ class TestReorganizedSettings:
         assert hasattr(sidebar, "btn_export_config")
         assert hasattr(sidebar, "btn_import_config")
         assert hasattr(sidebar, "btn_reset_config")
+
+
+class TestGrayscaleFilterSettings:
+    """Native backend exposes screen targets and both grayscale modes."""
+
+    def test_native_backend_lists_screens_and_both_modes(self, sidebar):
+        screen_items = [
+            sidebar.combo_grayscale_screen.itemText(i)
+            for i in range(sidebar.combo_grayscale_screen.count())
+        ]
+        assert "all" in screen_items
+        assert len(screen_items) >= 2
+        assert sidebar.combo_grayscale_screen.isEnabled()
+
+        mode_items = [
+            sidebar.combo_grayscale_mode.itemText(i)
+            for i in range(sidebar.combo_grayscale_mode.count())
+        ]
+        assert "OKLCh (感知均匀)" in mode_items
+        assert "Luma (BT.709 标准)" in mode_items
+        assert sidebar.combo_grayscale_mode.isEnabled()
+
+    def test_mag_backend_limits_screen_and_mode(self, sidebar):
+        sidebar._update_grayscale_screen_options("mag")
+        sidebar._update_grayscale_mode_options("mag")
+
+        assert sidebar.combo_grayscale_screen.count() == 1
+        assert sidebar.combo_grayscale_screen.itemText(0) == "all"
+        assert not sidebar.combo_grayscale_screen.isEnabled()
+
+        assert sidebar.combo_grayscale_mode.count() == 1
+        assert sidebar.combo_grayscale_mode.itemText(0) == "Luma (BT.709 标准)"
+        assert not sidebar.combo_grayscale_mode.isEnabled()
+
+    def test_native_luma_config_mapping(self, sidebar):
+        screen_items = [
+            sidebar.combo_grayscale_screen.itemText(i)
+            for i in range(sidebar.combo_grayscale_screen.count())
+        ]
+        target = next((item for item in screen_items if item != "all"), "all")
+        for combo in (
+            sidebar.combo_grayscale_screen,
+            sidebar.combo_grayscale_mode,
+            sidebar.combo_grayscale_backend,
+        ):
+            combo.blockSignals(True)
+        sidebar.combo_grayscale_screen.setCurrentText(target)
+        sidebar.combo_grayscale_mode.setCurrentText("Luma (BT.709 标准)")
+        sidebar.combo_grayscale_backend.setCurrentText("OKLCh (GPU兼容)")
+        for combo in (
+            sidebar.combo_grayscale_screen,
+            sidebar.combo_grayscale_mode,
+            sidebar.combo_grayscale_backend,
+        ):
+            combo.blockSignals(False)
+
+        cfg = sidebar._grayscale_filter_config()
+        expected_screen = (
+            target.split(":")[0].strip() if ":" in target else target
+        )
+        assert cfg == {
+            "grayscaleFilterScreen": expected_screen,
+            "grayscaleFilterMode": "luma",
+            "grayscaleFilterBackend": "native",
+        }
+
+    def test_mag_config_forces_all_screens(self, sidebar):
+        sidebar.combo_grayscale_screen.blockSignals(True)
+        sidebar.combo_grayscale_screen.setCurrentText(
+            sidebar.combo_grayscale_screen.itemText(
+                sidebar.combo_grayscale_screen.count() - 1
+            )
+        )
+        sidebar.combo_grayscale_screen.blockSignals(False)
+        sidebar.combo_grayscale_backend.blockSignals(True)
+        sidebar.combo_grayscale_backend.setCurrentText("系统 Luma (Mag)")
+        sidebar.combo_grayscale_backend.blockSignals(False)
+
+        cfg = sidebar._grayscale_filter_config()
+        assert cfg == {
+            "grayscaleFilterScreen": "all",
+            "grayscaleFilterMode": "luma",
+            "grayscaleFilterBackend": "mag",
+        }

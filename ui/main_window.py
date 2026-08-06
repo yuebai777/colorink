@@ -3,6 +3,7 @@ import math
 import os
 import re
 import sys
+import time
 from typing import cast
 
 from PyQt6.QtCore import (
@@ -291,6 +292,7 @@ class TitleBar(QWidget):
 
     def init_ui(self):
         self.setFixedHeight(28)
+        self.setMouseTracking(True)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
         layout.setSpacing(4)
@@ -755,8 +757,8 @@ class MainWindow(QMainWindow):
         self._last_dpr = None       # Previous screen devicePixelRatio
         self._dpi_locked_size = None  # (w, h) logical size frozen during DPI transition
 
-        # Fullscreen grayscale: one native OKLCh path plus the Windows Mag
-        # Luma fallback. Legacy capture/render backends are migrated to native.
+        # Fullscreen grayscale: native capture supports OKLCh/Luma and
+        # per-screen targets; Mag is the system-wide Luma fallback.
         mode = self.cfg.get("grayscaleFilterMode", "oklch")
         backend = self.cfg.get("grayscaleFilterBackend", "native")
         if backend == "mag":
@@ -764,15 +766,18 @@ class MainWindow(QMainWindow):
             self.grayscale_overlay = MagFilterController(mode="luma")
         else:
             from core.native_grayscale import NativeGrayscaleController
-            self.grayscale_overlay = NativeGrayscaleController(mode="oklch")
-        self.grayscale_overlay.set_target("all")
+            if mode not in ("oklch", "luma"):
+                mode = "oklch"
+            self.grayscale_overlay = NativeGrayscaleController(mode=mode)
+        screen_target = self.cfg.get("grayscaleFilterScreen", "all")
+        self.grayscale_overlay.set_target(screen_target)
         # Warm the OKLCh capture/OpenGL/PBO chain off-screen so Ctrl+G only
         # reveals a prepared frame instead of paying initialization latency.
         if backend != "mag":
             prepare = getattr(self.grayscale_overlay, "prepare", None)
             if callable(prepare):
                 # grayscale_overlay.prepare runs once the window is up:
-                # it warms the OKLCh GL overlay off-screen (light preheat).
+                # it warms the native GL overlay off-screen (light preheat).
                 QTimer.singleShot(800, prepare)
             # Pre-import dxcam off the GUI thread so the first Ctrl+G does not
             # pay the one-time ~0.4s module/D3D11/comtypes import cost.
@@ -796,6 +801,9 @@ class MainWindow(QMainWindow):
         self.init_foreground_tracker()
         self.apply_theme()
         self.init_tray()
+        # Timestamp of the last consumed local mouse/pen toggle press, used
+        # to deduplicate the tablet + synthetic-mouse event pair.
+        self._last_lab_toggle_ts = 0.0
         app = QApplication.instance()
         if app is not None:
             app.installEventFilter(self)
@@ -2743,54 +2751,36 @@ class MainWindow(QMainWindow):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if not self.cfg.get("lockWindowSize", False):
-            pos = event.position()
-            if getattr(self, "resizing", False):
-                start_pos = self.resize_start_pos
-                geom = self.resize_start_geometry
-                if start_pos is None or geom is None:
-                    return
-                delta = event.globalPosition().toPoint() - start_pos
-                new_geom = QRect(geom)
-                
-                min_w = 200
-                min_h = 300
-                
-                resize_dir = self.resize_dir
-                if resize_dir is None:
-                    return
-                
-                if "right" in resize_dir:
-                    new_w = max(min_w, geom.width() + delta.x())
-                    new_geom.setWidth(new_w)
-                elif "left" in resize_dir:
-                    new_w = max(min_w, geom.width() - delta.x())
-                    new_geom.setLeft(geom.right() - new_w)
-                    
-                if "bottom" in resize_dir:
-                    new_h = max(min_h, geom.height() + delta.y())
-                    new_geom.setHeight(new_h)
-                
-                self.setGeometry(new_geom)
-                event.accept()
+        if getattr(self, "resizing", False):
+            start_pos = self.resize_start_pos
+            geom = self.resize_start_geometry
+            if start_pos is None or geom is None:
                 return
-            else:
-                direction = self.get_resize_direction(pos)
-                target = Qt.CursorShape.ArrowCursor
-                if direction == "left" or direction == "right":
-                    target = Qt.CursorShape.SizeHorCursor
-                elif direction == "bottom":
-                    target = Qt.CursorShape.SizeVerCursor
-                elif direction == "bottom-left":
-                    target = Qt.CursorShape.SizeBDiagCursor
-                elif direction == "bottom-right":
-                    target = Qt.CursorShape.SizeFDiagCursor
-                
-                if self.cursor().shape() != target:
-                    if target == Qt.CursorShape.ArrowCursor:
-                        self.unsetCursor()
-                    else:
-                        self.setCursor(target)
+            delta = event.globalPosition().toPoint() - start_pos
+            new_geom = QRect(geom)
+
+            min_w = 200
+            min_h = 300
+
+            resize_dir = self.resize_dir
+            if resize_dir is None:
+                return
+
+            if "right" in resize_dir:
+                new_w = max(min_w, geom.width() + delta.x())
+                new_geom.setWidth(new_w)
+            elif "left" in resize_dir:
+                new_w = max(min_w, geom.width() - delta.x())
+                new_geom.setLeft(geom.right() - new_w)
+
+            if "bottom" in resize_dir:
+                new_h = max(min_h, geom.height() + delta.y())
+                new_geom.setHeight(new_h)
+
+            self.setGeometry(new_geom)
+            event.accept()
+            return
+        self._sync_resize_cursor(event.globalPosition().toPoint())
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -2810,23 +2800,40 @@ class MainWindow(QMainWindow):
         
         super().mouseReleaseEvent(event)
 
-    def _is_lab_toggle_zone(self) -> bool:
-        """True when the cursor is inside the visible picker pane.
+    def _is_lab_toggle_zone(self, global_pos: QPoint | None = None) -> bool:
+        """True when the given global point (or the system cursor) is inside
+        the visible picker pane.
 
         Covers the color wheel (the ring AND every position inside it) plus
         the LAB visualizer pane, so the local shortcut toggles in both
         directions without moving the mouse.
         """
         try:
+            if global_pos is None:
+                global_pos = QCursor.pos()
             if self.stack.currentIndex() == 0 and self.color_wheel.isVisible():
-                pos = self.color_wheel.mapFromGlobal(QCursor.pos())
+                pos = self.color_wheel.mapFromGlobal(global_pos)
                 return self.color_wheel.rect().contains(pos)
             if self.stack.currentIndex() == 1 and self.pane_lab.isVisible():
-                pos = self.pane_lab.mapFromGlobal(QCursor.pos())
+                pos = self.pane_lab.mapFromGlobal(global_pos)
                 return self.pane_lab.rect().contains(pos)
         except Exception:
             pass
         return False
+
+    def _consume_lab_toggle_press(self) -> bool:
+        """Single-fire guard for the local mouse/pen toggle shortcut.
+
+        A pen button press is delivered twice — once as a QTabletEvent and
+        once as a synthetic QMouseEvent — so only the first of the pair may
+        toggle. Returns True when this press should toggle, False when it is
+        the duplicate twin (caller swallows it without toggling).
+        """
+        now = time.monotonic()
+        if now - self._last_lab_toggle_ts < 0.06:
+            return False
+        self._last_lab_toggle_ts = now
+        return True
 
     def _maybe_handle_lab_toggle_key(self, event) -> bool:
         """Handle the configured local LAB-toggle shortcut.
@@ -2867,7 +2874,7 @@ class MainWindow(QMainWindow):
         Mouse events follow the cursor, not keyboard focus, so this path
         works even in 无焦点选色模式 while the painting app holds focus.
         """
-        if not self._is_lab_toggle_zone():
+        if not self._is_lab_toggle_zone(event.globalPosition().toPoint()):
             return False
         name = MOUSE_BUTTON_NAME_BY_QT.get(event.button())
         if not name:
@@ -2875,6 +2882,33 @@ class MainWindow(QMainWindow):
         expected = str(self.cfg.get("toggleLabKey", "")).lower().replace(" ", "")
         if name.lower() != expected:
             return False
+        # A pen press also arrives as a synthetic QMouseEvent — swallow the
+        # twin when the tablet event already toggled.
+        if not self._consume_lab_toggle_press():
+            return True
+        self.toggle_picker_mode()
+        return True
+
+    def _maybe_handle_lab_toggle_tablet(self, event) -> bool:
+        """Toggle wheel/LAB view when a pen (tablet) button press matches the
+        configured local shortcut.
+
+        Pen side-buttons configured as right-click arrive as QTabletEvent
+        (TabletPress) — and, depending on the driver, as a synthetic
+        QMouseEvent too. Handling the tablet event directly makes pen
+        buttons work exactly like mouse buttons, with the pair deduplicated
+        by ``_consume_lab_toggle_press``.
+        """
+        if not self._is_lab_toggle_zone(event.globalPosition().toPoint()):
+            return False
+        name = MOUSE_BUTTON_NAME_BY_QT.get(event.button())
+        if not name:
+            return False
+        expected = str(self.cfg.get("toggleLabKey", "")).lower().replace(" ", "")
+        if name.lower() != expected:
+            return False
+        if not self._consume_lab_toggle_press():
+            return True
         self.toggle_picker_mode()
         return True
 
@@ -2888,31 +2922,53 @@ class MainWindow(QMainWindow):
                     return True
                 if event.type() == QEvent.Type.MouseButtonPress and self._maybe_handle_lab_toggle_mouse(event):
                     return True
-            # Intercept MouseMove events globally for this window's child widgets
-            # to ensure the cursor correctly resets when leaving the 8px border zone
-            if event.type() == QEvent.Type.MouseMove and isinstance(watched, QWidget) and self.window() == watched.window():
-                if not getattr(self, "resizing", False) and not self.cfg.get("lockWindowSize", False):
-                    pos_in_main = self.mapFromGlobal(QCursor.pos())
-                    direction = self.get_resize_direction(pos_in_main)
-                    
-                    target = Qt.CursorShape.ArrowCursor
-                    if direction == "left" or direction == "right":
-                        target = Qt.CursorShape.SizeHorCursor
-                    elif direction == "bottom":
-                        target = Qt.CursorShape.SizeVerCursor
-                    elif direction == "bottom-left":
-                        target = Qt.CursorShape.SizeBDiagCursor
-                    elif direction == "bottom-right":
-                        target = Qt.CursorShape.SizeFDiagCursor
-                        
-                    if self.cursor().shape() != target:
-                        if target == Qt.CursorShape.ArrowCursor:
-                            self.unsetCursor()
-                        else:
-                            self.setCursor(target)
+                # Pen (tablet) button presses — e.g. a pen side-button bound
+                # to right-click — arrive as tablet events. Same handling as
+                # mouse buttons; the synthetic mouse twin is deduplicated.
+                if event.type() == QEvent.Type.TabletPress and self._maybe_handle_lab_toggle_tablet(event):
+                    return True
+            # Keep the resize cursor in sync even over widgets that do not
+            # enable mouse tracking. MouseMove alone can miss those areas and
+            # leave a stale size cursor after leaving the 8px border zone.
+            if (
+                event.type() in (QEvent.Type.MouseMove, QEvent.Type.Enter, QEvent.Type.Leave)
+                and isinstance(watched, QWidget)
+                and self.window() == watched.window()
+            ):
+                if not getattr(self, "resizing", False):
+                    if event.type() in (QEvent.Type.MouseMove, QEvent.Type.Enter):
+                        self._sync_resize_cursor(event.globalPosition().toPoint())
+                    else:
+                        self.unsetCursor()
         except Exception:
             pass
         return super().eventFilter(watched, event)
+
+    def _sync_resize_cursor(self, global_pos=None):
+        if self.cfg.get("lockWindowSize", False):
+            self.unsetCursor()
+            return
+
+        if global_pos is None:
+            global_pos = QCursor.pos()
+        pos_in_main = self.mapFromGlobal(global_pos)
+        direction = self.get_resize_direction(pos_in_main)
+
+        target = Qt.CursorShape.ArrowCursor
+        if direction == "left" or direction == "right":
+            target = Qt.CursorShape.SizeHorCursor
+        elif direction == "bottom":
+            target = Qt.CursorShape.SizeVerCursor
+        elif direction == "bottom-left":
+            target = Qt.CursorShape.SizeBDiagCursor
+        elif direction == "bottom-right":
+            target = Qt.CursorShape.SizeFDiagCursor
+
+        if self.cursor().shape() != target:
+            if target == Qt.CursorShape.ArrowCursor:
+                self.unsetCursor()
+            else:
+                self.setCursor(target)
 
     def get_resize_direction(self, pos):
         w = self.width()
@@ -2921,6 +2977,9 @@ class MainWindow(QMainWindow):
         
         x = pos.x()
         y = pos.y()
+
+        if x < 0 or y < 0 or x >= w or y >= h:
+            return None
         
         is_left = x <= border
         is_right = x >= w - border
@@ -3650,10 +3709,13 @@ class MainWindow(QMainWindow):
         self.cfg = config.load_hotkey_config()
         self.update_hotkey_bindings()
 
-        # Update grayscale controller and migrate all removed backends to the
-        # validated OKLCh implementation. Mag remains the Luma fallback.
+        # Update grayscale controller and migrate all removed backends to
+        # native. Mag remains the system-wide Luma fallback.
         new_backend = self.cfg.get("grayscaleFilterBackend", "native")
         new_backend = "mag" if new_backend == "mag" else "native"
+        new_mode = self.cfg.get("grayscaleFilterMode", "oklch")
+        if new_mode not in ("oklch", "luma"):
+            new_mode = "oklch"
         current_backend = (
             "mag" if type(self.grayscale_overlay).__name__ == "MagFilterController"
             else "native"
@@ -3668,9 +3730,12 @@ class MainWindow(QMainWindow):
                 self.grayscale_overlay = MagFilterController(mode="luma")
             else:
                 from core.native_grayscale import NativeGrayscaleController
-                self.grayscale_overlay = NativeGrayscaleController(mode="oklch")
-        self.grayscale_overlay.set_target("all")
-        self.grayscale_overlay.set_mode("luma" if new_backend == "mag" else "oklch")
+                self.grayscale_overlay = NativeGrayscaleController(mode=new_mode)
+        screen_target = self.cfg.get("grayscaleFilterScreen", "all")
+        self.grayscale_overlay.set_target(screen_target)
+        self.grayscale_overlay.set_mode(
+            "luma" if new_backend == "mag" else new_mode
+        )
 
         # Update window flags dynamically
         self.update_window_flags()

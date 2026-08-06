@@ -14,6 +14,8 @@ def test_settings_expose_validated_oklch_and_mag():
     sidebar = (PROJECT_ROOT / "ui" / "settings_sidebar.py").read_text(encoding="utf-8")
     assert '"OKLCh (GPU兼容)"' in sidebar
     assert '"系统 Luma (Mag)"' in sidebar
+    assert '"OKLCh (感知均匀)", "Luma (BT.709 标准)"' in sidebar
+    assert "_update_grayscale_screen_options" in sidebar
     for removed in (
         "OpenGL Overlay",
         "DComp 直通",
@@ -41,6 +43,15 @@ def test_native_backend_uses_nonblack_validated_overlay_runtime():
     assert "DXShareGrayscaleOverlay" not in controller
     assert "native_grayscale/runtime/grayscale_overlay.pyc" in controller
     assert "is_active" in controller
+
+
+def test_native_backend_supports_luma_and_screen_targets():
+    controller = (PROJECT_ROOT / "core" / "native_grayscale.py").read_text(encoding="utf-8")
+    assert "def set_mode" in controller
+    assert "def set_target" in controller
+    assert '"luma"' in controller
+    assert "_normalize_target" in controller
+    assert "available_screens" in controller
 
 
 

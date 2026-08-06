@@ -6,15 +6,16 @@ import pytest
 from core import native_grayscale as ng
 
 
-def test_controller_is_oklch_only_and_all_screens(monkeypatch):
+def test_controller_supports_oklch_luma_and_all_screens(monkeypatch):
     monkeypatch.setattr(ng, "_ensure_runtime_loaded", lambda: (_ for _ in ()).throw(ImportError("offline")))
     c = ng.NativeGrayscaleController(mode="luma")
-    assert c._mode == "oklch"
+    assert c._mode == "luma"
     assert c.target == "all"
     assert c.available_screens() == ["all"]
     c.set_mode("oklch")
+    c.set_mode("luma")
     with pytest.raises(ValueError):
-        c.set_mode("luma")
+        c.set_mode("unknown")
 
 
 def test_controller_delegates_to_validated_gpu_overlay(monkeypatch):
@@ -35,11 +36,13 @@ def test_controller_delegates_to_validated_gpu_overlay(monkeypatch):
     c = ng.NativeGrayscaleController()
     assert c.is_available and c.is_healthy
     c.set_target("0")
+    c.set_target("1: 屏幕 (1920x1080)")
     c.start()
     c.stop()
     c.close()
     assert calls == [
-        ("init", "oklch"), ("active", True, None),
+        ("init", "oklch"), ("target", "0"), ("target", "1"),
+        ("active", True, None),
         ("active", False, None),
     ]
 
@@ -156,9 +159,13 @@ class _FakeImpl:
     def __init__(self, mode):
         self._overlays = []
         self.mode = mode
+        self.target = "all"
 
     def set_mode(self, mode):
         self.mode = mode
+
+    def set_target(self, target):
+        self.target = target
 
     def set_active(self, active, mode=None):
         self.is_active = active
@@ -229,6 +236,44 @@ def test_quick_off_on_during_release_waits_for_release(monkeypatch):
     queue.run_all()
     assert c.is_active
     assert all(w._camera is not None for w in c._impl._overlays)
+
+
+def test_mode_switch_restarts_active_native_filter(monkeypatch):
+    queue = _TimerQueue()
+    c = _make_controller(monkeypatch, queue)
+
+    c.prepare()
+    queue.run_all()
+    c.start()
+    queue.run_all()
+    assert c.is_active
+
+    c.set_mode("luma")
+    queue.run_all()
+
+    assert c._mode == "luma"
+    assert c._impl.mode == "luma"
+    assert c.is_active
+    assert all(w.shown and not w.offscreen for w in c._impl._overlays)
+
+
+def test_set_target_restarts_active_native_filter(monkeypatch):
+    queue = _TimerQueue()
+    c = _make_controller(monkeypatch, queue)
+
+    c.prepare()
+    queue.run_all()
+    c.start()
+    queue.run_all()
+    assert c.is_active
+
+    c.set_target("1")
+    queue.run_all()
+
+    assert c.target == "1"
+    assert c._impl.target == "1"
+    assert c.is_active
+    assert all(w.shown and not w.offscreen for w in c._impl._overlays)
 
 
 def test_camera_error_fails_fast(monkeypatch):

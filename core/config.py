@@ -69,8 +69,8 @@ def default_hotkey_config():
         "showLabToggleButton": True,      # 显示/隐藏色轮与LAB之间的浮动切换按钮
         "grayscaleFilterScreen": "all",
         "grayscaleFilterMode": "oklch",
-        # native = DXGI Desktop Duplication + D3D11 OKLCh + DirectComposition；
-        # mag = Windows 系统颜色矩阵（仅 Luma，最流畅的备用路径）
+        # native = DXGI Desktop Duplication + OpenGL，支持 OKLCh / Luma 与按屏目标；
+        # mag = Windows 系统颜色矩阵（仅 Luma，作用于全部屏幕）
         "grayscaleFilterBackend": "native",
         "showTaskbarIcon": False,
         "lockWindowSize": False,

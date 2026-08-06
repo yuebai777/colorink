@@ -1,7 +1,7 @@
-"""Validated fullscreen OKLCh grayscale controller.
+"""Validated native fullscreen grayscale controller.
 
 This path uses the proven dxcam/Desktop-Duplication capture loop, asynchronous
-PBO texture uploads, and an OpenGL OKLab-L fragment shader. It is not the
+PBO texture uploads, and OpenGL OKLab-L / Luma fragment shaders. It is not the
 broken WGL shared-texture experiment: that runtime is deliberately excluded.
 
 Toggle latency
@@ -316,11 +316,11 @@ def _install_prewarm(runtime):
 
 
 class NativeGrayscaleController:
-    """Application facade for the validated, non-black OKLCh overlay."""
+    """Application facade for the validated native capture overlay."""
 
     def __init__(self, mode: str = "oklch"):
         self._impl = None
-        self._mode = "oklch"
+        self._mode = mode if mode in ("oklch", "luma") else "oklch"
         self._target = "all"
         self.last_error = ""
         self._reveal_timer = None
@@ -334,13 +334,11 @@ class NativeGrayscaleController:
         self._warmed = False
         self._warming = False
         self._user_active = False
-        if mode not in ("oklch", "luma"):
-            raise ValueError(mode)
         try:
             runtime = _ensure_runtime_loaded()
-            self._impl = runtime.GrayscaleOverlay(mode="oklch")
+            self._impl = runtime.GrayscaleOverlay(mode=self._mode)
         except Exception as exc:
-            self.last_error = f"OKLCh 滤镜加载失败: {exc}"
+            self.last_error = f"Native 滤镜加载失败: {exc}"
 
     @property
     def is_available(self) -> bool:
@@ -355,30 +353,58 @@ class NativeGrayscaleController:
         return bool(self._impl is not None and self._impl.is_healthy)
 
     def set_mode(self, mode: str) -> None:
-        if mode != "oklch":
-            raise ValueError("OKLCh 后端仅支持 OKLCh；Luma 请使用 Mag")
+        if mode not in ("oklch", "luma"):
+            raise ValueError("Native 后端仅支持 OKLCh 或 Luma")
         if self._mode == mode:
             return
-        self._mode = mode
+        was_active = self.is_active
+        if was_active:
+            self.stop()
         if self._impl is not None:
-            self._impl.set_mode("oklch")
+            if self._impl.is_active:
+                self._impl.set_active(False)
+                self._warmed = False
+                self._warming = False
+            self._impl.set_mode(mode)
+        self._mode = mode
+        if was_active:
+            self.start()
+
+    @staticmethod
+    def _normalize_target(target) -> str:
+        value = str(target or "all").strip()
+        if value != "all" and ":" in value:
+            value = value.split(":", 1)[0].strip()
+        return value
 
     def set_target(self, target) -> None:
-        # The product exposes one target only. Repeated settings saves must not
-        # tear down dxcam capture threads or recreate OpenGL windows.
-        if self._target == "all":
+        target = self._normalize_target(target)
+        if target == self._target:
             return
-        self._target = "all"
+        was_active = self.is_active
+        if was_active:
+            self.stop()
         if self._impl is not None:
-            self._impl.set_target("all")
+            if self._impl.is_active:
+                self._impl.set_active(False)
+                self._warmed = False
+                self._warming = False
+            self._impl.set_target(target)
+        self._target = target
+        if was_active:
+            self.start()
 
     @property
     def target(self) -> str:
-        return "all"
+        return self._target
 
     @staticmethod
     def available_screens() -> list[str]:
-        return ["all"]
+        try:
+            runtime = _ensure_runtime_loaded()
+            return list(runtime.GrayscaleOverlay.available_screens())
+        except Exception:
+            return ["all"]
 
     def prepare(self) -> None:
         """Warm OpenGL/PBO/capture resources while keeping the overlay hidden."""
@@ -387,7 +413,7 @@ class NativeGrayscaleController:
         if self._impl.is_active:
             return
         self._warming = True
-        self.set_mode("oklch")
+        self.set_mode(self._mode)
         self._impl.set_active(True)
         self._reveal_deadline = time.monotonic() + 3.0
         self._schedule_reveal()
@@ -438,7 +464,7 @@ class NativeGrayscaleController:
 
     def start(self) -> None:
         if self._impl is None:
-            raise RuntimeError(self.last_error or "OKLCh 滤镜不可用")
+            raise RuntimeError(self.last_error or "Native 滤镜不可用")
         if self._stopping_overlays:
             self._pending_start = True
             self._schedule_transition_poll()
@@ -459,10 +485,10 @@ class NativeGrayscaleController:
             self._user_active = True
             self._schedule_reveal()
             return
-        self.set_mode("oklch")
+        self.set_mode(self._mode)
         self._impl.set_active(True)
         if not self._impl.is_active:
-            raise RuntimeError("OKLCh 覆盖层没有成功激活")
+            raise RuntimeError("Native 覆盖层没有成功激活")
         self._user_active = True
         self._reveal_deadline = time.monotonic() + 2.0
         self._schedule_reveal()
@@ -518,7 +544,7 @@ class NativeGrayscaleController:
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(16, self._poll_reveal)
             return
-        self.last_error = "OKLCh 首帧未准备好，已阻止显示未初始化覆盖层"
+        self.last_error = "Native 首帧未准备好，已阻止显示未初始化覆盖层"
         self.stop()
 
     def stop(self) -> None:
@@ -613,7 +639,7 @@ class NativeGrayscaleController:
             self.last_error = ""
             return True
         except Exception as exc:
-            self.last_error = f"OKLCh 滤镜切换失败: {exc}"
+            self.last_error = f"Native 滤镜切换失败: {exc}"
             return False
 
     def close(self) -> None:
