@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock
 
+from PyQt6.QtCore import QPoint
+
 # Pre-populate sys.modules with mocks for every external dependency touched
 # by the ui.main_window import chain.  This prevents import-time side effects
 # (win32com genpath, brush_color_spaces, etc.) while still letting us import
@@ -144,6 +146,41 @@ class ContentHeightPolicyTests(unittest.TestCase):
 
         window.setMinimumHeight.assert_called_once_with(264)
         window.resize.assert_called_once_with(100, 264)
+
+
+class ResizeDirectionTests(unittest.TestCase):
+    def test_outside_positions_are_not_resize_edges(self):
+        window = SimpleNamespace(width=lambda: 100, height=lambda: 100)
+        for pos in (QPoint(-1, 50), QPoint(50, -1), QPoint(101, 50), QPoint(50, 101)):
+            self.assertIsNone(MainWindow.get_resize_direction(window, pos))
+
+    def test_cursor_sync_uses_event_global_position(self):
+        seen_positions = []
+        cursor = SimpleNamespace(shape=MagicMock(return_value=object()))
+        window = SimpleNamespace(
+            cfg={"lockWindowSize": False},
+            mapFromGlobal=lambda p: seen_positions.append(p) or p,
+            get_resize_direction=MagicMock(return_value=None),
+            cursor=MagicMock(return_value=cursor),
+            unsetCursor=MagicMock(),
+            setCursor=MagicMock(),
+        )
+
+        MainWindow._sync_resize_cursor(window, QPoint(50, 60))
+
+        self.assertEqual(seen_positions, [QPoint(50, 60)])
+        window.unsetCursor.assert_called_once_with()
+        window.setCursor.assert_not_called()
+
+    def test_cursor_sync_clears_stale_cursor_when_size_is_locked(self):
+        window = SimpleNamespace(
+            cfg={"lockWindowSize": True},
+            unsetCursor=MagicMock(),
+        )
+
+        MainWindow._sync_resize_cursor(window, QPoint(50, 60))
+
+        window.unsetCursor.assert_called_once_with()
 
 
 if __name__ == "__main__":
