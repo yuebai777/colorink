@@ -56,7 +56,11 @@ a = Analysis(
         'dxcam.core',
         'dxcam.core.device',
         'dxcam.core.output',
-        'dxcam.core.capture',
+        # Loaded via importlib.import_module("dxcam.processor._numpy_kernels")
+        # inside dxcam.processor.cv2_processor — a string import PyInstaller
+        # cannot see statically. Without the .pyd the numpy backend falls
+        # back to the cv2 processor, which needs opencv (not shipped).
+        'dxcam.processor._numpy_kernels',
         'comtypes',
         'comtypes.client',
         # CSP Companion QR scanning uses delayed imports.

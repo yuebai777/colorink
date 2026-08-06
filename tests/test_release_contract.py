@@ -11,23 +11,23 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_application_version_is_current_release():
-    assert APP_VERSION == "1.6.2"
-    # _normalize_version strips trailing zeros: "1.6.2" → [1, 6, 2]
-    assert _normalize_version(APP_VERSION) == [1, 6, 2]
+    assert APP_VERSION == "1.6.3"
+    # _normalize_version strips trailing zeros: "1.6.3" → [1, 6, 3]
+    assert _normalize_version(APP_VERSION) == [1, 6, 3]
 
 
 def test_windows_file_version_matches_application_version():
     content = (PROJECT_ROOT / "file_version_info.txt").read_text(encoding="utf-8")
 
-    assert "filevers=(1, 6, 2, 0)" in content
-    assert "prodvers=(1, 6, 2, 0)" in content
-    assert "StringStruct('FileVersion', '1.6.2.0')" in content
-    assert "StringStruct('ProductVersion', '1.6.2.0')" in content
+    assert "filevers=(1, 6, 3, 0)" in content
+    assert "prodvers=(1, 6, 3, 0)" in content
+    assert "StringStruct('FileVersion', '1.6.3.0')" in content
+    assert "StringStruct('ProductVersion', '1.6.3.0')" in content
 
 
 def test_release_notes_start_with_current_release():
     content = (PROJECT_ROOT / "release_notes.md").read_text(encoding="utf-8")
-    assert content.startswith("## v1.6.2\n")
+    assert content.startswith("## v1.6.3\n")
 
 
 def test_first_run_defaults_are_compact_and_discoverable():
