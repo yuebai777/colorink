@@ -740,7 +740,13 @@ class CSPCompanionSync:
                         continue
                     idx = d.get("CurrentColorIndex", 0)
                     model = d.get("ColorSelectionModel", "HSV")
-
+                    
+                    #get transparency flag
+                    IsCurrentColorTransparent = d.get("IsCurrentColorTransparent", False)
+                
+                    if IsCurrentColorTransparent:
+                        return None
+                   
                     if model == "HLS":
                         return self._parse_hls_response(d, idx)
                     else:
@@ -849,7 +855,7 @@ class CSPCompanionSync:
                     _log(f"Parse color response error: {exc}")
         return None
 
-    def set_color(self, r: int, g: int, b: int, hsv_u32: tuple[int, int, int] | None = None) -> bool:
+    def set_color(self, r: int, g: int, b: int, hsv_u32: tuple[int, int, int] | None = None ,IsCurrentColorTransparent = False) -> bool:
         """Write a color to CSP's brush via Companion protocol.
 
         If *hsv_u32* ``(h, s, v)`` is provided (all uint32-scaled), those

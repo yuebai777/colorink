@@ -941,6 +941,7 @@ class MainWindow(QMainWindow):
         self.preview_box.position_mode = self.cfg.get("previewBoxPosition", "top-left")
         self.preview_box.set_colors(QColor(*self.current_rgb), QColor(255, 255, 255))
         
+        
 
 
         # Settings Sidebar (Floating on MainWindow to avoid z-order issues)
