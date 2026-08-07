@@ -2054,6 +2054,16 @@ class SettingsSidebar(QWidget):
                 self._parent.sync_thread.companion_sync._disconnect()
             self._refresh_companion_status()
 
+    def hideEvent(self,event):
+        super().hideEvent(event)
+        no_focus = self.cfg.get("noFocusMode", False)
+        mv = self._parent
+        #When close the setting,check the no_focus mode and set the window flag
+        if no_focus:
+            mv.update_window_flags()
+            mv.update_no_focus_policies()
+            
+
 class _UpdateWorker(QThread):
     """Background worker that queries GitHub for the latest release."""
 
