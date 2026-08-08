@@ -6,7 +6,7 @@ signal integration all work.
 """
 
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from PyQt6.QtWidgets import QPushButton
@@ -129,6 +129,24 @@ class TestCloseButton:
         settings_window._title_bar._btn_close.click()
         qapp.processEvents()
         assert not settings_window.isVisible()
+
+    def test_close_restores_no_focus_when_enabled(
+        self, settings_window, sidebar, stub_main_window, qapp
+    ):
+        """Closing settings must re-apply no-focus mode immediately."""
+        stub_main_window.update_window_flags = MagicMock()
+        stub_main_window.update_no_focus_policies = MagicMock()
+        sidebar.cfg["noFocusMode"] = True
+        settings_window.show_near_main_window()
+        qapp.processEvents()
+        stub_main_window.update_window_flags.reset_mock()
+        stub_main_window.update_no_focus_policies.reset_mock()
+
+        settings_window._title_bar._btn_close.click()
+        qapp.processEvents()
+
+        stub_main_window.update_window_flags.assert_called_once_with()
+        stub_main_window.update_no_focus_policies.assert_called_once_with()
 
 
 class TestThemeColors:
@@ -304,6 +322,23 @@ class TestReorganizedSettings:
     def test_last_tab_is_remembered(self, sidebar):
         sidebar.stack.setCurrentIndex(3)
         assert sidebar._last_settings_tab == 3
+
+    def test_title_bar_toggle_controls_exist(self, sidebar):
+        hotkeys_page = sidebar.stack.widget(0)
+        assert hotkeys_page.isAncestorOf(sidebar.btn_title_bar)
+        interface_page = sidebar.stack.widget(1)
+        assert interface_page.isAncestorOf(sidebar.cb_show_title_bar)
+        assert sidebar.cb_show_title_bar.isChecked() is True
+
+    def test_title_bar_hotkey_and_visibility_are_saved(self, sidebar):
+        sidebar.btn_title_bar.val = "Ctrl+Alt+T"
+        with patch("ui.settings_sidebar.config.save_hotkey_config"), \
+             patch("ui.settings_sidebar.config.load_hotkey_config", side_effect=lambda: sidebar.cfg):
+            sidebar.cb_show_title_bar.setChecked(False)
+            sidebar.save_hotkeys()
+            sidebar.save_settings()
+        assert sidebar.cfg["toggleTitleBarKey"] == "Ctrl+Alt+T"
+        assert sidebar.cfg["showTitleBar"] is False
 
     def test_move_slider_order_swaps_values(self, sidebar):
         sidebar.cfg["colorSpaceModule"] = "hsv"  # pin: only module-visible rows participate
