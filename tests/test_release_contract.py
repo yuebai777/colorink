@@ -11,23 +11,23 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_application_version_is_current_release():
-    assert APP_VERSION == "1.6.3"
-    # _normalize_version strips trailing zeros: "1.6.3" → [1, 6, 3]
-    assert _normalize_version(APP_VERSION) == [1, 6, 3]
+    assert APP_VERSION == "1.6.4"
+    # _normalize_version strips trailing zeros: "1.6.4" → [1, 6, 4]
+    assert _normalize_version(APP_VERSION) == [1, 6, 4]
 
 
 def test_windows_file_version_matches_application_version():
     content = (PROJECT_ROOT / "file_version_info.txt").read_text(encoding="utf-8")
 
-    assert "filevers=(1, 6, 3, 0)" in content
-    assert "prodvers=(1, 6, 3, 0)" in content
-    assert "StringStruct('FileVersion', '1.6.3.0')" in content
-    assert "StringStruct('ProductVersion', '1.6.3.0')" in content
+    assert "filevers=(1, 6, 4, 0)" in content
+    assert "prodvers=(1, 6, 4, 0)" in content
+    assert "StringStruct('FileVersion', '1.6.4.0')" in content
+    assert "StringStruct('ProductVersion', '1.6.4.0')" in content
 
 
 def test_release_notes_start_with_current_release():
     content = (PROJECT_ROOT / "release_notes.md").read_text(encoding="utf-8")
-    assert content.startswith("## v1.6.3\n")
+    assert content.startswith("## v1.6.4\n")
 
 
 def test_first_run_defaults_are_compact_and_discoverable():
@@ -36,11 +36,13 @@ def test_first_run_defaults_are_compact_and_discoverable():
 
     assert config["pickKey"] == "F11"
     assert config["hideWindowKey"] == "Ctrl+H"
+    assert config["toggleTitleBarKey"] == "Ctrl+Shift+T"
     assert config["followMouseKey"] == "Ctrl+R"
     assert config["grayscaleFilterKey"] == "Ctrl+G"
     assert config["toggleLabKey"] == "Space"
     assert config["toggleLabGlobalKey"] == "Ctrl+L"
     assert config["showLabToggleButton"] is True
+    assert config["showTitleBar"] is True
     assert config["colorSpaceModule"] == "hsv"
     assert config["showModuleSwitchButton"] is True
     assert config["showSlidersHSV"] is True
@@ -125,6 +127,8 @@ def test_existing_config_values_survive_missing_key_merge(tmp_path):
     assert config["colorSpaceModule"] == "lch"
     assert config["showModuleSwitchButton"] is True
     assert config["showLabToggleButton"] is True
+    assert config["toggleTitleBarKey"] == "Ctrl+Shift+T"
+    assert config["showTitleBar"] is True
     assert config["toggleLabGlobalKey"] == "Ctrl+L"
     assert config["hideHueRing"] is False
     assert config["ringlessControlsSide"] == "right"
