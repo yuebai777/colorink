@@ -27,6 +27,53 @@ def _find_site_file(package, filename):
             return path
     return None
 
+
+_UNUSED_BIN_NAMES = {
+    'opengl32sw.dll',
+    'qt6pdf.dll',
+    'qt6network.dll',
+    'qt6svg.dll',
+    'qpdf.dll',
+    'qsvg.dll',
+    'qsvgicon.dll',
+    'qjpeg.dll',
+    'qwebp.dll',
+    'qtiff.dll',
+    'qicns.dll',
+    'qgif.dll',
+    'qtga.dll',
+    'qwbmp.dll',
+    'qtuiotouchplugin.dll',
+}
+
+_UNUSED_BIN_PREFIXES = (
+    'PIL/_avif.',
+    'PIL/_webp.',
+    'PIL/_imagingcms.',
+    'PIL/_imagingmath.',
+    'PIL/_imagingtk.',
+    'numpy/random/',
+    'numpy/fft/',
+    'numpy/_core/_multiarray_tests.',
+)
+
+
+def _trim_unused(a):
+    """Drop binaries the app never touches (kept small, no behavior change)."""
+    def _keep(item):
+        dest = item[0].replace('\\', '/')
+        name = dest.rsplit('/', 1)[-1].lower()
+        if name in _UNUSED_BIN_NAMES:
+            return False
+        return not any(
+            dest.lower().startswith(prefix.lower())
+            for prefix in _UNUSED_BIN_PREFIXES
+        )
+    a.binaries = [b for b in a.binaries if _keep(b)]
+    a.datas = [d for d in a.datas if _keep(d)]
+    return a
+
+
 _binaries = []
 for _zbar_name in ('libzbar-64.dll', 'libiconv.dll'):
     _zbar_path = _find_site_file('pyzbar', _zbar_name)
@@ -84,6 +131,20 @@ a = Analysis(
         'PyQt6.QtPdf',
         'PyQt6.QtNetwork',
         'PyQt6.QtSvg',
+        'numpy.random',
+        'numpy.fft',
+        'numpy.polynomial',
+        'numpy.ma',
+        'numpy.testing',
+        'numpy.matlib',
+        'numpy.rec',
+        'PIL.AvifImagePlugin',
+        'PIL.WebPImagePlugin',
+        'PIL.ImageCms',
+        'PIL.ImageMath',
+        'PIL.ImageTk',
+        'yaml',
+        'charset_normalizer',
     ],
     noarchive=False,
     optimize=0,
@@ -94,8 +155,8 @@ pyz = PYZ(a.pure)
 a.binaries = [b for b in a.binaries if 'Pythonwin' not in b[0] and 'pythonwin' not in b[0].lower()]
 a.datas = [d for d in a.datas if 'Pythonwin' not in d[0] and 'pythonwin' not in d[0].lower()]
 
-# Filter out opengl32sw.dll — software OpenGL renderer (~20 MB)
-a.binaries = [b for b in a.binaries if 'opengl32sw.dll' not in b[0].lower()]
+# Drop Qt/Pillow/numpy payloads the app does not load.
+a = _trim_unused(a)
 
 # Keep only zh_CN, zh_TW, en Qt6 translations
 KEEP_TRANS = ('qt_zh_CN.qm', 'qt_zh_TW.qm', 'qt_en.qm',
