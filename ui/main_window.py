@@ -755,6 +755,9 @@ class MainWindow(QMainWindow):
         self._gamut_oklch_C = None
         self._gamut_oklch_h = None
 
+        #最小化优化
+        self.Minimized = False
+        
         # Content-driven window height state
         self._last_auto_height = None
         self._manual_height_override = False
@@ -963,6 +966,7 @@ class MainWindow(QMainWindow):
         self.preview_box = ColorPreviewBox(self)
         self.preview_box.position_mode = self.cfg.get("previewBoxPosition", "top-left")
         self.preview_box.set_colors(QColor(*self.current_rgb), QColor(255, 255, 255))
+        
         
 
 
@@ -4001,7 +4005,30 @@ class MainWindow(QMainWindow):
         """Override: hide to tray instead of closing the application."""
         self.hide()
         event.ignore()
+    
+    def showMinimized(self):
+        if not self.Minimized:
+            self._expanded_height = self.height()
+            self._saved_preview_visible = self.preview_box.isVisible()
+            self.stack.hide()
+            self.sliders_container.hide()
+            if self._saved_preview_visible:
+                self.preview_box.hide()
+            collapsed_h = self.title_bar.height() + self.main_layout.contentsMargins().bottom()
+            self.setMinimumHeight(collapsed_h)
+            self.resize(self.width(), collapsed_h)
+            
+        else:
+            self.stack.show()
+            self.sliders_container.show()
+            if self._saved_preview_visible:
+                self.preview_box.show()
+            self.setMinimumHeight(0)
+            self.resize(self.width(), self._expanded_height)
+            self._adjust_content_height()
 
+        self.Minimized = not self.Minimized
+    
     def update_window_flags(self):
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
         if not self.cfg.get("showTaskbarIcon", False):

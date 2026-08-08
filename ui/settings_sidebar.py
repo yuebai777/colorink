@@ -2083,6 +2083,8 @@ class SettingsSidebar(QWidget):
                 self._parent.sync_thread.companion_sync._disconnect()
             self._refresh_companion_status()
 
+            
+
 class _UpdateWorker(QThread):
     """Background worker that queries GitHub for the latest release."""
 

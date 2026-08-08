@@ -44,7 +44,8 @@ class ColorPreviewBox(QWidget):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     # 鈹€鈹€ Public API 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
+    # What the fuck is this⬆️
+    
     def set_theme_colors(self, active_border, inactive_border):
         """Apply semantic border colors from the active application theme."""
         self.active_border_color = QColor(active_border)
@@ -133,7 +134,8 @@ class ColorPreviewBox(QWidget):
             self.move(margin_x, window_h - sliders_h - box_dim - int(6 * wheel_scale))
 
     # 鈹€鈹€ Shared geometry 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
+    #?⬆️
+    
     def _ringless_swatch_rects(self) -> tuple[QRectF, QRectF] | None:
         """Return the cached (fg_rect, bg_rect) pair, or ``None`` when
         ringless mode is inactive or disabled.
