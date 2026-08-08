@@ -5,7 +5,9 @@
 Attaches to a running CLIPStudioPaint.exe process, resolves the address
 of the in-memory brush color slot via a build-specific pointer offset,
 and translates between the host's packed u32-per-channel encoding and
-regular RGB triples.  Supported builds: 4.x, 5.x.
+regular RGB triples.  Supported builds: 4.x, 5.0, and 5.1 (5.1 moved
+the global slot pointer, but the RGB channels keep the legacy u32
+encoding at the same +0x20 / +0x24 / +0x28 offsets).
 
 The module exposes :data:`AOB_MAP` for external AOB scanning tools that
 need per-build signature resolution (e.g. distinguishing 4.0 from
@@ -49,6 +51,7 @@ try:
         encode_space_values_float,
         format_space_values,
         resolve_active_rgb,
+        rgb_to_hsv_float,
         rgb_to_space_values,
         space_to_rgb_float,
     )
@@ -62,6 +65,7 @@ except ImportError:
         encode_space_values_float,
         format_space_values,
         resolve_active_rgb,
+        rgb_to_hsv_float,
         rgb_to_space_values,
         space_to_rgb_float,
     )
@@ -106,6 +110,8 @@ class _CSPBuildProfile:
     indirection step when resolving the live color slot pointer.
     ``aob_offset`` is informational metadata for tooling that scans for
     the AOB signature; it isn't consumed by the sync path itself.
+    ``color_format`` selects the in-memory channel encoding: the legacy
+    proportional u16x2 duplicate layout, or CSP 5.1's compact RGB slot.
     """
 
     key: str
@@ -114,12 +120,15 @@ class _CSPBuildProfile:
     aob_signature: str
     intermediate_offset: int | None = None
     aob_offset: int = 0
+    color_format: str = "u16x2_dup"
 
 
 _PROFILES: tuple[_CSPBuildProfile, ...] = (
     _CSPBuildProfile("csp4.x", "CLIPStudioPaint.exe", 0x0518C2C0, _AOB_CSP4_0),
     _CSPBuildProfile("csp5.x", "CLIPStudioPaint.exe", 0x05449DB0, _AOB_CSP5_0,
                      aob_offset=0x0D),
+    _CSPBuildProfile("csp5.1", "CLIPStudioPaint.exe", 0x0556BFC8, "",
+                     color_format="rgb_u32"),
 )
 _PROFILE_INDEX: dict[str, _CSPBuildProfile] = {p.key: p for p in _PROFILES}
 
@@ -131,6 +140,8 @@ def _normalize_version_key(raw: object) -> str:
     and maps them to the simplified "csp4.x" / "csp5.x" scheme.
     """
     text = str(raw or "").strip().lower()
+    if "5.1" in text:
+        return "csp5.1"
     if "5.0" in text or "csp5" in text or "5.x" in text:
         return "csp5.x"
     if "4." in text or "csp4" in text or "4.x" in text:
@@ -265,19 +276,25 @@ class _ProcessVersionQuery:
         )
 
 
-def _detect_build_from_image_path(path: str | None) -> str | None:
-    """Map an exe's on-disk file version to a simplified profile key."""
-    if not path:
-        return None
-    version = _ProcessVersionQuery.exe_version(path)
+def _detect_build_from_version(version: tuple[int, int, int, int] | None) -> str | None:
+    """Map a CSP file version to a simplified profile key."""
     if not version:
         return None
     major, minor, _build, _patch = version
+    if (major, minor) >= (5, 1):
+        return "csp5.1"
     if (major, minor) >= (5, 0):
         return "csp5.x"
     if major == 4:
         return "csp4.x"
     return None
+
+
+def _detect_build_from_image_path(path: str | None) -> str | None:
+    """Map an exe's on-disk file version to a simplified profile key."""
+    if not path:
+        return None
+    return _detect_build_from_version(_ProcessVersionQuery.exe_version(path))
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +365,7 @@ class CSPSync:
         self.r_off: int = _DEFAULT_RED_OFFSET
         self.g_off: int = _DEFAULT_GREEN_OFFSET
         self.b_off: int = _DEFAULT_BLUE_OFFSET
-        self.color_format: str = "u16x2_dup"
+        self.color_format: str = self._profile.color_format
         self.space_offsets = build_space_offsets(self.r_off)
         self._last_hsv_h: float = 0.0
         self._last_hsv_s: float = 0.0
@@ -367,6 +384,7 @@ class CSPSync:
         self.base_offset = profile.base_offset
         self.intermediate_offset = profile.intermediate_offset
         self.aob_signature = profile.aob_signature
+        self.color_format = profile.color_format
 
     def _load_user_config(self) -> None:
         path = _resolve_config_file()
@@ -385,7 +403,8 @@ class CSPSync:
         self.r_off = _parse_int(sec.get("redoffset",   hex(self.r_off)))
         self.g_off = _parse_int(sec.get("greenoffset", hex(self.g_off)))
         self.b_off = _parse_int(sec.get("blueoffset",  hex(self.b_off)))
-        self.color_format = sec.get("colorformat", self.color_format)
+        if self._profile.color_format == "u16x2_dup":
+            self.color_format = sec.get("colorformat", self.color_format)
         self.space_offsets = build_space_offsets(self.r_off)
         _log(
             "Config loaded: "
@@ -487,6 +506,79 @@ class CSPSync:
         assert self.pm is not None
         self.pm.write_int(address, _u32_to_signed(value))
 
+    # ----- CSP 5.1 compact RGB slot --------------------------------------
+    _RGB_U32_OFFS = (0x20, 0x24, 0x28)
+    _HSV_UI_OFFS = (0x3E, 0x42, 0x44)
+
+    def _resolve_rgb_target(self) -> bool:
+        """Re-resolve the 5.1 global color slot pointer and validate it."""
+        if self.pm is None or self.module_base is None:
+            return False
+        try:
+            dereferenced = int(self.pm.read_longlong(self.module_base + self.base_offset))
+            if dereferenced:
+                self.target = dereferenced
+            if self.target is None:
+                return False
+            # Reading all three RGB channels validates the cached target.
+            for off in self._RGB_U32_OFFS:
+                _ = self.pm.read_int(self.target + off)
+            return True
+        except Exception as exc:
+            _log(f"_resolve_rgb_target: target unreadable: {exc}")
+            self.target = None
+            return False
+
+    def _read_rgb_u32(self) -> dict[str, int] | None:
+        if self.pm is None or not self._resolve_rgb_target() or self.target is None:
+            return None
+        raws = tuple(self._read_u32(self.target + off) for off in self._RGB_U32_OFFS)
+        return decode_space_raws("rgb", raws)
+
+    def _write_rgb_u32(self, r: int, g: int, b: int,
+                       source_space: str | None = None,
+                       source_values: Mapping[str, float] | None = None) -> bool:
+        if self.pm is None or not self._resolve_rgb_target() or self.target is None:
+            return False
+
+        rgb = {
+            "r": _clamp_byte(r),
+            "g": _clamp_byte(g),
+            "b": _clamp_byte(b),
+        }
+        try:
+            encoded = encode_space_values("rgb", rgb)
+            for addr, raw in zip(
+                (self.target + off for off in self._RGB_U32_OFFS), encoded
+            ):
+                self._write_u32(addr, raw)
+
+            # Keep CSP's color-circle UI state in sync too.  The UI slot
+            # stores 16-bit HSV while the brush slot stores u32 RGB.
+            hsv = rgb_to_hsv_float(rgb)
+            if hsv["s"] < 1.0:
+                h_deg = self._last_hsv_h
+            else:
+                h_deg = hsv["h"]
+                self._last_hsv_h = h_deg
+            if hsv["v"] < 1.0:
+                s_pct = self._last_hsv_s
+            else:
+                s_pct = hsv["s"]
+                self._last_hsv_s = s_pct
+            h16 = int(round(max(0.0, min(360.0, h_deg)) / 360.0 * 65535))
+            s16 = int(round(max(0.0, min(100.0, s_pct)) / 100.0 * 65535))
+            v16 = int(round(max(0.0, min(100.0, hsv["v"])) / 100.0 * 65535))
+            self.pm.write_ushort(self.target + self._HSV_UI_OFFS[0], h16)
+            self.pm.write_ushort(self.target + self._HSV_UI_OFFS[1], s16)
+            self.pm.write_ushort(self.target + self._HSV_UI_OFFS[2], v16)
+            self.pm.write_ushort(self.target + self._HSV_UI_OFFS[2] + 2, v16)
+            _log(f"set_color (rgb_u32): RGB=[{rgb['r']}, {rgb['g']}, {rgb['b']}]")
+            return True
+        except Exception as exc:
+            _log(f"set_color (rgb_u32): exception: {exc}")
+            return False
+
     def _snapshot_color_slot(self, base_addr: int) -> dict[str, dict[str, Any]]:
         snapshots: dict[str, dict[str, Any]] = {}
         for space_name, offsets in self.space_offsets.items():
@@ -547,6 +639,9 @@ class CSPSync:
         if self.pm is None and not self.connect():
             return None
 
+        if self.color_format == "rgb_u32":
+            return self._read_rgb_u32()
+
         space_addrs = self._resolve_space_addresses()
         if not space_addrs:
             _log("get_color: target not ready")
@@ -596,6 +691,10 @@ class CSPSync:
         """
         if self.pm is None and not self.connect():
             return False
+
+        if self.color_format == "rgb_u32":
+            return self._write_rgb_u32(r, g, b, source_space=source_space,
+                                       source_values=source_values)
 
         space_addrs = self._resolve_space_addresses()
         if not space_addrs:
@@ -655,12 +754,17 @@ class CSPSync:
     def status(self) -> dict[str, object]:
         if self.pm is None:
             self.connect()
-        space_addrs = self._resolve_space_addresses() if self.pm is not None else None
-        connected = (
-            self.pm is not None
-            and self.target is not None
-            and space_addrs is not None
-        )
+        connected = False
+        if self.pm is not None:
+            if self.color_format == "rgb_u32":
+                connected = self._resolve_rgb_target()
+            else:
+                space_addrs = self._resolve_space_addresses()
+                connected = (
+                    self.pm is not None
+                    and self.target is not None
+                    and space_addrs is not None
+                )
         return {
             "connected": bool(connected),
             "pid": self.pid if connected else None,
@@ -681,6 +785,20 @@ class CSPSync:
         """
         if self.pm is None and not self.connect():
             return {"error": "not connected"}
+        if self.color_format == "rgb_u32":
+            if not self._resolve_rgb_target() or self.target is None:
+                return {"error": "not connected"}
+            rgb = self._read_rgb_u32()
+            raw = [
+                f"0x{self._read_u32(self.target + off):08X}"
+                for off in self._RGB_U32_OFFS
+            ]
+            return {
+                "target": f"0x{self.target:X}",
+                "format": "rgb_u32",
+                "raw_u32": raw,
+                "rgb": rgb,
+            }
         if self._resolve_space_addresses() is None or self.target is None:
             return {"error": "not connected"}
         assert self.pm is not None
