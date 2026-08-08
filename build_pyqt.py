@@ -8,19 +8,63 @@ def _strip_dist(dist_dir: str):
     """Remove unnecessary bloat from the built distribution folder."""
     removed = 0
 
-    # 1. opengl32sw.dll — software OpenGL renderer (~20 MB), not needed on
-    #    any system with GPU drivers (Windows 10+ requirement already).
+    unused_names = {
+        'opengl32sw.dll',
+        'qt6pdf.dll',
+        'qt6network.dll',
+        'qt6svg.dll',
+        'qpdf.dll',
+        'qsvg.dll',
+        'qsvgicon.dll',
+        'qjpeg.dll',
+        'qwebp.dll',
+        'qtiff.dll',
+        'qicns.dll',
+        'qgif.dll',
+        'qtga.dll',
+        'qwbmp.dll',
+        'qtuiotouchplugin.dll',
+    }
+    unused_path_parts = (
+        os.sep + 'numpy' + os.sep + 'random' + os.sep,
+        os.sep + 'numpy' + os.sep + 'fft' + os.sep,
+        os.sep + 'numpy' + os.sep + '_core' + os.sep + '_multiarray_tests.',
+    )
+    unused_pil_prefixes = (
+        '_avif.',
+        '_webp.',
+        '_imagingcms.',
+        '_imagingmath.',
+        '_imagingtk.',
+    )
+
+    # 1. Drop unused Qt DLLs/plugins, Pillow codecs and numpy submodules.
     for root, dirs, files in os.walk(dist_dir):
         for f in files:
-            if f.lower() == 'opengl32sw.dll':
-                path = os.path.join(root, f)
+            path = os.path.join(root, f)
+            full = path.lower()
+            if (
+                f.lower() in unused_names
+                or any(part.lower() in full for part in unused_path_parts)
+                or f.lower().startswith(unused_pil_prefixes)
+            ):
                 sz = os.path.getsize(path)
                 os.remove(path)
                 removed += sz
                 print(f"  Stripped: {os.path.relpath(path, dist_dir)} "
                       f"({sz / (1024*1024):.1f} MB)")
 
-    # 2. Qt6 translations — keep only Chinese + English (~0.3 MB of ~5.8 MB).
+    # 2. Pure-Python packages pulled in by hooks but never used by the app.
+    for dirname in ('yaml', 'charset_normalizer'):
+        dir_path = os.path.join(dist_dir, '_internal', dirname)
+        if os.path.isdir(dir_path):
+            for dp, _, files in os.walk(dir_path):
+                for f in files:
+                    removed += os.path.getsize(os.path.join(dp, f))
+            shutil.rmtree(dir_path)
+            print(f"  Stripped: _internal/{dirname}/")
+
+    # 3. Qt6 translations — keep only Chinese + English (~0.3 MB of ~5.8 MB).
     trans_dir = None
     for root, dirs, files in os.walk(dist_dir):
         if os.path.basename(root) == 'translations' and 'Qt6' in root:
