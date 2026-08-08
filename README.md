@@ -48,6 +48,7 @@ python main.py
 | 取前景色 | `F11` |
 | 切换跟随鼠标 | `Ctrl + R` |
 | 显示 / 隐藏窗口 | `Ctrl + H` |
+| 显示 / 隐藏标题栏 | `Ctrl + Shift + T` |
 | 切换灰度滤镜 | `Ctrl + G` |
 | 切换 LAB 视图（鼠标悬停色轮 / LAB 区域） | `Space`（也可设为鼠标侧键 / 中键） |
 | 切换 LAB 视图（全局） | `Ctrl + L` |
