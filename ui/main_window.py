@@ -228,6 +228,28 @@ _C_SCALE = 1000          # 0.001 chroma resolution (legacy; not used for slider�
 _C_RAW_MAX = 100         # slider range → 0..100% of max chroma
 
 
+def _visible_title_bar_height(title_bar) -> int:
+    """Title-bar height used for content sizing; 0 while the bar is hidden."""
+    if not title_bar.isVisible():
+        return 0
+    height = title_bar.height()
+    if isinstance(height, int):
+        return height
+    try:
+        return int(title_bar.sizeHint().height())
+    except (TypeError, ValueError):
+        return 0
+
+
+def _title_bar_content_offset(title_bar, main_layout) -> int:
+    """Top offset below the title bar, including the border when it is hidden."""
+    if not title_bar.isVisible():
+        if main_layout is None:
+            return 0
+        return int(main_layout.contentsMargins().top())
+    return _visible_title_bar_height(title_bar)
+
+
 class TitleBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -849,6 +871,7 @@ class MainWindow(QMainWindow):
 
         # Title Bar
         self.title_bar = TitleBar(self)
+        self.title_bar.setVisible(self.cfg.get("showTitleBar", True))
         self.title_bar.btn_close.clicked.connect(self.close_application)
         self.title_bar.btn_settings.clicked.connect(self.toggle_settings_sidebar)
         self.main_layout.addWidget(self.title_bar)
@@ -1317,7 +1340,9 @@ class MainWindow(QMainWindow):
         self.color_wheel.set_ringless_layout(layout)
 
         _ws = wheel_size if wheel_size is not None else self.width() - int(16 * scale)
-        _tbh = title_bar_height if title_bar_height is not None else self.title_bar.height()
+        _tbh = title_bar_height if title_bar_height is not None else _title_bar_content_offset(
+            self.title_bar, getattr(self, "main_layout", None)
+        )
         self.preview_box.set_ringless_layout(
             layout, self.width(), _tbh, self.stack.height()
         )
@@ -2163,7 +2188,7 @@ class MainWindow(QMainWindow):
                 ),
             )
             required = self._required_content_height(
-                self.title_bar.sizeHint().height(),
+                _visible_title_bar_height(self.title_bar),
                 visualizer_h,
                 self.sliders_container.sizeHint().height(),
                 margins.top(), margins.bottom(), self.main_layout.spacing(),
@@ -2645,21 +2670,23 @@ class MainWindow(QMainWindow):
         # Apply scaling and updates
         self.apply_theme(scale=dynamic_scale, is_resize_event=True)
         
-        title_h = self.title_bar.height()
+        title_h = _visible_title_bar_height(self.title_bar)
+        title_offset = _title_bar_content_offset(self.title_bar, self.main_layout)
         sliders_h = self.sliders_container.sizeHint().height()
+        margins = self.main_layout.contentsMargins()
         
         # Calculate visualizer wheel size from the width, but never taller
         # than the visualizer pane: a short/wide window (manual resize)
         # shrinks the wheel instead of clipping its lower arc.  Mirrors the
         # clamp in ColorWheel.get_wheel_geometry().
         spacing = int(4 * dynamic_scale)
-        pane_h = h - 4 - title_h - sliders_h - 2 * spacing
+        pane_h = h - margins.top() - margins.bottom() - title_h - sliders_h - 2 * spacing
         wheel_size = min(w - int(16 * dynamic_scale), max(16, pane_h - 6))
         
         # ── Step 1: legacy preview sizing ALWAYS runs first ──
         # This restores legacy circle sizing/position when ringless is disabled,
         # and provides a baseline that ringless may override below.
-        self.preview_box.resize_and_position(wheel_size, title_h, h, sliders_h, self.active_slot)
+        self.preview_box.resize_and_position(wheel_size, title_offset, h, sliders_h, self.active_slot)
         self.preview_box.raise_()
 
         # ── Step 2: push DPI-scaled button metrics down; panes do the rest ──
@@ -2674,7 +2701,7 @@ class MainWindow(QMainWindow):
         # On wheel page: applies rectangle sizing over the legacy baseline.
         # On LAB page: same rectangle controls + top bar, with layout margin.
         # Do NOT call _adjust_content_height() from resize-driven sync.
-        self._sync_ringless_mode(wheel_size=wheel_size, title_bar_height=title_h)
+        self._sync_ringless_mode(wheel_size=wheel_size, title_bar_height=title_offset)
         self.color_wheel.schedule_slice_prewarm(500)
 
         # ── Step 4: LAB avoidance observes FINAL preview geometry ──
@@ -3040,7 +3067,11 @@ class MainWindow(QMainWindow):
         self.title_bar.btn_close.setFixedSize(title_btn_size, title_btn_size)
         
         
-        self.main_layout.setContentsMargins(4, 0, 4, 4)  # Fixed 4px margins
+        # Fixed 4px side/bottom margins; the top border needs its own margin
+        # when the title bar is hidden.
+        self.main_layout.setContentsMargins(
+            4, 0 if self.title_bar.isVisible() else 4, 4, 4
+        )
         spacing = int(4 * scale)
         self.main_layout.setSpacing(spacing)
         
@@ -3145,13 +3176,14 @@ class MainWindow(QMainWindow):
         self.title_bar.btn_min.setStyleSheet(f"QPushButton {{ background: transparent; border: none; color: {title_text_color}; font-size: {fs_min}px; }} QPushButton:hover {{ background-color: {hover_bg}; border-radius: 2px; }}")
         self.title_bar.btn_close.setStyleSheet(f"QPushButton {{ background: transparent; border: none; color: {title_text_color}; font-size: {fs_close}px; }} QPushButton:hover {{ background-color: #ff5050; color: white; border-radius: 2px; }}")
 
+        top_border = "none" if self.title_bar.isVisible() else f"4px solid {border_color}"
         self.setStyleSheet(f"""
             QWidget#CentralWidget {{
                 background-color: {bg};
                 border-left: 4px solid {border_color};
                 border-right: 4px solid {border_color};
                 border-bottom: 4px solid {border_color};
-                border-top: none;
+                border-top: {top_border};
                 border-radius: 0px;
             }}
             TitleBar {{
@@ -3268,13 +3300,18 @@ class MainWindow(QMainWindow):
 
         # Reposition the color preview box immediately when applying theme/settings
         if hasattr(self, 'preview_box') and hasattr(self, 'sliders_container') and hasattr(self, 'title_bar'):
-            title_h = self.title_bar.height()
+            title_h = _visible_title_bar_height(self.title_bar)
+            title_offset = _title_bar_content_offset(self.title_bar, self.main_layout)
             sliders_h = self.sliders_container.sizeHint().height()
             w = self.width()
             h = self.height()
             spacing = int(4 * scale)
-            wheel_size = min(w - 8, h - 4 - title_h - sliders_h - 2 * spacing) - 4
-            self.preview_box.resize_and_position(wheel_size, title_h, h, sliders_h, self.active_slot)
+            margins = self.main_layout.contentsMargins()
+            wheel_size = min(
+                w - margins.left() - margins.right(),
+                h - margins.top() - margins.bottom() - title_h - sliders_h - 2 * spacing,
+            ) - 4
+            self.preview_box.resize_and_position(wheel_size, title_offset, h, sliders_h, self.active_slot)
             self.preview_box.raise_()
             
             # If settings sidebar is open, ensure it remains on top!
@@ -3294,8 +3331,9 @@ class MainWindow(QMainWindow):
         # Global hotkeys may be bound to a keyboard key or a mouse button —
         # route each value to the matching system hook (mouse hotkeys are
         # not suppressed, so the app under the cursor still gets the click).
-        for hotkey_type in ("pickKey", "hideWindowKey", "followMouseKey",
-                            "grayscaleFilterKey", "toggleLabGlobalKey"):
+        for hotkey_type in ("pickKey", "hideWindowKey", "toggleTitleBarKey",
+                            "followMouseKey", "grayscaleFilterKey",
+                            "toggleLabGlobalKey"):
             value = cast(str, self.cfg.get(hotkey_type))
             if is_mouse_hotkey(value):
                 global_hotkeys.bind_mouse_hotkey(hotkey_type, value)
@@ -3319,6 +3357,8 @@ class MainWindow(QMainWindow):
                     self.show_window_at_cursor()
                 else:
                     self.show()
+        elif hotkey_type == "toggleTitleBarKey":
+            self.toggle_title_bar()
         elif hotkey_type == "followMouseKey":
             self.follow_mouse_active = not self.follow_mouse_active
             self.cfg["followMouseEnabled"] = self.follow_mouse_active
@@ -3708,6 +3748,10 @@ class MainWindow(QMainWindow):
         # Reload configs
         self.cfg = config.load_hotkey_config()
         self.update_hotkey_bindings()
+        if hasattr(self, "title_bar"):
+            self.title_bar.setVisible(self.cfg.get("showTitleBar", True))
+        if hasattr(self, "tray_title_action"):
+            self.tray_title_action.setChecked(self.cfg.get("showTitleBar", True))
 
         # Update grayscale controller and migrate all removed backends to
         # native. Mag remains the system-wide Luma fallback.
@@ -3896,6 +3940,19 @@ class MainWindow(QMainWindow):
         show_action = QAction("显示/隐藏", self)
         show_action.triggered.connect(self.toggle_visibility)
         tray_menu.addAction(show_action)
+
+        title_action = QAction("显示标题栏", self)
+        title_action.setCheckable(True)
+        title_action.setChecked(self.cfg.get("showTitleBar", True))
+        title_action.triggered.connect(self.set_title_bar_visible)
+        tray_menu.addAction(title_action)
+        self.tray_title_action = title_action
+
+        tray_menu.addSeparator()
+
+        settings_action = QAction("打开设置", self)
+        settings_action.triggered.connect(self.toggle_settings_sidebar)
+        tray_menu.addAction(settings_action)
         
         tray_menu.addSeparator()
         
@@ -3924,6 +3981,21 @@ class MainWindow(QMainWindow):
             else:
                 self.show()
                 self.raise_()
+
+    def set_title_bar_visible(self, visible: bool):
+        """Show or hide the title bar and keep the top border aligned."""
+        visible = bool(visible)
+        if self.title_bar.isVisible() != visible:
+            self.cfg["showTitleBar"] = visible
+            config.save_hotkey_config(self.cfg)
+            self.title_bar.setVisible(visible)
+            self.update_geometries()
+            self._adjust_content_height()
+        if hasattr(self, "tray_title_action"):
+            self.tray_title_action.setChecked(visible)
+
+    def toggle_title_bar(self):
+        self.set_title_bar_visible(not self.title_bar.isVisible())
 
     def closeEvent(self, event):
         """Override: hide to tray instead of closing the application."""
