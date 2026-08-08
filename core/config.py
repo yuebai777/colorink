@@ -63,10 +63,12 @@ def default_hotkey_config():
         "pickKey": "F11",
         "followMouseKey": "Ctrl+R",
         "hideWindowKey": "Ctrl+H",
+        "toggleTitleBarKey": "Ctrl+Shift+T",  # 全局快捷键: 切换标题栏（设置/最小化/关闭那一栏）显隐
         "grayscaleFilterKey": "Ctrl+G",
         "toggleLabKey": "Space",          # 本地快捷键: 鼠标悬停色轮/LAB区域时切换视图
         "toggleLabGlobalKey": "Ctrl+L",   # 全局快捷键: 任意位置切换色轮/LAB视图
         "showLabToggleButton": True,      # 显示/隐藏色轮与LAB之间的浮动切换按钮
+        "showTitleBar": True,             # 显示/隐藏标题栏（隐藏后顶部边框与四周一致）
         "grayscaleFilterScreen": "all",
         "grayscaleFilterMode": "oklch",
         # native = DXGI Desktop Duplication + OpenGL，支持 OKLCh / Luma 与按屏目标；

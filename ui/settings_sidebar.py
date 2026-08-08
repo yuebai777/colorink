@@ -160,6 +160,12 @@ class SettingsSidebar(QWidget):
         self.btn_lab_global.hotkeyChanged.connect(self.save_hotkeys)
         grid_hotkeys.addWidget(self.btn_lab_global, 5, 1)
 
+        grid_hotkeys.addWidget(QLabel("标题栏显隐"), 6, 0)
+        self.btn_title_bar = HotkeyButton("toggleTitleBarKey", self.cfg.get("toggleTitleBarKey", "Ctrl+Shift+T"), allow_mouse=True)
+        self.btn_title_bar.setToolTip("显示或隐藏标题栏（设置/最小化/关闭按钮那一栏）；隐藏后顶部边框与四周一致")
+        self.btn_title_bar.hotkeyChanged.connect(self.save_hotkeys)
+        grid_hotkeys.addWidget(self.btn_title_bar, 6, 1)
+
         cl_hk.addLayout(grid_hotkeys)
         page_hotkeys.addWidget(card_hk)
 
@@ -275,6 +281,11 @@ class SettingsSidebar(QWidget):
         self.cb_taskbar_icon = QCheckBox("任务栏图标")
         self.cb_taskbar_icon.stateChanged.connect(self.save_settings)
         grid_behavior.addWidget(self.cb_taskbar_icon, 0, 0)
+
+        self.cb_show_title_bar = QCheckBox("显示标题栏")
+        self.cb_show_title_bar.setToolTip("隐藏后顶部边框与四周一致；可通过快捷键或托盘菜单恢复")
+        self.cb_show_title_bar.stateChanged.connect(self.save_settings)
+        grid_behavior.addWidget(self.cb_show_title_bar, 3, 0)
 
         self.cb_lock_size = QCheckBox("固定窗口大小")
         self.cb_lock_size.stateChanged.connect(self.save_settings)
@@ -550,7 +561,7 @@ class SettingsSidebar(QWidget):
         row_csp_layout.setContentsMargins(0, 0, 0, 0)
         row_csp_layout.addWidget(QLabel("CSP 版本"))
         self.combo_csp = NonScrollComboBox()
-        self.combo_csp.addItems(["auto", "csp4.x", "csp5.x"])
+        self.combo_csp.addItems(["auto", "csp4.x", "csp5.x", "csp5.1"])
         self.combo_csp.setToolTip("自动检测失败时才需要手动指定 CSP 主版本")
         self.combo_csp.currentTextChanged.connect(self.save_settings)
         row_csp_layout.addWidget(self.combo_csp)
@@ -929,6 +940,10 @@ class SettingsSidebar(QWidget):
         _lab_global = self.cfg.get("toggleLabGlobalKey", "Ctrl+L")
         self.btn_lab_global.setText(display_hotkey(_lab_global) if _lab_global else "未绑定")
         self.btn_lab_global.val = _lab_global
+
+        _title_bar = self.cfg.get("toggleTitleBarKey", "Ctrl+Shift+T")
+        self.btn_title_bar.setText(display_hotkey(_title_bar) if _title_bar else "未绑定")
+        self.btn_title_bar.val = _title_bar
         
         self.combo_grayscale_mode.blockSignals(True)
         backend = self.cfg.get("grayscaleFilterBackend", "native")
@@ -1004,6 +1019,10 @@ class SettingsSidebar(QWidget):
             cb.blockSignals(True)
             cb.setChecked(self.cfg.get(key, False))
             cb.blockSignals(False)
+
+        self.cb_show_title_bar.blockSignals(True)
+        self.cb_show_title_bar.setChecked(self.cfg.get("showTitleBar", True))
+        self.cb_show_title_bar.blockSignals(False)
             
         # 3. Sliders — load only existing groups, respect module visibility
         for key in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh"]:
@@ -1494,6 +1513,7 @@ class SettingsSidebar(QWidget):
         self.cfg["grayscaleFilterKey"] = self.btn_grayscale.val
         self.cfg["toggleLabKey"] = self.btn_lab_toggle.val
         self.cfg["toggleLabGlobalKey"] = self.btn_lab_global.val
+        self.cfg["toggleTitleBarKey"] = self.btn_title_bar.val
         self._persist_and_emit()
 
     def _grayscale_filter_config(self) -> dict:
@@ -1535,6 +1555,7 @@ class SettingsSidebar(QWidget):
             
         self.cfg["onlyShowInCsp"] = self.cb_only_drawing.isChecked()
         self.cfg["showTaskbarIcon"] = self.cb_taskbar_icon.isChecked()
+        self.cfg["showTitleBar"] = self.cb_show_title_bar.isChecked()
         self.cfg["noFocusMode"] = self.cb_no_focus.isChecked()
         
         # Sliders (all groups stored, but only current-module groups shown in UI)
@@ -1878,6 +1899,14 @@ class SettingsSidebar(QWidget):
 
     def on_no_focus_clicked(self, checked):
         self.save_settings()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        # Settings are closed: re-apply the no-focus window state if enabled.
+        mv = self._parent
+        if mv is not None and self.cfg.get("noFocusMode", False):
+            mv.update_window_flags()
+            mv.update_no_focus_policies()
 
     # ── Eyedropper dual-point pick ────────────────────────────────────────
     def start_eyedropper_pick(self, target):
