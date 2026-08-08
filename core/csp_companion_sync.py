@@ -848,7 +848,7 @@ class CSPCompanionSync:
                     _log(f"Parse color response error: {exc}")
         return None
 
-    def set_color(self, r: int, g: int, b: int, hsv_u32: tuple[int, int, int] | None = None ,IsCurrentColorTransparent = False) -> bool:
+    def set_color(self, r: int, g: int, b: int, hsv_u32: tuple[int, int, int] | None = None ) -> bool:
         """Write a color to CSP's brush via Companion protocol.
 
         If *hsv_u32* ``(h, s, v)`` is provided (all uint32-scaled), those
