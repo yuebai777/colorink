@@ -740,13 +740,6 @@ class CSPCompanionSync:
                         continue
                     idx = d.get("CurrentColorIndex", 0)
                     model = d.get("ColorSelectionModel", "HSV")
-                    
-                    #get transparency flag
-                    IsCurrentColorTransparent = d.get("IsCurrentColorTransparent", False)
-                
-                    if IsCurrentColorTransparent:
-                        return None
-                   
                     if model == "HLS":
                         return self._parse_hls_response(d, idx)
                     else:

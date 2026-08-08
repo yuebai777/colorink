@@ -138,7 +138,6 @@ class MemorySyncThread(QThread):
                     self.pending_source_values = None
 
                     self.last_synced_color = (r, g, b)
-                    print(self.last_synced_color)
                     if self.software_mode == 'csp':
                         self.csp_sync.set_color(r, g, b, source_space=src_space, source_values=src_vals)
                     elif self.software_mode == 'sai':
