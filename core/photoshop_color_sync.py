@@ -1,19 +1,28 @@
 #!/usr/bin/env python3
-"""Photoshop colour sync via COM automation (DoJavaScript).
+"""Photoshop colour sync — COM automation + green-edition script bridge.
 
-Uses the Photoshop COM automation interface to execute ExtendScript
-snippets that read / write the foreground colour.  No memory scanning,
-no temp-file bridge, no persistent PS script — Photoshop stays fully
-responsive because DoJavaScript calls are synchronous COM round-trips
-that complete in microseconds and never block the UI thread.
+Two backends, chosen automatically per running instance:
 
-Matches the CSPSync / UDMSync interface for drop-in compatibility
-with MemorySyncThread.
+- **COM** (``PhotoshopSync`` classic path): registered Photoshop installs
+  are driven through the COM automation interface (``ForegroundColor`` /
+  ``BackgroundColor`` property mutation). Fast, live, full read-back.
+- **script-bridge**: green / portable editions register no COM interface,
+  so Colorink deploys an ExtendScript file bridge into the install's
+  ``Presets/Scripts`` folder (see :mod:`core.photoshop_script_bridge`).
+  The script polls a command file and mirrors live colors back.
+
+Both backends support the two colour slots: ``color_index`` 0 =
+foreground (main), 1 = background (sub). Photoshop has no alpha channel,
+so transparent colours are skipped by the sync layer (as before).
+
+Multiple Photoshop versions can be installed; the settings UI offers one
+entry per running instance ("auto" picks the first registered COM one).
 """
 
 import ctypes
 import os
 import sys
+import time
 from typing import Any, Dict, Optional, cast
 
 import psutil
@@ -23,6 +32,18 @@ try:
     import win32com.client as _w32
 except ImportError:
     _w32 = None
+
+from core.photoshop_instances import (
+    COM_KIND,
+    SCRIPT_BRIDGE_KIND,
+    PhotoshopInstance,
+    detect_instances,
+    pick_target,
+)
+from core.photoshop_script_bridge import (
+    PANEL_VERSION,
+    PhotoshopScriptBridge,
+)
 
 # ---- constants -----------------------------------------------------------
 
@@ -82,15 +103,17 @@ def clamp8(v: int) -> int:
 
 
 class PhotoshopSync:
-    """Colour bridge to Adobe Photoshop through COM + ExtendScript.
+    """Colour bridge to Adobe Photoshop (COM or green-edition script bridge).
 
     Usage::
 
         ps = PhotoshopSync()
         ps.connect()
-        rgb = ps.get_color()          # -> {'r': 128, 'g': 64, 'b': 32}
-        ps.set_color(255, 0, 0)       # -> True
-        print(ps.status())            # -> {connected, pid, ...}
+        rgb = ps.get_color()              # -> {'r': 128, 'g': 64, 'b': 32, 'index': 0}
+        rgb_bg = ps.get_bg_color()        # -> {..., 'index': 1}
+        ps.set_color(255, 0, 0)           # -> True (foreground)
+        ps.set_color(0, 0, 255, 1)        # -> True (background)
+        print(ps.status())                # -> {connected, backend, pid, ...}
     """
 
     def __init__(self) -> None:
@@ -99,62 +122,111 @@ class PhotoshopSync:
         self._dispid_js: int = 0       # cached DISPID for DoJavaScript
         self._pid: int | None = None
         self._proc_handle: int = 0     # Win32 process handle for fast alive check
-        self.current_version: str = "auto"
+        self.current_version: str = "auto"  # selected instance label
         self.process_name: str = PROCESS_NAME
+        self.backend: str = ""       # "" | "com" | "script-bridge"
+        self._bridge: PhotoshopScriptBridge | None = None
+        self._instances: list[PhotoshopInstance] = []
+        self._detect_ts: float = 0.0
+        # COM registration on this machine is flaky (registered at
+        # startup, torn down again). After one failed COM attempt, skip
+        # COM entirely until recheck() — a Dispatch can block for tens of
+        # seconds, which must never stall the UI or sync loop again.
+        self._com_failed = False
         # User-facing reason for the last failed connect / read / write.
-        # Empty string means no error. Exposed via status()["lastError"] so
-        # the UI can tell the user WHY Photoshop sync is not connected
-        # (PS not running / COM not registered / permission mismatch...).
         self.last_error: str = ""
         # True when the last failure looks like a UAC integrity-level
         # mismatch (e.g. Photoshop running as admin, Colorink not).
-        # The UI uses this to offer a one-click "relaunch as admin".
         self.permission_issue: bool = False
+
+    # -- instance discovery -----------------------------------------------------
+
+    def _detect(self, force: bool = False) -> list[PhotoshopInstance]:
+        """Cached (2 s TTL) snapshot of the running Photoshop instances."""
+        now = time.monotonic()
+        if force or now - self._detect_ts > 2.0:
+            try:
+                self._instances = detect_instances()
+            except Exception:
+                self._instances = []
+            self._detect_ts = now
+        return self._instances
 
     # -- connect -----------------------------------------------------------------
 
     def connect(self) -> bool:
-        """Acquire a COM reference to a running Photoshop instance."""
+        """Connect to a running Photoshop instance (auto or user-selected)."""
 
-        # Re-use existing connection if healthy
+        # Re-use existing COM connection if healthy
         if self._app is not None and self._disp is not None:
             # Bail early if Photoshop died — avoids hung COM RPC
             if not self._is_process_alive():
                 self.last_error = "Photoshop 进程已退出，请重新启动 Photoshop 后再试"
                 self._reset()
-                return False
-            try:
-                name = self._app.Name
-                if name:
-                    return True
-            except Exception:
-                self._reset()
+            else:
+                try:
+                    name = self._app.Name
+                    if name:
+                        return True
+                except Exception:
+                    self._reset()
 
-        if _w32 is None:
+        # Re-use healthy script bridge (event-driven: heartbeat refreshes
+        # only while PS is active, so check deployment + process instead)
+        if (self._bridge is not None and self._bridge.is_deployed()
+                and self._is_process_alive()):
+            return True
+
+        self._reset()
+
+        if _w32 is None and self.backend != SCRIPT_BRIDGE_KIND:
             self.last_error = "pywin32 组件不可用（打包异常或未安装 pywin32）"
             _print_error("connect: win32com / pywin32 not available")
             return False
 
-        # NEVER auto-launch Photoshop via COM Dispatch.
-        # win32com.dynamic.Dispatch("Photoshop.Application") will start
-        # Photoshop if it's not running — which is NOT what we want.
-        # Check first whether the process exists at all.
-        if not self._find_process():
-            self.last_error = "未检测到 Photoshop 进程，请先启动 Photoshop"
+        instances = self._detect()
+        target = pick_target(instances, self.current_version)
+        if target is None:
+            self.last_error = "未检测到运行中的 Photoshop 进程（请先启动 Photoshop）"
             return False
 
-        # Try each ProgID in order
-        for progid in _PROGIDS:
+        self._pid = target.pid
+        if target.kind == COM_KIND and not self._com_failed:
+            if self._connect_com(target):
+                return True
+            # COM registrations are transient on green builds (registered
+            # at startup, torn down again): fall back to the script bridge,
+            # which works for any running instance. In auto mode also try
+            # other COM-registered instances before giving up on COM.
+            self._com_failed = True
+            if self.current_version in ("", "auto"):
+                for inst in instances:
+                    if inst is not target and inst.kind == COM_KIND:
+                        self._pid = inst.pid
+                        if self._connect_com(inst):
+                            self._com_failed = False
+                            return True
+            self._pid = target.pid
+        return self._connect_bridge(target)
+
+    def _connect_com(self, target: PhotoshopInstance) -> bool:
+        """Attach to a registered, running Photoshop via COM automation."""
+        if _w32 is None:
+            self.last_error = "pywin32 组件不可用（打包异常或未安装 pywin32）"
+            return False
+        progids = [target.progid] if target.progid else []
+        progids += [p for p in _PROGIDS if p not in progids]
+        for progid in progids:
             try:
                 self._app = cast(Any, _w32).dynamic.Dispatch(progid)
                 self._disp = self._app._oleobj_
                 self._dispid_js = self._disp.GetIDsOfNames("DoJavaScript")
-                self._pid = self._find_process()
                 # Close old handle and invalidate so _is_process_alive re-opens
                 if self._proc_handle:
                     self.K32.CloseHandle(self._proc_handle)
                     self._proc_handle = 0
                 log(f"Connected via ProgID='{progid}'  PID={self._pid}")
+                self.backend = COM_KIND
                 self.last_error = ""
                 self.permission_issue = False
                 return True
@@ -164,18 +236,35 @@ class PhotoshopSync:
                     self.permission_issue = True
                 self.last_error = f"COM 连接 {progid} 失败:{exc}"
 
-        _print_error("connect: all ProgIDs failed — is Photoshop running?")
-        self._reset()
+        self._app = None
+        self._disp = None
+        _print_error("_connect_com: all ProgIDs failed")
         if self.permission_issue:
             self.last_error += (
                 "（可能是权限不足:请让 Photoshop 与 Colorink 都"
                 "以管理员身份运行）"
             )
-        elif self.last_error:
-            self.last_error += "（可能为绿色版 / 未正常安装，COM 接口未注册）"
-        else:
-            self.last_error = "Photoshop COM 接口不可用（可能为绿色版 / 未正常安装）"
         return False
+
+    def _connect_bridge(self, target: PhotoshopInstance) -> bool:
+        """Deploy the ExtendScript bridge for a green/portable Photoshop."""
+        ps_dir = os.path.dirname(target.exe_path)
+        self._bridge = PhotoshopScriptBridge(ps_dir)
+        if not self._bridge.deploy():
+            self.last_error = (
+                "脚本桥部署失败（目录不可写？请以管理员身份运行）"
+            )
+            return False
+        self.backend = SCRIPT_BRIDGE_KIND
+        if self._bridge.is_alive():
+            self.last_error = ""
+            log(f"Script bridge alive for PID={self._pid}")
+            return True
+        # Deployed but the script is not running yet — it loads when
+        # Photoshop restarts. Writes are queued into cmd.txt meanwhile.
+        self.last_error = "脚本桥已部署：重启 Photoshop（绿色版）后生效"
+        log("Script bridge deployed, awaiting Photoshop restart")
+        return True
 
     # -- colour I/O --------------------------------------------------------------
 
@@ -206,8 +295,9 @@ class PhotoshopSync:
 
         Uses WaitForSingleObject (0ms timeout) on the process handle —
         returns instantly, unlike psutil which creates Python objects.
-        This shrinks the TOCTOU window between the check and the COM call
-        to microseconds instead of milliseconds.
+        When OpenProcess is denied (elevated Photoshop vs non-elevated
+        Colorink) fall back to process enumeration, which sees every
+        process regardless of elevation.
         """
         if self._pid is None:
             return False
@@ -215,34 +305,42 @@ class PhotoshopSync:
             # SYNCHRONIZE access — just enough to wait on the handle
             self._proc_handle = self.K32.OpenProcess(0x00100000, False, self._pid)
             if not self._proc_handle:
-                return False
+                try:
+                    return any(
+                        p.info["pid"] == self._pid
+                        for p in psutil.process_iter(["pid"])
+                    )
+                except Exception:
+                    return False
         # WAIT_OBJECT_0 (0) = process exited; anything else = still alive
         return self.K32.WaitForSingleObject(self._proc_handle, 0) != 0
 
-    def get_color(self) -> dict[str, int] | None:
-        """Read the current Photoshop foreground colour via COM properties.
+    # -- slot readers ---------------------------------------------------------------
 
-        COM property reads do NOT invoke the ExtendScript engine, so they
-        never trigger Photoshop's busy cursor — safe for 10 Hz polling.
-        """
+    def get_color(self) -> dict[str, int] | None:
+        """Read the current Photoshop foreground colour (slot 0)."""
+        if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
+            state = self._bridge.read_state()
+            if state is not None:
+                fg = state["fg"]
+                return {"r": fg["r"], "g": fg["g"], "b": fg["b"], "index": 0}
+            return None
         if self._app is None:
             if not self.connect():
                 return None
         assert self._app is not None  # connect() sets _app on success
 
-        # Bail early if Photoshop has died — avoids hung COM RPC call
         if not self._is_process_alive():
             self._reset()
             return None
 
         try:
             rgb = self._app.ForegroundColor.RGB
-            r = int(round(float(rgb.Red)))
-            g = int(round(float(rgb.Green)))
-            b = int(round(float(rgb.Blue)))
-            r, g, b = clamp8(r), clamp8(g), clamp8(b)
+            r = clamp8(round(float(rgb.Red)))
+            g = clamp8(round(float(rgb.Green)))
+            b = clamp8(round(float(rgb.Blue)))
             log(f"get_color: RGB=[{r}, {g}, {b}]")
-            return {"r": r, "g": g, "b": b}
+            return {"r": r, "g": g, "b": b, "index": 0}
         except Exception as exc:
             _print_error(f"get_color: {exc}")
             if _com_hresult(exc) in _PERMISSION_HRESULTS:
@@ -251,71 +349,204 @@ class PhotoshopSync:
             self._reset()
             return None
 
-    def set_color(self, r: int, g: int, b: int) -> bool:
-        """Write foreground colour via COM property mutation.
+    def get_bg_color(self) -> dict[str, int] | None:
+        """Read the current Photoshop background colour (slot 1)."""
+        if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
+            state = self._bridge.read_state()
+            if state is not None:
+                bg = state["bg"]
+                return {"r": bg["r"], "g": bg["g"], "b": bg["b"], "index": 1}
+            return None
+        if self._app is None:
+            if not self.connect():
+                return None
+        assert self._app is not None  # connect() sets _app on success
 
-        With ``dynamic.Dispatch`` (late binding) the RGB object reference
-        is preserved across channel assignments, so in-place mutation
-        works reliably — no ExtendScript needed, no busy cursor.
-        """
+        if not self._is_process_alive():
+            self._reset()
+            return None
+
+        try:
+            rgb = self._app.BackgroundColor.RGB
+            r = clamp8(round(float(rgb.Red)))
+            g = clamp8(round(float(rgb.Green)))
+            b = clamp8(round(float(rgb.Blue)))
+            log(f"get_bg_color: RGB=[{r}, {g}, {b}]")
+            return {"r": r, "g": g, "b": b, "index": 1}
+        except Exception as exc:
+            _print_error(f"get_bg_color: {exc}")
+            if _com_hresult(exc) in _PERMISSION_HRESULTS:
+                self.permission_issue = True
+            self.last_error = f"读取 Photoshop 背景色失败：{exc}"
+            self._reset()
+            return None
+
+    # -- slot writers ---------------------------------------------------------------
+
+    def swap_slots(self) -> bool:
+        """Swap Photoshop's foreground/background (like pressing X)."""
+        if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
+            return self._bridge.send_swap(str(time.time_ns()))
         if self._app is None:
             if not self.connect():
                 return False
+        if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
+            return self._bridge.send_swap(str(time.time_ns()))
+        assert self._app is not None
+        if not self._is_process_alive():
+            self._reset()
+            return False
+        try:
+            self._invoke_js(
+                "var t=app.foregroundColor;"
+                "app.foregroundColor=app.backgroundColor;"
+                "app.backgroundColor=t;"
+            )
+            return True
+        except Exception as exc:
+            _print_error(f"swap_slots: {exc}")
+            self.last_error = f"交换 Photoshop 前后景色失败：{exc}"
+            self._reset()
+            return False
+
+    def set_color(self, r: int, g: int, b: int, color_index: int = 0) -> bool:
+        """Write a colour to the foreground (0) or background (1) slot."""
+        r, g, b = clamp8(r), clamp8(g), clamp8(b)
+
+        if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
+            return self._bridge.send_color(
+                str(time.time_ns()), color_index, r, g, b)
+
+        if self._app is None:
+            if not self.connect():
+                return False
+        # connect() may have switched to the script bridge (auto mode)
+        if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
+            return self._bridge.send_color(
+                str(time.time_ns()), color_index, r, g, b)
         assert self._app is not None  # connect() sets _app on success
 
-        # Bail early if Photoshop died since connect
         if not self._is_process_alive():
             self._reset()
             return False
 
-        r = clamp8(r)
-        g = clamp8(g)
-        b = clamp8(b)
-
         try:
-            cur = self.get_color()
+            cur = self.get_color() if color_index == 0 else self.get_bg_color()
             if cur and cur["r"] == r and cur["g"] == g and cur["b"] == b:
                 return True  # no-op
 
-            fg = self._app.ForegroundColor
-            rgb = fg.RGB          # single dispatch — mutate in place
+            slot = (self._app.ForegroundColor if color_index == 0
+                    else self._app.BackgroundColor)
+            rgb = slot.RGB          # single dispatch — mutate in place
             rgb.Red = r
             rgb.Green = g
             rgb.Blue = b
-            log(f"set_color: RGB=[{r}, {g}, {b}]")
+            log(f"set_color: idx={color_index} RGB=[{r}, {g}, {b}]")
             return True
         except Exception as exc:
             _print_error(f"set_color: {exc}")
             if _com_hresult(exc) in _PERMISSION_HRESULTS:
                 self.permission_issue = True
-            self.last_error = f"写入 Photoshop 前景色失败：{exc}"
+            self.last_error = f"写入 Photoshop 颜色失败：{exc}"
             self._reset()
             return False
 
     # -- status / meta -----------------------------------------------------------
 
     def status(self) -> dict[str, object]:
-        connected = self._disp is not None
+        if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
+            # Event-driven bridge: the heartbeat only refreshes while the
+            # user is interacting with Photoshop, so "connected" must mean
+            # "deployed + PS running" rather than a fresh heartbeat.
+            connected = (self._bridge.is_deployed()
+                         and self._is_process_alive())
+            if not connected:
+                self.connect()
+                connected = (self._bridge is not None
+                             and self._bridge.is_deployed()
+                             and self._is_process_alive())
+            return {
+                "connected": connected,
+                "pid": self._pid if connected else None,
+                "version": self.current_version,
+                "processName": self.process_name,
+                "backend": self.backend,
+                "bridgeAlive": bool(self._bridge is not None
+                                    and self._bridge.is_alive()),
+                # True when the deployed panel file is newer than the
+                # panel actually running inside Photoshop (user must
+                # restart PS for the new panel to load).
+                "panelStale": bool(self._bridge is not None
+                                   and self._bridge.panel_version()
+                                   != PANEL_VERSION),
+                "lastError": self.last_error,
+            }
+
+        connected = (self._disp is not None
+                     or (self._bridge is not None and self._bridge.is_alive()))
         if not connected:
             self.connect()
-            connected = self._disp is not None
+            connected = (self._disp is not None
+                         or (self._bridge is not None and self._bridge.is_alive()))
 
         return {
             "connected": connected,
             "pid": self._pid if connected else None,
             "version": self.current_version,
             "processName": self.process_name,
+            "backend": self.backend,
+            "bridgeAlive": bool(self._bridge is not None
+                                and self._bridge.is_alive()),
             "lastError": self.last_error,
         }
 
     def set_version(self, version: str) -> bool:
+        """Select the sync target: ``"auto"`` or an instance label from
+        :func:`core.photoshop_instances.detect_instances`."""
         version = str(version or "auto").strip()
         if version == self.current_version:
             return False
         self.current_version = version
         self._reset()
-        log(f"Version changed to {version}")
+        log(f"Target changed to {version}")
         return True
+
+    def recheck(self) -> bool:
+        """Force instance re-detection and reconnect.
+
+        Used after the user restarted Photoshop or changed installs, when
+        the 2 s detection cache would otherwise hide the new state.
+        Also clears the COM-failed flag so a working COM registration
+        gets another chance.
+        """
+        self._com_failed = False
+        self._detect(force=True)
+        return self.connect()
+
+    def status_lite(self) -> dict[str, object]:
+        """Snapshot of the current connection state WITHOUT connecting.
+
+        Safe to call from the UI thread: never blocks on COM, detection
+        or deployment. The sync loop keeps the real state fresh via
+        :meth:`status`.
+        """
+        bridge_ok = (self._bridge is not None
+                     and self._bridge.is_deployed()
+                     and self._is_process_alive())
+        return {
+            "connected": bridge_ok or self._disp is not None,
+            "pid": self._pid if bridge_ok or self._disp is not None else None,
+            "version": self.current_version,
+            "processName": self.process_name,
+            "backend": self.backend,
+            "bridgeAlive": bool(self._bridge is not None
+                                and self._bridge.is_alive()),
+            # COM backend has no panel; only meaningful for script-bridge.
+            "panelStale": bool(self._bridge is not None
+                               and self._bridge.panel_version()
+                               != PANEL_VERSION),
+            "lastError": self.last_error,
+        }
 
     def dump(self) -> dict[str, object]:
         color = self.get_color()
@@ -325,6 +556,7 @@ class PhotoshopSync:
             "pid": self._pid,
             "version": self.current_version,
             "processName": self.process_name,
+            "backend": self.backend,
             "color": color,
             "lastError": self.last_error,
         }
@@ -339,6 +571,8 @@ class PhotoshopSync:
         self._disp = None
         self._dispid_js = 0
         self._pid = None
+        self._bridge = None
+        self.backend = ""
 
     @staticmethod
     def _find_process() -> int | None:
