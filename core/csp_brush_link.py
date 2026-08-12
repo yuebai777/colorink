@@ -26,6 +26,7 @@ import ctypes
 import glob
 import os
 import sqlite3
+import struct
 import sys
 from collections.abc import Mapping
 from ctypes import wintypes
@@ -54,6 +55,7 @@ try:
         rgb_to_hsv_float,
         rgb_to_space_values,
         space_to_rgb_float,
+        space_to_rgb_values,
     )
 except ImportError:
     from core.brush_color_spaces import (
@@ -68,6 +70,7 @@ except ImportError:
         rgb_to_hsv_float,
         rgb_to_space_values,
         space_to_rgb_float,
+        space_to_rgb_values,
     )
 
 # ---------------------------------------------------------------------------
@@ -352,6 +355,11 @@ class CSPSync:
         self.pid: int | None = None
         self.module_base: int | None = None
         self.target: int | None = None
+        # Cached absolute addresses of every sub-color memory copy
+        # (re-resolved on demand when the cache goes stale).
+        self._sub_copy_addrs: list[int] | None = None
+        # Same for the MAIN color slot (+0x3C HSV u32 copies).
+        self._main_copy_addrs: list[int] | None = None
 
         # Currently selected build profile + the per-channel layout we
         # resolved from config.ini (or the defaults).
@@ -507,8 +515,317 @@ class CSPSync:
         self.pm.write_int(address, _u32_to_signed(value))
 
     # ----- CSP 5.1 compact RGB slot --------------------------------------
-    _RGB_U32_OFFS = (0x20, 0x24, 0x28)
+    # MAIN slot: three u32 HSV channels (proportional encoding, identical
+    # to the sub slot at +0x9C) at +0x3C/+0x40/+0x44. Verified against the
+    # companion protocol: writing main = (123,45,67) through CSP itself
+    # updates exactly these three u32s (H=0xF3F73F73, S=0xA2576A25,
+    # V=0x7B7B7B7B). The old +0x20/+0x24/+0x28 offsets were NOT written by
+    # CSP (stale residuals), which made main-color reads show a wrong
+    # color after the user changed the color inside CSP.
+    #
+    # The 16-bit HSV UI copies at +0x3E/+0x42/+0x44 overlap the high half
+    # of these u32s (+0x3C+2, +0x40+2, +0x44), so writing the full u32s
+    # keeps both views consistent.
+    _RGB_U32_OFFS = (0x3C, 0x40, 0x44)
     _HSV_UI_OFFS = (0x3E, 0x42, 0x44)
+    # Transparent flag: u32 at slot base + 0x08. 0x00000000 = opaque,
+    # 0xFFFFFFFF = transparent (verified empirically on CSP 5.1 by diffing
+    # the slot across manual transparent/non-transparent transitions).
+    _TRANSPARENT_FLAG_OFFS = 0x08
+    _TRANSPARENT_FLAG_ON = 0xFFFFFFFF
+    # Sub-color (background) slot: three u32 HSV channels (proportional,
+    # same encoding as the main slot's HSV UI) at +0x9C/+0xA0/+0xA4.
+    # Active-slot index lives in the low byte of +0x08 (0 = main, 1 = sub);
+    # +0x08 == 0xFFFFFFFF means the ACTIVE slot is transparent.
+    #
+    # The brush reads the sub color from MULTIPLE in-memory copies (the
+    # companion path updates ~12; the +0x9C slot alone is not the brush
+    # source). We locate every copy by searching the process for the
+    # current sub-color pattern, cache the addresses, and write all of
+    # them. Cache is re-validated on each write (cheap read of +0x9C).
+    _SUB_HSV_OFFS = (0x9C, 0xA0, 0xA4)
+    _SUB_COPY_LIMIT = 200  # search hit cap (avoid all-zero/pattern blowups)
+
+    def _read_float32(self, address: int) -> float:
+        assert self.pm is not None
+        raw = self.pm.read_bytes(address, 4)
+        return struct.unpack("<f", raw)[0]
+
+    def _write_float32(self, address: int, value: float) -> None:
+        assert self.pm is not None
+        self.pm.write_bytes(address, struct.pack("<f", float(value)), 4)
+
+    def _read_transparent_flag(self) -> bool:
+        """Return True when CSP's current drawing color is transparent.
+
+        Only valid for the rgb_u32 (5.1) slot layout; the u16x2_dup builds
+        use a different struct where +0x08 is a color channel.
+        """
+        if self.pm is None or not self._resolve_rgb_target() or self.target is None:
+            return False
+        try:
+            return self._read_u32(self.target + self._TRANSPARENT_FLAG_OFFS) == self._TRANSPARENT_FLAG_ON
+        except Exception:
+            return False
+
+    def _write_transparent_flag(self, transparent: bool) -> bool:
+        """Set/clear the 5.1 transparent flag in CSP memory."""
+        if self.pm is None or not self._resolve_rgb_target() or self.target is None:
+            return False
+        try:
+            self._write_u32(
+                self.target + self._TRANSPARENT_FLAG_OFFS,
+                self._TRANSPARENT_FLAG_ON if transparent else 0,
+            )
+            _log(f"set_color (rgb_u32): transparent={transparent}")
+            return True
+        except Exception as exc:
+            _log(f"set_color (rgb_u32): transparent exception: {exc}")
+            return False
+
+    def get_sub_color(self) -> dict[str, int] | None:
+        """Public facade for the 5.1 sub-color slot (index 1)."""
+        return self._read_sub_color()
+
+    def get_active_slot_index(self) -> int | None:
+        """Current active-slot index: 0 = main, 1 = sub.
+
+        Returns ``None`` while the active slot is transparent (the flag
+        overwrites the low byte with 0xFF).
+        """
+        if self.pm is None or not self._resolve_rgb_target() or self.target is None:
+            return None
+        try:
+            raw = self._read_u32(self.target + self._TRANSPARENT_FLAG_OFFS)
+        except Exception:
+            return None
+        if raw == self._TRANSPARENT_FLAG_ON:
+            return None
+        return int(raw & 0xFF)
+
+    def _read_sub_color(self) -> dict[str, int] | None:
+        """Read the 5.1 sub-color (background) slot as 8-bit RGB.
+
+        Sub slot stores three u32 HSV channels (proportional encoding) at
+        +0x9C/+0xA0/+0xA4. The transparent flag belongs to the active
+        slot and is reported by :meth:`get_color` (main path); sub
+        transparency is not reported here to avoid duplicate signals.
+
+        NOTE: +0x9C is only ONE of the sub-color copies in memory — the
+        brush reads from multiple copies (see :meth:`_write_sub_color`).
+        When :attr:`_sub_copy_addrs` has been located (by an earlier
+        write), read from that authoritative copy set instead of trusting
+        the +0x9C mirror alone: the mirror can lag behind the brush copy
+        (first switch to the background color then shows a stale value).
+        """
+        if self.pm is None or not self._resolve_rgb_target() or self.target is None:
+            return None
+        pm = self.pm
+        target = self.target
+        try:
+            addrs = getattr(self, "_sub_copy_addrs", None)
+            if addrs:
+                # 写路径定位的副本集（含权威笔刷副本）。验证所有副本仍持
+                # 有同一 12 字节模式才可信；任一失效/不一致即回退 +0x9C。
+                raws_12 = pm.read_bytes(addrs[0], 12)
+                ok_cache = True
+                for addr in addrs[1:]:
+                    try:
+                        if pm.read_bytes(addr, 12) != raws_12:
+                            ok_cache = False
+                            break
+                    except Exception:
+                        ok_cache = False
+                        break
+                if ok_cache:
+                    raws = tuple(
+                        int.from_bytes(raws_12[i * 4:(i + 1) * 4], "little")
+                        for i in range(3)
+                    )
+                    values = decode_space_raws("hsv", raws)
+                    rgb = space_to_rgb_values("hsv", values)
+                    return {
+                        "r": _clamp_byte(rgb["r"]),
+                        "g": _clamp_byte(rgb["g"]),
+                        "b": _clamp_byte(rgb["b"]),
+                        "transparent": 0,
+                        "index": 1,
+                    }
+            raws = tuple(self._read_u32(target + off) for off in self._SUB_HSV_OFFS)
+            values = decode_space_raws("hsv", raws)
+            rgb = space_to_rgb_values("hsv", values)
+            return {
+                "r": _clamp_byte(rgb["r"]),
+                "g": _clamp_byte(rgb["g"]),
+                "b": _clamp_byte(rgb["b"]),
+                "transparent": 0,
+                "index": 1,
+            }
+        except Exception as exc:
+            _log(f"_read_sub_color: exception: {exc}")
+            return None
+
+    def _search_pattern(self, pattern: bytes) -> list[int]:
+        """Search committed readable data pages (excluding code sections)
+        for *pattern*. Returns every hit address."""
+        if self.pm is None:
+            return []
+        try:
+            import ctypes as _ct
+            from ctypes import wintypes as _wt
+
+            class _MBI(_ct.Structure):
+                _fields_ = [
+                    ("BaseAddress", _ct.c_void_p),
+                    ("AllocationBase", _ct.c_void_p),
+                    ("AllocationProtect", _wt.DWORD),
+                    ("PartitionId", _wt.DWORD),
+                    ("RegionSize", _ct.c_size_t),
+                    ("State", _wt.DWORD),
+                    ("Protect", _wt.DWORD),
+                    ("Type", _wt.DWORD),
+                ]
+
+            k32 = _ct.WinDLL("kernel32", use_last_error=True)
+            vqe = k32.VirtualQueryEx
+            vqe.argtypes = [_wt.HANDLE, _ct.c_void_p,
+                            _ct.POINTER(_MBI), _ct.c_size_t]
+            vqe.restype = _ct.c_size_t
+            rp = k32.ReadProcessMemory
+            rp.argtypes = [_wt.HANDLE, _ct.c_void_p, _ct.c_void_p,
+                           _ct.c_size_t, _ct.POINTER(_ct.c_size_t)]
+            rp.restype = _wt.BOOL
+
+            hits: list[int] = []
+            addr = _ct.c_void_p(0)
+            mbi = _MBI()
+            buf = _ct.create_string_buffer(1 << 20)
+            while True:
+                if vqe(self.pm.process_handle, addr, _ct.byref(mbi),
+                       _ct.sizeof(mbi)) == 0:
+                    break
+                base = mbi.BaseAddress or 0
+                size = mbi.RegionSize or 0
+                if (size and mbi.State == 0x1000
+                        and (mbi.Protect & 0x3E)
+                        and not (mbi.Protect & 0x100)
+                        and not (0x7FF000000000 <= base < 0x800000000000)):
+                    off = 0
+                    while off < size:
+                        chunk = min(1 << 20, size - off)
+                        nread = _ct.c_size_t(0)
+                        if rp(self.pm.process_handle, _ct.c_void_p(base + off),
+                              buf, chunk, _ct.byref(nread)):
+                            data = buf.raw[:nread.value]
+                            pos = data.find(pattern)
+                            while pos != -1:
+                                hits.append(base + off + pos)
+                                pos = data.find(pattern, pos + 1)
+                        off += chunk
+                addr = _ct.c_void_p(base + size)
+            return hits
+        except Exception as exc:
+            _log(f"_search_pattern: exception: {exc}")
+            return []
+
+    def has_sub_copy_cache(self) -> bool:
+        """True once the sub-color copy addresses are known."""
+        return bool(getattr(self, "_sub_copy_addrs", None))
+
+    def capture_sub_copies_from_current(self) -> int:
+        """Search the process for the CURRENT sub-color value and cache the
+        hit addresses (authoritative brush source + UI mirrors).
+
+        Call right after a companion-protocol sub-color write so the cache
+        includes CSP's authoritative copy. Returns the number of copies.
+        """
+        if self.pm is None or self.target is None:
+            return 0
+        try:
+            old = b"".join(
+                self._read_u32(self.target + off).to_bytes(4, "little")
+                for off in self._SUB_HSV_OFFS
+            )
+            hits = self._search_pattern(old)
+            base_addr = self.target + self._SUB_HSV_OFFS[0]
+            if len(hits) <= self._SUB_COPY_LIMIT:
+                addrs = list(hits)
+                if base_addr not in addrs:
+                    addrs.append(base_addr)
+            else:
+                addrs = [base_addr]
+            self._sub_copy_addrs = addrs
+            _log(f"capture_sub_copies: {len(addrs)} copies of current sub color")
+            return len(addrs)
+        except Exception as exc:
+            _log(f"capture_sub_copies: exception: {exc}")
+            return 0
+
+    def _locate_hsv_copies(self, old: bytes, cache_attr: str,
+                           base_off: int) -> list[int]:
+        """Locate every in-memory copy of the current HSV u32 pattern.
+
+        The brush reads main/sub colors from MULTIPLE copies (verified: 8
+        copies for both slots on CSP 5.1); the base slot alone is not the
+        brush source. The cached address list is trusted only while every
+        address still holds *old* (CSP may create/destroy copies at
+        runtime). Falls back to the base slot when the hit count explodes.
+        """
+        if self.target is None or self.pm is None:
+            return []
+        pm = self.pm
+        addrs = getattr(self, cache_attr, None)
+        if addrs:
+            ok_cache = True
+            for addr in addrs:
+                try:
+                    if pm.read_bytes(addr, 12) != old:
+                        ok_cache = False
+                        break
+                except Exception:
+                    ok_cache = False
+                    break
+            if not ok_cache:
+                addrs = None
+        if not addrs:
+            hits = self._search_pattern(old)
+            if len(hits) <= self._SUB_COPY_LIMIT:
+                addrs = list(hits)
+                base_addr = self.target + base_off
+                if base_addr not in addrs:
+                    addrs.append(base_addr)
+            else:
+                addrs = [self.target + base_off]
+            setattr(self, cache_attr, addrs)
+            _log(f"_locate_hsv_copies: located {len(addrs)} copies")
+        return addrs
+
+    def _write_sub_color(self, r: int, g: int, b: int) -> bool:
+        """Write the 5.1 sub-color slot (HSV u32) to EVERY in-memory copy.
+
+        The brush reads the sub color from multiple copies; +0x9C alone is
+        only the UI mirror. We search the process for the current sub-color
+        pattern once (cached), then write the new value to all copies.
+        """
+        if self.pm is None or not self._resolve_rgb_target() or self.target is None:
+            return False
+        try:
+            # 当前副色模式（缓存验证用）+ 新模式
+            old = b"".join(
+                self._read_u32(self.target + off).to_bytes(4, "little")
+                for off in self._SUB_HSV_OFFS
+            )
+            hsv = rgb_to_space_values("hsv", {"r": _clamp_byte(r), "g": _clamp_byte(g), "b": _clamp_byte(b)})
+            new = b"".join(raw.to_bytes(4, "little") for raw in encode_space_values("hsv", hsv))
+
+            addrs = self._locate_hsv_copies(old, "_sub_copy_addrs", self._SUB_HSV_OFFS[0])
+            for addr in addrs:
+                self.pm.write_bytes(addr, new, 12)
+            _log(f"set_color (rgb_u32 sub): RGB=[{r}, {g}, {b}] -> {len(addrs)} copies")
+            return True
+        except Exception as exc:
+            _log(f"set_color (rgb_u32 sub): exception: {exc}")
+            return False
 
     def _resolve_rgb_target(self) -> bool:
         """Re-resolve the 5.1 global color slot pointer and validate it."""
@@ -532,8 +849,14 @@ class CSPSync:
     def _read_rgb_u32(self) -> dict[str, int] | None:
         if self.pm is None or not self._resolve_rgb_target() or self.target is None:
             return None
+        # +0x3C/+0x40/+0x44 store HSV as proportional u32s (same encoding
+        # as the sub slot at +0x9C) — NOT RGB. Verified against companion:
+        # CSP itself updates exactly these three u32s on main-color change.
         raws = tuple(self._read_u32(self.target + off) for off in self._RGB_U32_OFFS)
-        return decode_space_raws("rgb", raws)
+        values = decode_space_raws("hsv", raws)
+        rgb = space_to_rgb_values("hsv", values)
+        rgb["transparent"] = 1 if self._read_transparent_flag() else 0
+        return rgb
 
     def _write_rgb_u32(self, r: int, g: int, b: int,
                        source_space: str | None = None,
@@ -547,14 +870,11 @@ class CSPSync:
             "b": _clamp_byte(b),
         }
         try:
-            encoded = encode_space_values("rgb", rgb)
-            for addr, raw in zip(
-                (self.target + off for off in self._RGB_U32_OFFS), encoded
-            ):
-                self._write_u32(addr, raw)
-
-            # Keep CSP's color-circle UI state in sync too.  The UI slot
-            # stores 16-bit HSV while the brush slot stores u32 RGB.
+            # Main slot stores HSV as proportional u32s at +0x3C/+0x40/+0x44
+            # (verified against companion: CSP itself updates exactly these
+            # three u32s). Like the sub slot, the brush reads the main color
+            # from MULTIPLE in-memory copies — writing the base slot alone
+            # does not reach CSP. Locate every copy and write all of them.
             hsv = rgb_to_hsv_float(rgb)
             if hsv["s"] < 1.0:
                 h_deg = self._last_hsv_h
@@ -566,14 +886,21 @@ class CSPSync:
             else:
                 s_pct = hsv["s"]
                 self._last_hsv_s = s_pct
-            h16 = int(round(max(0.0, min(360.0, h_deg)) / 360.0 * 65535))
-            s16 = int(round(max(0.0, min(100.0, s_pct)) / 100.0 * 65535))
-            v16 = int(round(max(0.0, min(100.0, hsv["v"])) / 100.0 * 65535))
-            self.pm.write_ushort(self.target + self._HSV_UI_OFFS[0], h16)
-            self.pm.write_ushort(self.target + self._HSV_UI_OFFS[1], s16)
-            self.pm.write_ushort(self.target + self._HSV_UI_OFFS[2], v16)
-            self.pm.write_ushort(self.target + self._HSV_UI_OFFS[2] + 2, v16)
-            _log(f"set_color (rgb_u32): RGB=[{rgb['r']}, {rgb['g']}, {rgb['b']}]")
+            new = b"".join(
+                u.to_bytes(4, "little")
+                for u in encode_space_values_float(
+                    "hsv", {"h": h_deg, "s": s_pct, "v": hsv["v"]}
+                )
+            )
+            old = b"".join(
+                self._read_u32(self.target + off).to_bytes(4, "little")
+                for off in self._RGB_U32_OFFS
+            )
+            addrs = self._locate_hsv_copies(old, "_main_copy_addrs", self._RGB_U32_OFFS[0])
+            for addr in addrs:
+                self.pm.write_bytes(addr, new, 12)
+            _log(f"set_color (rgb_u32): RGB=[{rgb['r']}, {rgb['g']}, {rgb['b']}] "
+                 f"-> {len(addrs)} copies")
             return True
         except Exception as exc:
             _log(f"set_color (rgb_u32): exception: {exc}")
@@ -678,7 +1005,8 @@ class CSPSync:
         return rgb
 
     def set_color(self, r: int, g: int, b: int, source_space: str | None = None,
-                  source_values: Mapping[str, float] | None = None) -> bool:
+                  source_values: Mapping[str, float] | None = None,
+                  transparent: bool = False, color_index: int = 0) -> bool:
         """Write color to CSP memory, optionally preserving native source-space precision.
 
         *source_space* / *source_values* (the space the user last interacted
@@ -688,13 +1016,42 @@ class CSPSync:
 
         Other spaces are derived from the source (or from the passed RGB when
         no source is given) with standard int conversions.
+
+        *transparent* sets the CSP 5.1 transparent flag (target+0x08); the
+        u16x2_dup builds (4.x/5.x) have no verified flag offset, so the
+        flag write is skipped there with a log line.
+
+        *color_index* selects the slot: 0 = main color (u32 HSV channels at
+        +0x3C, + transparent flag), 1 = sub color (u32 HSV channels at
+        +0x9C; no transparent state in CSP's model).
         """
         if self.pm is None and not self.connect():
             return False
 
         if self.color_format == "rgb_u32":
-            return self._write_rgb_u32(r, g, b, source_space=source_space,
-                                       source_values=source_values)
+            if transparent:
+                # Transparent belongs to the ACTIVE slot: activate the
+                # target slot first, then set the transparent flag.
+                self._write_u32(self.target + self._TRANSPARENT_FLAG_OFFS,
+                                1 if color_index == 1 else 0)
+                return self._write_transparent_flag(True)
+            if color_index == 1:
+                # Sub slot: write HSV channels + activate the sub slot so
+                # the brush (which paints the active slot) uses this color.
+                ok_sub = self._write_sub_color(r, g, b)
+                self._write_u32(self.target + self._TRANSPARENT_FLAG_OFFS, 1)
+                return ok_sub
+            if not self._write_transparent_flag(False):
+                return False
+            ok_main = self._write_rgb_u32(r, g, b, source_space=source_space,
+                                          source_values=source_values)
+            # Activate the main slot (clearing +0x08 low byte to 0).
+            self._write_u32(self.target + self._TRANSPARENT_FLAG_OFFS, 0)
+            return ok_main
+
+        if transparent:
+            _log("set_color: transparent unsupported for u16x2_dup builds — skipped")
+            return False
 
         space_addrs = self._resolve_space_addresses()
         if not space_addrs:
