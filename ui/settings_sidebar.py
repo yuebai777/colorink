@@ -42,6 +42,25 @@ _CHECKBOX_CHECK_ICON = os.path.join(_ICONS_DIR, "checkbox_check.png").replace("\
 _ARROW_DOWN_DARK = os.path.join(_ICONS_DIR, "arrow_down_dark.png").replace("\\", "/")
 _ARROW_DOWN_LIGHT = os.path.join(_ICONS_DIR, "arrow_down_light.png").replace("\\", "/")
 
+# CSP 内存模式版本选项：显示文本 ↔ 配置存储值。前景/背景色与透明状态
+# 同步（rgb_u32 槽布局）只有 csp5.1 支持；csp4.x / csp5.x 仅主色同步。
+_CSP_VERSION_ITEMS: list[tuple[str, str]] = [
+    ("auto", "auto（自动检测）"),
+    ("csp4.x", "CSP 4.x（仅主色）"),
+    ("csp5.x", "CSP 5.0（仅主色）"),
+    ("csp5.1", "CSP 5.1（支持前景/背景/透明）"),
+]
+_CSP_DISPLAY_TO_VALUE = {disp: val for val, disp in _CSP_VERSION_ITEMS}
+_CSP_VALUE_TO_DISPLAY = dict(_CSP_VERSION_ITEMS)
+# 每项的悬停说明
+_CSP_VERSION_TIPS: dict[str, str] = {
+    "auto": "自动检测 CSP 主版本；检测为 5.1 时支持前景/背景色与透明同步，"
+            "5.0 及以下仅主色同步。",
+    "csp4.x": "CSP 4.x 内存模式仅支持主色同步；前景/背景色与透明同步需要 CSP 5.1。",
+    "csp5.x": "CSP 5.0 内存模式仅支持主色同步；前景/背景色与透明同步需要 CSP 5.1。",
+    "csp5.1": "CSP 5.1 内存模式支持前景/背景色与透明状态同步（推荐）。",
+}
+
 class NonScrollComboBox(QComboBox):
     def wheelEvent(self, event):
         event.ignore()
@@ -537,6 +556,7 @@ class SettingsSidebar(QWidget):
         self.combo_software = NonScrollComboBox()
         self.combo_software.addItems(["CLIP Studio Paint", "SAI2", "UDM Paint", "Photoshop", "CSP 智能手机 (R)"])
         self.combo_software.currentTextChanged.connect(self.save_settings)
+        self.combo_software.currentTextChanged.connect(self._on_software_changed)
         grid_sync.addWidget(self.combo_software, 0, 1)
         cl_sync.addLayout(grid_sync)
 
@@ -561,11 +581,28 @@ class SettingsSidebar(QWidget):
         row_csp_layout.setContentsMargins(0, 0, 0, 0)
         row_csp_layout.addWidget(QLabel("CSP 版本"))
         self.combo_csp = NonScrollComboBox()
-        self.combo_csp.addItems(["auto", "csp4.x", "csp5.x", "csp5.1"])
-        self.combo_csp.setToolTip("自动检测失败时才需要手动指定 CSP 主版本")
-        self.combo_csp.currentTextChanged.connect(self.save_settings)
+        self.combo_csp.addItems([disp for _, disp in _CSP_VERSION_ITEMS])
+        for i, (val, _disp) in enumerate(_CSP_VERSION_ITEMS):
+            self.combo_csp.setItemData(
+                i, _CSP_VERSION_TIPS.get(val, ""), Qt.ItemDataRole.ToolTipRole
+            )
+        self.combo_csp.setToolTip(
+            "前景/背景色与透明状态同步（内存模式）仅 CSP 5.1 支持；"
+            "自动检测失败时才需要手动指定版本"
+        )
+        self.combo_csp.currentTextChanged.connect(self._on_csp_version_changed)
         row_csp_layout.addWidget(self.combo_csp)
         cl_sync.addWidget(self.row_csp_widget)
+        # 版本能力说明行：明确 5.0 与 5.1 的同步能力差异
+        self.row_csp_hint_widget = QWidget()
+        row_csp_hint = QVBoxLayout(self.row_csp_hint_widget)
+        row_csp_hint.setContentsMargins(0, 0, 0, 0)
+        row_csp_hint.setSpacing(4)
+        self.lbl_csp_hint = QLabel("")
+        self.lbl_csp_hint.setWordWrap(True)
+        self.lbl_csp_hint.setObjectName("StatusHint")
+        row_csp_hint.addWidget(self.lbl_csp_hint)
+        cl_sync.addWidget(self.row_csp_hint_widget)
 
         # SAI2 Version Container
         self.row_sai_widget = QWidget()
@@ -600,6 +637,30 @@ class SettingsSidebar(QWidget):
         self.combo_ps.currentTextChanged.connect(self.save_settings)
         row_ps_layout.addWidget(self.combo_ps)
         cl_sync.addWidget(self.row_ps_widget)
+
+        # Green/portable Photoshop script-bridge notice row (visible only
+        # when a green edition is detected and PS sync is selected).
+        self.row_ps_bridge_widget = QWidget()
+        row_ps_bridge = QVBoxLayout(self.row_ps_bridge_widget)
+        row_ps_bridge.setContentsMargins(0, 0, 0, 0)
+        row_ps_bridge.setSpacing(4)
+        self.lbl_ps_bridge_status = QLabel("")
+        self.lbl_ps_bridge_status.setWordWrap(True)
+        self.lbl_ps_bridge_status.setObjectName("StatusHint")
+        row_ps_bridge.addWidget(self.lbl_ps_bridge_status)
+        row_ps_bridge_btns = QHBoxLayout()
+        row_ps_bridge_btns.setSpacing(6)
+        self.btn_ps_bridge_recheck = QPushButton("重新检测")
+        self.btn_ps_bridge_recheck.clicked.connect(self._on_ps_bridge_recheck)
+        self.btn_ps_bridge_restart = QPushButton("重启 Photoshop")
+        self.btn_ps_bridge_restart.clicked.connect(self._on_ps_restart)
+        row_ps_bridge_btns.addWidget(self.btn_ps_bridge_recheck)
+        row_ps_bridge_btns.addWidget(self.btn_ps_bridge_restart)
+        row_ps_bridge_btns.addStretch()
+        row_ps_bridge.addLayout(row_ps_bridge_btns)
+        cl_sync.addWidget(self.row_ps_bridge_widget)
+        self.row_ps_bridge_widget.hide()
+        self._ps_bridge_prompted = False
 
         page_software.addWidget(card_sync)
 
@@ -1103,10 +1164,12 @@ class SettingsSidebar(QWidget):
         # Migrate legacy CSP version keys to simplified 4.x / 5.x scheme
         _csp_migration = {"csp4.0": "csp4.x", "csp4.2.7-ex": "csp4.x",
                           "csp5.0": "csp5.x", "csp5.0-ex": "csp5.x"}
-        raw_csp = self.cfg.get("cspVersion", "auto")
+        raw_csp = str(self.cfg.get("cspVersion", "auto") or "auto")
+        raw_csp = _csp_migration.get(raw_csp, raw_csp)
         self.combo_csp.blockSignals(True)
-        self.combo_csp.setCurrentText(_csp_migration.get(raw_csp, raw_csp))
+        self.combo_csp.setCurrentText(_CSP_VALUE_TO_DISPLAY.get(raw_csp, _CSP_VALUE_TO_DISPLAY["auto"]))
         self.combo_csp.blockSignals(False)
+        self._refresh_csp_version_hint()
         
         self.combo_sai.blockSignals(True)
         self.combo_sai.setCurrentText(self.cfg.get("sai2Version", "auto"))
@@ -1117,6 +1180,7 @@ class SettingsSidebar(QWidget):
         self.combo_udm.setCurrentText(udm_display_map.get(self.cfg.get("udmVersion", "auto"), "auto"))
         self.combo_udm.blockSignals(False)
         
+        self._refresh_ps_instances()
         self.combo_ps.blockSignals(True)
         self.combo_ps.setCurrentText(self.cfg.get("psVersion", "auto"))
         self.combo_ps.blockSignals(False)
@@ -1124,17 +1188,60 @@ class SettingsSidebar(QWidget):
         self.update_version_visibility()
         self.apply_theme()
         self._refresh_module_sliders()
+    def _on_csp_version_changed(self, _text: str) -> None:
+        """CSP 版本选择变化：保存配置并刷新能力提示。"""
+        self.save_settings()
+        self._refresh_csp_version_hint()
+
+    def _refresh_csp_version_hint(self):
+        """按所选 CSP 版本显示同步能力说明（5.0 与 5.1 的能力差异）。"""
+        if not hasattr(self, "lbl_csp_hint"):
+            return
+        val = _CSP_DISPLAY_TO_VALUE.get(self.combo_csp.currentText(), "auto")
+        if val == "csp5.1":
+            text = ("CSP 5.1 内存模式支持前景/背景色与透明状态同步。")
+        elif val == "csp5.x":
+            text = ("CSP 5.0 内存模式仅支持主色同步；前景/背景色与透明状态"
+                    "同步需要 CSP 5.1。")
+        elif val == "csp4.x":
+            text = ("CSP 4.x 内存模式仅支持主色同步；前景/背景色与透明状态"
+                    "同步需要 CSP 5.1。")
+        else:
+            text = ("自动检测 CSP 版本：检测为 5.1 时支持前景/背景色与透明"
+                    "状态同步，5.0 及以下仅主色同步。")
+        self.lbl_csp_hint.setText(text)
+
     def update_version_visibility(self):
         software_val_map = {"CLIP Studio Paint": "csp", "SAI2": "sai", "UDM Paint": "udm", "Photoshop": "ps", "CSP 智能手机 (R)": "companion"}
         selected = software_val_map.get(self.combo_software.currentText(), "csp")
         self.row_csp_widget.setVisible(selected == "csp")
+        self.row_csp_hint_widget.setVisible(selected == "csp")
         self.row_sai_widget.setVisible(selected == "sai")
         self.row_udm_widget.setVisible(selected == "udm")
         self.row_ps_widget.setVisible(selected == "ps")
         self.row_companion_widget.setVisible(selected == "companion")
         if selected == "companion":
             self._refresh_companion_status()
+        if selected == "csp":
+            self._refresh_csp_version_hint()
         self._refresh_sync_status()
+        self._refresh_ps_bridge_status()
+
+    def _refresh_ps_instances(self):
+        """Populate the PS 版本 combo with detected running instances:
+        registered installs (COM) + green/portable editions (script bridge)."""
+        try:
+            from core.photoshop_instances import detect_instances
+            instances = detect_instances()
+        except Exception:
+            instances = []
+        labels = ["auto"] + [inst.label for inst in instances]
+        current = self.combo_ps.currentText()
+        self.combo_ps.blockSignals(True)
+        self.combo_ps.clear()
+        self.combo_ps.addItems(labels)
+        self.combo_ps.setCurrentText(current if current in labels else "auto")
+        self.combo_ps.blockSignals(False)
 
     def theme_colors(self):
         """Resolve active theme colors dynamically based on parent window.
@@ -1595,7 +1702,8 @@ class SettingsSidebar(QWidget):
         pos_val_map = {"左上角": "top-left", "左下角": "bottom-left"}
         self.cfg["previewBoxPosition"] = pos_val_map.get(self.combo_pos.currentText(), "top-left")
         
-        self.cfg["cspVersion"] = self.combo_csp.currentText()
+        self.cfg["cspVersion"] = _CSP_DISPLAY_TO_VALUE.get(
+            self.combo_csp.currentText(), "auto")
         self.cfg["sai2Version"] = self.combo_sai.currentText()
         
         udm_val_map = {"auto": "auto", "udm4.0pro": "udm4.0", "udm4.0ex": "udm4.0-ex"}
@@ -1796,7 +1904,7 @@ class SettingsSidebar(QWidget):
         else:
             mode = self.cfg.get("syncSoftware", "csp")
             version = {
-                "csp": self.combo_csp.currentText(),
+                "csp": _CSP_DISPLAY_TO_VALUE.get(self.combo_csp.currentText(), "auto"),
                 "sai": self.combo_sai.currentText(),
                 "udm": self.combo_udm.currentText(),
                 "ps": self.combo_ps.currentText(),
@@ -1804,6 +1912,144 @@ class SettingsSidebar(QWidget):
             }.get(mode, "")
             self.lbl_sync_status.setText(f"当前同步：{name} {version}".strip())
             self._set_label_state(self.lbl_sync_status, "muted")
+        self._refresh_ps_bridge_status()
+
+    # -- Green/portable Photoshop script-bridge notice ----------------------
+
+    def _ps_sync(self):
+        """Best-effort access to the PhotoshopSync instance (or None)."""
+        parent = self._parent
+        st = getattr(parent, "sync_thread", None)
+        return getattr(st, "ps_sync", None) if st is not None else None
+
+    def _refresh_ps_bridge_status(self):
+        """Show / hide the green-edition notice row with the current
+        script-bridge state (deployed-pending / alive / deploy failed)."""
+        if not hasattr(self, "row_ps_bridge_widget"):
+            return
+        if self.combo_software.currentText() != "Photoshop":
+            self.row_ps_bridge_widget.hide()
+            return
+        ps_sync = self._ps_sync()
+        if ps_sync is None:
+            self.row_ps_bridge_widget.hide()
+            return
+        try:
+            # UI thread: use the non-connecting snapshot — status() can
+            # block on a flaky COM registration attempt.
+            st = ps_sync.status_lite()
+        except Exception:
+            self.row_ps_bridge_widget.hide()
+            return
+        if st.get("backend") != "script-bridge":
+            self.row_ps_bridge_widget.hide()
+            return
+        self.row_ps_bridge_widget.show()
+        if st.get("bridgeAlive"):
+            if st.get("panelStale"):
+                self.lbl_ps_bridge_status.setText(
+                    "已连接（脚本桥），但 Photoshop 内运行的仍是旧版同步面板："
+                    "拖动颜色可能跳动。请重启 Photoshop 一次后点击右侧按钮。")
+                self._set_label_state(self.lbl_ps_bridge_status, "warning")
+                self.btn_ps_bridge_restart.show()
+            else:
+                self.lbl_ps_bridge_status.setText(
+                    "绿色版 Photoshop 已连接（脚本桥）：前景 / 背景色双槽同步已启用。")
+                self._set_label_state(self.lbl_ps_bridge_status, "success")
+                self.btn_ps_bridge_restart.hide()
+        else:
+            self.lbl_ps_bridge_status.setText(
+                "检测到绿色版 Photoshop：已自动部署同步脚本，"
+                "重启 Photoshop（绿色版）后生效；"
+                "之后在 PS 中有操作时颜色即会同步。")
+            self._set_label_state(self.lbl_ps_bridge_status, "warning")
+            self.btn_ps_bridge_restart.show()
+
+    def _on_ps_bridge_recheck(self):
+        """Force instance re-detection after the user restarted Photoshop."""
+        ps_sync = self._ps_sync()
+        if ps_sync is not None:
+            try:
+                ps_sync.recheck()
+            except Exception:
+                pass
+        self._refresh_ps_bridge_status()
+
+    def _on_ps_restart(self):
+        """Confirm, then restart the selected Photoshop instance so the
+        deployed bridge script gets loaded."""
+        ps_sync = self._ps_sync()
+        if ps_sync is None:
+            return
+        from core.photoshop_instances import detect_instances, pick_target
+        try:
+            target = pick_target(detect_instances(), ps_sync.current_version)
+        except Exception:
+            target = None
+        if target is None:
+            QMessageBox.warning(self, "重启 Photoshop",
+                                "未检测到运行中的 Photoshop 进程")
+            return
+        ret = QMessageBox.question(
+            self, "重启 Photoshop",
+            f"将关闭并重新启动 Photoshop：\n{target.exe_path}\n\n"
+            "未保存的更改可能会丢失，是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        import psutil as _psutil
+        import subprocess as _subprocess
+        try:
+            proc = _psutil.Process(target.pid)
+            proc.terminate()
+            try:
+                proc.wait(timeout=8)
+            except _psutil.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=3)
+        except (_psutil.NoSuchProcess, _psutil.AccessDenied):
+            pass
+        try:
+            _subprocess.Popen([target.exe_path])
+        except OSError as exc:
+            QMessageBox.warning(self, "重启 Photoshop", f"启动失败：{exc}")
+            return
+        # The bridge script reports heartbeats a few seconds after startup.
+        QTimer.singleShot(8000, self._refresh_ps_bridge_status)
+
+    def _on_software_changed(self, text):
+        """When the user picks Photoshop, offer the green-edition fix once."""
+        if text == "Photoshop":
+            QTimer.singleShot(400, self._maybe_prompt_ps_bridge)
+
+    def _maybe_prompt_ps_bridge(self):
+        """One-time dialog: bridge deployed but Photoshop not restarted yet."""
+        if self._ps_bridge_prompted:
+            return
+        if self.combo_software.currentText() != "Photoshop":
+            return
+        ps_sync = self._ps_sync()
+        if ps_sync is None:
+            return
+        try:
+            # Non-connecting snapshot: never block the UI on COM.
+            st = ps_sync.status_lite()
+        except Exception:
+            return
+        if st.get("backend") != "script-bridge":
+            return
+        self._ps_bridge_prompted = True
+        if st.get("bridgeAlive"):
+            return
+        ret = QMessageBox.question(
+            self, "绿色版 Photoshop",
+            "检测到绿色版（便携版）Photoshop：它未注册 COM 自动化接口，"
+            "无法直接同步颜色。\n\n"
+            "Colorink 已自动部署同步脚本（脚本桥），重启 Photoshop 后即可"
+            "同步前景 / 背景色。\n是否现在重启 Photoshop？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ret == QMessageBox.StandardButton.Yes:
+            self._on_ps_restart()
 
     def export_config(self):
         default_name = os.path.join(os.path.expanduser("~"), "Colorink-配置.json")

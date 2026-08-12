@@ -1,7 +1,7 @@
 """Tests for ColorPreviewBox ringless interaction semantics and paint safety.
 
-Covers left-click select, right-click copy-menu routing, double-click swap,
-legacy circle rendering, and module size check.
+Covers left-click select, right-click copy-menu routing, double-click
+no-op, legacy circle rendering, and module size check.
 """
 
 import os
@@ -22,7 +22,7 @@ from .test_ringless_preview_support import (
 # ── Interaction semantics ────────────────────────────────────────────────
 
 class TestRinglessInteractionSemantics:
-    """Left-click select, right-click copy-menu routing, double-click swap
+    """Left-click select, right-click copy-menu routing, double-click no-op
     all work correctly in ringless mode."""
 
     def test_left_click_selects_fg_when_hit(self, qapp):
@@ -75,7 +75,9 @@ class TestRinglessInteractionSemantics:
             assert called_color.green() == 20
             assert called_color.blue() == 30
 
-    def test_double_click_calls_swap(self, qapp):
+    def test_double_click_does_not_swap(self, qapp):
+        """Double-click must NOT swap the slot values: it is a normal
+        switch-target gesture, not an exchange."""
         box = make_preview_box(canonical_layout())
         fg_rect, _ = cast(Any, box._ringless_swatch_rects())
         assert fg_rect is not None
@@ -83,14 +85,14 @@ class TestRinglessInteractionSemantics:
         calls = []
 
         class FakeParent:
-            def select_fg_slot(self): pass
-            def select_bg_slot(self): pass
+            def select_fg_slot(self): calls.append("fg_selected")
+            def select_bg_slot(self): calls.append("bg_selected")
             def swap_colors(self): calls.append("swapped")
 
         box._parent = FakeParent()
         cx, cy = fg_rect.center().x(), fg_rect.center().y()
         box.mouseDoubleClickEvent(double_click_event(cx, cy))
-        assert calls == ["swapped"]
+        assert calls == []
 
 
 # ── paintEvent safety ────────────────────────────────────────────────────
