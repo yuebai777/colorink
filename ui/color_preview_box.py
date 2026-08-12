@@ -18,22 +18,21 @@ from ui.ringless_mode import (
     RinglessLayout,
     centered_control_offset,
 )
+from ui.transparent_swatch import TransparentTile, apply_preview_mouse_mask
 
 _STROKE_PAD = 3  # Default padding around swatches for the compact control bar
 
 
 class ColorPreviewBox(QWidget):
-    """Overlapping color circles preview widget drawn with QPainter.
+    """Overlapping fg/bg color swatches (+ transparent tile)."""
 
-    When ``set_ringless_layout()`` supplies a layout with ``controls_enabled``,
-    the widget switches to adjacent rounded rectangles (fg left / bg right,
-    shared geometry between paint and hit-test).
-    """
     def __init__(self, parent=None):
         super().__init__(parent)
         self._parent: object = parent
         self.fg_color = QColor(255, 255, 255)
         self.bg_color = QColor(128, 128, 128)
+        self.fg_transparent = False
+        self.bg_transparent = False
         self.position_mode = "top-left"  # "top-left" | "bottom-left"
         self.active_slot = "fg"
         self.active_border_color = QColor(RINGLESS_ACTIVE_BORDER); self.inactive_border_color = QColor(RINGLESS_INACTIVE_BORDER)
@@ -42,11 +41,12 @@ class ColorPreviewBox(QWidget):
         self._ringless_layout: RinglessLayout | None = None
         self._cached_ringless_rects: tuple[QRectF, QRectF] | None = None
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._trans_tile = TransparentTile(self)
+        self._trans_tile.clicked.connect(lambda: cast(Any, self._parent).set_active_transparent())
 
     # 鈹€鈹€ Public API 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     def set_theme_colors(self, active_border, inactive_border):
-        """Apply semantic border colors from the active application theme."""
         self.active_border_color = QColor(active_border)
         self.inactive_border_color = QColor(inactive_border)
         self.update()
@@ -56,9 +56,15 @@ class ColorPreviewBox(QWidget):
         self.bg_color = bg
         self.update()
 
+    def set_transparent(self, slot, transparent):
+        setattr(self, f"{slot}_transparent", bool(transparent))
+        self.update()
+        self._trans_tile.update()
+
     def update_slot_borders(self, active_slot):
         self.active_slot = active_slot
         self.update()
+        self._trans_tile.update()
 
     def set_ringless_layout(
         self, layout: RinglessLayout, window_width: int, title_bar_height: int,
@@ -66,11 +72,9 @@ class ColorPreviewBox(QWidget):
     ) -> None:
         """Apply ringless presentation and compute shared rectangle geometry.
 
-        Ringless rectangles are shown only when *layout*.*controls_enabled*
-        is ``True``.  When *controls_enabled* is ``False`` the widget restores
-        legacy circle presentation (``position_mode``, colors, and active slot
-        are **never** changed; the widget remains sized/positioned so
-        ``resize_and_position`` can still be called afterward).
+        When *controls_enabled* is ``False`` the widget restores legacy
+        circle presentation (``position_mode``, colors, and active slot are
+        never changed; ``resize_and_position`` still works afterward).
         """
         if not layout.controls_enabled:
             self._ringless_layout = None
@@ -85,15 +89,17 @@ class ColorPreviewBox(QWidget):
         sh = layout.swatch_height
         gap = layout.swatch_gap
 
+        # Row layout: [transparent][fg][bg] — all same size, same gap.
         self._cached_ringless_rects = (
-            QRectF(float(pad), float(pad), float(sw), float(sh)),
             QRectF(float(pad + sw + gap), float(pad), float(sw), float(sh)),
+            QRectF(float(pad + 2 * (sw + gap)), float(pad), float(sw), float(sh)),
         )
 
-        # Size the widget to exactly fit swatches + stroke padding
-        widget_w = pad * 2 + sw * 2 + gap
+        # Size the widget to exactly fit the three-swatch row.
+        widget_w = pad * 2 + sw * 3 + gap * 2
         widget_h = pad * 2 + sh
         self.setFixedSize(int(widget_w), int(widget_h))
+        self._trans_tile.place_ringless(float(pad), float(sw), float(sh))
 
         # Position based on controls_side and window width
         margin = layout.margin
@@ -101,26 +107,33 @@ class ColorPreviewBox(QWidget):
             x = window_width - int(widget_w) - margin
         else:
             x = margin
-        # Vertically center inside the selected control bar band.
+        # Vertically center the swatches inside the selected control bar band
+        # (the widget floats and is raised above page content).
         bar_y = 0
         if layout.control_bar_position == "bottom" and visualizer_height is not None:
             bar_y = max(0, visualizer_height - layout.control_bar_height)
+        swatch_only_h = pad * 2 + sh
         y = title_bar_height + bar_y + centered_control_offset(
-            layout.control_bar_height, int(widget_h)
+            layout.control_bar_height, int(swatch_only_h)
         ) + layout.swatch_offset_y
         self.move(x, y)
+        apply_preview_mouse_mask(self)
         self.update()
 
     def resize_and_position(self, wheel_size, title_bar_h, window_h, sliders_h, active_slot):
         # Calculate scale factor relative to default wheel size 304 to dynamically scale with the color wheel width
         wheel_scale = wheel_size / 304.0
         
-        self.fg_size = int(46 * wheel_scale)
+        self.fg_size = int(40 * wheel_scale)
         self.bg_size = int(30 * wheel_scale)
         self.active_slot = active_slot
-        
+
         box_dim = int(60 * wheel_scale)
-        self.setFixedSize(box_dim, box_dim)
+        # Compute directly from wheel_scale — width() is stale before the
+        # setFixedSize below takes effect.
+        t_size, t_gap = self._trans_tile.metrics(scale=wheel_scale)
+        self.setFixedSize(box_dim, box_dim + t_gap + t_size)
+        self._trans_tile.place_legacy(box_dim, wheel_scale)
         
         # Position at the top-left corner of the window with clean margins
         margin_x = int(6 * wheel_scale)
@@ -130,18 +143,13 @@ class ColorPreviewBox(QWidget):
             margin_y = title_bar_h + spacing
             self.move(margin_x, margin_y)
         else:
-            self.move(margin_x, window_h - sliders_h - box_dim - int(6 * wheel_scale))
+            self.move(margin_x, window_h - sliders_h - box_dim - t_gap - t_size - int(6 * wheel_scale))
+        apply_preview_mouse_mask(self)
 
     # 鈹€鈹€ Shared geometry 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     def _ringless_swatch_rects(self) -> tuple[QRectF, QRectF] | None:
-        """Return the cached (fg_rect, bg_rect) pair, or ``None`` when
-        ringless mode is inactive or disabled.
-
-        Returns **defensive copies** so callers cannot mutate the cached
-        geometry.  Paint and hit-test both use equivalent values derived
-        from the same layout computation.
-        """
+        """Return defensive copies of the cached (fg, bg) rect pair, or None."""
         if self._ringless_layout is None or not self._ringless_layout.controls_enabled:
             return None
         rects = self._cached_ringless_rects
@@ -178,22 +186,17 @@ class ColorPreviewBox(QWidget):
         fg_rect, bg_rect = rects
         assert self._ringless_layout is not None
         radius = float(self._ringless_layout.corner_radius)
+        # A transparent active slot keeps the swatch colors but moves the
+        # highlight to the transparent tile — no blue border here.
+        bg_active = self.active_slot == "bg" and not self.bg_transparent
+        fg_active = self.active_slot == "fg" and not self.fg_transparent
+        self._ringless_swatch(painter, bg_rect, radius, self.bg_color, bg_active)
+        self._ringless_swatch(painter, fg_rect, radius, self.fg_color, fg_active)
 
-        # Draw BG swatch
-        painter.setBrush(QBrush(self.bg_color))
-        if self.active_slot == "bg":
-            painter.setPen(QPen(self.active_border_color, 2.5))
-        else:
-            painter.setPen(QPen(self.inactive_border_color, 1.0))
-        painter.drawRoundedRect(bg_rect, radius, radius)
-
-        # Draw FG swatch (on top for correct visual z-order)
-        painter.setBrush(QBrush(self.fg_color))
-        if self.active_slot == "fg":
-            painter.setPen(QPen(self.active_border_color, 2.5))
-        else:
-            painter.setPen(QPen(self.inactive_border_color, 1.0))
-        painter.drawRoundedRect(fg_rect, radius, radius)
+    def _ringless_swatch(self, painter, rect, radius, color, active):
+        painter.setBrush(QBrush(color))
+        painter.setPen(QPen(self.active_border_color, 2.5) if active else QPen(self.inactive_border_color, 1.0))
+        painter.drawRoundedRect(rect, radius, radius)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -207,7 +210,7 @@ class ColorPreviewBox(QWidget):
             scale = self.width() / 60.0
             
             # Sizes
-            fg_r = (46.0 * scale) / 2.0
+            fg_r = (40.0 * scale) / 2.0
             bg_r = (30.0 * scale) / 2.0
             
             box_size = float(self.width())
@@ -229,20 +232,22 @@ class ColorPreviewBox(QWidget):
                 bg_cx = box_size - bg_r - border
                 bg_cy = box_size - bg_r - border
 
-            # Draw circles in correct z-order (active on top)
+            # Draw circles in correct z-order (active on top). A transparent
+            # active slot shows no blue border — only the tile is highlighted.
+            fg_active = self.active_slot == "fg" and not self.fg_transparent
+            bg_active = self.active_slot == "bg" and not self.bg_transparent
             if self.active_slot == "fg":
-                self.draw_circle(painter, bg_cx, bg_cy, bg_r, self.bg_color, active=False)
-                self.draw_circle(painter, fg_cx, fg_cy, fg_r, self.fg_color, active=True)
+                self.draw_circle(painter, bg_cx, bg_cy, bg_r, self.bg_color, bg_active)
+                self.draw_circle(painter, fg_cx, fg_cy, fg_r, self.fg_color, fg_active)
             else:
-                self.draw_circle(painter, fg_cx, fg_cy, fg_r, self.fg_color, active=False)
-                self.draw_circle(painter, bg_cx, bg_cy, bg_r, self.bg_color, active=True)
+                self.draw_circle(painter, fg_cx, fg_cy, fg_r, self.fg_color, fg_active)
+                self.draw_circle(painter, bg_cx, bg_cy, bg_r, self.bg_color, bg_active)
         finally:
             painter.end()
 
     # 鈹€鈹€ Hit-testing 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     def _get_clicked_slot(self, px, py):
-        """Return which slot ('fg' or 'bg') was hit, respecting z-order. Returns None if no hit."""
         # Ringless mode: rectangle hit-testing
         rects = self._ringless_swatch_rects()
         if rects is not None:
@@ -299,7 +304,6 @@ class ColorPreviewBox(QWidget):
     # 鈹€鈹€ Context menu 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     def _show_color_context_menu(self, color):
-        """Show a right-click context menu to copy RGB or HEX color values."""
         menu = QMenu()
         r, g, b = color.red(), color.green(), color.blue()
 
@@ -315,6 +319,7 @@ class ColorPreviewBox(QWidget):
     def mousePressEvent(self, event):
         pos = event.position()
         px, py = pos.x(), pos.y()
+
         clicked_slot = self._get_clicked_slot(px, py)
 
         if clicked_slot is None:
@@ -330,8 +335,12 @@ class ColorPreviewBox(QWidget):
             self._show_color_context_menu(color)
 
     def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            if hasattr(self._parent, 'swap_colors'):
-                cast(Any, self._parent).swap_colors()
-        super().mouseDoubleClickEvent(event)
+        # Deliberately a no-op (not forwarded to super(), which would
+        # re-run the press handler): the double click must NOT swap the
+        # fg/bg slot values. A quick double click while switching slots
+        # is a normal "switch editing target" gesture, and swapping the
+        # slot values (or mirroring an X swap into Photoshop) surprised
+        # users. The first press of the double-click sequence already
+        # selected the clicked slot.
+        return
 

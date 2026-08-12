@@ -86,6 +86,12 @@ class ColorHSV(TypedDict):
     r: int
     g: int
     b: int
+    # True when CSP reports the current drawing color is transparent
+    # (IsCurrentColorTransparent). Channel values are meaningless then.
+    transparent: bool
+    # CSP's active color slot: 0 = main color, 1 = sub color
+    # (CurrentColorIndex).
+    index: int
 
 
 class _CSPColorState(TypedDict, total=False):
@@ -112,6 +118,7 @@ class _CSPColorState(TypedDict, total=False):
     HLSColorSubH: int
     HLSColorSubS: int
     HLSColorSubL: int
+    IsCurrentColorTransparent: bool
 
 
 class _SessionData(TypedDict, total=False):
@@ -665,6 +672,69 @@ class CSPCompanionSync:
             return None
         return {"r": hsv["r"], "g": hsv["g"], "b": hsv["b"]}
 
+    def get_colors_hsv(self) -> dict | None:
+        """Read BOTH main and sub UI colors plus the active index.
+
+        Returns ``{"main": ColorHSV, "sub": ColorHSV, "active_index": int,
+        "transparent": bool}``. Used by the memory-mode observer so main
+        and sub color changes are tracked independently of the active
+        slot (a slot switch alone must not overwrite Colorink's values).
+        """
+        if not self._connected:
+            if not self.connect():
+                return None
+        stale_msgs = self._recv_messages(timeout=0.05)
+        self._ensure_heartbeat()
+        try:
+            self._send_raw(_build_message("SyncColorCircleUIState", {
+                "IsManipulating": False,
+                "HSVColorMainH": 0,
+                "HSVColorMainS": 0,
+                "HSVColorMainV": 0,
+                "CurrentColorIndex": 0,
+                "ColorSelectionModel": "HSV",
+            }))
+            for attempt in range(3):
+                msgs = self._recv_messages(timeout=0.3)
+                for _type, _cmd, detail_json in msgs:
+                    if _cmd not in ("SyncColorCircleUIState", "SetCurrentColor"):
+                        continue
+                    try:
+                        d: _CSPColorState = json.loads(detail_json)
+                        if not d or d == {}:
+                            continue
+                    except Exception:
+                        continue
+                    idx = int(d.get("CurrentColorIndex", 0))
+                    transp = bool(d.get("IsCurrentColorTransparent", False))
+
+                    def parse_ch(prefix: str) -> dict | None:
+                        h = d.get(f"{prefix}H")
+                        s = d.get(f"{prefix}S")
+                        v = d.get(f"{prefix}V")
+                        if h is None or s is None or v is None:
+                            return None
+                        r, g, b = _hsv_to_rgb_u32(int(h), int(s), int(v))
+                        return {"h": int(h) / _MAX_U32 * 360.0,
+                                "s": int(s) / _MAX_U32 * 100.0,
+                                "v": int(v) / _MAX_U32 * 100.0,
+                                "r": r, "g": g, "b": b,
+                                "transparent": transp, "index": 0}
+
+                    main = parse_ch("HSVColorMain")
+                    sub = parse_ch("HSVColorSub")
+                    if main is None:
+                        main = parse_ch("HSVColor")
+                    if main is None and sub is None:
+                        continue
+                    return {"main": main, "sub": sub,
+                            "active_index": idx, "transparent": transp}
+            return None
+        except Exception as exc:
+            _log(f"get_colors_hsv error: {exc}")
+            self._disconnect()
+            return None
+
     def get_color_hsv(self) -> ColorHSV | None:
         """Read CSP's brush color, returning native HSV + RGB.
 
@@ -771,7 +841,9 @@ class CSPCompanionSync:
         v_pct = (v_u32 / _MAX_U32) * 100.0
         r, g, b = _hsv_to_rgb_u32(h_u32, s_u32, v_u32)
         return {"h": h_deg, "s": s_pct, "v": v_pct,
-                "r": r, "g": g, "b": b}
+                "r": r, "g": g, "b": b,
+                "transparent": bool(d.get("IsCurrentColorTransparent", False)),
+                "index": idx}
 
     def _parse_hls_response(self, d: _CSPColorState, idx: int) -> ColorHSV | None:
         """Parse HLS-color-model response from CSP, convert to HSV+RGB.
@@ -810,7 +882,9 @@ class CSPCompanionSync:
         return {"h": h_norm * 360.0,
                 "s": s_hsv  * 100.0,
                 "v": v_norm * 100.0,
-                "r": r, "g": g, "b": b}
+                "r": r, "g": g, "b": b,
+                "transparent": bool(d.get("IsCurrentColorTransparent", False)),
+                "index": idx}
 
     def _parse_color_response(self, msgs: list[tuple[int, str, str]]) -> dict[str, int] | None:
         """Extract RGB from SyncColorCircleUIState response messages.
@@ -849,12 +923,20 @@ class CSPCompanionSync:
                     _log(f"Parse color response error: {exc}")
         return None
 
-    def set_color(self, r: int, g: int, b: int, hsv_u32: tuple[int, int, int] | None = None) -> bool:
+    def set_color(self, r: int, g: int, b: int, hsv_u32: tuple[int, int, int] | None = None,
+                  transparent: bool = False, color_index: int = 0) -> bool:
         """Write a color to CSP's brush via Companion protocol.
 
         If *hsv_u32* ``(h, s, v)`` is provided (all uint32-scaled), those
         values are used directly instead of converting from RGB.  This
         preserves saturation when V=0 (black RGB carries no S info).
+
+        When *transparent* is ``True`` the ``IsColorTransparent`` flag is
+        set on the wire, switching CSP's current drawing color to
+        transparent (the channel values are then ignored by CSP).
+
+        *color_index* selects the target slot: 0 = main color, 1 = sub
+        color.
         """
         if not self._connected:
             if not self.connect():
@@ -865,7 +947,9 @@ class CSPCompanionSync:
         # Skip if same as last set color (dedup).
         # But always send when explicit HSV is provided — the RGB may
         # be identical (e.g., black) while the HSV values changed.
-        if self._current_color and hsv_u32 is None:
+        # Transparent requests must always go through: the flag changed
+        # even when the RGB payload did not.
+        if not transparent and self._current_color and hsv_u32 is None:
             cr = self._current_color
             if cr["r"] == r and cr["g"] == g and cr["b"] == b:
                 return True
@@ -891,55 +975,22 @@ class CSPCompanionSync:
                 self._last_sat_u32 = s_u32
             elif hsv_u32 is None:
                 s_u32 = self._last_sat_u32
-
-            # ── Saturation / Value edge-case handling ────────────────────
-            if v_u32 >= _MAX_U32 * 0.005:
-                # ── Normal brightness ─────────────────────────────────
-                self._last_sat_u32 = s_u32
-                self._send_raw(_build_message("SetCurrentColor", {
-                    "ColorSpaceKind": "HSV",
-                    "IsColorTransparent": False,
-                    "HSVColorH": h_u32,
-                    "HSVColorS": s_u32,
-                    "HSVColorV": v_u32,
-                    "ColorIndex": 0,
-                }))
-                _ = self._recv_messages(timeout=0.2)
-                self._current_color = {"r": r, "g": g, "b": b}
-                _log(f"set_color: RGB=[{r}, {g}, {b}] -> H={h_u32} S={s_u32} V={v_u32}")
-                return True
-
-            elif hsv_u32 is None:
-                # ── Black, no explicit HSV ────────────────────────────
-                s_u32 = self._last_sat_u32
-                self._send_raw(_build_message("SetCurrentColor", {
-                    "ColorSpaceKind": "HSV",
-                    "IsColorTransparent": False,
-                    "HSVColorH": h_u32,
-                    "HSVColorS": s_u32,
-                    "HSVColorV": v_u32,
-                    "ColorIndex": 0,
-                }))
-                _ = self._recv_messages(timeout=0.2)
-                self._current_color = {"r": r, "g": g, "b": b}
-                _log(f"set_color: RGB=[{r}, {g}, {b}] -> H={h_u32} S={s_u32} V={v_u32}")
-                return True
-
-            else:
+            elif hsv_u32 is not None:
                 # CSP reads explicit hue and saturation directly at V=0.
                 self._last_sat_u32 = s_u32
-                self._send_raw(_build_message("SetCurrentColor", {
-                    "ColorSpaceKind": "HSV",
-                    "IsColorTransparent": False,
-                    "HSVColorH": h_u32,
-                    "HSVColorS": s_u32,
-                    "HSVColorV": v_u32,
-                    "ColorIndex": 0,
-                }))
-                _ = self._recv_messages(timeout=0.1)
-                self._current_color = {"r": r, "g": g, "b": b}
-                _log(f"set_color: RGB=[{r}, {g}, {b}] -> H={h_u32} S={s_u32} V={v_u32}")
-                return True
+
+            self._send_raw(_build_message("SetCurrentColor", {
+                "ColorSpaceKind": "HSV",
+                "IsColorTransparent": bool(transparent),
+                "HSVColorH": h_u32,
+                "HSVColorS": s_u32,
+                "HSVColorV": v_u32,
+                "ColorIndex": int(color_index),
+            }))
+            _ = self._recv_messages(timeout=0.2)
+            self._current_color = {"r": r, "g": g, "b": b}
+            _log(f"set_color: RGB=[{r}, {g}, {b}] transparent={transparent} index={color_index} -> H={h_u32} S={s_u32} V={v_u32}")
+            return True
         except Exception as exc:
             _log(f"set_color error: {exc}")
             self._disconnect()
