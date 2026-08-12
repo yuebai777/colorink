@@ -215,3 +215,36 @@ class TestCheckForegroundWindow:
         mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
         assert fs.visible is True
         assert fs.auto_hidden is False
+
+    def test_follow_mouse_does_not_block_hide_when_only_show_in_csp(
+        self, monkeypatch
+    ):
+        """Regression: with onlyShowInCsp enabled AND follow-mouse active,
+        a non-drawing foreground must still hide the palette. Previously the
+        follow-mouse keep-visible rule won, so switching away never hid the
+        window ("切走不隐藏")."""
+        import ui.main_window as mw
+
+        self._stub_win32(monkeypatch, "chrome - google chrome", 424242)
+        fs = self._make_self()
+        fs.visible = True
+        fs.follow_mouse_active = True  # follow-mouse is on…
+        fs.cfg = {"onlyShowInCsp": True}  # …but the foreground restriction wins
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
+        assert fs.visible is False, "onlyShowInCsp must override follow-mouse"
+        assert fs.auto_hidden is True
+
+    def test_follow_mouse_keeps_visible_when_only_show_in_csp_off(
+        self, monkeypatch
+    ):
+        """Without onlyShowInCsp, follow-mouse still prevents auto-hiding
+        (unchanged original behavior)."""
+        import ui.main_window as mw
+
+        self._stub_win32(monkeypatch, "chrome - google chrome", 424242)
+        fs = self._make_self()
+        fs.visible = True
+        fs.follow_mouse_active = True
+        fs.cfg = {"onlyShowInCsp": False}
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
+        assert fs.visible is True, "follow-mouse keeps it visible without the restriction"

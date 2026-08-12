@@ -720,6 +720,11 @@ class MainWindow(QMainWindow):
         self.current_ui_scale = self.cfg.get("uiScale", 100)
         self.current_rgb = (180, 130, 30)
         self.active_slot = "fg"  # "fg" | "bg"
+        # Transparent-color state per slot. When set, the swatch renders the
+        # checker tile and CSP writes are sent with IsColorTransparent=true
+        # (companion mode) / shortcut fallback (memory mode).
+        self._fg_transparent = False
+        self._bg_transparent = False
 
         # Deferred-render coalescer.
         # update_video_colors() does heavy pure-visual work (18 slider groove
@@ -1154,6 +1159,9 @@ class MainWindow(QMainWindow):
                 slider.valueChanged.connect(self.on_oklch_slider_changed)
 
     def select_fg_slot(self):
+        # Clicking the fg swatch restores an opaque fg: clear any transparent
+        # state so its highlight returns immediately.
+        self._set_slot_transparent("fg", False)
         if self.active_slot != "fg":
             # Save current source to bg slot
             self._bg_source_space = self._source_space
@@ -1167,6 +1175,8 @@ class MainWindow(QMainWindow):
             self.update_ui_colors(col.red(), col.green(), col.blue(), source="slot_change")
 
     def select_bg_slot(self):
+        # Clicking the bg swatch restores an opaque bg (see select_fg_slot).
+        self._set_slot_transparent("bg", False)
         if self.active_slot != "bg":
             # Save current source to fg slot
             self._fg_source_space = self._source_space
@@ -1179,25 +1189,45 @@ class MainWindow(QMainWindow):
             col = self.preview_box.bg_color
             self.update_ui_colors(col.red(), col.green(), col.blue(), source="slot_change")
 
-    def swap_colors(self):
-        # Swap foreground and background
-        fg = self.preview_box.fg_color
-        bg = self.preview_box.bg_color
-        self.preview_box.set_colors(bg, fg)
-        # Swap source tracking
-        self._fg_source_space, self._bg_source_space = self._bg_source_space, self._fg_source_space
-        self._fg_source_values, self._bg_source_values = self._bg_source_values, self._fg_source_values
-        # Update current source to match newly active slot
-        if self.active_slot == "fg":
-            self._source_space = self._fg_source_space
-            self._source_values = self._fg_source_values
+    def set_active_transparent(self):
+        """Toggle the active slot's transparent state and push it to the
+        drawing software.
+
+        The fg/bg swatches keep their last color — the transparent tile
+        shows the state with a blue outline.
+        """
+        slot = self.active_slot
+        is_transparent = self._fg_transparent if slot == "fg" else self._bg_transparent
+        self._set_slot_transparent(slot, not is_transparent)
+
+    def _set_slot_transparent(self, slot, transparent):
+        """Set *slot*'s transparent state and push it to the drawing software.
+
+        Used by the transparent-tile toggle (:meth:`set_active_transparent`)
+        and by fg/bg swatch clicks, which restore an opaque color for the
+        slot. The color always comes from the slot's own swatch, so the
+        push is correct regardless of which slot is active. Pushing twice
+        (once here, once from a slot-change) is harmless — same values.
+        """
+        if slot == "fg":
+            is_transparent = self._fg_transparent
+            color = self.preview_box.fg_color
         else:
-            self._source_space = self._bg_source_space
-            self._source_values = self._bg_source_values
-        # Maintain active slot color
-        active_color = bg if self.active_slot == "fg" else fg
-        r, g, b = active_color.red(), active_color.green(), active_color.blue()
-        self.update_ui_colors(r, g, b, source="swap")
+            is_transparent = self._bg_transparent
+            color = self.preview_box.bg_color
+        if is_transparent == transparent:
+            return
+        if slot == "fg":
+            self._fg_transparent = transparent
+        else:
+            self._bg_transparent = transparent
+        self.preview_box.set_transparent(slot, transparent)
+        print(f"[Transparent] {slot} transparent={transparent}")
+        if hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
+            color_index = 0 if slot == "fg" else 1
+            self.sync_thread.write_color(
+                color.red(), color.green(), color.blue(),
+                transparent=transparent, color_index=color_index)
 
     def on_history_color_picked(self, color):
         """User clicked a swatch in the history widget → load into active slot."""
@@ -1901,8 +1931,10 @@ class MainWindow(QMainWindow):
             # Source-space sync for CSP memory mode
             self._sync_wheel_source_values()
             src_sp, src_v = self._resolve_sync_source()
+            color_index = 0 if self.active_slot == "fg" else 1
             self.sync_thread.write_color(r, g, b, hsv_u32=hsv_override,
-                                         source_space=src_sp, source_values=src_v)
+                                         source_space=src_sp, source_values=src_v,
+                                         color_index=color_index)
 
     def _sync_wheel_source_values(self):
         """If the source space originates from the wheel, pull live h/s/v from it."""
@@ -2353,6 +2385,18 @@ class MainWindow(QMainWindow):
         self.current_rgb = (r, g, b)
         color = QColor(r, g, b)
 
+        # User picked a new real color (wheel/slider/picker/history/CSP
+        # read-back) → clear the transparent state on the active slot.
+        # init/slot_change/swap are internal state transitions that must
+        # NOT clear it (swap already exchanged the flags).
+        if source not in ("init", "slot_change", "swap"):
+            if self.active_slot == "fg":
+                self._fg_transparent = False
+            else:
+                self._bg_transparent = False
+        self.preview_box.set_transparent("fg", self._fg_transparent)
+        self.preview_box.set_transparent("bg", self._bg_transparent)
+
         # 1) Sync swatches based on active slot
         if self.active_slot == "fg":
             self.preview_box.fg_color = color
@@ -2569,8 +2613,18 @@ class MainWindow(QMainWindow):
                                   round(self.color_wheel.s/100*_U32),
                                   round(self.color_wheel.v/100*_U32))
                 src_sp, src_v = self._resolve_sync_source()
+                color_index = 0 if self.active_slot == "fg" else 1
+                # A transparent active slot must keep the transparent
+                # semantics when a slot-change re-pushes its color (e.g.
+                # switching to a transparent fg slot must not overwrite
+                # CSP's transparent state with the RGB).
+                is_transparent = (
+                    self._fg_transparent if color_index == 0 else self._bg_transparent
+                )
                 self.sync_thread.write_color(r, g, b, hsv_u32=hsv_ov,
-                                             source_space=src_sp, source_values=src_v)
+                                             source_space=src_sp, source_values=src_v,
+                                             transparent=is_transparent,
+                                             color_index=color_index)
 
     def _resolve_sync_source(self):
         """Return (space_name, values) for CSP memory-mode sync.
@@ -3417,13 +3471,17 @@ class MainWindow(QMainWindow):
         self._record_color_history()
         self.update_ui_colors(r, g, b)
         if hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
+            color_index = 0 if self.active_slot == "fg" else 1
             self.sync_thread.write_color(r, g, b, source_space="rgb",
-                                         source_values={"r": float(r), "g": float(g), "b": float(b)})
+                                         source_values={"r": float(r), "g": float(g), "b": float(b)},
+                                         color_index=color_index)
             print(f"[Picker] Picked color RGB({r}, {g}, {b})")
     def init_memory_sync(self):
         # Start background memory syncing thread
         self.sync_thread = memory_sync.MemorySyncThread(self)
         self.sync_thread.signals.color_changed.connect(self.on_external_color_changed)
+        self.sync_thread.signals.transparent_changed.connect(self.on_external_transparent_changed)
+        self.sync_thread.signals.active_slot_changed.connect(self.on_external_active_slot_changed)
         self.sync_thread.signals.status_changed.connect(self.on_sync_status_changed)
         self.sync_thread.signals.error_changed.connect(self.on_sync_error_changed)
         self._sync_error = None
@@ -3444,14 +3502,24 @@ class MainWindow(QMainWindow):
         # Start syncing
         self.sync_thread.start()
 
-    @pyqtSlot(int, int, int)
-    def on_external_color_changed(self, r, g, b):
+    @pyqtSlot(int, int, int, int)
+    def on_external_color_changed(self, r, g, b, color_index):
         # Drawing software (CSP/SAI/UDM/PS) color changed — e.g. the user
-        # Alt-picked a new color. Mirror _on_picker_color_picked: update
-        # current_rgb first (read by _record_color_history), then push the
-        # new color into the history widget before refreshing the UI.
-        # record() collapses consecutive duplicates, so continuous live
-        # slider drags in the drawing software won't flood the history.
+        # Alt-picked a new color or switched colors in CSP. color_index
+        # maps 0 → fg (main), 1 → bg (sub); each slot updates its own
+        # swatch regardless of the local active slot.
+        slot = "fg" if color_index == 0 else "bg"
+        if slot != self.active_slot:
+            # Off-slot change: update the swatch only, keep the wheel state.
+            if slot == "fg":
+                self.preview_box.fg_color = QColor(r, g, b)
+                self._fg_transparent = False
+            else:
+                self.preview_box.bg_color = QColor(r, g, b)
+                self._bg_transparent = False
+            self.preview_box.set_transparent(slot, False)
+            print(f"[Sync] {slot} color -> RGB({r}, {g}, {b})")
+            return
         self.current_rgb = (r, g, b)
         hsv_direct = None
         if hasattr(self, 'sync_thread'):
@@ -3460,6 +3528,77 @@ class MainWindow(QMainWindow):
                 hsv_direct = chsv
         self._record_color_history()
         self.update_ui_colors(r, g, b, source="sync", hsv=hsv_direct)
+
+    @pyqtSlot(int)
+    def on_external_active_slot_changed(self, color_index):
+        """The drawing software switched its active slot (e.g. user pressed
+        X in CSP / picked the sub swatch). Follow it locally WITHOUT
+        writing anything back — the swatch border, transparent-tile
+        highlight and source tracking switch to the new slot.
+        """
+        slot = "fg" if color_index == 0 else "bg"
+        if slot == self.active_slot:
+            return
+        if slot == "fg":
+            self._bg_source_space = self._source_space
+            self._bg_source_values = self._source_values
+            self._source_space = self._fg_source_space
+            self._source_values = self._fg_source_values
+            col = self.preview_box.fg_color
+        else:
+            self._fg_source_space = self._source_space
+            self._fg_source_values = self._source_values
+            self._source_space = self._bg_source_space
+            self._source_values = self._bg_source_values
+            col = self.preview_box.bg_color
+        self.active_slot = slot
+        self.preview_box.update_slot_borders(slot)
+        # 静默更新色轮显示对应槽颜色（block_signals → 不触发写入）
+        try:
+            self.color_wheel.set_color(col.red(), col.green(), col.blue(),
+                                       block_signals=True)
+        except Exception:
+            pass
+        print(f"[Sync] active slot followed: {slot}")
+
+    @pyqtSlot(int, bool)
+    def on_external_transparent_changed(self, color_index, transparent):
+        """The drawing software reports a slot's color is transparent
+        (companion read-back / CSP 5.1 memory flag). Mirror onto the
+        matching slot and follow the change like CSP's own "current
+        drawing color" concept by activating that slot (the slot-change
+        write carries the transparent flag, so CSP's state is not
+        overwritten).
+        """
+        mode = "csp"
+        if hasattr(self, 'sync_thread') and self.sync_thread is not None:
+            mode = self.sync_thread.software_mode
+        if color_index in (0, 1):
+            # 内存模式：+0x08 透明标志属于激活槽（index 恒 0），映射活动槽
+            if mode == 'csp' and color_index == 0:
+                slot = self.active_slot
+            else:
+                slot = "fg" if color_index == 0 else "bg"
+        else:
+            # 透明时 companion 报告 index=-1：透明属于激活槽
+            slot = self.active_slot
+        if transparent:
+            if slot == "fg":
+                self._fg_transparent = True
+            else:
+                self._bg_transparent = True
+        else:
+            if slot == "fg":
+                self._fg_transparent = False
+            else:
+                self._bg_transparent = False
+        self.preview_box.set_transparent(slot, transparent)
+        print(f"[Transparent] external read-back: {slot} transparent={transparent}")
+        if slot != self.active_slot:
+            if slot == "fg":
+                self.select_fg_slot()
+            else:
+                self.select_bg_slot()
 
     @pyqtSlot(str, bool)
     def on_sync_status_changed(self, mode, connected):
@@ -3730,8 +3869,12 @@ class MainWindow(QMainWindow):
         if picker is not None and picker.is_active:
             should_be_visible = True
 
-        # If follow_mouse_active is enabled and the window is visible, avoid auto-hiding it
-        if getattr(self, "follow_mouse_active", False) and self.isVisible():
+        # If follow_mouse_active is enabled and the window is visible, avoid auto-hiding it.
+        # But when the user explicitly restricted visibility to the drawing app's
+        # foreground (onlyShowInCsp), that restriction wins — otherwise the palette
+        # would never hide while following the mouse ("切走不隐藏").
+        if (getattr(self, "follow_mouse_active", False) and self.isVisible()
+                and not self.cfg.get("onlyShowInCsp", False)):
             should_be_visible = True
 
         if should_be_visible:

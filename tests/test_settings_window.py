@@ -57,6 +57,12 @@ def stub_main_window(qapp):
         def zoom_ui(self, *a, **k):
             pass
 
+        def update_window_flags(self):
+            pass
+
+        def update_no_focus_policies(self):
+            pass
+
     return StubMainWindow()
 
 

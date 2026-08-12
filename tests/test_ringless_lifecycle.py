@@ -85,6 +85,15 @@ class _Harness:
         self.update = MagicMock()
         self.active_slot = "fg"
         self.current_rgb = (128, 128, 128)
+        self._fg_transparent = False
+        self._bg_transparent = False
+        self._source_space = "rgb"
+        self._source_values = None
+        self._fg_source_space = "rgb"
+        self._fg_source_values = None
+        self._bg_source_space = "rgb"
+        self._bg_source_values = None
+        self.update_ui_colors = MagicMock()
         self._lab_avoid_recorded: list[dict] = []
         self.cfg = {"hideHueRing": True, "ringlessControlsSide": "right",
                      "uiScale": 100, "showModuleSwitchButton": True,
@@ -111,6 +120,10 @@ class _Harness:
             MainWindow.toggle_picker_mode, self)
         self.update_mode_buttons_visibility = types.MethodType(
             MainWindow.update_mode_buttons_visibility, self)
+        self.select_fg_slot = types.MethodType(MainWindow.select_fg_slot, self)
+        self.select_bg_slot = types.MethodType(MainWindow.select_bg_slot, self)
+        self._set_slot_transparent = types.MethodType(
+            MainWindow._set_slot_transparent, self)
 
 @pytest.fixture
 def harness(qapp):
@@ -218,7 +231,86 @@ class TestPreviewGeometry:
         box.set_ringless_layout(_CANONICAL, 400, 28)
         box.resize_and_position(300, 28, 600, 250, "fg")
         box.set_ringless_layout(_CANONICAL, 400, 28)
-        assert box.width() == 3 * 2 + 43 * 2 + 5  # _STROKE_PAD=3
+        # Three-swatch row: [transparent][fg][bg], all 43 wide, gap 5.
+        assert box.width() == 3 * 2 + 43 * 3 + 5 * 2  # _STROKE_PAD=3
+
+
+# ── Clicking a slot swatch restores its opaque highlight ─────────────────
+
+class TestTransparentSlotClickRestoresHighlight:
+    """Clicking the fg/bg swatch must bring back its highlight even when the
+    slot is already active and transparent — one click, no tile round-trip."""
+
+    @pytest.fixture
+    def h(self, qapp):
+        h = _Harness(); h._bind(); return h
+
+    def test_click_active_transparent_fg_restores_opaque(self, h):
+        h.preview_box.set_transparent("fg", True)
+        h._fg_transparent = True
+        h.select_fg_slot()
+        assert h._fg_transparent is False
+        assert h.preview_box.fg_transparent is False
+        # Already active → no slot-change re-push, but the sync write must
+        # carry the cleared flag.
+        h.update_ui_colors.assert_not_called()
+
+    def test_click_active_transparent_bg_restores_opaque(self, h):
+        h.active_slot = "bg"
+        h.current_rgb = (0, 0, 255)
+        h.preview_box.set_transparent("bg", True)
+        h._bg_transparent = True
+        h.select_bg_slot()
+        assert h._bg_transparent is False
+        assert h.preview_box.bg_transparent is False
+
+    def test_click_opaque_active_slot_changes_nothing(self, h):
+        h.select_fg_slot()
+        assert h._fg_transparent is False
+        h.update_ui_colors.assert_not_called()
+
+    def test_click_fg_while_bg_active_switches_and_clears(self, h):
+        h.active_slot = "bg"
+        h.preview_box.set_transparent("fg", True)
+        h._fg_transparent = True
+        h.select_fg_slot()
+        assert h.active_slot == "fg"
+        assert h._fg_transparent is False
+        h.update_ui_colors.assert_called_once()
+        assert h.update_ui_colors.call_args.kwargs["source"] == "slot_change"
+
+    def test_click_fg_keeps_other_slot_transparency(self, h):
+        h.preview_box.set_transparent("fg", True)
+        h.preview_box.set_transparent("bg", True)
+        h._fg_transparent = True
+        h._bg_transparent = True
+        h.select_fg_slot()
+        assert h._fg_transparent is False
+        assert h._bg_transparent is True
+        assert h.preview_box.bg_transparent is True
+
+    def test_active_transparent_clear_pushes_sync_write(self, h):
+        h.sync_thread = MagicMock(
+            isRunning=MagicMock(return_value=True), write_color=MagicMock())
+        h.preview_box.set_transparent("fg", True)
+        h._fg_transparent = True
+        h.select_fg_slot()
+        # The color always comes from the slot's own swatch (red here).
+        h.sync_thread.write_color.assert_called_once_with(
+            255, 0, 0, transparent=False, color_index=0)
+
+    def test_switching_clear_pushes_slot_color(self, h):
+        """While switching, the clear still pushes the *fg* color — the
+        swatch color, not the old active slot's current_rgb."""
+        h.sync_thread = MagicMock(
+            isRunning=MagicMock(return_value=True), write_color=MagicMock())
+        h.active_slot = "bg"
+        h.current_rgb = (0, 0, 255)  # bg color
+        h.preview_box.set_transparent("fg", True)
+        h._fg_transparent = True
+        h.select_fg_slot()
+        h.sync_thread.write_color.assert_called_once_with(
+            255, 0, 0, transparent=False, color_index=0)
 
 # ── Module button gap (real widgets, manual) ─────────────────────────────
 
