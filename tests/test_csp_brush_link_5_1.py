@@ -35,23 +35,34 @@ def test_csp5_1_profile_registered():
 class _StubPm:
     def __init__(self):
         self.u32 = {
-            0x2000 + 0x20: 0xFFFFFFFF,
-            0x2000 + 0x24: 0,
-            0x2000 + 0x28: 0,
+            0x2000 + 0x08: 0,
+            # 主槽 +0x3C/+0x40/+0x44 = HSV u32 比例编码（纯红: H=0, S=100%, V=100%）
+            0x2000 + 0x3C: 0x00000000,
+            0x2000 + 0x40: 0xFFFFFFFF,
+            0x2000 + 0x44: 0xFFFFFFFF,
         }
         self.u16 = {}
+        self.bytes = {}
 
     def read_longlong(self, address):
         return 0x2000 if address == 0x1000 + 0x0556BFC8 else 0
 
     def read_int(self, address):
-        return self.u32[address]
+        return self.u32.get(address, 0)
 
     def write_int(self, address, value):
-        self.u32[address] = value
+        self.u32[address] = value & 0xFFFFFFFF
 
     def write_ushort(self, address, value):
         self.u16[address] = value
+
+    def read_bytes(self, address, size):
+        if address in self.bytes:
+            return self.bytes[address]
+        return b"\x00" * size
+
+    def write_bytes(self, address, value, size):
+        self.bytes[address] = value
 
 
 def _make_rgb_sync():
@@ -69,15 +80,88 @@ def _make_rgb_sync():
 def test_rgb_u32_write_updates_channels():
     sync = _make_rgb_sync()
     assert sync.set_color(122, 122, 122)
-    assert sync.pm.u32[0x2000 + 0x20] == 0x7A7A7A7A
-    assert sync.pm.u32[0x2000 + 0x24] == 0x7A7A7A7A
-    assert sync.pm.u32[0x2000 + 0x28] == 0x7A7A7A7A
-    assert sync.pm.u16[0x2000 + 0x3E] == 0
-    assert sync.pm.u16[0x2000 + 0x42] == 0
-    assert sync.pm.u16[0x2000 + 0x44] == 0x7A7A
-    assert sync.pm.u16[0x2000 + 0x46] == 0x7A7A
+    # 主色写入走副本搜索（write_bytes 12 字节）：灰 (122,122,122) S=0 ->
+    # H/S 用记忆值 0；V=47.84% -> 0x7A7A7A7A
+    raw = sync.pm.bytes[0x2000 + 0x3C]
+    h = int.from_bytes(raw[0:4], "little")
+    s = int.from_bytes(raw[4:8], "little")
+    v = int.from_bytes(raw[8:12], "little")
+    assert h == 0
+    assert s == 0
+    assert v == 0x7A7A7A7A
 
 
 def test_rgb_u32_read_after_write():
     sync = _make_rgb_sync()
-    assert sync.get_color() == {"r": 255, "g": 0, "b": 0}
+    # stub 初始 +0x3C/0x40/0x44 = HSV u32 编码的纯红
+    assert sync.get_color() == {"r": 255, "g": 0, "b": 0, "transparent": 0}
+
+
+def test_transparent_flag_write_sets_u32_ff():
+    sync = _make_rgb_sync()
+    assert sync.set_color(255, 0, 0, transparent=True)
+    assert sync.pm.u32[0x2000 + 0x08] == 0xFFFFFFFF
+
+
+def test_transparent_flag_clear_on_normal_write():
+    sync = _make_rgb_sync()
+    assert sync.set_color(255, 0, 0, transparent=True)
+    assert sync.pm.u32[0x2000 + 0x08] == 0xFFFFFFFF
+    assert sync.set_color(10, 20, 30)
+    assert sync.pm.u32[0x2000 + 0x08] == 0
+    # 主色写入 +0x3C（HSV u32）：(10,20,30) H=210° -> 高 16 位 = 0x9555
+    raw = sync.pm.bytes[0x2000 + 0x3C]
+    h = int.from_bytes(raw[0:4], "little")
+    assert h >> 16 == round(210 / 360 * 65535)
+
+
+def test_transparent_flag_read_back():
+    sync = _make_rgb_sync()
+    sync.pm.u32[0x2000 + 0x08] = 0xFFFFFFFF
+    assert sync.get_color()["transparent"] == 1
+    assert sync._read_transparent_flag() is True
+
+
+def test_sub_color_write_uses_hsv_u32():
+    sync = _make_rgb_sync()
+    assert sync.set_color(255, 0, 0, color_index=1)
+    # 纯红 HSV: H=0, S=100%, V=100%（副本写入走 write_bytes，12 字节）
+    raw = sync.pm.bytes[0x2000 + 0x9C]
+    h = int.from_bytes(raw[0:4], "little")
+    s = int.from_bytes(raw[4:8], "little")
+    v = int.from_bytes(raw[8:12], "little")
+    assert h == 0
+    assert s == 0xFFFFFFFF
+    assert v == 0xFFFFFFFF
+    # 副色写入同时激活副色槽
+    assert sync.pm.u32[0x2000 + 0x08] == 1
+
+
+def test_sub_color_write_activates_sub_slot_and_main_activates_main():
+    sync = _make_rgb_sync()
+    sync.set_color(10, 20, 30, color_index=1)
+    assert sync.pm.u32[0x2000 + 0x08] == 1
+    sync.set_color(10, 20, 30, color_index=0)
+    assert sync.pm.u32[0x2000 + 0x08] == 0
+
+
+def test_sub_color_read_returns_index_1():
+    sync = _make_rgb_sync()
+    # 绿: H=120° → 120/360*0xFFFFFFFF, S=100%, V=100%
+    sync.pm.u32[0x2000 + 0x9C] = round(120 / 360 * 0xFFFFFFFF)
+    sync.pm.u32[0x2000 + 0xA0] = 0xFFFFFFFF
+    sync.pm.u32[0x2000 + 0xA4] = 0xFFFFFFFF
+    out = sync.get_sub_color()
+    assert out is not None
+    assert out["index"] == 1
+    assert out["r"] == 0
+    assert out["g"] == 255
+    assert out["b"] == 0
+    assert out["transparent"] == 0
+
+
+def test_sub_color_transparent_write_activates_sub_then_flag():
+    sync = _make_rgb_sync()
+    assert sync.set_color(255, 0, 0, transparent=True, color_index=1)
+    # 透明 = 激活槽(副色=1) 被透明标志覆盖为全 FF
+    assert sync.pm.u32[0x2000 + 0x08] == 0xFFFFFFFF

@@ -1,5 +1,7 @@
 import sys
 import time
+from typing import Any
+from collections.abc import Mapping
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
@@ -13,9 +15,23 @@ from core import (
 )
 
 
+def _rgb_close(a: tuple | None, b: tuple | None, tolerance: int = 2) -> bool:
+    """Return True when two RGB triples match within *tolerance* per channel."""
+    if a is None or b is None:
+        return False
+    return all(abs(x - y) <= tolerance for x, y in zip(a, b))
+
+
 class MemorySyncSignals(QObject):
-    # Emitted when the drawing software color changes: (r, g, b)
-    color_changed = pyqtSignal(int, int, int)
+    # Emitted when the drawing software color changes:
+    # (r, g, b, color_index) where color_index is 0 = main/fg, 1 = sub/bg.
+    color_changed = pyqtSignal(int, int, int, int)
+    # Emitted when the drawing software reports a slot's transparent state
+    # changed: (color_index, transparent).
+    transparent_changed = pyqtSignal(int, bool)
+    # Emitted when the drawing software's ACTIVE slot changes:
+    # (color_index) 0 = main, 1 = sub. Only emitted while not transparent.
+    active_slot_changed = pyqtSignal(int)
     # Emitted when the connection status changes: (software_mode, connected_bool)
     status_changed = pyqtSignal(str, bool)
     # Emitted when the connection failure reason changes:
@@ -43,11 +59,21 @@ class MemorySyncThread(QThread):
         self.udm_version = "auto"
         
         # Cache to prevent loops
-        self.last_synced_color = None  # (r, g, b)
-        self.pending_write_color = None  # (r, g, b)
-        self.pending_hsv_u32 = None      # (h, s, v) uint32 for companion mode
-        self.pending_source_space = None # e.g. "hsv", "hls" — for CSP memory mode
-        self.pending_source_values = None # float values in that space
+        self._last_synced_color: dict[int, tuple[int, int, int]] = {}  # per slot
+        # Timestamp of the last local write per slot. The PS script/CEP
+        # bridge applies writes asynchronously (up to ~100 ms poll
+        # latency); read-back echoes of the previous value during that
+        # window must not yank the UI back (乱跳).
+        self._last_write_ts: dict[int, float] = {}
+        # Pre-write RGB value per slot, so echo suppression can reject only
+        # the stale read-back instead of every PS change for 1.5 seconds.
+        self._last_write_old_color: dict[int, tuple[int, int, int] | None] = {}
+        # Pending writes are kept per slot. A single shared pending value
+        # would let a quick fg write be overwritten by a bg write (and vice
+        # versa) before the worker thread had a chance to apply it.
+        self._pending_writes: dict[int, dict[str, Any]] = {}
+        self._last_read_transparent: dict[int, bool] = {}  # read-back dedup per slot
+        self._last_active_slot: int | None = None          # 0/1/None dedup
         self.companion_hsv = None
         self._last_companion_hsv = (0.0, 0.0, 0.0)
         self.last_write_time = 0.0
@@ -71,20 +97,46 @@ class MemorySyncThread(QThread):
         
     def set_software_mode(self, mode):
         self.software_mode = mode
-        self.last_synced_color = None
+        self._last_synced_color = {}
+        self._last_write_ts = {}
+        self._last_write_old_color = {}
+        self._pending_writes = {}
+        self._last_read_transparent = {}
+        self._last_active_slot = None
         
     def set_sync_enabled(self, enabled):
         self.sync_enabled = enabled
         if not enabled:
-            self.last_synced_color = None
-            
-    def write_color(self, r, g, b, hsv_u32=None, source_space=None, source_values=None):
-        self.pending_write_color = (r, g, b)
-        self.pending_hsv_u32 = hsv_u32
-        self.pending_source_space = source_space
-        self.pending_source_values = source_values
+            self._last_synced_color = {}
+            self._last_write_ts = {}
+            self._last_write_old_color = {}
+            self._pending_writes = {}
+
+    def write_color(self, r, g, b, hsv_u32=None, source_space=None, source_values=None,
+                    transparent=False, color_index=0):
+        color_index = int(color_index)
+        pending = self._pending_writes.get(color_index)
+        if pending is not None:
+            old_color = pending.get("old_color")
+        elif (time.time() - self._last_write_ts.get(color_index, 0.0)
+                < 1.5):
+            # A previous write to this slot is still in flight; keep the
+            # original pre-write color so a stale read-back of it stays
+            # suppressed even while the user keeps dragging.
+            old_color = self._last_write_old_color.get(
+                color_index, self._last_synced_color.get(color_index))
+        else:
+            old_color = self._last_synced_color.get(color_index)
+        self._pending_writes[color_index] = {
+            "rgb": (r, g, b),
+            "hsv_u32": hsv_u32,
+            "source_space": source_space,
+            "source_values": source_values,
+            "transparent": bool(transparent),
+            "old_color": old_color,
+        }
         self.last_write_time = time.time()
-        
+
     def get_active_pid(self):
         if not self.sync_enabled or self.paused:
             return None
@@ -127,28 +179,80 @@ class MemorySyncThread(QThread):
                 
             try:
                 # 1) Handle write request
-                if self.pending_write_color is not None:
-                    r, g, b = self.pending_write_color
-                    hsv_override = self.pending_hsv_u32
-                    src_space = self.pending_source_space
-                    src_vals = self.pending_source_values
-                    self.pending_write_color = None
-                    self.pending_hsv_u32 = None
-                    self.pending_source_space = None
-                    self.pending_source_values = None
+                if self._pending_writes:
+                    color_index = next(iter(self._pending_writes))
+                    pending = self._pending_writes.pop(color_index)
+                    r, g, b = pending["rgb"]
+                    hsv_override = pending["hsv_u32"]
+                    src_space = pending["source_space"]
+                    src_vals = pending["source_values"]
+                    transparent = pending["transparent"]
 
-                    self.last_synced_color = (r, g, b)
+                    old_color = pending.get("old_color")
+                    if old_color is None:
+                        old_color = self._last_write_old_color.get(
+                            color_index, self._last_synced_color.get(color_index))
+                    if transparent and self.software_mode not in ("companion", "csp"):
+                        print(f"[Sync] transparent write unsupported in mode '{self.software_mode}' — skipped")
+                        continue
+                    self._last_write_old_color[color_index] = old_color
+                    self._last_synced_color[color_index] = (r, g, b)
+                    self._last_write_ts[color_index] = time.time()
+
+                    if transparent:
+                        # Transparent is a flag on the ACTIVE slot
+                        # (companion: IsColorTransparent; CSP 5.1 memory:
+                        # +0x08 = 0xFFFFFFFF). Both main and sub slots
+                        # support it — the backends activate the target
+                        # slot before setting the flag.
+                        if self.software_mode == 'companion':
+                            self.companion_sync.set_color(
+                                r, g, b, hsv_u32=hsv_override, transparent=True,
+                                color_index=color_index,
+                            )
+                            if hsv_override:
+                                _U32 = 4294967295
+                                self.companion_hsv = (
+                                    hsv_override[0] / _U32 * 360.0,
+                                    hsv_override[1] / _U32 * 100.0,
+                                    hsv_override[2] / _U32 * 100.0,
+                                )
+                                self._last_companion_hsv = self.companion_hsv
+                            self._last_read_transparent[color_index] = True
+                        elif self.software_mode == 'csp':
+                            self.csp_sync.set_color(
+                                r, g, b, source_space=src_space,
+                                source_values=src_vals, transparent=True,
+                                color_index=color_index,
+                            )
+                            # CSP 内存模式的透明标志属于激活槽，读回总是以
+                            # index 0 报告（get_color），所以种子必须落在 0
+                            # 上——否则下一轮 get_sub_color (transparent=0)
+                            # 会把它误判为"槽 1 已清除"并发
+                            # 出虚假的 transparent_changed(1, False)。
+                            self._last_read_transparent[0] = True
+                        continue
 
                     if self.software_mode == 'csp':
-                        self.csp_sync.set_color(r, g, b, source_space=src_space, source_values=src_vals)
+                        # 纯内存写副色：`_write_sub_color` 会把新模式写入
+                        # 进程内搜索到的全部副本（含权威笔刷副本），不依赖
+                        # companion —— csp 内存模式与 companion 完全独立。
+                        self.csp_sync.set_color(
+                            r, g, b, source_space=src_space,
+                            source_values=src_vals, color_index=color_index,
+                        )
+                        self._last_synced_color[color_index] = (r, g, b)
+                        self._last_read_transparent[color_index] = False
                     elif self.software_mode == 'sai':
                         self.sai2_sync.set_color(r, g, b)
                     elif self.software_mode == 'udm':
                         self.udm_sync.set_color(r, g, b)
                     elif self.software_mode == 'ps':
-                        self.ps_sync.set_color(r, g, b)
+                        self.ps_sync.set_color(r, g, b, color_index=color_index)
                     elif self.software_mode == 'companion':
-                        self.companion_sync.set_color(r, g, b, hsv_u32=hsv_override)
+                        self.companion_sync.set_color(
+                            r, g, b, hsv_u32=hsv_override, color_index=color_index,
+                        )
                         # Seed dedup with what we just wrote so the read-back
                         # echo is suppressed (HSV dedup below catches it).
                         if hsv_override:
@@ -159,32 +263,79 @@ class MemorySyncThread(QThread):
                                 hsv_override[2] / _U32 * 100.0,
                             )
                             self._last_companion_hsv = self.companion_hsv
+                        self._last_read_transparent[color_index] = False
                     continue
                 
                 # 2) Handle read request (polling)
-                color = None
+                # Each entry is a color dict with r/g/b plus optional
+                # "index" (0 = main/fg, 1 = sub/bg) and "transparent".
+                colors: list[Mapping[str, Any]] = []
                 connected = False
-                
+
                 if self.software_mode == 'csp':
-                    color = self.csp_sync.get_color()
+                    # 纯内存模式：主色/副色全部从 CSP 进程内存读取（主槽
+                    # +0x3C.. / 副槽 +0x9C..，均为 HSV u32 比例编码），
+                    # 与 companion 完全独立。
+                    main_color = self.csp_sync.get_color()
+                    sub_color = self.csp_sync.get_sub_color()
+                    if main_color is not None:
+                        colors.append(main_color)
+                    if sub_color is not None:
+                        colors.append(sub_color)
+                    active = self.csp_sync.get_active_slot_index()
+                    if active is not None and active != self._last_active_slot:
+                        self._last_active_slot = active
+                        self.signals.active_slot_changed.emit(active)
                     status = self.csp_sync.status()
                     connected = status.get('connected', False)
                 elif self.software_mode == 'sai':
                     color = self.sai2_sync.get_color()
+                    if color is not None:
+                        colors = [color]
                     status = self.sai2_sync.status()
                     connected = status.get('connected', False)
                 elif self.software_mode == 'udm':
                     color = self.udm_sync.get_color()
+                    if color is not None:
+                        colors = [color]
                     status = self.udm_sync.status()
                     connected = status.get('connected', False)
                 elif self.software_mode == 'ps':
-                    color = self.ps_sync.get_color()
+                    fg = self.ps_sync.get_color()
+                    bg = self.ps_sync.get_bg_color()
+                    if fg is not None:
+                        colors.append(fg)
+                    if bg is not None:
+                        colors.append(bg)
+                    # External X-swap detection: the user pressed X in
+                    # Photoshop, so each slot now holds the OTHER slot's
+                    # previous value. Without clearing the write-echo
+                    # suppression here, the slot whose write timestamp is
+                    # still fresh keeps its stale swatch while the other
+                    # slot updates — both swatches then end up showing the
+                    # same color ("把前景色背景色同步成一样的").
+                    if fg is not None and bg is not None:
+                        prev_fg = self._last_synced_color.get(0)
+                        prev_bg = self._last_synced_color.get(1)
+                        if prev_fg is not None and prev_bg is not None:
+                            fg_rgb = (fg.get("r"), fg.get("g"), fg.get("b"))
+                            bg_rgb = (bg.get("r"), bg.get("g"), bg.get("b"))
+                            fg_is_old_bg = _rgb_close(fg_rgb, prev_bg)
+                            bg_is_old_fg = _rgb_close(bg_rgb, prev_fg)
+                            if fg_is_old_bg and bg_is_old_fg:
+                                # Genuine external swap, not a write echo:
+                                # let both slots refresh immediately.
+                                self._last_write_ts.pop(0, None)
+                                self._last_write_ts.pop(1, None)
                     status = self.ps_sync.status()
                     connected = status.get('connected', False)
                 elif self.software_mode == 'companion':
                     color = self.companion_sync.get_color_hsv()
-                    if color: self.companion_hsv = (color["h"], color["s"], color["v"])
-                    else: self.companion_hsv = None
+                    if color:
+                        colors = [color]
+                        self.companion_hsv = (color["h"], color["s"], color["v"])
+                    else:
+                        self.companion_hsv = None
                     status = self.companion_sync.status()
                     connected = status.get('connected', False)
                     
@@ -205,31 +356,81 @@ class MemorySyncThread(QThread):
                     self._last_error_text = (err_text, perm_issue)
                     self.signals.error_changed.emit(self.software_mode, err_text, perm_issue)
 
-                if not connected or color is None:
+                if not connected or not colors:
                     continue
-                    
-                r = color.get('r')
-                g = color.get('g')
-                b = color.get('b')
-                if r is None or g is None or b is None:
-                    continue
-                    
-                if self.last_synced_color is not None:
-                    if self.software_mode == 'companion' and self.companion_hsv is not None:
+
+                # Active-slot tracking (companion mode): CSP reports
+                # CurrentColorIndex in every read-back.
+                if self.software_mode == 'companion':
+                    for color in colors:
+                        ai = color.get("index")
+                        if isinstance(ai, int) and ai in (0, 1) and ai != self._last_active_slot:
+                            self._last_active_slot = ai
+                            self.signals.active_slot_changed.emit(ai)
+
+                # Process each reported slot (main index 0, sub index 1).
+                # Transparent read-back: CSP reports the drawing color is
+                # transparent via IsCurrentColorTransparent (companion) or
+                # the memory flag (CSP 5.1 main slot, get_color returns
+                # "transparent": 0/1). Mirror onto the UI and skip the RGB
+                # update — the channel values are meaningless then.
+                # Entries WITHOUT an explicit "transparent" key are pure RGB
+                # observations (companion UI main/sub) — they must not emit
+                # transparent signals, or a routine RGB change would clear a
+                # slot's transparent state that the dedicated flag observer
+                # (ui["transparent"]) is still reporting as set.
+                for color in colors:
+                    color_index = int(color.get("index", 0))
+                    if "transparent" in color:
+                        is_transparent = bool(color["transparent"])
+                        if is_transparent != self._last_read_transparent.get(color_index, False):
+                            self._last_read_transparent[color_index] = is_transparent
+                            self.signals.transparent_changed.emit(color_index, is_transparent)
+                        if is_transparent:
+                            continue
+
+                    r = color.get('r')
+                    g = color.get('g')
+                    b = color.get('b')
+                    if r is None or g is None or b is None:
+                        continue
+
+                    if self.software_mode == 'companion' and color_index == 0 and self.companion_hsv is not None:
                         lh, ls, lv = self._last_companion_hsv
                         ch, cs, cv = self.companion_hsv
                         if abs(ch - lh) <= 0.1 and abs(cs - ls) <= 0.5 and abs(cv - lv) <= 0.5:
                             continue
                         self._last_companion_hsv = self.companion_hsv
                     else:
-                        lr, lg, lb = self.last_synced_color
-                        if abs(r - lr) <= 2 and abs(g - lg) <= 2 and abs(b - lb) <= 2:
-                            continue
+                        prev = self._last_synced_color.get(color_index)
+                        if prev is not None:
+                            lr, lg, lb = prev
+                            if abs(r - lr) <= 2 and abs(g - lg) <= 2 and abs(b - lb) <= 2:
+                                if self.software_mode == 'ps':
+                                    # The target value has been observed, so
+                                    # the asynchronous write is applied and
+                                    # the echo window can close immediately.
+                                    self._last_write_ts.pop(color_index, None)
+                                    self._last_write_old_color.pop(color_index, None)
+                                continue
 
-                color_tuple = (r, g, b)
-                if self.last_synced_color != color_tuple:
-                    self.last_synced_color = color_tuple
-                    self.signals.color_changed.emit(r, g, b)
+                    # PS script/CEP bridge applies writes asynchronously
+                    # (up to ~100 ms poll latency): the read-back echoes
+                    # the previous value while our write is still in
+                    # flight. Accepting it would yank the UI back to the
+                    # stale color (乱跳). Suppress only that stale echo;
+                    # a genuinely new PS-side change still propagates.
+                    if self.software_mode == 'ps':
+                        age = time.time() - self._last_write_ts.get(color_index, 0.0)
+                        if age < 1.5:
+                            old = self._last_write_old_color.get(color_index)
+                            if old is None or _rgb_close((r, g, b), old):
+                                continue
+
+                    color_tuple = (r, g, b)
+                    if self._last_synced_color.get(color_index) != color_tuple:
+                        self._last_synced_color[color_index] = color_tuple
+                        self.signals.color_changed.emit(r, g, b, color_index)
                     
             except Exception as e:
                 # Avoid flooding console in thread
