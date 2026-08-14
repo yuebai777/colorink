@@ -232,6 +232,19 @@ _EN: dict[str, str] = {
     "任意位置全局切换色轮/LAB视图，无需聚焦本窗口；支持键盘或鼠标按键（鼠标按键作为全局快捷键时不拦截点击，画画软件仍会收到）": "Toggle the wheel/LAB view globally from anywhere, no focus required. Supports keyboard or mouse buttons (mouse hotkeys are not suppressed, so the drawing app still receives the click).",
     "显示或隐藏标题栏（设置/最小化/关闭按钮那一栏）；隐藏后顶部边框与四周一致": "Show or hide the title bar (settings/minimize/close buttons). When hidden the top border matches the other edges.",
     "OKLCh (GPU兼容)：感知均匀的全屏黑白，覆盖 ColorInk；系统 Luma (Mag)：延迟最低、仅作用于全部屏幕的备用模式；需要按屏目标时请在 Native 后端选择 Luma。": "OKLCh (GPU-compatible): perceptual full-screen grayscale covering Colorink. System Luma (Mag): lowest latency fallback that only applies to all screens. Use the Native backend's Luma mode for per-screen targeting.",
+    # ── Update errors (translated at the UI boundary via {detail}) ──
+    "跳过此版本": "Skip this version",
+    "GitHub 返回 HTTP {detail}，请稍后重试": "GitHub returned HTTP {detail}; try again later",
+    "网络异常：{detail}": "Network error: {detail}",
+    "获取更新失败：{detail}": "Update check failed: {detail}",
+    "下载失败：{detail}": "Download failed: {detail}",
+    "下载不完整：{detail}": "Incomplete download: {detail}",
+    "保存失败：{detail}": "Save failed: {detail}",
+    "校验失败：下载文件与发布校验和不一致": "Checksum mismatch: the downloaded file does not match the published checksum",
+    "GitHub API 限流 (403)。未认证请求每小时仅 60 次，可稍后重试或设置 COLORINK_GITHUB_TOKEN 提升配额。": "GitHub API rate limit (403). Unauthenticated requests are capped at 60/hour; retry later or set COLORINK_GITHUB_TOKEN.",
+    "未在 GitHub 上找到发布信息 (404)": "No release found on GitHub (404)",
+    "GitHub 响应解析失败": "Failed to parse the GitHub response",
+    "未在响应中找到版本号": "No version tag found in the response",
 }
 
 

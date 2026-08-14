@@ -95,8 +95,10 @@ class TrayMixin:
         """Show a tray notification when a newer release exists."""
         if "error" in result or not result.get("has_update"):
             return
+        latest = result.get("latest_version", "")
+        if latest and latest == self.cfg.get("skippedUpdateVersion", ""):
+            return  # User already declined this exact version — don't nag.
         self._pending_update = result
-        latest = result.get("latest_version", "?")
         if (hasattr(self, "tray_icon")
                 and QSystemTrayIcon.isSystemTrayAvailable()):
             self.tray_icon.showMessage(
@@ -107,15 +109,18 @@ class TrayMixin:
             )
 
     def _open_pending_update(self):
-        """Open the pending update's release page (tray message click)."""
-        import webbrowser as _wb
+        """Handle a tray-message click: reuse the in-app download flow."""
         result = getattr(self, "_pending_update", None)
-        if result:
-            _wb.open(
-                result.get("release_url")
-                or "https://github.com/yuebai777/colorink"
-            )
-            self._pending_update = None
+        if not result:
+            return
+        self._pending_update = None
+        sidebar = getattr(self, "settings_sidebar", None)
+        if sidebar is not None and hasattr(sidebar, "prompt_update"):
+            self._show_settings_window()
+            sidebar.prompt_update(result)
+            return
+        import webbrowser as _wb
+        _wb.open(result.get("release_url") or "https://github.com/yuebai777/colorink")
 
     def toggle_visibility(self):
         """Toggle window visibility — same logic as hotkey hide/show."""
@@ -148,10 +153,8 @@ class TrayMixin:
         self.hide()
         event.ignore()
 
-    def close_application(self):
-        # Flush coalesced module state before writing the final window config.
-        self._flush_module_config_save()
-        # Save window settings on exit, normalized to 1x DPI for consistency
+    def save_window_geometry(self):
+        """Persist current window geometry, normalized to 1x DPI."""
         dpr = self.devicePixelRatio() if hasattr(self, "devicePixelRatio") else 1.0
         if dpr < 0.1:
             dpr = 1.0
@@ -164,6 +167,11 @@ class TrayMixin:
             "zoom": 0  # Default placeholder
         }
         config.save_window_config(cfg)
+
+    def close_application(self):
+        # Flush coalesced module state before writing the final window config.
+        self._flush_module_config_save()
+        self.save_window_geometry()
 
         # Clean up hotkeys and thread
         global_hotkeys.unbind_all()

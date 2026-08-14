@@ -45,3 +45,12 @@ def test_build_self_replace_script_falls_back_to_new_when_move_fails(tmp_path):
     cur = str(tmp_path / "old" / "Colorink.exe")
     script = updater.build_self_replace_script(new, cur)
     assert 'if exist "' + os.path.abspath(new) + '"' in script
+
+
+def test_can_self_replace_readonly_dir(tmp_path, monkeypatch):
+    """A onefile exe in a non-writable directory (e.g. Program Files
+    without elevation) must NOT be offered self-replace — the post-update
+    move would fail and silently degrade to running from Downloads."""
+    exe = str(tmp_path / "Colorink.exe")
+    monkeypatch.setattr(updater, "_dir_writable", lambda _d: False)
+    assert updater.can_self_replace(exe, frozen=True) is False
