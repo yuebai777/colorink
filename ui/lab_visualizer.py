@@ -194,6 +194,12 @@ class LabSquare(QWidget):
             r, g, b = self.get_current_rgb()
             self.colorChanged.emit(r, g, b)
 
+    def native_color_values(self):
+        """Return (space, values) for the LabSquare's current colour."""
+        if self.render_mode == "oklab":
+            return "oklab", (self.L / 100.0, self.a, self.b)
+        return "lab", (self.L, self.a, self.b)
+
     def set_lightness(self, lightness, update_widget=True):
         old_l_bucket = int(self.L * 2)
         self.L = lightness

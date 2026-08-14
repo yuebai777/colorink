@@ -104,7 +104,8 @@ class HotkeyMixin:
         self._source_space = "rgb"
         self._source_values = {"r": float(r), "g": float(g), "b": float(b)}
         self._record_color_history()
-        self.update_ui_colors(r, g, b)
+        color = self.color_state.set_from("rgb", (r, g, b))
+        self._project_color(color, source="picker")
         if hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
             color_index = 0 if self.active_slot == "fg" else 1
             self.sync_thread.write_color(r, g, b, source_space="rgb",
