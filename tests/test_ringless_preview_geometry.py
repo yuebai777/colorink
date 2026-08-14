@@ -45,11 +45,35 @@ class TestRinglessSwatchGeometry:
         assert bg_rect.height() == pytest.approx(24.0)
 
     def test_gap_between_swatches_is_5px(self, qapp):
+        """FG and BG stay adjacent (5 px gap); the transparent tile sits on
+        the innermost side rather than between them."""
         box = make_preview_box(canonical_layout())
         fg_rect, bg_rect = cast(Any, box._ringless_swatch_rects())
-
         gap = bg_rect.left() - fg_rect.right()
         assert gap == pytest.approx(5.0)
+
+    @pytest.mark.parametrize("layout_factory, tile_is_leftmost", [
+        (right_side_layout, True),
+        (left_side_layout, False),
+    ])
+    def test_transparent_tile_hugs_innermost_edge(
+        self, qapp, layout_factory, tile_is_leftmost,
+    ):
+        """The transparent tile always sits nearest the window centre:
+        leftmost when the group is anchored right, rightmost when left."""
+        layout = layout_factory()
+        box = make_preview_box(layout)
+        fg_rect, bg_rect = cast(Any, box._ringless_swatch_rects())
+        tile = box._trans_tile.geometry()
+
+        assert tile.y() == pytest.approx(layout.swatch_padding)
+        assert tile.width() == pytest.approx(fg_rect.width())
+        assert tile.height() == pytest.approx(fg_rect.height())
+        assert fg_rect.right() < bg_rect.left()
+        if tile_is_leftmost:
+            assert tile.x() < fg_rect.left()
+        else:
+            assert tile.x() > bg_rect.right()
 
     def test_fg_is_left_of_bg(self, qapp):
         """FG swatch is always left of BG regardless of controls_side."""

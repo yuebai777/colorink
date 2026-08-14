@@ -150,12 +150,12 @@ class TransparentTile(QWidget):
         avail = max(0, int(available))
         return min(avail, max(height * 2, min(avail, height * 3)))
 
-    def place_ringless(self, pad: float, swatch_w: float, swatch_h: float) -> None:
-        """Position the tile as a same-size swatch at the left of the fg/bg row."""
+    def place_ringless(self, x_pos: float, y_pos: float, swatch_w: float, swatch_h: float) -> None:
+        """Position the tile as a same-size swatch at *(x_pos, y_pos)*
+        inside the fg/bg row (middle position between the two swatches)."""
         w = max(1, int(round(swatch_w)))
         h = max(1, int(round(swatch_h)))
-        x, y = int(round(pad)), int(round(pad))
-        self.setGeometry(x, y, w, h)
+        self.setGeometry(int(round(x_pos)), int(round(y_pos)), w, h)
         # Rounded-rect hit region matching the painted shape.
         parent = cast(QWidget, self.parent())
         layout = getattr(parent, "_ringless_layout", None)

@@ -89,6 +89,22 @@ def centered_control_offset(container_size: int, content_size: int) -> int:
     return (container_size - content_size) // 2
 
 
+def ringless_swatch_row(
+    side: ControlsSide, pad: float, swatch: float, gap: float,
+) -> tuple[float, float, float]:
+    """Return ``(fg_x, bg_x, transparent_x)`` for the three-swatch row.
+
+    FG always stays left of BG (the colour pair is never mirrored). The
+    transparent tile always takes the innermost slot — nearest the window
+    centre — so it sits left of the pair when the group is anchored right
+    and right of the pair when the group is anchored left.
+    """
+    lead = swatch + gap
+    if side == "right":
+        return pad + lead, pad + 2.0 * lead, pad
+    return pad, pad + lead, pad + 2.0 * lead
+
+
 def resolve_ringless_layout(
     config: RinglessConfig,
     wheel_page_active: bool,

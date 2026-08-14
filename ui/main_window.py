@@ -1,7 +1,6 @@
 import colorsys
 import math
 import os
-import re
 import sys
 import time
 from typing import cast
@@ -9,53 +8,38 @@ from typing import cast
 from PyQt6.QtCore import (
     QEvent,
     QPoint,
-    QPointF,
     QRect,
-    QRectF,
-    QSize,
     Qt,
     QTimer,
-    pyqtSignal,
-    pyqtSlot,
 )
 from PyQt6.QtGui import (
-    QAction,
-    QBrush,
     QColor,
     QCursor,
-    QIcon,
-    QLinearGradient,
-    QMouseEvent,
-    QPainter,
-    QPalette,
-    QPen,
-    QPixmap,
-    QPolygonF,
 )
 from PyQt6.QtWidgets import (
     QApplication,
-    QFrame,
-    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMenu,
     QPlainTextEdit,
     QPushButton,
-    QSlider,
     QStackedWidget,
-    QStyle,
-    QStyleOptionSlider,
-    QSystemTrayIcon,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from core import config, global_hotkeys, memory_sync
+from core import config
+from core.foreground import (
+    _exe_matches_drawing_app,
+    _resolve_process_exe,
+    _title_matches_drawing_app,
+    bring_process_to_foreground,
+)
 from ui.color_conversions import (
     clamp_rgb,
+    hsv_to_hls_floats,
     lab_to_rgb,
     map_lab_to_gamut,
     map_oklab_to_gamut,
@@ -72,11 +56,10 @@ from ui.color_wheel import ColorWheel, hls_to_hsv_floats, hsv_to_rgb, rgb_to_hsv
 from ui.hotkey_button import (
     MOUSE_BUTTON_NAME_BY_QT,
     capture_active,
-    is_mouse_hotkey,
     parse_key_event,
 )
 from ui.lab_visualizer import LabSlider, LabSquare
-from ui.picker_panes import LabPane, PaneWithModeButton, WheelPane
+from ui.picker_panes import LabPane, WheelPane
 from ui.ringless_mode import (
     RINGLESS_ACTIVE_BORDER,
     RinglessConfig,
@@ -84,128 +67,14 @@ from ui.ringless_mode import (
 )
 from ui.settings_sidebar import SettingsSidebar
 from ui.slider_themes import get_slider_theme
-
-# Drawing applications recognized by the "only show while the drawing app is
-# in the foreground" tracker (onlyShowInCsp). Process basenames are matched
-# with the ".exe" extension stripped; window titles are lowercased.
-_DRAWING_APP_EXE_MARKERS = (
-    "clipstudiopaint",   # CLIP Studio Paint main + CLIPStudioPaintApp painting process
-    "clipstudio",        # CSP launcher / companion processes
-    "sai",               # PaintTool SAI 1.x / 2.x (sai.exe / sai2.exe)
-    "udmpaint",          # UDM Paint (UDMPaintPro.exe / UDMPaintEx.exe)
-    "photoshop",         # Adobe Photoshop
+from ui.widgets import (
+    GradientSlider,
+    SliderValueLabel,
+    TitleBar,
+    _title_bar_content_offset,
+    _visible_title_bar_height,
 )
-
-
-def _exe_matches_drawing_app(exe_name: str) -> bool:
-    """True if a lowercased process basename belongs to a drawing app.
-
-    The extension is stripped first so "sai2.exe" and "sai.exe" both match
-    the same "sai" marker.
-    """
-    stem = exe_name[:-4] if exe_name.lower().endswith(".exe") else exe_name
-    return any(marker in stem for marker in _DRAWING_APP_EXE_MARKERS)
-
-
-def _title_matches_drawing_app(title: str) -> bool:
-    """True if a lowercased window title belongs to a drawing app.
-
-    Latin app names are matched at a word boundary so titles like
-    "Photosai" can't false-positive on the "sai" marker, while real-world
-    titles such as "SAI Ver.2" or "paint tool sai" still match.
-    """
-    if "clip studio paint" in title or "优动漫" in title or "photoshop" in title:
-        return True
-    if re.search(r"(?<![a-z0-9])sai", title):  # SAI / SAI Ver.2 / paint tool sai
-        return True
-    if re.search(r"(?<![a-z0-9])udm", title):  # UDM Paint
-        return True
-    return False
-
-
-def _resolve_process_exe(pid: int) -> str:
-    """Resolve a PID to its executable basename (lowercased).
-
-    psutil first; if it fails (elevated / protected process, antivirus
-    interference) fall back to QueryFullProcessImageNameW via ctypes so the
-    foreground check keeps working for admin-run drawing apps.
-    """
-    try:
-        import psutil
-        exe = psutil.Process(pid).exe()
-        if exe:
-            return os.path.basename(exe).lower()
-    except Exception:
-        pass
-    try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if not handle:
-            return ""
-        try:
-            buf = ctypes.create_unicode_buffer(32768)
-            size = ctypes.c_ulong(len(buf))
-            if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
-                return os.path.basename(buf.value).lower()
-        finally:
-            kernel32.CloseHandle(handle)
-    except Exception:
-        pass
-    return ""
-
-
-def bring_process_to_foreground(pid: int) -> bool:
-    import ctypes
-    user32 = ctypes.windll.user32
-    
-    hwnd_to_focus = None
-    
-    def enum_windows_callback(hwnd, lParam):
-        nonlocal hwnd_to_focus
-        if user32.IsWindowVisible(hwnd):
-            window_pid = ctypes.c_ulong()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(window_pid))
-            if window_pid.value == pid:
-                parent = user32.GetParent(hwnd)
-                owner = user32.GetWindow(hwnd, 4)  # GW_OWNER = 4
-                if parent == 0 or parent is None:
-                    length = user32.GetWindowTextLengthW(hwnd)
-                    if length > 0:
-                        # Prefer ownerless window (main window)
-                        if owner == 0 or owner is None:
-                            hwnd_to_focus = hwnd
-                            return False  # Stop enumeration
-                        else:
-                            if hwnd_to_focus is None:
-                                hwnd_to_focus = hwnd
-        return True
-        
-    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-    callback = WNDENUMPROC(enum_windows_callback)
-    user32.EnumWindows(callback, 0)
-    
-    if hwnd_to_focus:
-        is_minimized = user32.IsIconic(hwnd_to_focus)
-        user32.ShowWindowAsync(hwnd_to_focus, 9 if is_minimized else 5)  # 9 = SW_RESTORE, 5 = SW_SHOW
-        user32.BringWindowToTop(hwnd_to_focus)
-        user32.SetForegroundWindow(hwnd_to_focus)
-        return True
-    return False
-
-def hsv_to_hls_floats(h, s, v):
-    # h: [0, 360], s: [0, 100], v: [0, 100]
-    h_f = h / 360.0
-    s_f = s / 100.0
-    v_f = v / 100.0
-    l_f = v_f * (1.0 - s_f / 2.0)
-    if 0.0 < l_f < 1.0:
-        hsl_s = (v_f - l_f) / min(l_f, 1.0 - l_f)
-    else:
-        hsl_s = 0.0
-    return h_f, l_f, hsl_s
-
+from ui.window import ColorSlotsMixin, HotkeyMixin, SyncMixin, TrayMixin
 
 # ── Color-space module definitions ────────────────────────────────────────
 # Each module bundles a default wheel mode + slider subset (user can
@@ -228,495 +97,14 @@ _C_SCALE = 1000          # 0.001 chroma resolution (legacy; not used for slider�
 _C_RAW_MAX = 100         # slider range → 0..100% of max chroma
 
 
-def _visible_title_bar_height(title_bar) -> int:
-    """Title-bar height used for content sizing; 0 while the bar is hidden."""
-    if not title_bar.isVisible():
-        return 0
-    height = title_bar.height()
-    if isinstance(height, int):
-        return height
-    try:
-        return int(title_bar.sizeHint().height())
-    except (TypeError, ValueError):
-        return 0
-
-
-def _title_bar_content_offset(title_bar, main_layout) -> int:
-    """Top offset below the title bar, including the border when it is hidden."""
-    if not title_bar.isVisible():
-        if main_layout is None:
-            return 0
-        return int(main_layout.contentsMargins().top())
-    return _visible_title_bar_height(title_bar)
-
-
-class TitleBar(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._parent = cast("MainWindow", parent)
-        self.drag_position = None
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.customContextMenuRequested.connect(self._show_context_menu)
-        self.init_ui()
-
-    def _show_context_menu(self, pos):
-        """Quick toggles for the most-used settings."""
-        p = self._parent
-        menu = QMenu(self)
-
-        act_follow = menu.addAction("跟随鼠标")
-        if act_follow is not None:
-            act_follow.setCheckable(True)
-            act_follow.setChecked(cast(bool, p.cfg.get("followMouseEnabled", False)))
-            act_follow.triggered.connect(lambda checked: self._toggle_follow_mouse(checked))
-
-        act_no_focus = menu.addAction("无焦点选色模式")
-        if act_no_focus is not None:
-            act_no_focus.setCheckable(True)
-            act_no_focus.setChecked(cast(bool, p.cfg.get("noFocusMode", False)))
-            act_no_focus.triggered.connect(lambda checked: self._toggle_no_focus(checked))
-
-        menu.addSeparator()
-        act_settings = menu.addAction("打开设置")
-        if act_settings is not None:
-            act_settings.triggered.connect(p.toggle_settings_sidebar)
-        menu.exec(self.mapToGlobal(pos))
-
-    def _toggle_follow_mouse(self, checked):
-        p = self._parent
-        p.follow_mouse_active = checked
-        p.cfg["followMouseEnabled"] = checked
-        config.save_hotkey_config(p.cfg)
-        if checked and p.isVisible():
-            p.show_window_at_cursor()
-        sidebar = getattr(p, "settings_sidebar", None)
-        if sidebar is not None and sidebar.isVisible():
-            sidebar.cfg["followMouseEnabled"] = checked
-            sidebar.cb_follow_mouse.blockSignals(True)
-            sidebar.cb_follow_mouse.setChecked(checked)
-            sidebar.cb_follow_mouse.blockSignals(False)
-            sidebar._persist_config()
-
-    def _toggle_no_focus(self, checked):
-        p = self._parent
-        p.cfg["noFocusMode"] = checked
-        config.save_hotkey_config(p.cfg)
-        p.update_window_flags()
-        p.update_no_focus_policies()
-        sidebar = getattr(p, "settings_sidebar", None)
-        if sidebar is not None and sidebar.isVisible():
-            sidebar.cfg["noFocusMode"] = checked
-            sidebar.cb_no_focus.blockSignals(True)
-            sidebar.cb_no_focus.setChecked(checked)
-            sidebar.cb_no_focus.blockSignals(False)
-            sidebar._persist_config()
-
-    def init_ui(self):
-        self.setFixedHeight(28)
-        self.setMouseTracking(True)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 0, 4, 0)
-        layout.setSpacing(4)
-
-        # Settings Button (Hamburger)
-        self.btn_settings = QPushButton("☰")
-        self.btn_settings.setFixedSize(9, 9)
-        self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
-        # Never keep keyboard focus — otherwise Space (the default LAB-toggle
-        # hotkey) would re-click the focused button and toggle the settings.
-        self.btn_settings.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_settings.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                border: none;
-                font-size: 7px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255,255,255,0.12);
-                border-radius: 2px;
-            }
-        """)
-
-        # Title
-        self.title_label = QLabel("Colorink")
-        self.title_label.setStyleSheet("font-weight: bold; font-size: 7px;")
-        
-        # Minimize Button
-        self.btn_min = QPushButton("—")
-        self.btn_min.setFixedSize(9, 9)
-        self.btn_min.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_min.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_min.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                border: none;
-                font-size: 6px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255,255,255,0.12);
-                border-radius: 2px;
-            }
-        """)
-        self.btn_min.clicked.connect(self._parent.showMinimized)
-        
-        # Close Button
-        self.btn_close = QPushButton("×")
-        self.btn_close.setFixedSize(9, 9)
-        self.btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_close.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_close.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                border: none;
-                font-size: 8px;
-            }
-            QPushButton:hover {
-                background-color: #ff5050;
-                color: white;
-                border-radius: 2px;
-            }
-        """)
-
-        layout.addWidget(self.btn_settings)
-        layout.addStretch()
-        layout.addWidget(self.title_label)
-        layout.addStretch()
-        layout.addWidget(self.btn_min)
-        layout.addWidget(self.btn_close)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            if not self._parent.cfg.get("lockWindowPosition", False):
-                self.drag_position = event.globalPosition().toPoint() - self._parent.frameGeometry().topLeft()
-            event.accept()
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() == Qt.MouseButton.LeftButton and self.drag_position is not None:
-            if not self._parent.cfg.get("lockWindowPosition", False):
-                self._parent.move(event.globalPosition().toPoint() - self.drag_position)
-            event.accept()
-
-    def mouseReleaseEvent(self, event):
-        self.drag_position = None
-
-
-class SliderValueLabel(QLabel):
-    """Compact slider readout with clear hover-only +/-1 controls."""
-
-    def __init__(self, slider, parent=None):
-        super().__init__("0", parent)
-        self.slider = slider
-        self._hovered = False
-        self._hover_half = 1
-        self.setMouseTracking(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("Upper half: +1; lower half: -1")
-
-    def enterEvent(self, event):
-        self._hovered = True
-        local_pos = self.mapFromGlobal(QCursor.pos())
-        self._hover_half = 1 if local_pos.y() < self.height() / 2 else -1
-        self.update()
-        super().enterEvent(event)
-
-    def leaveEvent(self, a0):
-        self._hovered = False
-        self._hover_half = 0
-        self.update()
-        super().leaveEvent(a0)
-
-    def mouseMoveEvent(self, ev: QMouseEvent):
-        next_half = 1 if ev.position().y() < self.height() / 2 else -1
-        if next_half != self._hover_half:
-            self._hover_half = next_half
-            self.update()
-        super().mouseMoveEvent(ev)
-
-    def mousePressEvent(self, ev: QMouseEvent):
-        if ev.button() == Qt.MouseButton.LeftButton:
-            delta = 1 if ev.position().y() < self.height() / 2 else -1
-            new_value = max(
-                self.slider.minimum(),
-                min(self.slider.maximum(), self.slider.value() + delta),
-            )
-            if new_value != self.slider.value():
-                self.slider.setValue(new_value)
-                self.slider.sliderReleased.emit()
-            ev.accept()
-            return
-        super().mousePressEvent(ev)
-
-    def paintEvent(self, a0):
-        super().paintEvent(a0)
-        if not self._hovered:
-            return
-
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        strip_left = max(0, self.width() - 12)
-        half_height = self.height() / 2
-        painter.setPen(Qt.PenStyle.NoPen)
-
-        # The active half gets a stronger tint so the click target is obvious.
-        for half, center_y in ((1, half_height * 0.5), (-1, half_height * 1.5)):
-            is_active = half == self._hover_half
-            bg = QColor(90, 148, 226, 90 if is_active else 28)
-            painter.setBrush(bg)
-            painter.drawRoundedRect(
-                QRectF(strip_left + 1, center_y - half_height * 0.5 + 1,
-                       self.width() - strip_left - 2, half_height - 2),
-                2, 2,
-            )
-
-            arrow_color = self.palette().color(QPalette.ColorRole.Text)
-            arrow_color.setAlpha(230 if is_active else 115)
-            painter.setBrush(arrow_color)
-            x = self.width() - 6
-            if half == 1:
-                points = [
-                    QPointF(x, center_y - 5),
-                    QPointF(x - 5, center_y + 3),
-                    QPointF(x + 5, center_y + 3),
-                ]
-            else:
-                points = [
-                    QPointF(x, center_y + 5),
-                    QPointF(x - 5, center_y - 3),
-                    QPointF(x + 5, center_y - 3),
-                ]
-            painter.drawPolygon(QPolygonF(points))
-        painter.end()
-
-
-class GradientSlider(QSlider):
-    def __init__(self, orientation, parent=None):
-        super().__init__(orientation, parent)
-        self.gradient_colors = []
-        self.groove_h = 16
-        self.groove_radius = 3.0
-        self.scale = 1.0
-        self._theme = get_slider_theme("default")
-        self.update_scale(1.0)
-        self._gamut_min = None
-        self._gamut_max = None
-
-    def set_in_gamut_range(self, mn, mx):
-        """Set the valid in-gamut L range.
-        Values outside [mn, mx] will be grayed on the track.
-        Pass None for both to clear the marking."""
-        self._gamut_min = mn
-        self._gamut_max = mx
-        self.update()
-
-    def clear_in_gamut_range(self):
-        self._gamut_min = None
-        self._gamut_max = None
-        self.update()
-
-    def wheelEvent(self, event):
-        # Read the step size from configuration or parent window
-        step = 1
-        win = self.window()
-        if win is not None:
-            win_cfg = getattr(win, "cfg", None)
-            if win_cfg is not None:
-                step = win_cfg.get("sliderScrollStep", 1)
-        
-        delta = event.angleDelta().y()
-        if delta == 0:
-            return
-            
-        steps_to_move = step
-        if delta < 0:
-            steps_to_move = -step
-            
-        new_val = self.value() + steps_to_move
-        new_val = max(self.minimum(), min(self.maximum(), new_val))
-        self.setValue(new_val)
-        event.accept()
-
-    def update_scale(self, scale, theme=None):
-        if theme is not None:
-            self._theme = theme
-        t = self._theme
-        handle_shape = str(t.get("handle_shape", "rect"))
-        self.scale = scale
-        self.groove_h = max(2, int(16 * scale * float(cast(float, t["groove_h_factor"]))))
-        self.groove_radius = 3.0 * scale * float(cast(float, t["groove_radius_factor"]))
-        handle_w = max(2, int(5 * scale * float(cast(float, t["handle_w_factor"]))))
-        handle_h = max(4, int(24 * scale * float(cast(float, t["handle_h_factor"]))))
-        margin_y = -max(1, int(4 * scale * float(cast(float, t["handle_margin_y_factor"]))))
-        border_radius = max(0, int(1 * scale * float(cast(float, t["handle_radius_factor"]))))
-
-        if handle_shape == "triangle-below":
-            # Native handle is invisible (but kept at standard hit size so
-            # mouse drag still works). We draw the triangle ourselves in
-            # paintEvent below the groove.
-            self.setStyleSheet(f"""
-                QSlider::groove:horizontal {{
-                    height: {self.groove_h}px;
-                    background: transparent;
-                }}
-                QSlider::handle:horizontal {{
-                    background: transparent;
-                    border: none;
-                    width: {handle_w}px;
-                    height: {handle_h}px;
-                    margin: 0px;
-                }}
-            """)
-            # Triangle needs extra vertical space below the groove
-            tri_off = int(float(cast(float, t.get("handle_tri_offset_y", 2))) * scale)
-            tri_h = int(float(cast(float, t.get("handle_tri_size_h", 6))) * scale)
-            pad = max(2, int(2 * scale))
-            self.setMinimumHeight(self.groove_h + tri_off + tri_h + pad)
-        else:
-            # Native handle is invisible (transparent fill, no border).
-            # The double-ring border is drawn underneath in paintEvent and
-            # shows through. Hover adds a blue ring on top.
-            self.setStyleSheet(f"""
-                QSlider::groove:horizontal {{
-                    height: {self.groove_h}px;
-                    background: transparent;
-                }}
-                QSlider::handle:horizontal {{
-                    background: transparent;
-                    border: none;
-                    width: {handle_w}px;
-                    height: {handle_h}px;
-                    margin-top: {margin_y}px;
-                    margin-bottom: {margin_y}px;
-                    border-radius: {border_radius}px;
-                }}
-                QSlider::handle:horizontal:hover {{
-                    background: transparent;
-                    border: none;
-                }}
-            """)
-            # Reserve space for the handle's overhangs above and below the groove
-            self.setMinimumHeight(self.groove_h + 2 * abs(margin_y))
-
-    def set_gradient(self, colors):
-        if hasattr(self, "_cached_colors") and self._cached_colors == colors:
-            return
-        self._cached_colors = colors
-        self.gradient_colors = colors
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setClipRect(self.rect())  # prevent partial-update clipping of handle overhang
-        
-        rect = self.rect()
-        groove_y = (rect.height() - self.groove_h) // 2
-        groove_rect = QRectF(0, groove_y, rect.width(), self.groove_h)
-        
-        grad = QLinearGradient(0, 0, rect.width(), 0)
-        for stop, color in self.gradient_colors:
-            grad.setColorAt(stop, color)
-             
-        # Fill groove
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(grad)
-        painter.drawRoundedRect(groove_rect, self.groove_radius, self.groove_radius)
-        
-        # Out-of-gamut overlay
-        painter.setPen(Qt.PenStyle.NoPen)
-        if self._gamut_min is not None and self._gamut_max is not None:
-            vmin = self.minimum()
-            vrange = self.maximum() - vmin
-            if vrange > 0:
-                left_frac = (self._gamut_min - vmin) / vrange
-                right_frac = (self._gamut_max - vmin) / vrange
-                painter.setBrush(QColor(160, 160, 160, 140))
-                if left_frac > 0.005:
-                    painter.drawRect(QRectF(0, groove_y, rect.width() * left_frac, self.groove_h))
-                if right_frac < 0.995:
-                    painter.drawRect(QRectF(rect.width() * right_frac, groove_y, rect.width() * (1.0 - right_frac), self.groove_h))
-
-        t = self._theme
-        handle_shape = str(t.get("handle_shape", "rect"))
-
-        if handle_shape == "triangle-below":
-            vrange = self.maximum() - self.minimum()
-            frac = (self.value() - self.minimum()) / vrange if vrange > 0 else 0.0
-            handle_x = frac * rect.width()
-
-            tri_color = QColor(t.get("handle_tri_color", t["handle_bg"]))
-            tri_border_color = QColor(t.get("handle_tri_border", t["handle_border"]))
-            tri_size_w = float(cast(float, t.get("handle_tri_size_w", 5))) * self.scale
-            tri_size_h = float(cast(float, t.get("handle_tri_size_h", 6))) * self.scale
-            tri_offset_y = int(float(cast(float, t.get("handle_tri_offset_y", 2))) * self.scale)
-            tri_base_y = groove_y + self.groove_h + tri_offset_y
-
-            triangle = QPolygonF([
-                QPointF(handle_x, tri_base_y),
-                QPointF(handle_x - tri_size_w, tri_base_y + tri_size_h),
-                QPointF(handle_x + tri_size_w, tri_base_y + tri_size_h),
-            ])
-            painter.setBrush(tri_color)
-            painter.setPen(QPen(tri_border_color, 1))
-            painter.drawPolygon(triangle)
-            painter.end()
-            # Do NOT call super().paintEvent — we own this paint
-        else:
-            # Draw the double-ring border UNDER the invisible native handle.
-            # QStyle's rect ensures alignment; hover state is custom-drawn
-            # so it always matches pixel-for-pixel.
-            opt = QStyleOptionSlider()
-            self.initStyleOption(opt)
-            _style = self.style()
-            if _style is None:
-                hr_q = QRect()
-            else:
-                hr_q = _style.subControlRect(
-                    QStyle.ComplexControl.CC_Slider, opt,
-                    QStyle.SubControl.SC_SliderHandle, self
-                )
-            is_active = bool(opt.activeSubControls & QStyle.SubControl.SC_SliderHandle)
-            hx, hy, hw, hh = float(hr_q.x()), float(hr_q.y()), float(hr_q.width()), float(hr_q.height())
-            hr = max(0, int(1 * self.scale * float(cast(float, t["handle_radius_factor"]))))
-            hf = QRectF(hx, hy, hw, hh)
-
-            bw = max(1, int(1 * self.scale))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-
-            # Inner ring: white (normal) or theme hover colour (active)
-            inner_color = QColor(t["handle_hover_border"]) if is_active else QColor(255, 255, 255, 200)
-            wi = QRectF(hx + bw, hy + bw, hw - 2 * bw, hh - 2 * bw)
-            wr = max(0, hr - bw)
-            painter.setPen(QPen(inner_color, bw))
-            painter.drawRoundedRect(wi, wr, wr)
-
-            # Black outer ring (on top)
-            painter.setPen(QPen(QColor(0, 0, 0, 200), bw))
-            painter.drawRoundedRect(hf, hr, hr)
-
-            painter.end()
-            super().paintEvent(event)
-
-
-class ClickableFrame(QFrame):
-    clicked = pyqtSignal()
-    double_clicked = pyqtSignal()
-    
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
-        super().mousePressEvent(event)
-        
-    def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.double_clicked.emit()
-        super().mouseDoubleClickEvent(event)
-
-
-class MainWindow(QMainWindow):
+class MainWindow(TrayMixin, SyncMixin, HotkeyMixin, ColorSlotsMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.cfg = config.load_hotkey_config()
+        # Resolve the UI language before any widget is built so every tr()
+        # lookup sees the configured language.
+        from core import i18n
+        i18n.set_language(i18n.resolve_language(self.cfg.get("language", "auto")))
         self.current_ui_scale = self.cfg.get("uiScale", 100)
         self.current_rgb = (180, 130, 30)
         self.active_slot = "fg"  # "fg" | "bg"
@@ -820,6 +208,7 @@ class MainWindow(QMainWindow):
 
         # Global color picker overlay (magnifier + click-to-pick)
         self.picker_overlay = ColorPickerOverlay(None)
+        self.picker_overlay.set_zoom(self.cfg.get("pickerZoom", 6))
         self.picker_overlay.colorPicked.connect(self._on_picker_color_picked)
 
         self.init_ui()
@@ -834,6 +223,10 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if app is not None:
             app.installEventFilter(self)
+        # Deferred background update check → tray notification, not a modal.
+        self._startup_update_checked = False
+        self._pending_update = None
+        QTimer.singleShot(4000, self._check_updates_silently)
 
     def init_ui(self):
         # Frameless, transparent, stays on top, taskbar icon based on config
@@ -1157,133 +550,6 @@ class MainWindow(QMainWindow):
                 slider.valueChanged.connect(self.on_oklab_slider_changed)
             elif group == "OKLCh":
                 slider.valueChanged.connect(self.on_oklch_slider_changed)
-
-    def select_fg_slot(self):
-        # Clicking the fg swatch restores an opaque fg: clear any transparent
-        # state so its highlight returns immediately.
-        self._set_slot_transparent("fg", False)
-        if self.active_slot != "fg":
-            # Save current source to bg slot
-            self._bg_source_space = self._source_space
-            self._bg_source_values = self._source_values
-            self.active_slot = "fg"
-            self.preview_box.update_slot_borders(self.active_slot)
-            # Restore fg source
-            self._source_space = self._fg_source_space
-            self._source_values = self._fg_source_values
-            col = self.preview_box.fg_color
-            self.update_ui_colors(col.red(), col.green(), col.blue(), source="slot_change")
-
-    def select_bg_slot(self):
-        # Clicking the bg swatch restores an opaque bg (see select_fg_slot).
-        self._set_slot_transparent("bg", False)
-        if self.active_slot != "bg":
-            # Save current source to fg slot
-            self._fg_source_space = self._source_space
-            self._fg_source_values = self._source_values
-            self.active_slot = "bg"
-            self.preview_box.update_slot_borders(self.active_slot)
-            # Restore bg source
-            self._source_space = self._bg_source_space
-            self._source_values = self._bg_source_values
-            col = self.preview_box.bg_color
-            self.update_ui_colors(col.red(), col.green(), col.blue(), source="slot_change")
-
-    def set_active_transparent(self):
-        """Toggle the active slot's transparent state and push it to the
-        drawing software.
-
-        The fg/bg swatches keep their last color — the transparent tile
-        shows the state with a blue outline.
-        """
-        slot = self.active_slot
-        is_transparent = self._fg_transparent if slot == "fg" else self._bg_transparent
-        self._set_slot_transparent(slot, not is_transparent)
-
-    def _set_slot_transparent(self, slot, transparent):
-        """Set *slot*'s transparent state and push it to the drawing software.
-
-        Used by the transparent-tile toggle (:meth:`set_active_transparent`)
-        and by fg/bg swatch clicks, which restore an opaque color for the
-        slot. The color always comes from the slot's own swatch, so the
-        push is correct regardless of which slot is active. Pushing twice
-        (once here, once from a slot-change) is harmless — same values.
-        """
-        if slot == "fg":
-            is_transparent = self._fg_transparent
-            color = self.preview_box.fg_color
-        else:
-            is_transparent = self._bg_transparent
-            color = self.preview_box.bg_color
-        if is_transparent == transparent:
-            return
-        if slot == "fg":
-            self._fg_transparent = transparent
-        else:
-            self._bg_transparent = transparent
-        self.preview_box.set_transparent(slot, transparent)
-        print(f"[Transparent] {slot} transparent={transparent}")
-        if hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
-            color_index = 0 if slot == "fg" else 1
-            self.sync_thread.write_color(
-                color.red(), color.green(), color.blue(),
-                transparent=transparent, color_index=color_index)
-
-    def on_history_color_picked(self, color):
-        """User clicked a swatch in the history widget → load into active slot."""
-        r, g, b = color.red(), color.green(), color.blue()
-        hex_key = f"#{r:02x}{g:02x}{b:02x}"
-        stored = self._color_source_store.get(hex_key)
-        if stored:
-            self._source_space = stored["s"]
-            # Reconstruct float values from stored list
-            vals_list = stored.get("v", [])
-            if hasattr(self, "_SOURCE_CHANNELS"):
-                ch_names = self._SOURCE_CHANNELS.get(self._source_space, [])
-                self._source_values = {ch: float(vals_list[i]) for i, ch in enumerate(ch_names) if i < len(vals_list)}
-            else:
-                self._source_values = None
-        else:
-            self._source_space = "rgb"
-            self._source_values = {"r": float(r), "g": float(g), "b": float(b)}
-        self.update_ui_colors(r, g, b, source="history")
-        if hasattr(self, "color_history"):
-            updated = self.color_history.mark_selected(color)
-            self.cfg["historyColors"] = self._build_history_entries(updated)
-            from core import config as _config
-            _config.save_hotkey_config(self.cfg)
-
-    def _record_color_history(self):
-        """Persist the latest RGB into the history widget and into config.
-        Called when an interaction finishes (slider/wheel/lab release)."""
-        if not hasattr(self, "color_history"):
-            return
-        r, g, b = self.current_rgb
-        updated = self.color_history.record(r, g, b)
-        # Cache source info for the newest entry
-        if self._source_space and self._source_values:
-            hex_key = f"#{r:02x}{g:02x}{b:02x}"
-            ch_names = self._SOURCE_CHANNELS.get(self._source_space, [])
-            vals_list = [round(float(self._source_values.get(ch, 0)), 4)
-                         for ch in ch_names]
-            self._color_source_store[hex_key] = {
-                "rgb": [r, g, b], "s": self._source_space, "v": vals_list,
-            }
-        self.cfg["historyColors"] = self._build_history_entries(list(updated))
-        from core import config as _config
-        _config.save_hotkey_config(self.cfg)
-
-    def _build_history_entries(self, colors):
-        """Convert QColor list to serialisable entries, preserving source info."""
-        entries = []
-        for c in colors:
-            hex_key = f"#{c.red():02x}{c.green():02x}{c.blue():02x}"
-            stored = self._color_source_store.get(hex_key)
-            if stored:
-                entries.append(stored)
-            else:
-                entries.append([int(c.red()), int(c.green()), int(c.blue())])
-        return entries
 
     def _init_module_button(self):
         """Create a floating button next to ⊙/△ to cycle HSV→HLS→LCH modules."""
@@ -2590,70 +1856,9 @@ class MainWindow(QMainWindow):
         # the colored groove bars / grayed gamut regions trail by ≤~16ms.
         self._schedule_deferred_color_updates(r, g, b)
 
-        # 5) Push to drawing software
-        if source != "sync" and hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
-            is_dragging = False
-            if source.startswith("sliders_"):
-                for chan, (slider, _) in self.slider_widgets.items():
-                    if slider.isSliderDown():
-                        is_dragging = True
-                        break
-            if not is_dragging:
-                hsv_ov = None
-                if self.sync_thread.software_mode == 'companion':
-                    _U32 = 4294967295
-                    if hsv is not None and len(hsv) == 3:
-                        hsv_ov = (round(hsv[0]/360*_U32),
-                                  round(hsv[1]/100*_U32),
-                                  round(hsv[2]/100*_U32))
-                    else:
-                        # Fallback: wheel HSV was already updated in step 2 above.
-                        # This preserves hue when RGB→HSV would lose it (grayscale).
-                        hsv_ov = (round(self.color_wheel.h/360*_U32),
-                                  round(self.color_wheel.s/100*_U32),
-                                  round(self.color_wheel.v/100*_U32))
-                src_sp, src_v = self._resolve_sync_source()
-                color_index = 0 if self.active_slot == "fg" else 1
-                # A transparent active slot must keep the transparent
-                # semantics when a slot-change re-pushes its color (e.g.
-                # switching to a transparent fg slot must not overwrite
-                # CSP's transparent state with the RGB).
-                is_transparent = (
-                    self._fg_transparent if color_index == 0 else self._bg_transparent
-                )
-                self.sync_thread.write_color(r, g, b, hsv_u32=hsv_ov,
-                                             source_space=src_sp, source_values=src_v,
-                                             transparent=is_transparent,
-                                             color_index=color_index)
-
-    def _resolve_sync_source(self):
-        """Return (space_name, values) for CSP memory-mode sync.
-
-        Only spaces in SPACE_ORDER (rgb/cmyk/hsv/hls) are passed directly;
-        lab/oklab/oklch are converted to float RGB.
-        """
-        src = self._source_space
-        vals = self._source_values
-        if not src or not vals:
-            return (None, None)
-        if src in ("rgb", "cmyk", "hsv", "hls"):
-            return (src, vals)
-        # Fallback: convert non-SPACE_ORDER sources to float RGB
-        try:
-            if src == "lab":
-                r, g, b = lab_to_rgb(vals["l"], vals["a"], vals["b"])
-            elif src == "oklab":
-                r, g, b = oklab_to_rgb(vals["L"], vals["a"], vals["b"])
-            elif src == "oklch":
-                r, g, b = oklch_to_rgb(vals["L"], vals["C"], vals["h"])
-            else:
-                return (None, None)
-            rgb = {"r": max(0.0, min(255.0, r)),
-                   "g": max(0.0, min(255.0, g)),
-                   "b": max(0.0, min(255.0, b))}
-            return ("rgb", rgb)
-        except Exception:
-            return (None, None)
+        # 5) Push to drawing software — delegated to SyncMixin so the god
+        # class no longer owns the companion/memory write path.
+        self._push_color_to_sync(r, g, b, source, hsv)
 
     def resizeEvent(self, event):
         """Handle resize, preventing DPI-induced size drift when dragged between monitors.
@@ -3375,306 +2580,6 @@ class MainWindow(QMainWindow):
         if not is_resize_event:
             self._adjust_content_height()
 
-    def init_hotkeys(self):
-        # Register global hotkeys from config
-        global_hotkeys.hotkey_signals.triggered.connect(self.on_hotkey_triggered)
-        self.update_hotkey_bindings()
-
-    def update_hotkey_bindings(self):
-        global_hotkeys.unbind_all()
-        # Global hotkeys may be bound to a keyboard key or a mouse button —
-        # route each value to the matching system hook (mouse hotkeys are
-        # not suppressed, so the app under the cursor still gets the click).
-        for hotkey_type in ("pickKey", "hideWindowKey", "toggleTitleBarKey",
-                            "followMouseKey", "grayscaleFilterKey",
-                            "toggleLabGlobalKey"):
-            value = cast(str, self.cfg.get(hotkey_type))
-            if is_mouse_hotkey(value):
-                global_hotkeys.bind_mouse_hotkey(hotkey_type, value)
-            else:
-                global_hotkeys.bind_hotkey(hotkey_type, value)
-        # The local LAB-toggle key is bound as a system-wide hook too, so it
-        # works while focus is in the drawing app (无焦点选色模式). Mouse
-        # buttons need no hook — the event filter sees them by cursor
-        # position — so only keyboard values are bound here.
-        lab_toggle_key = cast(str, self.cfg.get("toggleLabKey"))
-        if not is_mouse_hotkey(lab_toggle_key):
-            global_hotkeys.bind_hotkey("toggleLabKey", lab_toggle_key)
-
-    @pyqtSlot(str)
-    def on_hotkey_triggered(self, hotkey_type):
-        if hotkey_type == "hideWindowKey":
-            if self.isVisible():
-                self.hide()
-            else:
-                if self.follow_mouse_active:
-                    self.show_window_at_cursor()
-                else:
-                    self.show()
-        elif hotkey_type == "toggleTitleBarKey":
-            self.toggle_title_bar()
-        elif hotkey_type == "followMouseKey":
-            self.follow_mouse_active = not self.follow_mouse_active
-            self.cfg["followMouseEnabled"] = self.follow_mouse_active
-            config.save_hotkey_config(self.cfg)
-            print(f"[Hotkeys] Follow Mouse toggled to: {self.follow_mouse_active}")
-            
-            # Immediately move to cursor if activated and window is visible
-            if self.follow_mouse_active and self.isVisible():
-                self.show_window_at_cursor()
-                
-            # Sync settings sidebar if visible
-            if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
-                self.settings_sidebar.cb_follow_mouse.blockSignals(True)
-                self.settings_sidebar.cb_follow_mouse.setChecked(self.follow_mouse_active)
-                self.settings_sidebar.cb_follow_mouse.blockSignals(False)
-        elif hotkey_type == "toggleLabKey":
-            # System-wide hook path: the Qt event filter already consumed the
-            # key when a Colorink window has focus. Without focus — e.g. while
-            # drawing in CSP with 无焦点选色模式 — this hook is the only path,
-            # and the mouse-over-wheel gate still applies.
-            if QApplication.activeWindow() is not None:
-                return  # handled by the Qt key path
-            if self._is_lab_toggle_zone():
-                print("[Hotkeys] Toggle LAB view (local, no-focus)")
-                self.toggle_picker_mode()
-        elif hotkey_type == "toggleLabGlobalKey":
-            print("[Hotkeys] Toggle LAB view (global)")
-            self.toggle_picker_mode()
-        elif hotkey_type == "pickKey":
-            if self.picker_overlay.is_active:
-                self.picker_overlay.stop()
-            else:
-                self.picker_overlay.start()
-                print("[Hotkeys] Global Color Picker activated")
-        elif hotkey_type == "grayscaleFilterKey":
-            print("[Hotkeys] Grayscale Filter toggled")
-            try:
-                result = self.grayscale_overlay.toggle()
-                # Backends return False + last_error on failure — show it
-                # clearly instead of silently switching modes.
-                if result is False and hasattr(self.grayscale_overlay, 'last_error'):
-                    err = getattr(self.grayscale_overlay, "last_error", "")
-                    if err:
-                        from PyQt6.QtWidgets import QMessageBox
-                        QMessageBox.warning(self, "黑白滤镜", err)
-            except Exception as e:
-                print(f"[Hotkeys] Grayscale toggle error: {e}")
-                from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.warning(self, "黑白滤镜", f"切换失败: {e}")
-
-    def _on_picker_color_picked(self, r, g, b):
-        """Handle color picked from the global magnifier overlay."""
-        self.current_rgb = (r, g, b)
-        self._source_space = "rgb"
-        self._source_values = {"r": float(r), "g": float(g), "b": float(b)}
-        self._record_color_history()
-        self.update_ui_colors(r, g, b)
-        if hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
-            color_index = 0 if self.active_slot == "fg" else 1
-            self.sync_thread.write_color(r, g, b, source_space="rgb",
-                                         source_values={"r": float(r), "g": float(g), "b": float(b)},
-                                         color_index=color_index)
-            print(f"[Picker] Picked color RGB({r}, {g}, {b})")
-    def init_memory_sync(self):
-        # Start background memory syncing thread
-        self.sync_thread = memory_sync.MemorySyncThread(self)
-        self.sync_thread.signals.color_changed.connect(self.on_external_color_changed)
-        self.sync_thread.signals.transparent_changed.connect(self.on_external_transparent_changed)
-        self.sync_thread.signals.active_slot_changed.connect(self.on_external_active_slot_changed)
-        self.sync_thread.signals.status_changed.connect(self.on_sync_status_changed)
-        self.sync_thread.signals.error_changed.connect(self.on_sync_error_changed)
-        self._sync_error = None
-        self._ps_perm_prompted = False
-        
-        # Set active software mode
-        mode = self.cfg.get("syncSoftware", "csp")
-        if mode not in ("csp", "sai", "udm", "ps", "companion"):
-            mode = "csp"
-        self.sync_thread.set_software_mode(mode)
-        
-        self.sync_thread.csp_version = self.cfg.get("cspVersion", "auto")
-        self.sync_thread.sai2_version = self.cfg.get("sai2Version", "auto")
-        self.sync_thread.udm_version = self.cfg.get("udmVersion", "auto")
-        setattr(self.sync_thread, "ps_version", self.cfg.get("psVersion", "auto"))
-        self.sync_thread.update_versions()
-        
-        # Start syncing
-        self.sync_thread.start()
-
-    @pyqtSlot(int, int, int, int)
-    def on_external_color_changed(self, r, g, b, color_index):
-        # Drawing software (CSP/SAI/UDM/PS) color changed — e.g. the user
-        # Alt-picked a new color or switched colors in CSP. color_index
-        # maps 0 → fg (main), 1 → bg (sub); each slot updates its own
-        # swatch regardless of the local active slot.
-        slot = "fg" if color_index == 0 else "bg"
-        if slot != self.active_slot:
-            # Off-slot change: update the swatch only, keep the wheel state.
-            if slot == "fg":
-                self.preview_box.fg_color = QColor(r, g, b)
-                self._fg_transparent = False
-            else:
-                self.preview_box.bg_color = QColor(r, g, b)
-                self._bg_transparent = False
-            self.preview_box.set_transparent(slot, False)
-            print(f"[Sync] {slot} color -> RGB({r}, {g}, {b})")
-            return
-        self.current_rgb = (r, g, b)
-        hsv_direct = None
-        if hasattr(self, 'sync_thread'):
-            chsv = getattr(self.sync_thread, 'companion_hsv', None)
-            if chsv is not None and self.sync_thread.software_mode == 'companion':
-                hsv_direct = chsv
-        self._record_color_history()
-        self.update_ui_colors(r, g, b, source="sync", hsv=hsv_direct)
-
-    @pyqtSlot(int)
-    def on_external_active_slot_changed(self, color_index):
-        """The drawing software switched its active slot (e.g. user pressed
-        X in CSP / picked the sub swatch). Follow it locally WITHOUT
-        writing anything back — the swatch border, transparent-tile
-        highlight and source tracking switch to the new slot.
-        """
-        slot = "fg" if color_index == 0 else "bg"
-        if slot == self.active_slot:
-            return
-        if slot == "fg":
-            self._bg_source_space = self._source_space
-            self._bg_source_values = self._source_values
-            self._source_space = self._fg_source_space
-            self._source_values = self._fg_source_values
-            col = self.preview_box.fg_color
-        else:
-            self._fg_source_space = self._source_space
-            self._fg_source_values = self._source_values
-            self._source_space = self._bg_source_space
-            self._source_values = self._bg_source_values
-            col = self.preview_box.bg_color
-        self.active_slot = slot
-        self.preview_box.update_slot_borders(slot)
-        # 静默更新色轮显示对应槽颜色（block_signals → 不触发写入）
-        try:
-            self.color_wheel.set_color(col.red(), col.green(), col.blue(),
-                                       block_signals=True)
-        except Exception:
-            pass
-        print(f"[Sync] active slot followed: {slot}")
-
-    @pyqtSlot(int, bool)
-    def on_external_transparent_changed(self, color_index, transparent):
-        """The drawing software reports a slot's color is transparent
-        (companion read-back / CSP 5.1 memory flag). Mirror onto the
-        matching slot and follow the change like CSP's own "current
-        drawing color" concept by activating that slot (the slot-change
-        write carries the transparent flag, so CSP's state is not
-        overwritten).
-        """
-        mode = "csp"
-        if hasattr(self, 'sync_thread') and self.sync_thread is not None:
-            mode = self.sync_thread.software_mode
-        if color_index in (0, 1):
-            # 内存模式：+0x08 透明标志属于激活槽（index 恒 0），映射活动槽
-            if mode == 'csp' and color_index == 0:
-                slot = self.active_slot
-            else:
-                slot = "fg" if color_index == 0 else "bg"
-        else:
-            # 透明时 companion 报告 index=-1：透明属于激活槽
-            slot = self.active_slot
-        if transparent:
-            if slot == "fg":
-                self._fg_transparent = True
-            else:
-                self._bg_transparent = True
-        else:
-            if slot == "fg":
-                self._fg_transparent = False
-            else:
-                self._bg_transparent = False
-        self.preview_box.set_transparent(slot, transparent)
-        print(f"[Transparent] external read-back: {slot} transparent={transparent}")
-        if slot != self.active_slot:
-            if slot == "fg":
-                self.select_fg_slot()
-            else:
-                self.select_bg_slot()
-
-    @pyqtSlot(str, bool)
-    def on_sync_status_changed(self, mode, connected):
-        print(f"[Sync] Software status changed: {mode} -> connected={connected}")
-        self._sync_status = (mode, connected)
-        # Optionally update title bar text or border to show connection status
-        mode_display = {"csp": "CSP", "sai": "SAI", "udm": "UDM", "ps": "PS", "companion": "手机"}.get(mode, mode.upper())
-        status_text = f"Colorink ({mode_display} {'✓' if connected else '×'})"
-        self.title_bar.title_label.setText(status_text)
-        if mode == "companion" and hasattr(self, 'settings_sidebar'):
-            self.settings_sidebar._refresh_companion_status()
-        if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
-            self.settings_sidebar._refresh_sync_status()
-
-    @pyqtSlot(str, str, bool)
-    def on_sync_error_changed(self, mode, error, permission_issue):
-        """Show *why* the sync backend failed to connect (e.g. Photoshop)."""
-        self._sync_error = (mode, error, permission_issue) if error else None
-        if hasattr(self, 'title_bar'):
-            self.title_bar.title_label.setToolTip(error if error else "")
-        if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
-            self.settings_sidebar._refresh_sync_status()
-        # A UAC integrity mismatch is self-fixable: offer to relaunch
-        # Colorink elevated. Prompt once per session to avoid nagging.
-        if mode == 'ps' and permission_issue and not self._ps_perm_prompted:
-            self._ps_perm_prompted = True
-            self._prompt_relaunch_as_admin()
-
-    def _prompt_relaunch_as_admin(self):
-        from PyQt6.QtWidgets import QMessageBox
-        ret = QMessageBox.question(
-            self, "需要管理员权限",
-            "检测到 Photoshop 可能以管理员身份运行，而 Colorink 权限不足，"
-            "无法通过 COM 连接。\n\n"
-            "是否以管理员身份重启 Colorink？\n"
-            "（如果 Photoshop 是绿色版 / 未正常安装，提权也无法解决）",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if ret == QMessageBox.StandardButton.Yes:
-            self._relaunch_as_admin()
-
-    def _relaunch_as_admin(self):
-        """Restart the app elevated via ShellExecute(runas); exit current."""
-        import ctypes
-        exe = sys.executable
-        args = " ".join(
-            f'"{a}"' if " " in a else a for a in sys.argv[1:]
-        )
-        try:
-            ret = ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", exe, args, os.getcwd(), 1
-            )
-        except Exception as exc:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "提权失败", f"无法以管理员身份启动: {exc}")
-            return
-        if ret <= 32:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "提权失败", f"无法以管理员身份启动 (错误码 {ret})")
-            return
-        # ShellExecute returned OK — this instance hands over and exits.
-        os._exit(0)
-
-    def _setup_companion_connection(self):
-        if not hasattr(self, 'sync_thread'):
-            return
-        from core.csp_companion_sync import CSPCompanionSync
-        ok = CSPCompanionSync.show_setup_dialog(self)
-        if ok:
-            c = self.sync_thread.companion_sync
-            c._load_session()
-            self.title_bar.title_label.setText("Colorink (手机 — 连接中...)")
-        if hasattr(self, 'settings_sidebar'):
-            self.settings_sidebar._refresh_companion_status()
-
     def toggle_settings_sidebar(self):
         # Lazy-create the independent settings window on first use
         if not hasattr(self, 'settings_window') or self.settings_window is None:
@@ -3890,6 +2795,8 @@ class MainWindow(QMainWindow):
     def on_settings_saved(self):
         # Reload configs
         self.cfg = config.load_hotkey_config()
+        if hasattr(self, "picker_overlay"):
+            self.picker_overlay.set_zoom(self.cfg.get("pickerZoom", 6))
         self.update_hotkey_bindings()
         if hasattr(self, "title_bar"):
             self.title_bar.setVisible(self.cfg.get("showTitleBar", True))
@@ -4005,145 +2912,6 @@ class MainWindow(QMainWindow):
         # Mode OFF restores full ring/circles/bottom-right immediately.
         self._sync_ringless_mode()
         self._adjust_content_height()
-
-    def close_application(self):
-        # Flush coalesced module state before writing the final window config.
-        self._flush_module_config_save()
-        # Save window settings on exit, normalized to 1x DPI for consistency
-        dpr = self.devicePixelRatio() if hasattr(self, "devicePixelRatio") else 1.0
-        if dpr < 0.1:
-            dpr = 1.0
-        cfg = {
-            "x": self.x(),
-            "y": self.y(),
-            "width": self.width(),
-            "height": self.height(),
-            "dpr": dpr,  # Store DPR so we can restore correctly
-            "zoom": 0  # Default placeholder
-        }
-        config.save_window_config(cfg)
-        
-        # Clean up hotkeys and thread
-        global_hotkeys.unbind_all()
-        if hasattr(self, 'picker_overlay'):
-            self.picker_overlay.stop()
-            self.picker_overlay.close()
-        if hasattr(self, 'grayscale_overlay'):
-            self.grayscale_overlay.set_active(False)
-            close_fn = getattr(self.grayscale_overlay, "close", None)
-            if callable(close_fn):
-                close_fn()
-        if hasattr(self, 'sync_thread'):
-            # Disable sync & reset PS COM ref so the polling loop
-            # won't try to make new COM calls to a dead Photoshop.
-            self.sync_thread.sync_enabled = False
-            if hasattr(self.sync_thread, 'ps_sync'):
-                try:
-                    self.sync_thread.ps_sync._reset()
-                except Exception:
-                    pass
-            if hasattr(self.sync_thread, 'companion_sync'):
-                self.sync_thread.companion_sync._disconnect()
-            # Signal the thread to stop, but DO NOT join it.
-            # If it's blocked in a hung COM RPC call (Photoshop died
-            # mid-call), joining would freeze the main thread forever.
-            # The OS reclaims all resources on process exit anyway.
-            self.sync_thread.running = False
-        
-        # Hide settings window before exit
-        if hasattr(self, 'settings_window') and self.settings_window is not None:
-            self.settings_window.hide()
-
-        # Hide tray icon before exit
-        if hasattr(self, 'tray_icon'):
-            self.tray_icon.hide()
-        
-        # Use os._exit to bypass Python's thread-join on exit.
-        # sys.exit(0) would try to join non-daemon threads, which
-        # can hang if the sync thread is stuck in a COM RPC call.
-        import os as _os
-        _os._exit(0)
-
-    def init_tray(self):
-        """Setup system tray icon with context menu for minimized window access."""
-        self.tray_icon = QSystemTrayIcon(self)
-        icon_path = os.path.join("icons", "icon.ico")
-        if os.path.exists(icon_path):
-            self.tray_icon.setIcon(QIcon(icon_path))
-        else:
-            _style = QApplication.style()
-            if _style is not None:
-                self.tray_icon.setIcon(_style.standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
-        
-        self.tray_icon.setToolTip("Colorink")
-
-        # Context menu
-        tray_menu = QMenu()
-        
-        show_action = QAction("显示/隐藏", self)
-        show_action.triggered.connect(self.toggle_visibility)
-        tray_menu.addAction(show_action)
-
-        title_action = QAction("显示标题栏", self)
-        title_action.setCheckable(True)
-        title_action.setChecked(self.cfg.get("showTitleBar", True))
-        title_action.triggered.connect(self.set_title_bar_visible)
-        tray_menu.addAction(title_action)
-        self.tray_title_action = title_action
-
-        tray_menu.addSeparator()
-
-        settings_action = QAction("打开设置", self)
-        settings_action.triggered.connect(self.toggle_settings_sidebar)
-        tray_menu.addAction(settings_action)
-        
-        tray_menu.addSeparator()
-        
-        quit_action = QAction("退出", self)
-        quit_action.triggered.connect(self.close_application)
-        tray_menu.addAction(quit_action)
-        
-        self.tray_icon.setContextMenu(tray_menu)
-        self.tray_icon.activated.connect(self.on_tray_activated)
-        self.tray_icon.show()
-
-    def on_tray_activated(self, reason):
-        """Handle tray icon click: single left-click toggles visibility."""
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.toggle_visibility()
-        elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            self.toggle_visibility()
-
-    def toggle_visibility(self):
-        """Toggle window visibility — same logic as hotkey hide/show."""
-        if self.isVisible():
-            self.hide()
-        else:
-            if self.follow_mouse_active:
-                self.show_window_at_cursor()
-            else:
-                self.show()
-                self.raise_()
-
-    def set_title_bar_visible(self, visible: bool):
-        """Show or hide the title bar and keep the top border aligned."""
-        visible = bool(visible)
-        if self.title_bar.isVisible() != visible:
-            self.cfg["showTitleBar"] = visible
-            config.save_hotkey_config(self.cfg)
-            self.title_bar.setVisible(visible)
-            self.update_geometries()
-            self._adjust_content_height()
-        if hasattr(self, "tray_title_action"):
-            self.tray_title_action.setChecked(visible)
-
-    def toggle_title_bar(self):
-        self.set_title_bar_visible(not self.title_bar.isVisible())
-
-    def closeEvent(self, event):
-        """Override: hide to tray instead of closing the application."""
-        self.hide()
-        event.ignore()
 
     def update_window_flags(self):
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint

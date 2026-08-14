@@ -14,7 +14,8 @@ def test_settings_expose_validated_oklch_and_mag():
     sidebar = (PROJECT_ROOT / "ui" / "settings_sidebar.py").read_text(encoding="utf-8")
     assert '"OKLCh (GPU兼容)"' in sidebar
     assert '"系统 Luma (Mag)"' in sidebar
-    assert '"OKLCh (感知均匀)", "Luma (BT.709 标准)"' in sidebar
+    assert '"OKLCh (感知均匀)"' in sidebar
+    assert '"Luma (BT.709 标准)"' in sidebar
     assert "_update_grayscale_screen_options" in sidebar
     for removed in (
         "OpenGL Overlay",

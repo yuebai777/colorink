@@ -1,4 +1,4 @@
-﻿"""ColorPreviewBox 鈥?overlapping fg/bg color circles drawn with QPainter.
+"""ColorPreviewBox 鈥?overlapping fg/bg color circles drawn with QPainter.
 
 Extracted from ui.main_window so the preview widget can evolve independently
 (e.g. ringless mode) without touching the main window module.
@@ -17,6 +17,7 @@ from ui.ringless_mode import (
     RINGLESS_INACTIVE_BORDER,
     RinglessLayout,
     centered_control_offset,
+    ringless_swatch_row,
 )
 from ui.transparent_swatch import TransparentTile, apply_preview_mouse_mask
 
@@ -89,17 +90,19 @@ class ColorPreviewBox(QWidget):
         sh = layout.swatch_height
         gap = layout.swatch_gap
 
-        # Row layout: [transparent][fg][bg] — all same size, same gap.
+        # Row layout: FG stays left of BG; the transparent tile always takes
+        # the innermost (window-centre) slot on either side.
+        fg_x, bg_x, tile_x = ringless_swatch_row(layout.controls_side, pad, sw, gap)
         self._cached_ringless_rects = (
-            QRectF(float(pad + sw + gap), float(pad), float(sw), float(sh)),
-            QRectF(float(pad + 2 * (sw + gap)), float(pad), float(sw), float(sh)),
+            QRectF(float(fg_x), float(pad), float(sw), float(sh)),
+            QRectF(float(bg_x), float(pad), float(sw), float(sh)),
         )
 
         # Size the widget to exactly fit the three-swatch row.
         widget_w = pad * 2 + sw * 3 + gap * 2
         widget_h = pad * 2 + sh
         self.setFixedSize(int(widget_w), int(widget_h))
-        self._trans_tile.place_ringless(float(pad), float(sw), float(sh))
+        self._trans_tile.place_ringless(float(tile_x), float(pad), float(sw), float(sh))
 
         # Position based on controls_side and window width
         margin = layout.margin

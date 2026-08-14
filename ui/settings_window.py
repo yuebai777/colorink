@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core import i18n
+
 
 class SettingsWindow(QDialog):
     """Frameless, always-on-top dialog wrapping SettingsSidebar.
@@ -223,7 +225,7 @@ class _TitleBar(QWidget):
         layout.setSpacing(4)
 
         # Title label
-        self._label = QLabel("设置")
+        self._label = QLabel(i18n.tr("设置"))
         font = self._label.font()
         font.setBold(True)
         self._label.setFont(font)

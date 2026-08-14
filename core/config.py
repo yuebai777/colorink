@@ -1,8 +1,19 @@
 import json
 import os
+from datetime import datetime, timezone
+from typing import Callable
 
 CFG_NAME = "window-config.json"
 HOTKEY_CFG_NAME = "hotkey-config.json"
+
+# Schema version stamped into every saved hotkey/settings config. Bump this
+# when the shape of the config changes and register a migration below; old
+# configs are migrated forward on load instead of relying on ad-hoc key pops.
+CONFIG_SCHEMA_KEY = "schemaVersion"
+CONFIG_SCHEMA_VERSION = 1
+
+# Envelope marker for the settings backup/restore JSON export.
+SETTINGS_EXPORT_FORMAT = "colorink-settings"
 
 # Canonical slider groups, in their default display order. Every place that
 # reasons about slider order (main window layout, settings sidebar moves,
@@ -79,11 +90,13 @@ def default_hotkey_config():
         "lockWindowPosition": False,
         "onlyShowInCsp": False,
         "openAtLogin": False,
+        "checkUpdatesOnStartup": True,
         "previewBoxPosition": "top-left",
         "cspVersion": "auto",
         "sai2Version": "auto",
         "udmVersion": "auto",
         "ui-theme": "auto",
+        "language": "auto",
         "showSlidersRGB": False,
         "showSlidersHSV": True,
         "showSlidersHSL": False,
@@ -122,6 +135,7 @@ def default_hotkey_config():
         "hideHueRing": False,
         "ringlessControlsSide": "right",
         "ringlessControlBarPosition": "top",
+        CONFIG_SCHEMA_KEY: CONFIG_SCHEMA_VERSION,
     }
 
 
@@ -142,36 +156,129 @@ def normalize_slider_orders(cfg):
     return cfg
 
 
+def _migrate_0_to_1(cfg: dict) -> dict:
+    """Migrate a legacy config to v1: drop dead keys and the obsolete
+    ringless control-bar toggle.
+
+    These removals used to live inline in ``load_hotkey_config``; keeping them
+    as the first migration makes the forward-compat path explicit and leaves a
+    place for future structural migrations.
+    """
+    cfg.pop("showRinglessControlBar", None)
+    for dead_key in ("injectionKey", "colorPickingEnabled", "cspAutoClick", "cspClickDelayMs"):
+        cfg.pop(dead_key, None)
+    return cfg
+
+
+# Registered migrations, keyed by the target schema version they produce.
+_CONFIG_MIGRATIONS: dict[int, Callable[[dict], dict]] = {
+    1: _migrate_0_to_1,
+}
+
+
+def migrate_config(cfg: dict) -> dict:
+    """Bring *cfg* forward to the current schema version, in place.
+
+    Configs without a ``schemaVersion`` are treated as version 0 and run every
+    migration. Returns the same dict (mutated) for convenience.
+    """
+    try:
+        from_version = int(cfg.get(CONFIG_SCHEMA_KEY, 0) or 0)
+    except (TypeError, ValueError):
+        from_version = 0
+    for target in range(from_version + 1, CONFIG_SCHEMA_VERSION + 1):
+        migrator = _CONFIG_MIGRATIONS.get(target)
+        if migrator is not None:
+            cfg = migrator(cfg)
+    cfg[CONFIG_SCHEMA_KEY] = CONFIG_SCHEMA_VERSION
+    return cfg
+
+
+def _merge_with_defaults(loaded: dict) -> dict:
+    """Back-fill missing keys from the default config, preserving user values."""
+    for key, value in default_hotkey_config().items():
+        if key not in loaded:
+            loaded[key] = value
+    return loaded
+
+
 def load_hotkey_config():
     path = os.path.join(get_user_data_dir(), HOTKEY_CFG_NAME)
-    default_cfg = default_hotkey_config()
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
                 if not isinstance(loaded, dict):
-                    return default_cfg
-                # The old visibility toggle was replaced by an explicit
-                # top/bottom position setting; do not keep writing the
-                # obsolete key back into the user's config.
-                loaded.pop("showRinglessControlBar", None)
-                # Legacy keys that were never wired into the app.
-                for dead_key in ("injectionKey", "colorPickingEnabled", "cspAutoClick", "cspClickDelayMs"):
-                    loaded.pop(dead_key, None)
-                # merge defaults to ensure any missing keys are populated
-                for k, v in default_cfg.items():
-                    if k not in loaded:
-                        loaded[k] = v
-                return normalize_slider_orders(loaded)
+                    return dict(default_hotkey_config())
+                loaded = migrate_config(loaded)
+                return normalize_slider_orders(_merge_with_defaults(loaded))
         except Exception:
             pass
-    return normalize_slider_orders(dict(default_cfg))
+    return normalize_slider_orders(migrate_config(dict(default_hotkey_config())))
 
 def save_hotkey_config(cfg):
+    cfg.setdefault(CONFIG_SCHEMA_KEY, CONFIG_SCHEMA_VERSION)
     path = os.path.join(get_user_data_dir(), HOTKEY_CFG_NAME)
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+
+
+# ── Settings export / import (backup & restore) ────────────────────────────
+
+
+def export_settings(cfg: dict) -> dict:
+    """Build a self-describing export envelope for the hotkey/settings config.
+
+    The envelope is what gets written to disk for backup; the ``config`` field
+    holds the raw settings so ``import_settings`` can re-run merge/migration
+    against it exactly like a normal load.
+    """
+    return {
+        "format": SETTINGS_EXPORT_FORMAT,
+        "schemaVersion": CONFIG_SCHEMA_VERSION,
+        "exportedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "config": dict(cfg),
+    }
+
+
+def merge_imported_config(imported: dict) -> dict:
+    """Migrate + back-fill + normalize a raw config dict for import."""
+    merged = migrate_config(dict(imported))
+    return normalize_slider_orders(_merge_with_defaults(merged))
+
+
+def import_settings(data) -> dict:
+    """Parse an exported envelope into a merged, migrated config.
+
+    ``data`` may be an envelope dict or its JSON string. Raises ``ValueError``
+    for anything that is not a Colorink settings export.
+    """
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError as exc:
+            raise ValueError("文件不是有效的 JSON") from exc
+    if not isinstance(data, dict):
+        raise ValueError("导入内容不是有效的设置数据")
+    if data.get("format") != SETTINGS_EXPORT_FORMAT:
+        raise ValueError("这不是 Colorink 的设置备份文件")
+    imported = data.get("config")
+    if not isinstance(imported, dict):
+        raise ValueError("备份文件中缺少设置内容")
+    return merge_imported_config(imported)
+
+
+def export_settings_to_file(cfg: dict, path: str) -> None:
+    """Write the settings export envelope to *path* as UTF-8 JSON."""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(export_settings(cfg), f, ensure_ascii=False, indent=2)
+
+
+def import_settings_from_file(path: str) -> dict:
+    """Load and validate a settings export from *path*."""
+    with open(path, "r", encoding="utf-8") as f:
+        return import_settings(json.load(f))
 

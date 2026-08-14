@@ -439,3 +439,17 @@ def oklab_to_rgb_array(L, a, b):
     return (srgb_gamma_encode_array(r_lin) * 255.0,
             srgb_gamma_encode_array(g_lin) * 255.0,
             srgb_gamma_encode_array(b_lin) * 255.0)
+
+
+def hsv_to_hls_floats(h, s, v):
+    """Convert HSV (h 0–360, s 0–100, v 0–100) to normalized HLS floats."""
+    # h: [0, 360], s: [0, 100], v: [0, 100]
+    h_f = h / 360.0
+    s_f = s / 100.0
+    v_f = v / 100.0
+    l_f = v_f * (1.0 - s_f / 2.0)
+    if 0.0 < l_f < 1.0:
+        hsl_s = (v_f - l_f) / min(l_f, 1.0 - l_f)
+    else:
+        hsl_s = 0.0
+    return h_f, l_f, hsl_s

@@ -33,6 +33,21 @@ def test_ringless_settings_module_is_importable():
     assert RinglessSettingsWidget is not None
 
 
+def test_ringless_swatch_row_keeps_transparent_innermost():
+    """The transparent tile always takes the window-centre slot while FG
+    stays left of BG — regardless of which side the group is anchored to."""
+    from ui.ringless_mode import ringless_swatch_row
+
+    # Right-anchored: innermost = left → [transparent][fg][bg].
+    assert ringless_swatch_row("right", 3.0, 43.0, 5.0) == (51.0, 99.0, 3.0)
+    # Left-anchored: innermost = right → [fg][bg][transparent].
+    assert ringless_swatch_row("left", 3.0, 43.0, 5.0) == (3.0, 51.0, 99.0)
+    # FG is always left of BG in both orientations.
+    for side in ("left", "right"):
+        fg_x, bg_x, _ = ringless_swatch_row(side, 3.0, 43.0, 5.0)
+        assert fg_x < bg_x
+
+
 # ── Value object tests (RED: RinglessConfig / resolve_ringless_layout) ──
 
 

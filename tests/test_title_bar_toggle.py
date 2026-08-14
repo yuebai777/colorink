@@ -21,7 +21,6 @@ for _a in ("GetForegroundWindow", "GetWindowText", "GetWindowLong",
            "GetWindow", "GetWindowTextLengthW"):
     setattr(sys.modules["win32gui"], _a, MagicMock(return_value=False))
 
-import ui.main_window as mw
 from ui.main_window import MainWindow, _title_bar_content_offset
 
 
@@ -53,10 +52,10 @@ def test_hotkey_binding_registers_title_bar_toggle():
         "toggleLabGlobalKey": "Ctrl+L",
         "toggleLabKey": "Space",
     })
-    with patch.object(mw.global_hotkeys, "unbind_all") as unbind, \
-         patch.object(mw.global_hotkeys, "bind_hotkey") as bind, \
-         patch.object(mw.global_hotkeys, "bind_mouse_hotkey"), \
-         patch.object(mw, "is_mouse_hotkey", return_value=False):
+    with patch("ui.window.hotkey_mixin.global_hotkeys.unbind_all") as unbind, \
+         patch("ui.window.hotkey_mixin.global_hotkeys.bind_hotkey") as bind, \
+         patch("ui.window.hotkey_mixin.global_hotkeys.bind_mouse_hotkey"), \
+         patch("ui.window.hotkey_mixin.is_mouse_hotkey", return_value=False):
         MainWindow.update_hotkey_bindings(fake)
 
     unbind.assert_called_once_with()
@@ -77,7 +76,7 @@ def test_set_title_bar_visible_hides_and_persists():
         _adjust_content_height=MagicMock(),
         tray_title_action=MagicMock(),
     )
-    with patch("ui.main_window.config.save_hotkey_config") as save:
+    with patch("ui.window.tray_mixin.config.save_hotkey_config") as save:
         MainWindow.set_title_bar_visible(fake, False)
 
     assert fake.title_bar.isVisible() is False
@@ -96,7 +95,7 @@ def test_set_title_bar_visible_shows_again():
         _adjust_content_height=MagicMock(),
         tray_title_action=MagicMock(),
     )
-    with patch("ui.main_window.config.save_hotkey_config"):
+    with patch("ui.window.tray_mixin.config.save_hotkey_config"):
         MainWindow.set_title_bar_visible(fake, True)
 
     assert fake.title_bar.isVisible() is True

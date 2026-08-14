@@ -39,7 +39,7 @@ The color list is mirrored to config so it survives restarts. The maximum
 in-memory list is `cols * rows`; older entries are dropped FIFO.
 """
 
-from PyQt6.QtCore import QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QBrush, QColor, QCursor, QPainter, QPen
 from PyQt6.QtWidgets import QApplication, QMenu, QWidget
 
@@ -161,20 +161,23 @@ class _SwatchCell(QWidget):
                 # is then always exactly 1 physical pixel wide, whatever the
                 # display scaling factor is (100%, 125%, 150%, ...).
                 #
-                # NOTE: painter.viewport() reports the LOGICAL size, so the
-                # device size must be derived from the logical geometry the
-                # same way Qt lays child widgets out: each edge is
-                # qRound(edge*dpr). Adjacent cells share edges, so their
-                # fills are contiguous in device pixels and the 1px seam is
-                # the only gap between colors.
-                x, y = self.pos().x(), self.pos().y()
+                # The cell's on-screen footprint is decided by Qt, which
+                # rounds the *window-relative* logical position of the cell
+                # (not its parent-relative pos()) once by dpr. On fractional
+                # scaling (125%, 150%, 175%, ...) the parent's own offset
+                # carries a fractional device-pixel remainder, so rounding
+                # self.pos() alone can disagree with Qt by 1 device pixel
+                # and leave an unpainted 1px sliver of panel background
+                # between rows. Rounding the window-relative origin instead
+                # reproduces Qt's exact device footprint.
+                origin = self.mapTo(self.window(), QPoint(0, 0))
                 w, h = self.width(), self.height()
 
                 def dev_edge(v):
                     return int(v * dpr + 0.5)  # qRound, same as Qt's widget rounding
 
-                dev_w = max(1, dev_edge(x + w) - dev_edge(x))
-                dev_h = max(1, dev_edge(y + h) - dev_edge(y))
+                dev_w = max(1, dev_edge(origin.x() + w) - dev_edge(origin.x()))
+                dev_h = max(1, dev_edge(origin.y() + h) - dev_edge(origin.y()))
 
                 # 1) Colour fill spanning the cell, leaving the last
                 #    row/column for the seam.
