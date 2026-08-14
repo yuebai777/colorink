@@ -36,8 +36,16 @@ def qapp():
 
 
 @pytest.fixture
-def stub_main_window(qapp):
-    """Minimal stub of Colorink main window — must be a QWidget to satisfy QScrollArea(parent)."""
+def stub_main_window(qapp, tmp_path, monkeypatch):
+    """Minimal stub of Colorink main window — must be a QWidget to satisfy
+    QScrollArea(parent).
+
+    Isolates the config directory to *tmp_path* so the stub (and the sidebar
+    built from it) never read or write the real %APPDATA%\\Colorink config —
+    whose values vary by machine (e.g. ``showTitleBar``) and would otherwise
+    make assertions non-deterministic."""
+    from core import config as _config
+    monkeypatch.setattr(_config, "get_user_data_dir", lambda: str(tmp_path))
 
     from PyQt6.QtWidgets import QWidget
 

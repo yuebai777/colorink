@@ -91,6 +91,9 @@ def default_hotkey_config():
         "onlyShowInCsp": False,
         "openAtLogin": False,
         "checkUpdatesOnStartup": True,
+        # Latest release tag the user chose to skip, so the startup tray
+        # notification is not re-shown for that version ("" = never skipped).
+        "skippedUpdateVersion": "",
         "previewBoxPosition": "top-left",
         "cspVersion": "auto",
         "sai2Version": "auto",

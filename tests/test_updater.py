@@ -3,6 +3,7 @@ result, and chunked release download (against a local HTTP server).
 """
 
 import functools
+import hashlib
 import http.server
 import json
 import threading
@@ -57,6 +58,31 @@ def test_find_installer_asset_ignores_missing_names():
 
     assert picked is not None
     assert picked["name"] == "Colorink.exe"
+
+
+def test_find_installer_asset_onefile_prefers_largest_exe():
+    """A onefile build must never download the small onedir stub, so when
+    no asset is explicitly named onefile the largest EXE wins (size signal)."""
+    assets = [
+        {"name": "Colorink.exe", "url": "https://x/stub.exe", "size": 6_578_040},
+        {"name": "Colorink_setup.exe", "url": "https://x/full.exe", "size": 39_303_661},
+    ]
+
+    picked = updater.find_installer_asset(assets, flavor="onefile")
+
+    assert picked is not None
+    assert picked["name"] == "Colorink_setup.exe"
+
+
+def test_build_flavor_detects_onedir(tmp_path):
+    exe_dir = tmp_path / "Colorink"
+    exe_dir.mkdir()
+    (exe_dir / "_internal").mkdir()
+    assert updater.build_flavor(str(exe_dir / "Colorink.exe")) == "onedir"
+
+
+def test_build_flavor_defaults_to_onefile(tmp_path):
+    assert updater.build_flavor(str(tmp_path / "Colorink.exe")) == "onefile"
 
 
 # ── check_for_update asset extraction ──────────────────────────────────────
@@ -155,6 +181,43 @@ def test_download_release_reports_404(http_server, tmp_path):
 
     assert "error" in result
     assert not dest.exists()
+
+
+def test_download_release_rejects_size_mismatch(http_server, tmp_path):
+    server, payload = http_server
+    url = f"http://127.0.0.1:{server.server_address[1]}/Colorink.exe"
+    dest = tmp_path / "Colorink.exe"
+
+    result = updater.download_release(url, str(dest), total_size=len(payload) + 10)
+
+    assert "error" in result
+    assert not dest.exists()
+    assert not (tmp_path / "Colorink.exe.part").exists()
+
+
+def test_download_release_rejects_bad_sha256(http_server, tmp_path):
+    server, _ = http_server
+    url = f"http://127.0.0.1:{server.server_address[1]}/Colorink.exe"
+    dest = tmp_path / "Colorink.exe"
+
+    result = updater.download_release(url, str(dest), sha256="0" * 64)
+
+    assert "error" in result
+    assert not dest.exists()
+    assert not (tmp_path / "Colorink.exe.part").exists()
+
+
+def test_download_release_accepts_matching_sha256(http_server, tmp_path):
+    server, payload = http_server
+    url = f"http://127.0.0.1:{server.server_address[1]}/Colorink.exe"
+    dest = tmp_path / "Colorink.exe"
+    digest = hashlib.sha256(payload).hexdigest()
+
+    result = updater.download_release(url, str(dest), sha256=digest)
+
+    assert "error" not in result
+    assert dest.read_bytes() == payload
+    assert not (tmp_path / "Colorink.exe.part").exists()
 
 
 class _FakeResponse:

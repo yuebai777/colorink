@@ -2323,6 +2323,15 @@ class MainWindow(TrayMixin, SyncMixin, HotkeyMixin, ColorSlotsMixin, QMainWindow
         if not is_resize_event:
             self._adjust_content_height()
 
+    def _show_settings_window(self):
+        """Ensure the settings window exists and is shown (no-op if already up)."""
+        if not hasattr(self, 'settings_window') or self.settings_window is None:
+            from ui.settings_window import SettingsWindow
+            self.settings_window = SettingsWindow(self, self.settings_sidebar)
+        if not self.settings_window.isVisible():
+            self.settings_sidebar.refresh_ui()
+            self.settings_window.show_near_main_window()
+
     def toggle_settings_sidebar(self):
         # Lazy-create the independent settings window on first use
         if not hasattr(self, 'settings_window') or self.settings_window is None:
@@ -2331,8 +2340,7 @@ class MainWindow(TrayMixin, SyncMixin, HotkeyMixin, ColorSlotsMixin, QMainWindow
         if self.settings_window.isVisible():
             self.settings_window.hide()
         else:
-            self.settings_sidebar.refresh_ui()
-            self.settings_window.show_near_main_window()
+            self._show_settings_window()
         self.update_no_focus_policies()
 
     def _schedule_module_layout_refresh(self):

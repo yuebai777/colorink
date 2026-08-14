@@ -2312,9 +2312,16 @@ class SettingsSidebar(QWidget):
         self.btn_check_update.setEnabled(True)
         self.btn_check_update.setText(i18n.tr("检查更新"))
         self._update_worker = None
+        self.prompt_update(result)
 
+    def prompt_update(self, result: dict):
+        """Show the "new version available" dialog and act on the choice.
+
+        Shared by the manual check and the tray-notification path so both
+        offer the same in-app download flow.
+        """
         if "error" in result:
-            QMessageBox.warning(self, i18n.tr("检查更新"), result["error"])
+            QMessageBox.warning(self, i18n.tr("检查更新"), self._update_error_text(result))
             return
 
         current = result.get("current_version", "?")
@@ -2337,6 +2344,7 @@ class SettingsSidebar(QWidget):
             box.setText(msg)
             dl_btn = box.addButton(i18n.tr("下载到本地"), QMessageBox.ButtonRole.AcceptRole)
             open_btn = box.addButton(i18n.tr("前往下载"), QMessageBox.ButtonRole.ActionRole)
+            skip_btn = box.addButton(i18n.tr("跳过此版本"), QMessageBox.ButtonRole.ActionRole)
             box.addButton(i18n.tr("稍后"), QMessageBox.ButtonRole.RejectRole)
             box.exec()
             clicked = box.clickedButton()
@@ -2344,15 +2352,23 @@ class SettingsSidebar(QWidget):
                 self._download_release(result)
             elif clicked is open_btn:
                 webbrowser.open(url)
+            elif clicked is skip_btn:
+                self.cfg["skippedUpdateVersion"] = latest
+                self._persist_config()
         else:
             QMessageBox.information(
                 self, i18n.tr("检查更新"),
                 f"{i18n.tr('已是最新版本')} (v{current})"
             )
 
+    def _update_error_text(self, result: dict) -> str:
+        """Translate a structured updater error (source-as-key + detail)."""
+        return i18n.tr(result.get("error", ""), detail=result.get("error_detail", ""))
+
     def _download_release(self, result: dict):
         """Download the picked installer asset to a user-chosen path."""
-        asset = updater.find_installer_asset(result.get("assets", []))
+        flavor = updater.build_flavor(sys.executable)
+        asset = updater.find_installer_asset(result.get("assets", []), flavor=flavor)
         if asset is None:
             # No installer asset on the release — fall back to the page.
             webbrowser.open(result.get("release_url", updater.GITHUB_URL))
@@ -2382,12 +2398,40 @@ class SettingsSidebar(QWidget):
         else:
             self.btn_check_update.setText(f"{label} {downloaded // 1024}KB")
 
+    def _flush_state_before_update(self):
+        """Persist settings + window geometry before the self-replace exit.
+
+        ``os._exit`` bypasses normal shutdown, so without this the user's last
+        window position and any unsaved settings changes are lost on update.
+        """
+        parent = getattr(self, "_parent", None)
+        # Flush the main window's pending module write first so a stale copy
+        # can't clobber the sidebar's fuller settings snapshot below.
+        if parent is not None:
+            try:
+                flush = getattr(parent, "_flush_module_config_save", None)
+                if callable(flush):
+                    flush()
+            except Exception:
+                pass
+        try:
+            self._persist_config()
+        except Exception:
+            pass
+        if parent is not None:
+            try:
+                save_geom = getattr(parent, "save_window_geometry", None)
+                if callable(save_geom):
+                    save_geom()
+            except Exception:
+                pass
+
     def _on_download_done(self, result: dict):
         self.btn_check_update.setText(i18n.tr("检查更新"))
         self.btn_check_update.setEnabled(True)
         self._download_worker = None
         if "error" in result:
-            QMessageBox.warning(self, i18n.tr("下载失败"), result["error"])
+            QMessageBox.warning(self, i18n.tr("下载失败"), self._update_error_text(result))
             return
         path = result["path"]
         can_replace = updater.can_self_replace(sys.executable)
@@ -2407,6 +2451,7 @@ class SettingsSidebar(QWidget):
             # helper waits for our lock to release, replaces the exe and
             # relaunches. If spawning fails, fall back to just running it.
             if updater.launch_self_replace(path, sys.executable):
+                self._flush_state_before_update()
                 os._exit(0)
             os.startfile(path)
         elif clicked is folder_btn:

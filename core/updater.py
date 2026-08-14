@@ -9,6 +9,7 @@ queries the GitHub releases API for the latest release, compares the tag with
 without needing to handle exceptions.
 """
 
+import hashlib
 import json
 import os
 import subprocess
@@ -55,6 +56,23 @@ def _normalize_version(v: str) -> list[int]:
     return parts
 
 
+def _github_headers() -> dict:
+    """Headers for the GitHub API, including an optional auth token.
+
+    Unauthenticated requests share a 60/hour/IP quota; a token (set via
+    ``COLORINK_GITHUB_TOKEN`` or ``GITHUB_TOKEN``) raises that to 5000/hour,
+    which matters on shared/NAT connections.
+    """
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Colorink-Updater",
+    }
+    token = os.environ.get("COLORINK_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def check_for_update(timeout: float = 8.0) -> dict:
     """Query GitHub for the latest release and compare against ``APP_VERSION``.
 
@@ -69,22 +87,25 @@ def check_for_update(timeout: float = 8.0) -> dict:
     On failure returns ``{"error": "<message>"}`` so the caller never has to
     catch exceptions.
     """
-    req = urllib.request.Request(
-        RELEASES_API,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "Colorink-Updater",
-        },
-    )
+    req = urllib.request.Request(RELEASES_API, headers=_github_headers())
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
-        return {"error": f"GitHub 返回 HTTP {e.code}，请稍后重试"}
+        if e.code == 403:
+            return {
+                "error": (
+                    "GitHub API 限流 (403)。未认证请求每小时仅 60 次，"
+                    "可稍后重试或设置 COLORINK_GITHUB_TOKEN 提升配额。"
+                )
+            }
+        if e.code == 404:
+            return {"error": "未在 GitHub 上找到发布信息 (404)"}
+        return {"error": "GitHub 返回 HTTP {detail}，请稍后重试", "error_detail": str(e.code)}
     except urllib.error.URLError as e:
-        return {"error": f"网络异常: {e.reason}"}
+        return {"error": "网络异常：{detail}", "error_detail": str(e.reason)}
     except Exception as e:  # pragma: no cover - defensive
-        return {"error": f"获取更新失败: {e}"}
+        return {"error": "获取更新失败：{detail}", "error_detail": str(e)}
 
     try:
         data = json.loads(raw)
@@ -112,12 +133,15 @@ def check_for_update(timeout: float = 8.0) -> dict:
     }
 
 
-def find_installer_asset(assets: list[dict], name_hint: str = "colorink") -> dict | None:
+def find_installer_asset(assets: list[dict], name_hint: str = "colorink", flavor: str = "onefile") -> dict | None:
     """Pick the Windows installer asset from a release asset list.
 
-    Prefers the onefile EXE, then any EXE whose name mentions *name_hint*,
-    then any EXE. Returns ``None`` when no EXE asset exists. Entries without a
-    usable ``name`` are skipped so malformed assets never crash the picker.
+    Prefers the onefile EXE, then — when *flavor* is "onefile" — the largest
+    EXE (the self-contained build dwarfs the onedir stub, so a name-only
+    match can never hand the stub to a running onefile build), then any EXE
+    whose name mentions *name_hint*, then any EXE. Returns ``None`` when no
+    EXE asset exists. Entries without a usable ``name`` are skipped so
+    malformed assets never crash the picker.
     """
     exes = [a for a in assets if (a.get("name") or "").lower().endswith(".exe")]
     if not exes:
@@ -126,6 +150,10 @@ def find_installer_asset(assets: list[dict], name_hint: str = "colorink") -> dic
     for a in exes:
         if "onefile" in (a.get("name") or "").lower():
             return a
+    if flavor == "onefile":
+        sized = [a for a in exes if a.get("size")]
+        if sized:
+            return max(sized, key=lambda a: a["size"])
     for a in exes:
         if hint in (a.get("name") or "").lower():
             return a
@@ -138,23 +166,28 @@ def download_release(
     total_size: int | None = None,
     progress_cb=None,
     timeout: float = 60.0,
+    sha256: str | None = None,
 ) -> dict:
     """Download a release asset from *url* to *dest_path* in chunks.
 
-    Returns ``{"path": dest_path, "bytes": downloaded}`` on success, or
+    Writes to ``dest_path + ".part"`` first and only renames it into place
+    once the byte count and (optionally) SHA-256 checksum both verify, so a
+    truncated or tampered file is never handed to the installer. Returns
+    ``{"path": dest_path, "bytes": downloaded}`` on success, or
     ``{"error": message}`` on failure. ``progress_cb(downloaded, total)`` is
     called after each chunk when provided; ``total`` is *total_size* or the
     Content-Length header when available, else 0.
     """
+    part_path = dest_path + ".part"
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "Colorink-Updater"},
     )
+    downloaded = 0
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             total = total_size if total_size is not None else _content_length(resp)
-            downloaded = 0
-            with open(dest_path, "wb") as f:
+            with open(part_path, "wb") as f:
                 while True:
                     chunk = resp.read(1 << 16)
                     if not chunk:
@@ -164,11 +197,32 @@ def download_release(
                     if progress_cb is not None:
                         progress_cb(downloaded, total)
     except urllib.error.HTTPError as e:
-        return {"error": f"下载失败: HTTP {e.code}"}
+        _remove_file(part_path)
+        return {"error": "下载失败：{detail}", "error_detail": f"HTTP {e.code}"}
     except urllib.error.URLError as e:
-        return {"error": f"网络异常: {e.reason}"}
+        _remove_file(part_path)
+        return {"error": "网络异常：{detail}", "error_detail": str(e.reason)}
     except Exception as e:  # pragma: no cover - defensive
-        return {"error": f"下载失败: {e}"}
+        _remove_file(part_path)
+        return {"error": "下载失败：{detail}", "error_detail": str(e)}
+
+    # A partial download must never reach the self-replace/install step.
+    if total_size and downloaded != total_size:
+        _remove_file(part_path)
+        return {
+            "error": "下载不完整：{detail}",
+            "error_detail": f"收到 {downloaded} 字节，应为 {total_size} 字节",
+        }
+
+    if sha256 is not None and _sha256_file(part_path) != sha256.lower():
+        _remove_file(part_path)
+        return {"error": "校验失败：下载文件与发布校验和不一致"}
+
+    try:
+        os.replace(part_path, dest_path)
+    except OSError as e:  # pragma: no cover - defensive
+        _remove_file(part_path)
+        return {"error": "保存失败：{detail}", "error_detail": str(e)}
     return {"path": dest_path, "bytes": downloaded}
 
 
@@ -180,12 +234,32 @@ def _content_length(resp) -> int:
         return 0
 
 
+def _sha256_file(path: str) -> str:
+    """Return the lowercase hex SHA-256 of *path*."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _remove_file(path: str) -> None:
+    """Best-effort delete of a (partial) download, never raising."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def can_self_replace(current_exe: str | None = None, frozen: bool | None = None) -> bool:
     """Return True when the running app can replace itself in place.
 
     Only single-file (onefile) builds qualify: onedir builds ship an
     ``_internal`` folder next to the exe, so swapping just the exe would
-    leave the bundled libraries stale and break the app.
+    leave the bundled libraries stale and break the app. The exe's directory
+    must also be writable — otherwise the post-update ``move`` would fail
+    (e.g. under ``C:\\Program Files`` without elevation) and silently degrade
+    to running the downloaded copy from Downloads.
 
     ``frozen`` defaults to the real ``sys.frozen`` so the check is a no-op
     under the source tree (nothing to replace), but tests can inject it.
@@ -195,8 +269,40 @@ def can_self_replace(current_exe: str | None = None, frozen: bool | None = None)
         frozen = bool(getattr(sys, "frozen", False))
     if not exe or not frozen:
         return False
-    internal = os.path.join(os.path.dirname(exe), "_internal")
-    return not os.path.isdir(internal)
+    exe_dir = os.path.dirname(exe)
+    if os.path.isdir(os.path.join(exe_dir, "_internal")):
+        return False
+    return _dir_writable(exe_dir)
+
+
+def _dir_writable(directory: str) -> bool:
+    """True when *directory* exists and a file can be created then removed
+    inside it — a stronger signal than ``os.access`` under Windows ACLs."""
+    if not directory or not os.path.isdir(directory):
+        return False
+    probe = os.path.join(directory, f".colorink-write-{os.getpid()}")
+    try:
+        with open(probe, "w") as f:
+            f.write("x")
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
+def build_flavor(exe: str | None = None) -> str:
+    """Return "onedir" when *exe* sits next to a PyInstaller ``_internal``
+    folder, else "onefile".
+
+    Lets the updater avoid downloading a onedir stub over a running onefile
+    build (or vice versa). Under the source tree this reports "onefile";
+    callers gate self-replace on ``sys.frozen`` separately.
+    """
+    exe = getattr(sys, "executable", "") if exe is None else exe
+    exe_dir = os.path.dirname(os.path.abspath(exe)) if exe else ""
+    if exe_dir and os.path.isdir(os.path.join(exe_dir, "_internal")):
+        return "onedir"
+    return "onefile"
 
 
 def build_self_replace_script(new_exe: str, current_exe: str) -> str:

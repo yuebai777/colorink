@@ -10,24 +10,29 @@ from core.updater import APP_VERSION, _normalize_version
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_application_version_is_current_release():
-    assert APP_VERSION == "1.6.6"
-    # _normalize_version strips trailing zeros: "1.6.6" → [1, 6, 6]
-    assert _normalize_version(APP_VERSION) == [1, 6, 6]
+def test_application_version_matches_release_notes():
+    """APP_VERSION is the single source of truth: the newest release-note
+    heading must carry the same version, so a bump only edits updater.py +
+    release_notes.md instead of a hardcoded copy inside this test too."""
+    content = (PROJECT_ROOT / "release_notes.md").read_text(encoding="utf-8")
+    assert content.startswith(f"## v{APP_VERSION}\n")
+    # v-prefix stripping must be a no-op against the bare version.
+    assert _normalize_version(APP_VERSION) == _normalize_version(f"v{APP_VERSION}")
 
 
 def test_windows_file_version_matches_application_version():
     content = (PROJECT_ROOT / "file_version_info.txt").read_text(encoding="utf-8")
+    major, minor, patch = (int(x) for x in APP_VERSION.split("."))
 
-    assert "filevers=(1, 6, 6, 0)" in content
-    assert "prodvers=(1, 6, 6, 0)" in content
-    assert "StringStruct('FileVersion', '1.6.6.0')" in content
-    assert "StringStruct('ProductVersion', '1.6.6.0')" in content
+    assert f"filevers=({major}, {minor}, {patch}, 0)" in content
+    assert f"prodvers=({major}, {minor}, {patch}, 0)" in content
+    assert f"StringStruct('FileVersion', '{APP_VERSION}.0')" in content
+    assert f"StringStruct('ProductVersion', '{APP_VERSION}.0')" in content
 
 
 def test_release_notes_start_with_current_release():
     content = (PROJECT_ROOT / "release_notes.md").read_text(encoding="utf-8")
-    assert content.startswith("## v1.6.6\n")
+    assert content.startswith(f"## v{APP_VERSION}\n")
 
 
 def test_first_run_defaults_are_compact_and_discoverable():

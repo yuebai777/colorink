@@ -112,12 +112,44 @@ def run_pyinstaller(spec_file, label):
         print(f"  [FAIL] {label} — {e}")
         return False
 
+def _verify_version_consistency():
+    """Fail fast before packaging when APP_VERSION has drifted from the
+    Windows file version or the release notes heading."""
+    from core import updater
+    v = updater.APP_VERSION
+    info = ""
+    notes = ""
+    try:
+        with open("file_version_info.txt", "r", encoding="utf-8") as f:
+            info = f.read()
+    except OSError:
+        pass
+    try:
+        with open("release_notes.md", "r", encoding="utf-8") as f:
+            notes = f.read()
+    except OSError:
+        pass
+    expected = f"StringStruct('FileVersion', '{v}.0')"
+    if expected not in info:
+        raise SystemExit(
+            f"Version drift: file_version_info.txt missing {expected!r}. "
+            f"Bump it to match core.updater.APP_VERSION ({v})."
+        )
+    if not notes.startswith(f"## v{v}\n"):
+        raise SystemExit(
+            f"Version drift: release_notes.md must start with '## v{v}'."
+        )
+    print(f"  Version consistency OK: v{v}")
+
+
 def build():
     try:
         import PyInstaller
     except ImportError:
         print("Installing PyInstaller...")
         subprocess.run([sys.executable, "-m", "pip", "install", "pyinstaller"], check=True)
+
+    _verify_version_consistency()
 
     # Clean
     for d in ["build", "dist"]:
