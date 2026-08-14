@@ -231,7 +231,8 @@ class TestPreviewGeometry:
         box.set_ringless_layout(_CANONICAL, 400, 28)
         box.resize_and_position(300, 28, 600, 250, "fg")
         box.set_ringless_layout(_CANONICAL, 400, 28)
-        # Three-swatch row: [transparent][fg][bg], all 43 wide, gap 5.
+        # Three-swatch row (43 wide, gap 5): FG left of BG, transparent on
+        # the innermost side. Width is padding + 3 swatches + 2 gaps.
         assert box.width() == 3 * 2 + 43 * 3 + 5 * 2  # _STROKE_PAD=3
 
 

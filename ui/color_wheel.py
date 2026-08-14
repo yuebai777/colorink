@@ -1,4 +1,4 @@
-﻿import colorsys
+import colorsys
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict, cast
@@ -27,7 +27,12 @@ from ui.color_conversions import (
     rgb_to_lab,
     rgb_to_oklch,
 )
-from ui.slice_prewarm import SlicePrewarmRequest, SlicePrewarmResult, SlicePrewarmTask
+from ui.slice_prewarm import (
+    SlicePrewarmRequest,
+    SlicePrewarmResult,
+    SlicePrewarmTask,
+    render_slice,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +264,46 @@ class ColorWheel(QWidget):
     def _on_slice_prewarm_failed(self, failure: object) -> None:
         # Prewarming is an optimization only; normal paint remains the fallback.
         return
+
+    def _render_slice_image(
+        self, mode: str, hue: float, center_x: float, center_y: float,
+        radius: float, width: float | None = None,
+        scale: float | None = None, subsample: int = 1,
+    ) -> tuple[SlicePrewarmResult, object]:
+        """Synchronously render a slice through the vectorized numpy path.
+
+        Replaces the per-pixel Python fallback loops: the numpy renderers
+        are an order of magnitude faster, so enlarged ringless slices stay
+        responsive while the hue changes. ``subsample`` renders at a reduced
+        device resolution and the returned image is already upscaled to the
+        logical size (Smooth for square/HLS/RGB, Fast for OKLCh to match the
+        legacy interactive preview).
+        """
+        ratio = max(1.0, float(self.devicePixelRatio()))
+        request = SlicePrewarmRequest(
+            generation=0, mode=mode, hue=hue,
+            center_x=center_x, center_y=center_y, radius=radius,
+            pixel_ratio=ratio, width=width, scale=scale,
+            subsample=subsample,
+        )
+        result = render_slice(request)
+        image = QImage(
+            result.image_bytes, result.image_width, result.image_height,
+            result.image_width * 4, QImage.Format.Format_RGBA8888,
+        ).copy()
+        image.setDevicePixelRatio(ratio)
+        if subsample > 1:
+            transform = (
+                Qt.TransformationMode.FastTransformation
+                if mode == "oklch-slice"
+                else Qt.TransformationMode.SmoothTransformation
+            )
+            image = image.scaled(
+                int(result.width * ratio), int(result.height * ratio),
+                Qt.AspectRatioMode.IgnoreAspectRatio, transform,
+            )
+            image.setDevicePixelRatio(ratio)
+        return result, image
 
     def is_active_interaction(self):
         """Return True when wheel is being dragged or an external slider is active."""
@@ -739,38 +784,15 @@ class ColorWheel(QWidget):
         if self._cached_img_key == cache_key and self._cached_img is not None:
             painter.drawImage(int(cx - half), int(cy - half), self._cached_img)
             return
-            
-        ratio = self.devicePixelRatio()
-        is_active = self.is_active_interaction()
-        
-        if is_active:
-            subsample = 3
-        else:
-            subsample = 1
-            
-        sub_w = max(1, int(width * ratio) // subsample if is_active else int(width * ratio))
-        sub_h = max(1, int(height * ratio) // subsample if is_active else int(height * ratio))
-        
-        img = QImage(sub_w, sub_h, QImage.Format.Format_ARGB32)
-        
-        for y in range(sub_h):
-            l_val = 1.0 - (y / float(sub_h - 1)) if sub_h > 1 else 0.5
-            for x in range(sub_w):
-                s_val = x / float(sub_w - 1) if sub_w > 1 else 0.5
-                red, green, blue = colorsys.hls_to_rgb(self.h / 360.0, l_val, s_val)
-                img.setPixelColor(x, y, QColor(int(red * 255), int(green * 255), int(blue * 255)))
-                
-        if is_active:
-            final_img = img.scaled(int(width * ratio), int(height * ratio), Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            final_img.setDevicePixelRatio(ratio)
-        else:
-            final_img = img
-            final_img.setDevicePixelRatio(ratio)
-            
-        self._cached_img = final_img
+
+        subsample = 3 if self.is_active_interaction() else 1
+        _, img = self._render_slice_image(
+            "hsl-square", self.h, cx, cy, r, subsample=subsample)
+
+        self._cached_img = img
         self._cached_img_key = cache_key
-        
-        painter.drawImage(int(cx - half), int(cy - half), final_img)
+
+        painter.drawImage(int(cx - half), int(cy - half), img)
 
     def draw_hsv_square(self, painter, cx, cy, r):
         half = int(r / 1.414) - 2
@@ -798,38 +820,15 @@ class ColorWheel(QWidget):
             painter.drawRect(int(cx - half), int(cy - half), width, height)
             painter.restore()
             return
-            
-        ratio = self.devicePixelRatio()
-        is_active = self.is_active_interaction()
-        
-        if is_active:
-            subsample = 3
-        else:
-            subsample = 1
-            
-        sub_w = max(1, int(width * ratio) // subsample if is_active else int(width * ratio))
-        sub_h = max(1, int(height * ratio) // subsample if is_active else int(height * ratio))
-        
-        img = QImage(sub_w, sub_h, QImage.Format.Format_ARGB32)
-        
-        for y in range(sub_h):
-            v_val = 1.0 - (y / float(sub_h - 1)) if sub_h > 1 else 0.5
-            for x in range(sub_w):
-                s_val = x / float(sub_w - 1) if sub_w > 1 else 0.5
-                red, green, blue = hsv_to_rgb(self.h, s_val * 100.0, v_val * 100.0)
-                img.setPixelColor(x, y, QColor(red, green, blue))
-                
-        if is_active:
-            final_img = img.scaled(int(width * ratio), int(height * ratio), Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            final_img.setDevicePixelRatio(ratio)
-        else:
-            final_img = img
-            final_img.setDevicePixelRatio(ratio)
-            
-        self._cached_img = final_img
+
+        subsample = 3 if self.is_active_interaction() else 1
+        _, img = self._render_slice_image(
+            "hsv-square", self.h, cx, cy, r, subsample=subsample)
+
+        self._cached_img = img
         self._cached_img_key = cache_key
-        
-        painter.drawImage(int(cx - half), int(cy - half), final_img)
+
+        painter.drawImage(int(cx - half), int(cy - half), img)
         painter.save()
         painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -946,64 +945,19 @@ class ColorWheel(QWidget):
             ss = 3 if (is_active and self.dragging != "hls-triangle") else 1
             self._draw_hls_triangle_outline(painter, v0, v1, v2, ss)
             return
-            
-        hy = r * 0.866
-        px_left = cx - 0.5 * r
-        
-        min_x = int(math.floor(min(v0.x(), v1.x(), v2.x())))
-        max_x = int(math.ceil(max(v0.x(), v1.x(), v2.x())))
-        min_y = int(math.floor(min(v0.y(), v1.y(), v2.y())))
-        max_y = int(math.ceil(max(v0.y(), v1.y(), v2.y())))
-        width = max_x - min_x
-        height = max_y - min_y
-        
-        if width <= 0 or height <= 0:
-            return
-            
+
         # Keep every active drag responsive; end_drag() invalidates the cache
         # so the next paint restores the full-quality image.
-        is_active = self.is_active_interaction()
-        subsample = 3 if is_active else 1
-            
-        sub_w = max(1, (width + subsample - 1) // subsample)
-        sub_h = max(1, (height + subsample - 1) // subsample)
-        
-        img = QImage(sub_w, sub_h, QImage.Format.Format_ARGB32)
-        img.fill(0)
-        
-        for y in range(sub_h):
-            py = min_y + y * subsample
-            l_val = max(0.0, min(1.0, (cy + hy - py) / (2.0 * hy)))
-            px_right = px_left + 3.0 * r * (0.5 - abs(l_val - 0.5))
-            row_w = px_right - px_left
-            first_colored = -1
-            
-            for x in range(sub_w):
-                px = min_x + x * subsample
-                if px >= px_left and px <= px_right and self.is_point_in_triangle(px, py, v0, v1, v2):
-                    s_val = (px - px_left) / row_w if row_w > 0.001 else 0.0
-                    s_val = max(0.0, min(1.0, s_val))
-                    red, green, blue = colorsys.hls_to_rgb(self.h / 360.0, l_val, s_val)
-                    color = QColor(int(red * 255), int(green * 255), int(blue * 255))
-                    img.setPixelColor(x, y, color)
-                    if first_colored < 0:
-                        first_colored = x
-                        
-            # Fill gap on the left — caused by integer pixel positions vs fractional triangle edge
-            if first_colored > 0:
-                fill = img.pixelColor(first_colored, y)
-                for x in range(first_colored):
-                    img.setPixelColor(x, y, fill)
-                    
+        subsample = 3 if self.is_active_interaction() else 1
+        result, img = self._render_slice_image(
+            "hls-triangle", self.h, cx, cy, r, subsample=subsample)
+
         self._cached_hls_key = cache_key
-        if subsample > 1:
-            self._cached_hls_img = img.scaled(width, height, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        else:
-            self._cached_hls_img = img
-        self._cached_hls_minx = min_x
-        self._cached_hls_miny = min_y
-        
-        painter.drawImage(min_x, min_y, self._cached_hls_img)
+        self._cached_hls_img = img
+        self._cached_hls_minx = result.min_x
+        self._cached_hls_miny = result.min_y
+
+        painter.drawImage(result.min_x, result.min_y, img)
         self._draw_hls_triangle_outline(painter, v0, v1, v2, subsample)
 
     def _draw_hls_triangle_outline(self, painter, v0, v1, v2, subsample=1):
@@ -1045,86 +999,26 @@ class ColorWheel(QWidget):
             painter.drawImage(int(self._cached_rgb_minx), int(self._cached_rgb_miny), self._cached_rgb_img)
             self._draw_slice_outline(painter, "rgb")
             return
-            
-        hy = r * 0.866
-        min_x = int(math.floor(cx - r * 0.5))
-        max_x = int(math.ceil(cx + r * 1.5))
-        min_y = int(math.floor(cy - hy))
-        max_y = int(math.ceil(cy + hy))
-        width = max_x - min_x
-        height = max_y - min_y
-        
-        if width <= 0 or height <= 0:
-            return
-            
-        # RGB?Lab conversion is the most expensive slice renderer, so use a
+
+        # RGB→Lab conversion is the most expensive slice renderer, so use a
         # slightly coarser active preview to keep the indicator under one frame.
-        is_active = self.is_active_interaction()
-        subsample = 5 if is_active else 1
-            
-        sub_w = max(1, (width + subsample - 1) // subsample)
-        sub_h = max(1, (height + subsample - 1) // subsample)
-        
-        img = QImage(sub_w, sub_h, QImage.Format.Format_ARGB32)
-        img.fill(0)
-        
-        pure_r, pure_g, pure_b = hsv_to_rgb(self.h, 100.0, 100.0)
-        l_p, a_p, b_p = rgb_to_lab(pure_r, pure_g, pure_b)
-        C_pure = math.sqrt(a_p * a_p + b_p * b_p)
-        a_dir = a_p / C_pure if C_pure > 0.001 else 0.0
-        b_dir = b_p / C_pure if C_pure > 0.001 else 0.0
+        subsample = 5 if self.is_active_interaction() else 1
+        result, img = self._render_slice_image(
+            "rgb-slice", self.h, cx, cy, r, subsample=subsample)
 
-        # Sample max chroma at multiple L and scale to fill available width
-        max_c = max(
-            find_max_lab_c(20, a_dir, b_dir),
-            find_max_lab_c(50, a_dir, b_dir),
-            find_max_lab_c(80, a_dir, b_dir),
-        )
-        scale = (r * 1.05) / max(max_c, 0.001)
-
-        sub_edge_x = [min_x] * sub_h
-        
-        for y in range(sub_h):
-            py = min_y + y * subsample
-            L = max(0.0, min(1.0, (cy + hy - py) / (2.0 * hy)))
-            L_val = L * 100.0
-            
-            for x in range(sub_w):
-                px = min_x + x * subsample
-                C = (px - min_x) / scale
-                a_val = C * a_dir
-                b_val = C * b_dir
-                
-                rgb_r, rgb_g, rgb_b = lab_to_rgb(L_val, a_val, b_val)
-                
-                if (0.0 <= rgb_r <= 255.0 and
-                    0.0 <= rgb_g <= 255.0 and
-                    0.0 <= rgb_b <= 255.0):
-                    
-                    img.setPixelColor(x, y, QColor(
-                        max(0, min(255, int(rgb_r))),
-                        max(0, min(255, int(rgb_g))),
-                        max(0, min(255, int(rgb_b)))
-                    ))
-                    if px > sub_edge_x[y]:
-                        sub_edge_x[y] = px
-                        
         self._cached_rgb_key = cache_key
-        if subsample > 1:
-            self._cached_rgb_img = img.scaled(width, height, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        else:
-            self._cached_rgb_img = img
-        self._cached_rgb_minx = min_x
-        self._cached_rgb_miny = min_y
-        
-        painter.drawImage(min_x, min_y, self._cached_rgb_img)
-        
+        self._cached_rgb_img = img
+        self._cached_rgb_minx = result.min_x
+        self._cached_rgb_miny = result.min_y
+
+        painter.drawImage(result.min_x, result.min_y, img)
+
         # Save edge data and draw outline
-        edge_x = [min_x] * height
-        for y in range(height):
-            sub_y = min(sub_h - 1, y // subsample) if subsample > 1 else y
-            edge_x[y] = sub_edge_x[sub_y]
-        self._cached_rgb_edge = (edge_x, min_x, min_y, max_y, height)
+        if result.edge_x is not None:
+            self._cached_rgb_edge = (
+                result.edge_x, result.min_x, result.min_y,
+                result.min_y + result.height, result.height,
+            )
         self._draw_slice_outline(painter, "rgb")
 
     def _draw_slice_outline(self, painter, tag):
@@ -1559,47 +1453,16 @@ class ColorWheel(QWidget):
         if not img_ready:
             # Keep every active drag responsive; end_drag() invalidates the cache
             # so the next paint restores the full-quality image.
-            is_active = self.is_active_interaction()
-            subsample = 3 if is_active else 1
-            sub_w = max(1, (width + subsample - 1) // subsample)
-            sub_h = max(1, (height + subsample - 1) // subsample)
-
-            img = QImage(sub_w, sub_h, QImage.Format.Format_ARGB32)
-            img.fill(0)
-
+            subsample = 3 if self.is_active_interaction() else 1
             scale = self._oklch_scale_for_hue(oklch_h, r)
-
-            for y in range(sub_h):
-                py = min_y + y * subsample
-                L = max(0.0, min(1.0, (cy + hy - py) / (2.0 * hy)))
-
-                for x in range(sub_w):
-                    px = min_x + x * subsample
-                    C = max(0.0, (px - min_x) / scale)
-
-                    rgb_r, rgb_g, rgb_b = oklch_to_rgb(L, C, oklch_h)
-
-                    if not (0.0 <= rgb_r <= 255.0 and
-                            0.0 <= rgb_g <= 255.0 and
-                            0.0 <= rgb_b <= 255.0):
-                        continue
-
-                    r8 = max(0, min(255, int(rgb_r)))
-                    g8 = max(0, min(255, int(rgb_g)))
-                    b8 = max(0, min(255, int(rgb_b)))
-
-                    img.setPixelColor(x, y, QColor(r8, g8, b8))
+            result, img = self._render_slice_image(
+                "oklch-slice", oklch_h, cx, cy, r,
+                width=box_w, scale=scale, subsample=subsample)
 
             self._cached_oklch_key = cache_key
-            if subsample > 1:
-                self._cached_oklch_img = img.scaled(
-                    width, height,
-                    Qt.AspectRatioMode.IgnoreAspectRatio,
-                    Qt.TransformationMode.FastTransformation)
-            else:
-                self._cached_oklch_img = img
-            self._cached_oklch_minx = min_x
-            self._cached_oklch_miny = min_y
+            self._cached_oklch_img = img
+            self._cached_oklch_minx = result.min_x
+            self._cached_oklch_miny = result.min_y
 
         painter.drawImage(int(self._cached_oklch_minx),
                           int(self._cached_oklch_miny),

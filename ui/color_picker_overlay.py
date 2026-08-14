@@ -19,12 +19,24 @@ _ZOOM=6; _RADIUS=7; _PREVIEW=32; _PAD=6; _BR=8
 # Fixed magnifier display area in px (at default zoom × radius)
 _GRID_PX = (2*_RADIUS+1) * _ZOOM  # 90
 
-def _read_zoom():
-    try: from core import config; return cast(int, config.load_hotkey_config().get("pickerZoom",6))
-    except: return 6
-
 def _nearest_odd(v):
     v = max(3, int(v)); return v if v%2 else v+1
+
+
+def _zoom_geometry(zoom):
+    """Resolve the magnifier geometry for *zoom*.
+
+    Returns ``(cap_size, radius, grid_disp, panel_w, panel_h)``. The zoom
+    level is injected by the owner (MainWindow) rather than re-read from the
+    settings file on every pick; see :meth:`ColorPickerOverlay.set_zoom`.
+    """
+    zoom = max(1, int(zoom))
+    cap_size = _nearest_odd(_GRID_PX / zoom)
+    radius = (cap_size - 1) // 2
+    grid_disp = cap_size * zoom
+    panel_w = grid_disp + _PAD * 2
+    panel_h = _PAD + grid_disp + _PAD + _PREVIEW + _PAD + 10 + 11 + _PAD
+    return cap_size, radius, grid_disp, panel_w, panel_h
 
 # Load native mouse hook DLL
 _hook_dll = None
@@ -163,16 +175,23 @@ class ColorPickerOverlay(QWidget):
 
     @property
     def is_active(self): return self._active
+
+    def set_zoom(self, zoom):
+        """Inject the magnifier zoom level; used on the next ``start()``.
+
+        MainWindow owns the live ``pickerZoom`` setting and pushes it here at
+        construction and on settings save, so a pick never re-reads the whole
+        settings file just to resolve one key.
+        """
+        self._zoom = max(1, int(zoom))
+
     def start(self):
         self._active=True
-        # Recalc source region from fixed display size + zoom
-        self._zoom = _read_zoom()
-        self._cap_size = _nearest_odd(_GRID_PX / self._zoom)
-        self._radius = (self._cap_size - 1) // 2
-        # Recalc panel to exactly fit the grid (avoids asymmetric margins)
-        grid_disp = self._cap_size * self._zoom
-        self._panel_w = grid_disp + _PAD * 2
-        self._panel_h = _PAD + grid_disp + _PAD + _PREVIEW + _PAD + 10 + 11 + _PAD
+        # Recalc source region + panel from the injected zoom level. The
+        # panel is recomputed to exactly fit the grid (avoids asymmetric
+        # margins) without any config I/O on the hot path.
+        (self._cap_size, self._radius, grid_disp,
+         self._panel_w, self._panel_h) = _zoom_geometry(self._zoom)
         self.setFixedSize(self._panel_w, self._panel_h)
         # Snapshot ALL screens BEFORE showing the picker panel / cross-hair dot
         # so neither appears in the captured pixels.  _tick() will sample from

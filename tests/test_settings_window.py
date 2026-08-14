@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from PyQt6.QtWidgets import QPushButton
 
+from core import i18n
 from core.config import load_hotkey_config
 
 # ── Fixtures ────────────────────────────────────────────────────────────
@@ -21,6 +22,12 @@ def qapp():
     """Provide a QApplication for the test module (offscreen)."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PyQt6.QtWidgets import QApplication
+
+    # Pin the UI language so text assertions are deterministic regardless of
+    # the machine's locale.
+    from core import i18n
+
+    i18n.set_language(i18n.LANG_ZH)
 
     app = QApplication.instance()
     if app is None:
@@ -106,6 +113,33 @@ class TestSettingsWindowConstruction:
 
     def test_initial_state_is_hidden(self, settings_window):
         assert not settings_window.isVisible()
+
+
+class TestLanguageSwitch:
+    """Language changes re-apply immediately without a restart."""
+
+    def test_retranslate_switches_nav_to_english(self, sidebar, qapp):
+        i18n.set_language(i18n.LANG_EN)
+        try:
+            sidebar.retranslate()
+            qapp.processEvents()
+            assert sidebar.nav.item(0).text() == "Hotkeys"
+        finally:
+            i18n.set_language(i18n.LANG_ZH)
+
+    def test_language_combo_applies_immediately(self, sidebar, qapp):
+        i18n.set_language(i18n.LANG_ZH)
+        try:
+            with patch("ui.settings_sidebar.config.save_hotkey_config"):
+                # Move to Chinese first (regardless of the persisted state),
+                # then to English — both via the combo signal path.
+                sidebar.cmb_language.setCurrentIndex(sidebar.cmb_language.findData("zh"))
+                qapp.processEvents()
+                sidebar.cmb_language.setCurrentIndex(sidebar.cmb_language.findData("en"))
+                qapp.processEvents()
+            assert sidebar.nav.item(0).text() == "Hotkeys"
+        finally:
+            i18n.set_language(i18n.LANG_ZH)
 
 
 class TestShowNearMainWindow:

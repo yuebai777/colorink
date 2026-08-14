@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import sys
 import webbrowser
 from typing import TYPE_CHECKING, cast
 
@@ -26,7 +27,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core import autostart, config, updater
+from core import autostart, config, i18n, updater
 from ui.hotkey_button import HotkeyButton, display_hotkey
 from ui.ringless_mode import RinglessConfig
 from ui.ringless_settings import RinglessSettingsWidget
@@ -82,12 +83,38 @@ class SettingsSidebar(QWidget):
         self._last_settings_tab = 0
         self.init_ui()
         self.refresh_ui()
-        
+
+    @staticmethod
+    def _clear_layout(layout):
+        """Recursively detach and schedule deletion of a layout's contents."""
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+            else:
+                sub = item.layout()
+                if sub is not None:
+                    SettingsSidebar._clear_layout(sub)
+
+    def retranslate(self):
+        """Rebuild the sidebar UI to reflect the newly active language."""
+        row = self.nav.currentRow() if hasattr(self, "nav") else 0
+        self.init_ui()
+        self.refresh_ui()
+        if 0 <= row < self.nav.count():
+            self.nav.setCurrentRow(row)
+
     def init_ui(self):
-        # Main layout: CSP-style left rail navigation + stacked pages
-        self._layout = QVBoxLayout(self)
-        self._layout.setContentsMargins(8, 8, 8, 8)
-        self._layout.setSpacing(0)
+        # Rebuildable: clear any previous content so retranslate() can re-run
+        # this method without stacking a second layout on the widget.
+        if hasattr(self, "_layout") and self._layout is not None:
+            self._clear_layout(self._layout)
+        else:
+            self._layout = QVBoxLayout(self)
+            self._layout.setContentsMargins(8, 8, 8, 8)
+            self._layout.setSpacing(0)
 
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
@@ -110,10 +137,10 @@ class SettingsSidebar(QWidget):
             ("软件", "software"),
             ("关于", "about"),
         ]:
-            item = QListWidgetItem(text)
+            item = QListWidgetItem(i18n.tr(text))
+            item.setData(Qt.ItemDataRole.UserRole, kind)
             item.setSizeHint(QSize(0, 28))
             self.nav.addItem(item)
-            self._nav_icons[text] = kind
         self.nav.currentRowChanged.connect(self._on_nav_changed)
         body.addWidget(self.nav)
 
@@ -133,55 +160,55 @@ class SettingsSidebar(QWidget):
         page_about     = self._make_page("关于")
 
         # ═══════════════════ Page 1: 快捷键 ═══════════════════
-        card_hk, cl_hk = self._begin_card(page_hotkeys, "全局热键")
+        card_hk, cl_hk = self._begin_card(page_hotkeys, i18n.tr("全局热键"))
 
         grid_hotkeys = QGridLayout()
         grid_hotkeys.setSpacing(6)
         grid_hotkeys.setColumnMinimumWidth(0, 84)
         grid_hotkeys.setColumnStretch(1, 1)
 
-        grid_hotkeys.addWidget(QLabel("全局取色"), 0, 0)
+        grid_hotkeys.addWidget(QLabel(i18n.tr("全局取色")), 0, 0)
         self.btn_pick = HotkeyButton("pickKey", self.cfg.get("pickKey", "F11"), allow_mouse=True)
         self.btn_pick.hotkeyChanged.connect(self.save_hotkeys)
         grid_hotkeys.addWidget(self.btn_pick, 0, 1)
 
-        grid_hotkeys.addWidget(QLabel("隐藏界面"), 1, 0)
+        grid_hotkeys.addWidget(QLabel(i18n.tr("隐藏界面")), 1, 0)
         self.btn_hide = HotkeyButton("hideWindowKey", self.cfg.get("hideWindowKey", "Ctrl+H"), allow_mouse=True)
         self.btn_hide.hotkeyChanged.connect(self.save_hotkeys)
         grid_hotkeys.addWidget(self.btn_hide, 1, 1)
 
-        grid_hotkeys.addWidget(QLabel("随鼠标移动"), 2, 0)
+        grid_hotkeys.addWidget(QLabel(i18n.tr("随鼠标移动")), 2, 0)
         self.btn_follow = HotkeyButton("followMouseKey", self.cfg.get("followMouseKey", "Ctrl+R"), allow_mouse=True)
         self.btn_follow.hotkeyChanged.connect(self.save_hotkeys)
         row_follow = QHBoxLayout()
         row_follow.setSpacing(6)
-        self.cb_follow_mouse = QCheckBox("启用")
+        self.cb_follow_mouse = QCheckBox(i18n.tr("启用"))
         self.cb_follow_mouse.stateChanged.connect(self.save_settings)
         row_follow.addWidget(self.btn_follow)
         row_follow.addWidget(self.cb_follow_mouse)
         row_follow.addStretch()
         grid_hotkeys.addLayout(row_follow, 2, 1)
 
-        grid_hotkeys.addWidget(QLabel("黑白滤镜"), 3, 0)
+        grid_hotkeys.addWidget(QLabel(i18n.tr("黑白滤镜")), 3, 0)
         self.btn_grayscale = HotkeyButton("grayscaleFilterKey", self.cfg.get("grayscaleFilterKey", "Ctrl+G"), allow_mouse=True)
         self.btn_grayscale.hotkeyChanged.connect(self.save_hotkeys)
         grid_hotkeys.addWidget(self.btn_grayscale, 3, 1)
 
-        grid_hotkeys.addWidget(QLabel("LAB切换(色轮)"), 4, 0)
+        grid_hotkeys.addWidget(QLabel(i18n.tr("LAB切换(色轮)")), 4, 0)
         self.btn_lab_toggle = HotkeyButton("toggleLabKey", self.cfg.get("toggleLabKey", "Space"), allow_mouse=True)
-        self.btn_lab_toggle.setToolTip("鼠标悬停在色轮或LAB区域时，按此键/鼠标键切换色轮/LAB视图；支持键盘、鼠标按键或数位板笔按键（建议侧键/中键，左键会与色轮操作冲突）；无需聚焦本窗口，无焦点选色模式下也可用")
+        self.btn_lab_toggle.setToolTip(i18n.tr("鼠标悬停在色轮或LAB区域时，按此键/鼠标键切换色轮/LAB视图；支持键盘、鼠标按键或数位板笔按键（建议侧键/中键，左键会与色轮操作冲突）；无需聚焦本窗口，无焦点选色模式下也可用"))
         self.btn_lab_toggle.hotkeyChanged.connect(self.save_hotkeys)
         grid_hotkeys.addWidget(self.btn_lab_toggle, 4, 1)
 
-        grid_hotkeys.addWidget(QLabel("LAB切换(全局)"), 5, 0)
+        grid_hotkeys.addWidget(QLabel(i18n.tr("LAB切换(全局)")), 5, 0)
         self.btn_lab_global = HotkeyButton("toggleLabGlobalKey", self.cfg.get("toggleLabGlobalKey", "Ctrl+L"), allow_mouse=True)
-        self.btn_lab_global.setToolTip("任意位置全局切换色轮/LAB视图，无需聚焦本窗口；支持键盘或鼠标按键（鼠标按键作为全局快捷键时不拦截点击，画画软件仍会收到）")
+        self.btn_lab_global.setToolTip(i18n.tr("任意位置全局切换色轮/LAB视图，无需聚焦本窗口；支持键盘或鼠标按键（鼠标按键作为全局快捷键时不拦截点击，画画软件仍会收到）"))
         self.btn_lab_global.hotkeyChanged.connect(self.save_hotkeys)
         grid_hotkeys.addWidget(self.btn_lab_global, 5, 1)
 
-        grid_hotkeys.addWidget(QLabel("标题栏显隐"), 6, 0)
+        grid_hotkeys.addWidget(QLabel(i18n.tr("标题栏显隐")), 6, 0)
         self.btn_title_bar = HotkeyButton("toggleTitleBarKey", self.cfg.get("toggleTitleBarKey", "Ctrl+Shift+T"), allow_mouse=True)
-        self.btn_title_bar.setToolTip("显示或隐藏标题栏（设置/最小化/关闭按钮那一栏）；隐藏后顶部边框与四周一致")
+        self.btn_title_bar.setToolTip(i18n.tr("显示或隐藏标题栏（设置/最小化/关闭按钮那一栏）；隐藏后顶部边框与四周一致"))
         self.btn_title_bar.hotkeyChanged.connect(self.save_hotkeys)
         grid_hotkeys.addWidget(self.btn_title_bar, 6, 1)
 
@@ -189,7 +216,7 @@ class SettingsSidebar(QWidget):
         page_hotkeys.addWidget(card_hk)
 
         # ═══════════════════ Page 2: 界面 ═══════════════════
-        card_appear, cl_appear = self._begin_card(page_interface, "外观")
+        card_appear, cl_appear = self._begin_card(page_interface, i18n.tr("外观"))
         self._card_layout_interface_bg = cl_appear  # stored for _make_eyedropper_row
 
         grid_appear = QGridLayout()
@@ -198,14 +225,18 @@ class SettingsSidebar(QWidget):
         grid_appear.setColumnStretch(1, 1)
 
         # Background theme
-        grid_appear.addWidget(QLabel("背景主题"), 0, 0)
+        grid_appear.addWidget(QLabel(i18n.tr("背景主题")), 0, 0)
         self.combo_theme = NonScrollComboBox()
-        self.combo_theme.addItems(["背景 自动（匹配CSP）", "背景 取色", "背景 灰", "背景 白", "背景 黑"])
+        self.combo_theme.addItem(i18n.tr("背景 自动（匹配CSP）"), "auto")
+        self.combo_theme.addItem(i18n.tr("背景 取色"), "eyedropper")
+        self.combo_theme.addItem(i18n.tr("背景 灰"), "gray")
+        self.combo_theme.addItem(i18n.tr("背景 白"), "white")
+        self.combo_theme.addItem(i18n.tr("背景 黑"), "black")
         self.combo_theme.currentTextChanged.connect(self.save_settings)
         grid_appear.addWidget(self.combo_theme, 0, 1)
 
         # Slider visual theme
-        grid_appear.addWidget(QLabel("滑条样式"), 1, 0)
+        grid_appear.addWidget(QLabel(i18n.tr("滑条样式")), 1, 0)
         self.combo_slider_style = NonScrollComboBox()
         for _key, _display in list_slider_theme_names():
             self.combo_slider_style.addItem(_display, _key)
@@ -213,7 +244,7 @@ class SettingsSidebar(QWidget):
         grid_appear.addWidget(self.combo_slider_style, 1, 1)
 
         # Font size controls (- / +)
-        grid_appear.addWidget(QLabel("字体大小"), 2, 0)
+        grid_appear.addWidget(QLabel(i18n.tr("字体大小")), 2, 0)
         row_font_size = QHBoxLayout()
         row_font_size.setSpacing(4)
         self.btn_font_dec = self._make_step_button("-")
@@ -229,7 +260,7 @@ class SettingsSidebar(QWidget):
         grid_appear.addLayout(row_font_size, 2, 1)
 
         # UI Scale controls (Slider)
-        grid_appear.addWidget(QLabel("界面缩放"), 3, 0)
+        grid_appear.addWidget(QLabel(i18n.tr("界面缩放")), 3, 0)
         row_zoom = QHBoxLayout()
         self.zoom_slider = NonScrollSlider(Qt.Orientation.Horizontal)
         self.zoom_slider.setObjectName("ScaleSlider")
@@ -252,81 +283,82 @@ class SettingsSidebar(QWidget):
         cl_appear.addWidget(self.lbl_theme_status)
 
         # Eyedropper control rows (visible only when "取色" theme is selected)
-        self._make_eyedropper_row("bar", "框色", "绘画软件标题栏/边框的深色")
-        self._make_eyedropper_row("bg",  "底色", "绘画软件画布区域的浅色")
+        self._make_eyedropper_row("bar", i18n.tr("框色"), i18n.tr("绘画软件标题栏/边框的深色"))
+        self._make_eyedropper_row("bg",  i18n.tr("底色"), i18n.tr("绘画软件画布区域的浅色"))
 
         page_interface.addWidget(card_appear)
 
-        card_gray, cl_gray = self._begin_card(page_interface, "灰度滤镜")
+        card_gray, cl_gray = self._begin_card(page_interface, i18n.tr("灰度滤镜"))
 
         grid_gray = QGridLayout()
         grid_gray.setSpacing(6)
         grid_gray.setColumnMinimumWidth(0, 84)
         grid_gray.setColumnStretch(1, 1)
 
-        grid_gray.addWidget(QLabel("滤镜目标屏幕"), 0, 0)
+        grid_gray.addWidget(QLabel(i18n.tr("滤镜目标屏幕")), 0, 0)
         self.combo_grayscale_screen = NonScrollComboBox()
-        self.combo_grayscale_screen.setToolTip("选择黑白滤镜作用在哪个屏幕，默认作用于全部屏幕")
+        self.combo_grayscale_screen.setToolTip(i18n.tr("选择黑白滤镜作用在哪个屏幕，默认作用于全部屏幕"))
         self.combo_grayscale_screen.currentTextChanged.connect(self.save_settings)
         grid_gray.addWidget(self.combo_grayscale_screen, 0, 1)
 
-        grid_gray.addWidget(QLabel("黑白模式"), 1, 0)
+        grid_gray.addWidget(QLabel(i18n.tr("黑白模式")), 1, 0)
         self.combo_grayscale_mode = NonScrollComboBox()
-        self.combo_grayscale_mode.addItems(["OKLCh (感知均匀)", "Luma (BT.709 标准)"])
-        self.combo_grayscale_mode.setToolTip("OKLCh 更接近人眼感知；Luma 是标准亮度转换")
+        self.combo_grayscale_mode.addItem(i18n.tr("OKLCh (感知均匀)"), "oklch")
+        self.combo_grayscale_mode.addItem(i18n.tr("Luma (BT.709 标准)"), "luma")
+        self.combo_grayscale_mode.setToolTip(i18n.tr("OKLCh 更接近人眼感知；Luma 是标准亮度转换"))
         self.combo_grayscale_mode.currentTextChanged.connect(self.save_settings)
         grid_gray.addWidget(self.combo_grayscale_mode, 1, 1)
 
-        grid_gray.addWidget(QLabel("渲染后端 (高级)"), 2, 0)
+        grid_gray.addWidget(QLabel(i18n.tr("渲染后端 (高级)")), 2, 0)
         self.combo_grayscale_backend = NonScrollComboBox()
-        self.combo_grayscale_backend.addItems(
-            ["OKLCh (GPU兼容)", "系统 Luma (Mag)"])
+        self.combo_grayscale_backend.addItem(i18n.tr("OKLCh (GPU兼容)"), "native")
+        self.combo_grayscale_backend.addItem(i18n.tr("系统 Luma (Mag)"), "mag")
         self.combo_grayscale_backend.setToolTip(
-            "OKLCh (GPU兼容)：感知均匀的全屏黑白，覆盖 ColorInk；"
+            i18n.tr("OKLCh (GPU兼容)：感知均匀的全屏黑白，覆盖 ColorInk；"
             "系统 Luma (Mag)：延迟最低、仅作用于全部屏幕的备用模式；"
-            "需要按屏目标时请在 Native 后端选择 Luma。")
+            "需要按屏目标时请在 Native 后端选择 Luma。"))
         self.combo_grayscale_backend.currentTextChanged.connect(self._on_grayscale_backend_changed)
         grid_gray.addWidget(self.combo_grayscale_backend, 2, 1)
 
         cl_gray.addLayout(grid_gray)
         page_interface.addWidget(card_gray)
 
-        card_behavior, cl_behavior = self._begin_card(page_interface, "行为")
+        card_behavior, cl_behavior = self._begin_card(page_interface, i18n.tr("行为"))
 
         # 6 checkboxes in symmetric 3×2 grid
         grid_behavior = QGridLayout()
         grid_behavior.setSpacing(6)
 
-        self.cb_taskbar_icon = QCheckBox("任务栏图标")
+        self.cb_taskbar_icon = QCheckBox(i18n.tr("任务栏图标"))
         self.cb_taskbar_icon.stateChanged.connect(self.save_settings)
         grid_behavior.addWidget(self.cb_taskbar_icon, 0, 0)
 
-        self.cb_show_title_bar = QCheckBox("显示标题栏")
-        self.cb_show_title_bar.setToolTip("隐藏后顶部边框与四周一致；可通过快捷键或托盘菜单恢复")
+        self.cb_show_title_bar = QCheckBox(i18n.tr("显示标题栏"))
+        self.cb_show_title_bar.setToolTip(i18n.tr("隐藏后顶部边框与四周一致；可通过快捷键或托盘菜单恢复"))
         self.cb_show_title_bar.stateChanged.connect(self.save_settings)
         grid_behavior.addWidget(self.cb_show_title_bar, 3, 0)
 
-        self.cb_lock_size = QCheckBox("固定窗口大小")
+        self.cb_lock_size = QCheckBox(i18n.tr("固定窗口大小"))
         self.cb_lock_size.stateChanged.connect(self.save_settings)
         grid_behavior.addWidget(self.cb_lock_size, 1, 0)
 
-        self.cb_lock_position = QCheckBox("锁定窗口位置")
-        self.cb_lock_position.setToolTip("开启后不能拖动窗口")
+        self.cb_lock_position = QCheckBox(i18n.tr("锁定窗口位置"))
+        self.cb_lock_position.setToolTip(i18n.tr("开启后不能拖动窗口"))
         self.cb_lock_position.stateChanged.connect(self.save_settings)
         grid_behavior.addWidget(self.cb_lock_position, 2, 0)
 
-        self.cb_autostart = QCheckBox("开机自启动")
-        self.cb_autostart.setToolTip("开机后自动以管理员权限启动（免 UAC 弹窗）")
+        self.cb_autostart = QCheckBox(i18n.tr("开机自启动"))
+        self.cb_autostart.setToolTip(i18n.tr("开机后自动以管理员权限启动（免 UAC 弹窗）"))
         self.cb_autostart.stateChanged.connect(self.save_settings)
         grid_behavior.addWidget(self.cb_autostart, 0, 1)
 
-        self.cb_only_drawing = QCheckBox("仅在画图软件前台时显示")
-        self.cb_only_drawing.setToolTip("画图软件不在前台时自动隐藏悬浮面板")
+        self.cb_only_drawing = QCheckBox(i18n.tr("仅在画图软件前台时显示"))
+        self.cb_only_drawing.setToolTip(i18n.tr("画图软件不在前台时自动隐藏悬浮面板"))
         self.cb_only_drawing.stateChanged.connect(self.save_settings)
         grid_behavior.addWidget(self.cb_only_drawing, 1, 1)
 
-        self.cb_no_focus = QCheckBox("无焦点选色模式")
-        self.cb_no_focus.setToolTip("开启后不会抢占画图软件的键盘焦点，适合边画边选色")
+        self.cb_no_focus = QCheckBox(i18n.tr("无焦点选色模式"))
+        self.cb_no_focus.setToolTip(i18n.tr("开启后不会抢占画图软件的键盘焦点，适合边画边选色"))
         self.cb_no_focus.clicked.connect(self.on_no_focus_clicked)
         grid_behavior.addWidget(self.cb_no_focus, 2, 1)
 
@@ -334,13 +366,13 @@ class SettingsSidebar(QWidget):
         page_interface.addWidget(card_behavior)
 
         # ═══════════════════ Page 3: 取色器 ═══════════════════
-        card_pz, cl_pz = self._begin_card(page_picker, "取色器")
+        card_pz, cl_pz = self._begin_card(page_picker, i18n.tr("取色器"))
         grid_pz = QGridLayout()
         grid_pz.setSpacing(6)
         grid_pz.setColumnMinimumWidth(0, 84)
         grid_pz.setColumnStretch(1, 1)
 
-        grid_pz.addWidget(QLabel("取色放大倍率"), 0, 0)
+        grid_pz.addWidget(QLabel(i18n.tr("取色放大倍率")), 0, 0)
         row_picker_zoom = QHBoxLayout()
         row_picker_zoom.setSpacing(4)
         self.btn_zoom_dec = self._make_step_button("-")
@@ -355,13 +387,14 @@ class SettingsSidebar(QWidget):
         row_picker_zoom.addWidget(self.btn_zoom_inc)
         grid_pz.addLayout(row_picker_zoom, 0, 1)
 
-        grid_pz.addWidget(QLabel("前背景色位置"), 1, 0)
+        grid_pz.addWidget(QLabel(i18n.tr("前背景色位置")), 1, 0)
         self.combo_pos = NonScrollComboBox()
-        self.combo_pos.addItems(["左上角", "左下角"])
+        self.combo_pos.addItem(i18n.tr("左上角"), "top-left")
+        self.combo_pos.addItem(i18n.tr("左下角"), "bottom-left")
         self.combo_pos.currentTextChanged.connect(self.save_settings)
         grid_pz.addWidget(self.combo_pos, 1, 1)
 
-        grid_pz.addWidget(QLabel("色彩空间模块"), 2, 0)
+        grid_pz.addWidget(QLabel(i18n.tr("色彩空间模块")), 2, 0)
         self.combo_module = NonScrollComboBox()
         self.combo_module.addItems(["HSV", "HLS", "RGB", "LCH"])
         self.combo_module.currentTextChanged.connect(self.save_settings)
@@ -369,19 +402,19 @@ class SettingsSidebar(QWidget):
 
         cl_pz.addLayout(grid_pz)
 
-        self.cb_show_module_btn = QCheckBox("显示模块切换按钮")
-        self.cb_show_module_btn.setToolTip("在色环区域显示色彩空间模块切换按钮")
+        self.cb_show_module_btn = QCheckBox(i18n.tr("显示模块切换按钮"))
+        self.cb_show_module_btn.setToolTip(i18n.tr("在色环区域显示色彩空间模块切换按钮"))
         self.cb_show_module_btn.stateChanged.connect(self.save_settings)
         cl_pz.addWidget(self.cb_show_module_btn)
 
-        self.cb_show_lab_toggle = QCheckBox("显示LAB切换按钮")
-        self.cb_show_lab_toggle.setToolTip("在色轮/LAB区域显示色轮与LAB之间的切换按钮")
+        self.cb_show_lab_toggle = QCheckBox(i18n.tr("显示LAB切换按钮"))
+        self.cb_show_lab_toggle.setToolTip(i18n.tr("在色轮/LAB区域显示色轮与LAB之间的切换按钮"))
         self.cb_show_lab_toggle.stateChanged.connect(self.save_settings)
         cl_pz.addWidget(self.cb_show_lab_toggle)
 
         page_picker.addWidget(card_pz)
 
-        card_sl_order, cl_sl_order = self._begin_card(page_picker, "滑块显示与顺序")
+        card_sl_order, cl_sl_order = self._begin_card(page_picker, i18n.tr("滑块显示与顺序"))
 
         self._MODULE_SLIDER_MAP = {
             "hsv":  ["HSV", "RGB", "LAB", "OKLab", "OKLCh"],
@@ -394,11 +427,11 @@ class SettingsSidebar(QWidget):
                           ("LAB", "LAB 滑条"), ("OKLab", "OKLab 滑条"), ("OKLCh", "OKLCh 滑条")]:
             row_layout = QHBoxLayout()
             row_layout.setSpacing(6)
-            cb = QCheckBox(name)
+            cb = QCheckBox(i18n.tr(name))
             cb.stateChanged.connect(self.save_settings)
-            btn_up = self._make_step_button("▲", "上移", width=24)
+            btn_up = self._make_step_button("▲", i18n.tr("上移"), width=24)
             btn_up.clicked.connect(lambda _checked, k=key: self._move_slider_order(k, -1))
-            btn_down = self._make_step_button("▼", "下移", width=24)
+            btn_down = self._make_step_button("▼", i18n.tr("下移"), width=24)
             btn_down.clicked.connect(lambda _checked, k=key: self._move_slider_order(k, 1))
             row_layout.addWidget(cb)
             row_layout.addStretch()
@@ -414,15 +447,15 @@ class SettingsSidebar(QWidget):
 
         self._refresh_module_sliders()
 
-        card_hist, cl_hist = self._begin_card(page_picker, "颜色历史")
+        card_hist, cl_hist = self._begin_card(page_picker, i18n.tr("颜色历史"))
 
         row_hist_show = QHBoxLayout()
         row_hist_show.setSpacing(6)
-        self.cb_history = QCheckBox("显示颜色历史")
+        self.cb_history = QCheckBox(i18n.tr("显示颜色历史"))
         self.cb_history.stateChanged.connect(self.save_settings)
-        self.btn_hist_up = self._make_step_button("▲", "在滑块顺序中上移", width=24)
+        self.btn_hist_up = self._make_step_button("▲", i18n.tr("在滑块顺序中上移"), width=24)
         self.btn_hist_up.clicked.connect(lambda _checked: self._move_slider_order("History", -1))
-        self.btn_hist_down = self._make_step_button("▼", "在滑块顺序中下移", width=24)
+        self.btn_hist_down = self._make_step_button("▼", i18n.tr("在滑块顺序中下移"), width=24)
         self.btn_hist_down.clicked.connect(lambda _checked: self._move_slider_order("History", 1))
         row_hist_show.addWidget(self.cb_history)
         row_hist_show.addStretch()
@@ -436,14 +469,14 @@ class SettingsSidebar(QWidget):
         grid_hist.setColumnMinimumWidth(0, 84)
         grid_hist.setColumnStretch(1, 1)
 
-        grid_hist.addWidget(QLabel("历史列数"), 0, 0)
+        grid_hist.addWidget(QLabel(i18n.tr("历史列数")), 0, 0)
         self.combo_history_cols = NonScrollComboBox()
         self.combo_history_cols.addItems(["3", "4", "5", "6", "7", "8", "9", "10", "12", "14", "16"])
         self.combo_history_cols.currentTextChanged.connect(self.save_settings)
         self.combo_history_cols.setFixedWidth(50)
         grid_hist.addWidget(self.combo_history_cols, 0, 1)
 
-        grid_hist.addWidget(QLabel("历史行数"), 1, 0)
+        grid_hist.addWidget(QLabel(i18n.tr("历史行数")), 1, 0)
         self.combo_history_rows = NonScrollComboBox()
         self.combo_history_rows.addItems(["1", "2", "3", "4", "5", "6", "8"])
         self.combo_history_rows.currentTextChanged.connect(self.save_settings)
@@ -453,7 +486,7 @@ class SettingsSidebar(QWidget):
         cl_hist.addLayout(grid_hist)
         page_picker.addWidget(card_hist)
 
-        card_wheel, cl_wheel = self._begin_card(page_picker, "色环与 LAB")
+        card_wheel, cl_wheel = self._begin_card(page_picker, i18n.tr("色环与 LAB"))
 
         # Ringless mode settings
         self.ringless_settings = RinglessSettingsWidget()
@@ -465,25 +498,26 @@ class SettingsSidebar(QWidget):
         grid_wheel.setColumnMinimumWidth(0, 84)
         grid_wheel.setColumnStretch(1, 1)
 
-        grid_wheel.addWidget(QLabel("LAB图模式"), 0, 0)
+        grid_wheel.addWidget(QLabel(i18n.tr("LAB图模式")), 0, 0)
         self.combo_viz_mode = NonScrollComboBox()
-        self.combo_viz_mode.addItems(["LAB 色彩空间", "OKLab 色彩空间"])
+        self.combo_viz_mode.addItem(i18n.tr("LAB 色彩空间"), "lab")
+        self.combo_viz_mode.addItem(i18n.tr("OKLab 色彩空间"), "oklab")
         self.combo_viz_mode.currentTextChanged.connect(self.save_settings)
         grid_wheel.addWidget(self.combo_viz_mode, 0, 1)
 
         cl_wheel.addLayout(grid_wheel)
 
-        self.cb_show_lab_lightness = QCheckBox("显示 LAB 亮度滑条")
+        self.cb_show_lab_lightness = QCheckBox(i18n.tr("显示 LAB 亮度滑条"))
         self.cb_show_lab_lightness.stateChanged.connect(self.save_settings)
         cl_wheel.addWidget(self.cb_show_lab_lightness)
 
-        self.cb_flip_wheel = QCheckBox("水平翻转色环")
+        self.cb_flip_wheel = QCheckBox(i18n.tr("水平翻转色环"))
         self.cb_flip_wheel.stateChanged.connect(self.save_settings)
         cl_wheel.addWidget(self.cb_flip_wheel)
 
         page_picker.addWidget(card_wheel)
 
-        card_sp, cl_sp = self._begin_card(page_picker, "高级")
+        card_sp, cl_sp = self._begin_card(page_picker, i18n.tr("高级"))
 
         grid_sp = QGridLayout()
         grid_sp.setSpacing(6)
@@ -491,7 +525,7 @@ class SettingsSidebar(QWidget):
         grid_sp.setColumnStretch(1, 1)
 
         # 滚轮步长
-        grid_sp.addWidget(QLabel("滚轮单次步长"), 0, 0)
+        grid_sp.addWidget(QLabel(i18n.tr("滚轮单次步长")), 0, 0)
         row_scroll = QHBoxLayout()
         row_scroll.setSpacing(4)
         self.btn_scroll_dec = self._make_step_button("-")
@@ -507,7 +541,7 @@ class SettingsSidebar(QWidget):
         grid_sp.addLayout(row_scroll, 0, 1)
 
         # 同一空间间距
-        grid_sp.addWidget(QLabel("同空间滑条间距"), 1, 0)
+        grid_sp.addWidget(QLabel(i18n.tr("同空间滑条间距")), 1, 0)
         row_same = QHBoxLayout()
         row_same.setSpacing(4)
         self.btn_same_dec = self._make_step_button("-")
@@ -523,7 +557,7 @@ class SettingsSidebar(QWidget):
         grid_sp.addLayout(row_same, 1, 1)
 
         # 不同空间间距
-        grid_sp.addWidget(QLabel("不同空间间距"), 2, 0)
+        grid_sp.addWidget(QLabel(i18n.tr("不同空间间距")), 2, 0)
         row_diff = QHBoxLayout()
         row_diff.setSpacing(4)
         self.btn_diff_dec = self._make_step_button("-")
@@ -542,7 +576,7 @@ class SettingsSidebar(QWidget):
         page_picker.addWidget(card_sp)
 
         # ═══════════════════ Page 4: 软件 ═══════════════════
-        card_sync, cl_sync = self._begin_card(page_software, "同步与版本")
+        card_sync, cl_sync = self._begin_card(page_software, i18n.tr("同步与版本"))
 
         self.lbl_sync_status = QLabel("")
         self.lbl_sync_status.setObjectName("StatusHint")
@@ -552,9 +586,12 @@ class SettingsSidebar(QWidget):
         grid_sync.setSpacing(6)
         grid_sync.setColumnMinimumWidth(0, 84)
         grid_sync.setColumnStretch(1, 1)
-        grid_sync.addWidget(QLabel("同步软件"), 0, 0)
+        grid_sync.addWidget(QLabel(i18n.tr("同步软件")), 0, 0)
         self.combo_software = NonScrollComboBox()
-        self.combo_software.addItems(["CLIP Studio Paint", "SAI2", "UDM Paint", "Photoshop", "CSP 智能手机 (R)"])
+        for _val, _disp in [("csp", "CLIP Studio Paint"), ("sai", "SAI2"),
+                            ("udm", "UDM Paint"), ("ps", "Photoshop"),
+                            ("companion", "CSP 智能手机 (R)")]:
+            self.combo_software.addItem(i18n.tr(_disp), _val)
         self.combo_software.currentTextChanged.connect(self.save_settings)
         self.combo_software.currentTextChanged.connect(self._on_software_changed)
         grid_sync.addWidget(self.combo_software, 0, 1)
@@ -564,10 +601,10 @@ class SettingsSidebar(QWidget):
         self.row_companion_widget = QWidget()
         row_comp = QHBoxLayout(self.row_companion_widget)
         row_comp.setContentsMargins(0, 0, 0, 0); row_comp.setSpacing(6)
-        self.lbl_companion_status = QLabel("未连接")
-        self.btn_companion_reconnect = QPushButton("重新连接")
+        self.lbl_companion_status = QLabel(i18n.tr("未连接"))
+        self.btn_companion_reconnect = QPushButton(i18n.tr("重新连接"))
         self.btn_companion_reconnect.clicked.connect(self._on_companion_reconnect)
-        self.btn_companion_disconnect = QPushButton("断开")
+        self.btn_companion_disconnect = QPushButton(i18n.tr("断开"))
         self.btn_companion_disconnect.clicked.connect(self._on_companion_disconnect)
         row_comp.addWidget(self.lbl_companion_status)
         row_comp.addStretch()
@@ -579,16 +616,17 @@ class SettingsSidebar(QWidget):
         self.row_csp_widget = QWidget()
         row_csp_layout = QHBoxLayout(self.row_csp_widget)
         row_csp_layout.setContentsMargins(0, 0, 0, 0)
-        row_csp_layout.addWidget(QLabel("CSP 版本"))
+        row_csp_layout.addWidget(QLabel(i18n.tr("CSP 版本")))
         self.combo_csp = NonScrollComboBox()
-        self.combo_csp.addItems([disp for _, disp in _CSP_VERSION_ITEMS])
+        for _val, _disp in _CSP_VERSION_ITEMS:
+            self.combo_csp.addItem(i18n.tr(_disp), _val)
         for i, (val, _disp) in enumerate(_CSP_VERSION_ITEMS):
             self.combo_csp.setItemData(
-                i, _CSP_VERSION_TIPS.get(val, ""), Qt.ItemDataRole.ToolTipRole
+                i, i18n.tr(_CSP_VERSION_TIPS.get(val, "")), Qt.ItemDataRole.ToolTipRole
             )
         self.combo_csp.setToolTip(
-            "前景/背景色与透明状态同步（内存模式）仅 CSP 5.1 支持；"
-            "自动检测失败时才需要手动指定版本"
+            i18n.tr("前景/背景色与透明状态同步（内存模式）仅 CSP 5.1 支持；"
+            "自动检测失败时才需要手动指定版本")
         )
         self.combo_csp.currentTextChanged.connect(self._on_csp_version_changed)
         row_csp_layout.addWidget(self.combo_csp)
@@ -608,10 +646,10 @@ class SettingsSidebar(QWidget):
         self.row_sai_widget = QWidget()
         row_sai_layout = QHBoxLayout(self.row_sai_widget)
         row_sai_layout.setContentsMargins(0, 0, 0, 0)
-        row_sai_layout.addWidget(QLabel("SAI2 版本"))
+        row_sai_layout.addWidget(QLabel(i18n.tr("SAI2 版本")))
         self.combo_sai = NonScrollComboBox()
         self.combo_sai.addItems(["auto", "pre-2024-sai2", "after-2024-sai2"])
-        self.combo_sai.setToolTip("2024 年后的 SAI2 版本地址偏移不同，自动检测失败时可手动指定")
+        self.combo_sai.setToolTip(i18n.tr("2024 年后的 SAI2 版本地址偏移不同，自动检测失败时可手动指定"))
         self.combo_sai.currentTextChanged.connect(self.save_settings)
         row_sai_layout.addWidget(self.combo_sai)
         cl_sync.addWidget(self.row_sai_widget)
@@ -620,7 +658,7 @@ class SettingsSidebar(QWidget):
         self.row_udm_widget = QWidget()
         row_udm_layout = QHBoxLayout(self.row_udm_widget)
         row_udm_layout.setContentsMargins(0, 0, 0, 0)
-        row_udm_layout.addWidget(QLabel("UDM 版本"))
+        row_udm_layout.addWidget(QLabel(i18n.tr("UDM 版本")))
         self.combo_udm = NonScrollComboBox()
         self.combo_udm.addItems(["auto", "udm4.0pro", "udm4.0ex"])
         self.combo_udm.currentTextChanged.connect(self.save_settings)
@@ -631,7 +669,7 @@ class SettingsSidebar(QWidget):
         self.row_ps_widget = QWidget()
         row_ps_layout = QHBoxLayout(self.row_ps_widget)
         row_ps_layout.setContentsMargins(0, 0, 0, 0)
-        row_ps_layout.addWidget(QLabel("PS 版本"))
+        row_ps_layout.addWidget(QLabel(i18n.tr("PS 版本")))
         self.combo_ps = NonScrollComboBox()
         self.combo_ps.addItems(["auto"])
         self.combo_ps.currentTextChanged.connect(self.save_settings)
@@ -650,9 +688,9 @@ class SettingsSidebar(QWidget):
         row_ps_bridge.addWidget(self.lbl_ps_bridge_status)
         row_ps_bridge_btns = QHBoxLayout()
         row_ps_bridge_btns.setSpacing(6)
-        self.btn_ps_bridge_recheck = QPushButton("重新检测")
+        self.btn_ps_bridge_recheck = QPushButton(i18n.tr("重新检测"))
         self.btn_ps_bridge_recheck.clicked.connect(self._on_ps_bridge_recheck)
-        self.btn_ps_bridge_restart = QPushButton("重启 Photoshop")
+        self.btn_ps_bridge_restart = QPushButton(i18n.tr("重启 Photoshop"))
         self.btn_ps_bridge_restart.clicked.connect(self._on_ps_restart)
         row_ps_bridge_btns.addWidget(self.btn_ps_bridge_recheck)
         row_ps_bridge_btns.addWidget(self.btn_ps_bridge_restart)
@@ -665,41 +703,63 @@ class SettingsSidebar(QWidget):
         page_software.addWidget(card_sync)
 
         # ═══════════════════ Page 5: 关于 ═══════════════════
-        card_about, cl_about = self._begin_card(page_about, "关于")
+        card_about, cl_about = self._begin_card(page_about, i18n.tr("关于"))
 
         row_version = QHBoxLayout()
-        row_version.addWidget(QLabel("当前版本"))
+        row_version.addWidget(QLabel(i18n.tr("当前版本")))
         self.lbl_version_value = QLabel(f"v{updater.APP_VERSION}")
         self.lbl_version_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         row_version.addStretch()
         row_version.addWidget(self.lbl_version_value)
         cl_about.addLayout(row_version)
 
+        row_lang = QHBoxLayout()
+        row_lang.addWidget(QLabel("语言 / Language"))
+        self.cmb_language = QComboBox()
+        self.cmb_language.addItem("自动 (Auto)", "auto")
+        self.cmb_language.addItem("中文", "zh")
+        self.cmb_language.addItem("English", "en")
+        self.cmb_language.setToolTip(i18n.tr("切换界面语言"))
+        cur_lang = self.cfg.get("language", "auto")
+        for i in range(self.cmb_language.count()):
+            if self.cmb_language.itemData(i) == cur_lang:
+                self.cmb_language.setCurrentIndex(i)
+                break
+        self.cmb_language.currentIndexChanged.connect(self._on_language_changed)
+        row_lang.addStretch()
+        row_lang.addWidget(self.cmb_language)
+        cl_about.addLayout(row_lang)
+
         row_about_actions = QHBoxLayout()
         row_about_actions.setSpacing(6)
-        self.btn_check_update = QPushButton("检查更新")
+        self.btn_check_update = QPushButton(i18n.tr("检查更新"))
         self.btn_check_update.clicked.connect(self.on_check_update)
-        self.btn_about_author = QPushButton("关于作者")
+        self.btn_about_author = QPushButton(i18n.tr("关于作者"))
         self.btn_about_author.clicked.connect(self.on_about_author)
         row_about_actions.addWidget(self.btn_check_update)
         row_about_actions.addWidget(self.btn_about_author)
         row_about_actions.addStretch()
         cl_about.addLayout(row_about_actions)
 
+        self.cb_check_updates = QCheckBox(i18n.tr("启动时自动检查更新"))
+        self.cb_check_updates.setChecked(self.cfg.get("checkUpdatesOnStartup", True))
+        self.cb_check_updates.toggled.connect(self._on_check_updates_toggled)
+        cl_about.addWidget(self.cb_check_updates)
+
         cl_about.addStretch()
         page_about.addWidget(card_about)
 
-        card_config, cl_config = self._begin_card(page_about, "配置管理")
+        card_config, cl_config = self._begin_card(page_about, i18n.tr("配置管理"))
         row_config_actions = QHBoxLayout()
         row_config_actions.setSpacing(6)
-        self.btn_export_config = QPushButton("导出配置")
-        self.btn_export_config.setToolTip("把当前设置保存为 JSON 文件")
+        self.btn_export_config = QPushButton(i18n.tr("导出配置"))
+        self.btn_export_config.setToolTip(i18n.tr("把当前设置保存为 JSON 文件"))
         self.btn_export_config.clicked.connect(self.export_config)
-        self.btn_import_config = QPushButton("导入配置")
-        self.btn_import_config.setToolTip("从 JSON 文件恢复设置")
+        self.btn_import_config = QPushButton(i18n.tr("导入配置"))
+        self.btn_import_config.setToolTip(i18n.tr("从 JSON 文件恢复设置"))
         self.btn_import_config.clicked.connect(self.import_config)
-        self.btn_reset_config = QPushButton("恢复默认")
-        self.btn_reset_config.setToolTip("恢复全部设置为出厂默认值")
+        self.btn_reset_config = QPushButton(i18n.tr("恢复默认"))
+        self.btn_reset_config.setToolTip(i18n.tr("恢复全部设置为出厂默认值"))
         self.btn_reset_config.clicked.connect(self.reset_config)
         row_config_actions.addWidget(self.btn_export_config)
         row_config_actions.addWidget(self.btn_import_config)
@@ -859,7 +919,7 @@ class SettingsSidebar(QWidget):
             item = self.nav.item(i)
             if item is None:
                 continue
-            kind = self._nav_icons.get(item.text(), "about")
+            kind = item.data(Qt.ItemDataRole.UserRole) or "about"
             item.setIcon(self._nav_icon(kind, "#ffffff" if i == selected else text))
 
     def create_header(self, text):
@@ -876,15 +936,15 @@ class SettingsSidebar(QWidget):
         row.setSpacing(4)
         row.addWidget(QLabel(label_text))
 
-        lbl = QLabel("未设定")
+        lbl = QLabel(i18n.tr("未设定"))
         self._set_label_state(lbl, "muted")
         row.addWidget(lbl)
 
-        btn_set = QPushButton("设定")
-        btn_set.setToolTip(tooltip + " — 点击后窗口隐藏3秒，移鼠标到目标位置")
+        btn_set = QPushButton(i18n.tr("设定"))
+        btn_set.setToolTip(tooltip + " — " + i18n.tr("点击后窗口隐藏3秒，移鼠标到目标位置"))
         btn_set.clicked.connect(lambda: self.start_eyedropper_pick(target))
-        btn_sync = QPushButton("同步")
-        btn_sync.setToolTip("从已设定的取色点立即同步颜色")
+        btn_sync = QPushButton(i18n.tr("同步"))
+        btn_sync.setToolTip(i18n.tr("从已设定的取色点立即同步颜色"))
         btn_sync.clicked.connect(lambda: self.do_eyedropper_sync(target))
         row.addWidget(btn_set)
         row.addWidget(btn_sync)
@@ -907,16 +967,13 @@ class SettingsSidebar(QWidget):
         self.combo_grayscale_mode.blockSignals(True)
         self.combo_grayscale_mode.clear()
         if backend == "mag":
-            self.combo_grayscale_mode.addItems(["Luma (BT.709 标准)"])
+            self.combo_grayscale_mode.addItem(i18n.tr("Luma (BT.709 标准)"), "luma")
         else:
-            self.combo_grayscale_mode.addItems(
-                ["OKLCh (感知均匀)", "Luma (BT.709 标准)"]
-            )
+            self.combo_grayscale_mode.addItem(i18n.tr("OKLCh (感知均匀)"), "oklch")
+            self.combo_grayscale_mode.addItem(i18n.tr("Luma (BT.709 标准)"), "luma")
             saved_mode = self.cfg.get("grayscaleFilterMode", "oklch")
-            self.combo_grayscale_mode.setCurrentText(
-                "Luma (BT.709 标准)" if saved_mode == "luma"
-                else "OKLCh (感知均匀)"
-            )
+            idx = self.combo_grayscale_mode.findData(saved_mode)
+            self.combo_grayscale_mode.setCurrentIndex(idx if idx >= 0 else 0)
         self.combo_grayscale_mode.setEnabled(backend != "mag")
         self.combo_grayscale_mode.blockSignals(False)
 
@@ -942,12 +999,12 @@ class SettingsSidebar(QWidget):
         if backend == "mag":
             self.combo_grayscale_screen.setEnabled(False)
             self.combo_grayscale_screen.setToolTip(
-                "系统 Luma (Mag) 作用于全部屏幕"
+                i18n.tr("系统 Luma (Mag) 作用于全部屏幕")
             )
         else:
             self.combo_grayscale_screen.setEnabled(True)
             self.combo_grayscale_screen.setToolTip(
-                "选择黑白滤镜作用在哪个屏幕，默认作用于全部屏幕"
+                i18n.tr("选择黑白滤镜作用在哪个屏幕，默认作用于全部屏幕")
             )
         self.combo_grayscale_screen.blockSignals(False)
 
@@ -979,31 +1036,31 @@ class SettingsSidebar(QWidget):
         
         # 1. Hotkeys
         _pick = self.cfg.get("pickKey", "F11")
-        self.btn_pick.setText(display_hotkey(_pick) if _pick else "未绑定")
+        self.btn_pick.setText(display_hotkey(_pick) if _pick else i18n.tr("未绑定"))
         self.btn_pick.val = _pick
 
         _hide = self.cfg.get("hideWindowKey", "Ctrl+H")
-        self.btn_hide.setText(display_hotkey(_hide) if _hide else "未绑定")
+        self.btn_hide.setText(display_hotkey(_hide) if _hide else i18n.tr("未绑定"))
         self.btn_hide.val = _hide
 
         _follow = self.cfg.get("followMouseKey", "Ctrl+R")
-        self.btn_follow.setText(display_hotkey(_follow) if _follow else "未绑定")
+        self.btn_follow.setText(display_hotkey(_follow) if _follow else i18n.tr("未绑定"))
         self.btn_follow.val = _follow
 
         _gray = self.cfg.get("grayscaleFilterKey", "Ctrl+G")
-        self.btn_grayscale.setText(display_hotkey(_gray) if _gray else "未绑定")
+        self.btn_grayscale.setText(display_hotkey(_gray) if _gray else i18n.tr("未绑定"))
         self.btn_grayscale.val = _gray
 
         _lab_key = self.cfg.get("toggleLabKey", "Space")
-        self.btn_lab_toggle.setText(display_hotkey(_lab_key) if _lab_key else "未绑定")
+        self.btn_lab_toggle.setText(display_hotkey(_lab_key) if _lab_key else i18n.tr("未绑定"))
         self.btn_lab_toggle.val = _lab_key
 
         _lab_global = self.cfg.get("toggleLabGlobalKey", "Ctrl+L")
-        self.btn_lab_global.setText(display_hotkey(_lab_global) if _lab_global else "未绑定")
+        self.btn_lab_global.setText(display_hotkey(_lab_global) if _lab_global else i18n.tr("未绑定"))
         self.btn_lab_global.val = _lab_global
 
         _title_bar = self.cfg.get("toggleTitleBarKey", "Ctrl+Shift+T")
-        self.btn_title_bar.setText(display_hotkey(_title_bar) if _title_bar else "未绑定")
+        self.btn_title_bar.setText(display_hotkey(_title_bar) if _title_bar else i18n.tr("未绑定"))
         self.btn_title_bar.val = _title_bar
         
         self.combo_grayscale_mode.blockSignals(True)
@@ -1022,9 +1079,9 @@ class SettingsSidebar(QWidget):
         self.cb_follow_mouse.blockSignals(False)
         
         # 2. Interface
-        theme_map = {"auto": "背景 自动（匹配CSP）", "eyedropper": "背景 取色", "gray": "背景 灰", "white": "背景 白", "black": "背景 黑"}
+        _idx = self.combo_theme.findData(self.cfg.get("ui-theme", "auto"))
         self.combo_theme.blockSignals(True)
-        self.combo_theme.setCurrentText(theme_map.get(self.cfg.get("ui-theme", "auto"), "背景 自动（匹配CSP）"))
+        self.combo_theme.setCurrentIndex(_idx if _idx >= 0 else 0)
         self.combo_theme.blockSignals(False)
 
         # Show/hide eyedropper rows and update point labels
@@ -1040,7 +1097,7 @@ class SettingsSidebar(QWidget):
                     lbl.setText(f"({pt['x']}, {pt['y']})")
                     self._set_label_state(lbl, None)
                 else:
-                    lbl.setText("未设定")
+                    lbl.setText(i18n.tr("未设定"))
                     self._set_label_state(lbl, "danger")
         self._refresh_theme_status()
 
@@ -1120,9 +1177,9 @@ class SettingsSidebar(QWidget):
         self.cb_show_lab_toggle.setChecked(self.cfg.get("showLabToggleButton", True))
         self.cb_show_lab_toggle.blockSignals(False)
 
-        viz_mode_map = {"lab": "LAB 色彩空间", "oklab": "OKLab 色彩空间"}
+        _idx = self.combo_viz_mode.findData(self.cfg.get("visualizerMode", "lab"))
         self.combo_viz_mode.blockSignals(True)
-        self.combo_viz_mode.setCurrentText(viz_mode_map.get(self.cfg.get("visualizerMode", "lab"), "LAB 色彩空间"))
+        self.combo_viz_mode.setCurrentIndex(_idx if _idx >= 0 else 0)
         self.combo_viz_mode.blockSignals(False)
         
         self.cb_show_lab_lightness.blockSignals(True)
@@ -1151,14 +1208,14 @@ class SettingsSidebar(QWidget):
         self.lbl_diff_space.setText(str(diff_val))
         
         # 4. Software Version
-        software_map = {"csp": "CLIP Studio Paint", "sai": "SAI2", "udm": "UDM Paint", "ps": "Photoshop", "companion": "CSP 智能手机 (R)"}
+        _idx = self.combo_software.findData(self.cfg.get("syncSoftware", "csp"))
         self.combo_software.blockSignals(True)
-        self.combo_software.setCurrentText(software_map.get(self.cfg.get("syncSoftware", "csp"), "CLIP Studio Paint"))
+        self.combo_software.setCurrentIndex(_idx if _idx >= 0 else 0)
         self.combo_software.blockSignals(False)
         
-        pos_map = {"top-left": "左上角", "bottom-left": "左下角"}
+        _idx = self.combo_pos.findData(self.cfg.get("previewBoxPosition", "top-left"))
         self.combo_pos.blockSignals(True)
-        self.combo_pos.setCurrentText(pos_map.get(self.cfg.get("previewBoxPosition", "top-left"), "左上角"))
+        self.combo_pos.setCurrentIndex(_idx if _idx >= 0 else 0)
         self.combo_pos.blockSignals(False)
         
         # Migrate legacy CSP version keys to simplified 4.x / 5.x scheme
@@ -1166,8 +1223,9 @@ class SettingsSidebar(QWidget):
                           "csp5.0": "csp5.x", "csp5.0-ex": "csp5.x"}
         raw_csp = str(self.cfg.get("cspVersion", "auto") or "auto")
         raw_csp = _csp_migration.get(raw_csp, raw_csp)
+        _idx = self.combo_csp.findData(raw_csp)
         self.combo_csp.blockSignals(True)
-        self.combo_csp.setCurrentText(_CSP_VALUE_TO_DISPLAY.get(raw_csp, _CSP_VALUE_TO_DISPLAY["auto"]))
+        self.combo_csp.setCurrentIndex(_idx if _idx >= 0 else 0)
         self.combo_csp.blockSignals(False)
         self._refresh_csp_version_hint()
         
@@ -1197,23 +1255,19 @@ class SettingsSidebar(QWidget):
         """按所选 CSP 版本显示同步能力说明（5.0 与 5.1 的能力差异）。"""
         if not hasattr(self, "lbl_csp_hint"):
             return
-        val = _CSP_DISPLAY_TO_VALUE.get(self.combo_csp.currentText(), "auto")
+        val = self.combo_csp.currentData() or "auto"
         if val == "csp5.1":
-            text = ("CSP 5.1 内存模式支持前景/背景色与透明状态同步。")
+            text = i18n.tr("CSP 5.1 内存模式支持前景/背景色与透明状态同步。")
         elif val == "csp5.x":
-            text = ("CSP 5.0 内存模式仅支持主色同步；前景/背景色与透明状态"
-                    "同步需要 CSP 5.1。")
+            text = i18n.tr("CSP 5.0 内存模式仅支持主色同步；前景/背景色与透明状态同步需要 CSP 5.1。")
         elif val == "csp4.x":
-            text = ("CSP 4.x 内存模式仅支持主色同步；前景/背景色与透明状态"
-                    "同步需要 CSP 5.1。")
+            text = i18n.tr("CSP 4.x 内存模式仅支持主色同步；前景/背景色与透明状态同步需要 CSP 5.1。")
         else:
-            text = ("自动检测 CSP 版本：检测为 5.1 时支持前景/背景色与透明"
-                    "状态同步，5.0 及以下仅主色同步。")
+            text = i18n.tr("自动检测 CSP 版本：检测为 5.1 时支持前景/背景色与透明状态同步，5.0 及以下仅主色同步。")
         self.lbl_csp_hint.setText(text)
 
     def update_version_visibility(self):
-        software_val_map = {"CLIP Studio Paint": "csp", "SAI2": "sai", "UDM Paint": "udm", "Photoshop": "ps", "CSP 智能手机 (R)": "companion"}
-        selected = software_val_map.get(self.combo_software.currentText(), "csp")
+        selected = self.combo_software.currentData() or "csp"
         self.row_csp_widget.setVisible(selected == "csp")
         self.row_csp_hint_widget.setVisible(selected == "csp")
         self.row_sai_widget.setVisible(selected == "sai")
@@ -1626,9 +1680,9 @@ class SettingsSidebar(QWidget):
     def _grayscale_filter_config(self) -> dict:
         """Map the grayscale controls to persisted config values."""
         screen_text = self.combo_grayscale_screen.currentText()
-        mode_text = self.combo_grayscale_mode.currentText()
-        backend_text = self.combo_grayscale_backend.currentText()
-        use_mag = "Mag" in backend_text
+        backend = self.combo_grayscale_backend.currentData() or "native"
+        mode = self.combo_grayscale_mode.currentData() or "oklch"
+        use_mag = backend == "mag"
         return {
             "grayscaleFilterScreen": (
                 "all"
@@ -1636,15 +1690,12 @@ class SettingsSidebar(QWidget):
                 else (screen_text.split(":")[0].strip()
                       if ":" in screen_text else screen_text)
             ),
-            "grayscaleFilterMode": (
-                "luma" if ("Luma" in mode_text or use_mag) else "oklch"
-            ),
+            "grayscaleFilterMode": "luma" if (mode == "luma" or use_mag) else "oklch",
             "grayscaleFilterBackend": "mag" if use_mag else "native",
         }
 
     def save_settings(self):
-        theme_val_map = {"背景 自动（匹配CSP）": "auto", "背景 取色": "eyedropper", "背景 灰": "gray", "背景 白": "white", "背景 黑": "black"}
-        self.cfg["ui-theme"] = theme_val_map.get(self.combo_theme.currentText(), "auto")
+        self.cfg["ui-theme"] = self.combo_theme.currentData() or "auto"
 
         # Slider visual theme (key stored as combo item data)
         slider_key = self.combo_slider_style.currentData()
@@ -1686,8 +1737,7 @@ class SettingsSidebar(QWidget):
         self.cfg["colorSpaceModule"] = module_val_map.get(self.combo_module.currentText(), "hsv")
         self.cfg["showModuleSwitchButton"] = self.cb_show_module_btn.isChecked()
         self.cfg["showLabToggleButton"] = self.cb_show_lab_toggle.isChecked()
-        viz_val_map = {"LAB 色彩空间": "lab", "OKLab 色彩空间": "oklab"}
-        self.cfg["visualizerMode"] = viz_val_map.get(self.combo_viz_mode.currentText(), "lab")
+        self.cfg["visualizerMode"] = self.combo_viz_mode.currentData() or "lab"
         self.cfg["showLabLightnessSlider"] = self.cb_show_lab_lightness.isChecked()
 
         # ── Ringless settings ──
@@ -1696,14 +1746,11 @@ class SettingsSidebar(QWidget):
         self.cfg["ringlessControlsSide"] = rcfg.controls_side
         self.cfg["ringlessControlBarPosition"] = rcfg.control_bar_position
         
-        software_val_map = {"CLIP Studio Paint": "csp", "SAI2": "sai", "UDM Paint": "udm", "Photoshop": "ps", "CSP 智能手机 (R)": "companion"}
-        self.cfg["syncSoftware"] = software_val_map.get(self.combo_software.currentText(), "csp")
+        self.cfg["syncSoftware"] = self.combo_software.currentData() or "csp"
         
-        pos_val_map = {"左上角": "top-left", "左下角": "bottom-left"}
-        self.cfg["previewBoxPosition"] = pos_val_map.get(self.combo_pos.currentText(), "top-left")
+        self.cfg["previewBoxPosition"] = self.combo_pos.currentData() or "top-left"
         
-        self.cfg["cspVersion"] = _CSP_DISPLAY_TO_VALUE.get(
-            self.combo_csp.currentText(), "auto")
+        self.cfg["cspVersion"] = self.combo_csp.currentData() or "auto"
         self.cfg["sai2Version"] = self.combo_sai.currentText()
         
         udm_val_map = {"auto": "auto", "udm4.0pro": "udm4.0", "udm4.0ex": "udm4.0-ex"}
@@ -1744,7 +1791,7 @@ class SettingsSidebar(QWidget):
                     lbl.setText(f"({pt['x']}, {pt['y']})")
                     self._set_label_state(lbl, None)
                 else:
-                    lbl.setText("未设定")
+                    lbl.setText(i18n.tr("未设定"))
                     self._set_label_state(lbl, "danger")
         self._refresh_theme_status()
         self.apply_theme()
@@ -1752,8 +1799,11 @@ class SettingsSidebar(QWidget):
 
     def _refresh_module_sliders(self):
         """Show only the slider rows that belong to the currently active module.
-        Re-reads config from disk so changes outside the sidebar are picked up."""
-        self.cfg = config.load_hotkey_config()
+
+        Reads the in-memory ``self.cfg`` — reloading from disk here would
+        discard unsaved changes (e.g. a just-switched language). External
+        changes are picked up by :meth:`notify_module_changed` instead.
+        """
         module = self.cfg.get("colorSpaceModule", "hsv")
         allowed = set(self._MODULE_SLIDER_MAP.get(module, ["HSV", "RGB", "LAB"]))
         for key, (cb, btn_up, btn_down, row_layout) in self.slider_rows.items():
@@ -1858,25 +1908,27 @@ class SettingsSidebar(QWidget):
         if theme == "auto":
             try:
                 dark = QColor(self.theme_colors()["bg"]).lightness() < 128
-                self.lbl_theme_status.setText(f"自动匹配：{'深色' if dark else '浅色'}主题")
+                self.lbl_theme_status.setText(
+                    i18n.tr("自动匹配：{dark}主题", dark=(i18n.tr("深色") if dark else i18n.tr("浅色")))
+                )
             except Exception:
-                self.lbl_theme_status.setText("自动匹配画图软件主题")
+                self.lbl_theme_status.setText(i18n.tr("自动匹配画图软件主题"))
         elif theme == "eyedropper":
-            self.lbl_theme_status.setText("取色主题：从屏幕两个位置取色")
+            self.lbl_theme_status.setText(i18n.tr("取色主题：从屏幕两个位置取色"))
         else:
-            names = {"black": "黑", "white": "白", "gray": "灰"}
-            self.lbl_theme_status.setText(f"固定主题：{names.get(theme, theme)}")
+            names = {"black": i18n.tr("黑"), "white": i18n.tr("白"), "gray": i18n.tr("灰")}
+            self.lbl_theme_status.setText(i18n.tr("固定主题：{name}", name=names.get(theme, theme)))
 
     def _refresh_sync_status(self):
         if not hasattr(self, "lbl_sync_status"):
             return
-        selected = self.combo_software.currentText()
+        selected = self.combo_software.currentData() or "csp"
         software_names = {
-            "CLIP Studio Paint": "CSP",
-            "SAI2": "SAI2",
-            "UDM Paint": "UDM",
-            "Photoshop": "PS",
-            "CSP 智能手机 (R)": "手机",
+            "csp": "CSP",
+            "sai": "SAI2",
+            "udm": "UDM",
+            "ps": "PS",
+            "companion": i18n.tr("手机"),
         }
         name = software_names.get(selected, selected)
         connected = None
@@ -1885,10 +1937,10 @@ class SettingsSidebar(QWidget):
             if status and len(status) == 2 and status[0] == self.cfg.get("syncSoftware"):
                 connected = status[1]
         if connected is True:
-            self.lbl_sync_status.setText(f"{name} 已连接")
+            self.lbl_sync_status.setText(i18n.tr("{name} 已连接", name=name))
             self._set_label_state(self.lbl_sync_status, "success")
         elif connected is False:
-            text = f"{name} 未连接"
+            text = i18n.tr("{name} 未连接", name=name)
             parent = self._parent
             sync_err = getattr(parent, "_sync_error", None) if parent is not None else None
             if sync_err and len(sync_err) >= 2 and sync_err[0] == self.cfg.get("syncSoftware"):
@@ -1904,13 +1956,13 @@ class SettingsSidebar(QWidget):
         else:
             mode = self.cfg.get("syncSoftware", "csp")
             version = {
-                "csp": _CSP_DISPLAY_TO_VALUE.get(self.combo_csp.currentText(), "auto"),
+                "csp": self.combo_csp.currentData() or "auto",
                 "sai": self.combo_sai.currentText(),
                 "udm": self.combo_udm.currentText(),
                 "ps": self.combo_ps.currentText(),
                 "companion": "",
             }.get(mode, "")
-            self.lbl_sync_status.setText(f"当前同步：{name} {version}".strip())
+            self.lbl_sync_status.setText(i18n.tr("当前同步：{name} {version}", name=name, version=version).strip())
             self._set_label_state(self.lbl_sync_status, "muted")
         self._refresh_ps_bridge_status()
 
@@ -1927,7 +1979,7 @@ class SettingsSidebar(QWidget):
         script-bridge state (deployed-pending / alive / deploy failed)."""
         if not hasattr(self, "row_ps_bridge_widget"):
             return
-        if self.combo_software.currentText() != "Photoshop":
+        if self.combo_software.currentData() != "ps":
             self.row_ps_bridge_widget.hide()
             return
         ps_sync = self._ps_sync()
@@ -1948,20 +2000,20 @@ class SettingsSidebar(QWidget):
         if st.get("bridgeAlive"):
             if st.get("panelStale"):
                 self.lbl_ps_bridge_status.setText(
-                    "已连接（脚本桥），但 Photoshop 内运行的仍是旧版同步面板："
-                    "拖动颜色可能跳动。请重启 Photoshop 一次后点击右侧按钮。")
+                    i18n.tr("已连接（脚本桥），但 Photoshop 内运行的仍是旧版同步面板："
+                    "拖动颜色可能跳动。请重启 Photoshop 一次后点击右侧按钮。"))
                 self._set_label_state(self.lbl_ps_bridge_status, "warning")
                 self.btn_ps_bridge_restart.show()
             else:
                 self.lbl_ps_bridge_status.setText(
-                    "绿色版 Photoshop 已连接（脚本桥）：前景 / 背景色双槽同步已启用。")
+                    i18n.tr("绿色版 Photoshop 已连接（脚本桥）：前景 / 背景色双槽同步已启用。"))
                 self._set_label_state(self.lbl_ps_bridge_status, "success")
                 self.btn_ps_bridge_restart.hide()
         else:
             self.lbl_ps_bridge_status.setText(
-                "检测到绿色版 Photoshop：已自动部署同步脚本，"
+                i18n.tr("检测到绿色版 Photoshop：已自动部署同步脚本，"
                 "重启 Photoshop（绿色版）后生效；"
-                "之后在 PS 中有操作时颜色即会同步。")
+                "之后在 PS 中有操作时颜色即会同步。"))
             self._set_label_state(self.lbl_ps_bridge_status, "warning")
             self.btn_ps_bridge_restart.show()
 
@@ -1987,13 +2039,12 @@ class SettingsSidebar(QWidget):
         except Exception:
             target = None
         if target is None:
-            QMessageBox.warning(self, "重启 Photoshop",
-                                "未检测到运行中的 Photoshop 进程")
+            QMessageBox.warning(self, i18n.tr("重启 Photoshop"),
+                                i18n.tr("未检测到运行中的 Photoshop 进程"))
             return
         ret = QMessageBox.question(
-            self, "重启 Photoshop",
-            f"将关闭并重新启动 Photoshop：\n{target.exe_path}\n\n"
-            "未保存的更改可能会丢失，是否继续？",
+            self, i18n.tr("重启 Photoshop"),
+            i18n.tr("将关闭并重新启动 Photoshop：\n{path}\n\n未保存的更改可能会丢失，是否继续？", path=target.exe_path),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if ret != QMessageBox.StandardButton.Yes:
             return
@@ -2012,7 +2063,7 @@ class SettingsSidebar(QWidget):
         try:
             _subprocess.Popen([target.exe_path])
         except OSError as exc:
-            QMessageBox.warning(self, "重启 Photoshop", f"启动失败：{exc}")
+            QMessageBox.warning(self, i18n.tr("重启 Photoshop"), i18n.tr("启动失败：{e}", e=exc))
             return
         # The bridge script reports heartbeats a few seconds after startup.
         QTimer.singleShot(8000, self._refresh_ps_bridge_status)
@@ -2042,57 +2093,61 @@ class SettingsSidebar(QWidget):
         if st.get("bridgeAlive"):
             return
         ret = QMessageBox.question(
-            self, "绿色版 Photoshop",
-            "检测到绿色版（便携版）Photoshop：它未注册 COM 自动化接口，"
+            self, i18n.tr("绿色版 Photoshop"),
+            i18n.tr("检测到绿色版（便携版）Photoshop：它未注册 COM 自动化接口，"
             "无法直接同步颜色。\n\n"
             "Colorink 已自动部署同步脚本（脚本桥），重启 Photoshop 后即可"
-            "同步前景 / 背景色。\n是否现在重启 Photoshop？",
+            "同步前景 / 背景色。\n是否现在重启 Photoshop？"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if ret == QMessageBox.StandardButton.Yes:
             self._on_ps_restart()
 
     def export_config(self):
         default_name = os.path.join(os.path.expanduser("~"), "Colorink-配置.json")
-        path, _ = QFileDialog.getSaveFileName(self, "导出配置", default_name, "JSON 文件 (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, i18n.tr("导出配置"), default_name, i18n.tr("JSON 文件 (*.json)"))
         if not path:
             return
-        cfg_path = os.path.join(config.get_user_data_dir(), config.HOTKEY_CFG_NAME)
         try:
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                data = f.read()
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(data)
-            QMessageBox.information(self, "导出配置", f"配置已导出到：\n{path}")
+            config.export_settings_to_file(self.cfg, path)
+            QMessageBox.information(self, i18n.tr("导出配置"), i18n.tr("配置已导出到：\n{path}", path=path))
         except Exception as e:
-            QMessageBox.warning(self, "导出配置", f"导出失败：{e}")
+            QMessageBox.warning(self, i18n.tr("导出配置"), i18n.tr("导出失败：{e}", e=e))
 
     def import_config(self):
-        path, _ = QFileDialog.getOpenFileName(self, "导入配置", os.path.expanduser("~"), "JSON 文件 (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, i18n.tr("导入配置"), os.path.expanduser("~"), i18n.tr("JSON 文件 (*.json)"))
         if not path:
             return
         try:
             with open(path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if not isinstance(loaded, dict):
-                raise ValueError("配置文件格式不正确")
+                data = json.load(f)
+            if isinstance(data, dict) and data.get("format") == config.SETTINGS_EXPORT_FORMAT:
+                imported = config.import_settings(data)
+            else:
+                # Legacy raw config (pre-envelope): merge + migrate + normalize.
+                if not isinstance(data, dict):
+                    raise ValueError(i18n.tr("配置文件格式不正确"))
+                imported = config.merge_imported_config(data)
+        except ValueError as e:
+            QMessageBox.warning(self, i18n.tr("导入配置"), str(e))
+            return
         except Exception as e:
-            QMessageBox.warning(self, "导入配置", f"读取失败：{e}")
+            QMessageBox.warning(self, i18n.tr("导入配置"), i18n.tr("读取失败：{e}", e=e))
             return
         old_autostart = self.cfg.get("openAtLogin", False)
-        new_autostart = loaded.get("openAtLogin", False)
-        self.cfg = config.normalize_slider_orders(dict(loaded))
+        new_autostart = imported.get("openAtLogin", False)
+        self.cfg = imported
         config.save_hotkey_config(self.cfg)
         if old_autostart != new_autostart:
             autostart.apply_autostart(new_autostart)
         self.refresh_ui()
         self.settingChanged.emit()
-        QMessageBox.information(self, "导入配置", "配置已导入并生效。")
+        QMessageBox.information(self, i18n.tr("导入配置"), i18n.tr("配置已导入并生效。"))
 
     def reset_config(self):
         answer = QMessageBox.question(
             self,
-            "恢复默认",
-            "确定要恢复所有设置为默认值吗？",
+            i18n.tr("恢复默认"),
+            i18n.tr("确定要恢复所有设置为默认值吗？"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -2105,7 +2160,7 @@ class SettingsSidebar(QWidget):
             autostart.apply_autostart(False)
         self.refresh_ui()
         self.settingChanged.emit()
-        QMessageBox.information(self, "恢复默认", "设置已恢复为默认值。")
+        QMessageBox.information(self, i18n.tr("恢复默认"), i18n.tr("设置已恢复为默认值。"))
 
     def scroll_step_decrease(self):
         val = self.cfg.get("sliderScrollStep", 1)
@@ -2177,7 +2232,7 @@ class SettingsSidebar(QWidget):
             btn_set.setText(f"{self._eye_countdown}...")
         else:
             self._eye_countdown_timer.stop()
-            btn_set.setText("设定")
+            btn_set.setText(i18n.tr("设定"))
             btn_set.setEnabled(True)
             if self._parent is not None:
                 self._parent.show()
@@ -2244,7 +2299,7 @@ class SettingsSidebar(QWidget):
         if getattr(self, "_update_worker", None) is not None:
             return  # Already running
         self.btn_check_update.setEnabled(False)
-        self.btn_check_update.setText("检查中...")
+        self.btn_check_update.setText(i18n.tr("检查中..."))
         worker = _UpdateWorker(self)
         worker.done.connect(self._on_update_result)
         # Keep a reference alive until the signal fires; QThread auto-deletes
@@ -2255,11 +2310,11 @@ class SettingsSidebar(QWidget):
 
     def _on_update_result(self, result: dict):
         self.btn_check_update.setEnabled(True)
-        self.btn_check_update.setText("检查更新")
+        self.btn_check_update.setText(i18n.tr("检查更新"))
         self._update_worker = None
 
         if "error" in result:
-            QMessageBox.warning(self, "检查更新", result["error"])
+            QMessageBox.warning(self, i18n.tr("检查更新"), result["error"])
             return
 
         current = result.get("current_version", "?")
@@ -2270,29 +2325,117 @@ class SettingsSidebar(QWidget):
 
         if has_update:
             msg = (
-                f"发现新版本 {latest}！\n"
-                f"当前版本: v{current}\n\n"
-                f"是否前往 GitHub 下载？"
+                f"{i18n.tr('发现新版本')} {latest}！\n"
+                f"{i18n.tr('当前版本')}: v{current}\n\n"
             )
             if notes:
                 snippet = notes if len(notes) <= 600 else notes[:600] + "..."
-                msg += f"\n\n更新内容:\n{snippet}"
+                msg += f"{i18n.tr('更新内容:')}\n{snippet}\n\n"
+            msg += i18n.tr("可一键下载安装包，或前往 GitHub 页面。")
             box = QMessageBox(self)
-            box.setWindowTitle("发现新版本")
+            box.setWindowTitle(i18n.tr("发现新版本"))
             box.setText(msg)
-            open_btn = box.addButton("前往下载", QMessageBox.ButtonRole.AcceptRole)
-            box.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
+            dl_btn = box.addButton(i18n.tr("下载到本地"), QMessageBox.ButtonRole.AcceptRole)
+            open_btn = box.addButton(i18n.tr("前往下载"), QMessageBox.ButtonRole.ActionRole)
+            box.addButton(i18n.tr("稍后"), QMessageBox.ButtonRole.RejectRole)
             box.exec()
-            if box.clickedButton() is open_btn:
+            clicked = box.clickedButton()
+            if clicked is dl_btn:
+                self._download_release(result)
+            elif clicked is open_btn:
                 webbrowser.open(url)
         else:
             QMessageBox.information(
-                self, "检查更新", f"已是最新版本 (v{current})"
+                self, i18n.tr("检查更新"),
+                f"{i18n.tr('已是最新版本')} (v{current})"
             )
+
+    def _download_release(self, result: dict):
+        """Download the picked installer asset to a user-chosen path."""
+        asset = updater.find_installer_asset(result.get("assets", []))
+        if asset is None:
+            # No installer asset on the release — fall back to the page.
+            webbrowser.open(result.get("release_url", updater.GITHUB_URL))
+            return
+        name = asset.get("name") or "Colorink.exe"
+        default_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+        dest, _ = QFileDialog.getSaveFileName(
+            self, i18n.tr("保存安装包"), os.path.join(default_dir, name), i18n.tr("程序 (*.exe)")
+        )
+        if not dest:
+            return
+        self._download_worker = _DownloadWorker(
+            asset["url"], dest, asset.get("size"), self
+        )
+        self._download_worker.progress.connect(self._on_download_progress)
+        self._download_worker.done.connect(self._on_download_done)
+        self._download_worker.finished.connect(self._download_worker.deleteLater)
+        self.btn_check_update.setText(i18n.tr("下载中"))
+        self.btn_check_update.setEnabled(False)
+        self._download_worker.start()
+
+    def _on_download_progress(self, downloaded: int, total: int):
+        label = i18n.tr("下载中")
+        if total:
+            pct = int(downloaded * 100 / total)
+            self.btn_check_update.setText(f"{label} {pct}%")
+        else:
+            self.btn_check_update.setText(f"{label} {downloaded // 1024}KB")
+
+    def _on_download_done(self, result: dict):
+        self.btn_check_update.setText(i18n.tr("检查更新"))
+        self.btn_check_update.setEnabled(True)
+        self._download_worker = None
+        if "error" in result:
+            QMessageBox.warning(self, i18n.tr("下载失败"), result["error"])
+            return
+        path = result["path"]
+        can_replace = updater.can_self_replace(sys.executable)
+        box = QMessageBox(self)
+        box.setWindowTitle(i18n.tr("下载完成"))
+        box.setText(i18n.tr("已下载到:\n{path}", path=path))
+        install_btn = None
+        if can_replace:
+            install_btn = box.addButton(i18n.tr("更新并重启"), QMessageBox.ButtonRole.AcceptRole)
+        folder_btn = box.addButton(i18n.tr("打开所在文件夹"), QMessageBox.ButtonRole.ActionRole)
+        run_btn = box.addButton(i18n.tr("立即运行"), QMessageBox.ButtonRole.ActionRole)
+        box.addButton(i18n.tr("关闭"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if install_btn is not None and clicked is install_btn:
+            # Hand the update over to a detached batch helper, then exit. The
+            # helper waits for our lock to release, replaces the exe and
+            # relaunches. If spawning fails, fall back to just running it.
+            if updater.launch_self_replace(path, sys.executable):
+                os._exit(0)
+            os.startfile(path)
+        elif clicked is folder_btn:
+            os.startfile(os.path.dirname(path))
+        elif clicked is run_btn:
+            os.startfile(path)
 
     def on_about_author(self):
         """Open the author's Bilibili homepage in the default browser."""
         webbrowser.open(updater.BILIBILI_URL)
+
+    def _on_check_updates_toggled(self, checked: bool):
+        self.cfg["checkUpdatesOnStartup"] = bool(checked)
+        self._persist_config()
+
+    def _on_language_changed(self, _index=None):
+        # Read currentData() rather than the signal argument: PyQt6's
+        # currentIndexChanged is overloaded (int / str) and the bound overload
+        # can differ, so the argument is unreliable.
+        lang = self.cmb_language.currentData()
+        if not lang:
+            return
+        self.cfg["language"] = lang
+        self._persist_config()
+        i18n.set_language(i18n.resolve_language(lang))
+        self.retranslate()
+        parent = getattr(self, "_parent", None)
+        if parent is not None and hasattr(parent, "retranslate"):
+            parent.retranslate()
 
 
     # ── Companion helpers ──────────────────────────────────────────────
@@ -2302,19 +2445,19 @@ class SettingsSidebar(QWidget):
         c = self._parent.sync_thread.companion_sync
         connected = getattr(c, '_connected', False)
         if connected:
-            self.lbl_companion_status.setText("● 已连接")
+            self.lbl_companion_status.setText(i18n.tr("● 已连接"))
             self._set_label_state(self.lbl_companion_status, "success")
             self.btn_companion_reconnect.setVisible(False)
             self.btn_companion_disconnect.setVisible(True)
         elif c._has_session():
-            self.lbl_companion_status.setText("○ 已保存 — 等待 CSP...")
+            self.lbl_companion_status.setText(i18n.tr("○ 已保存 — 等待 CSP..."))
             self._set_label_state(self.lbl_companion_status, "warning")
             self.btn_companion_reconnect.setVisible(True)
             self.btn_companion_disconnect.setVisible(False)
         else:
-            self.lbl_companion_status.setText("○ 未设置")
+            self.lbl_companion_status.setText(i18n.tr("○ 未设置"))
             self._set_label_state(self.lbl_companion_status, "muted")
-            self.btn_companion_reconnect.setText("连接智能手机")
+            self.btn_companion_reconnect.setText(i18n.tr("连接智能手机"))
             self.btn_companion_reconnect.setVisible(True)
             self.btn_companion_disconnect.setVisible(False)
 
@@ -2336,3 +2479,24 @@ class _UpdateWorker(QThread):
 
     def run(self):  # noqa: D401 - QThread override
         self.done.emit(updater.check_for_update())
+
+
+class _DownloadWorker(QThread):
+    """Background worker that downloads a release asset to disk."""
+
+    progress = pyqtSignal(int, int)
+    done = pyqtSignal(dict)
+
+    def __init__(self, url: str, dest_path: str, total_size, parent=None):
+        super().__init__(parent)
+        self._url = url
+        self._dest_path = dest_path
+        self._total_size = total_size
+
+    def run(self):  # noqa: D401 - QThread override
+        self.done.emit(updater.download_release(
+            self._url,
+            self._dest_path,
+            total_size=self._total_size,
+            progress_cb=lambda downloaded, total: self.progress.emit(downloaded, total),
+        ))

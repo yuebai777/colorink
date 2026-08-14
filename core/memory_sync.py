@@ -360,12 +360,20 @@ class MemorySyncThread(QThread):
                     continue
 
                 # Active-slot tracking (companion mode): CSP reports
-                # CurrentColorIndex in every read-back.
+                # CurrentColorIndex in every read-back. The write applies
+                # asynchronously over TCP, so its read-back echo lags behind
+                # local clicks; following it would yank the highlight back to
+                # a stale slot during rapid fg/bg switching (抽搐). Suppress
+                # the echo within the write window — the same 1.5 s guard as
+                # the PS colour echo — so local slot selection stays
+                # authoritative while a write settles.
                 if self.software_mode == 'companion':
                     for color in colors:
                         ai = color.get("index")
                         if isinstance(ai, int) and ai in (0, 1) and ai != self._last_active_slot:
                             self._last_active_slot = ai
+                            if time.time() - self._last_write_ts.get(ai, 0.0) < 1.5:
+                                continue
                             self.signals.active_slot_changed.emit(ai)
 
                 # Process each reported slot (main index 0, sub index 1).

@@ -13,9 +13,11 @@ from ui.transparent_swatch import TransparentTile
 
 from .test_ringless_preview_support import (
     canonical_layout,
+    left_side_layout,
     make_preview_box,
     mouse_press_event,
     qapp,
+    right_side_layout,
 )
 
 # Re-export helpers used by other modules that import from here.
@@ -79,14 +81,26 @@ class TestTransparentTileGeometry:
         assert tile.height() == fg_rect.height()
         assert tile.height() == 24
 
-    def test_tile_sits_left_of_fg_same_row_ringless(self, qapp):
-        """Ringless: tile is left of fg with the same gap as fg→bg."""
-        layout = canonical_layout()
+    @pytest.mark.parametrize("layout_factory, tile_is_leftmost", [
+        (right_side_layout, True),
+        (left_side_layout, False),
+    ])
+    def test_tile_hugs_innermost_edge_ringless(
+        self, qapp, layout_factory, tile_is_leftmost,
+    ):
+        """Ringless: the transparent tile always sits nearest the window
+        centre — left of the fg/bg pair on the right side, right of the pair
+        on the left side. FG stays left of BG in both orientations."""
+        layout = layout_factory()
         box = make_preview_box(layout)
         tile = _tile(box)
-        fg_rect, _ = cast(Any, box._ringless_swatch_rects())
+        fg_rect, bg_rect = cast(Any, box._ringless_swatch_rects())
         assert not tile.isHidden()
-        assert tile.x() + tile.width() + layout.swatch_gap == pytest.approx(fg_rect.left())
+        assert fg_rect.right() < bg_rect.left()
+        if tile_is_leftmost:
+            assert tile.x() + tile.width() + layout.swatch_gap == pytest.approx(fg_rect.left())
+        else:
+            assert bg_rect.right() + layout.swatch_gap == pytest.approx(tile.x())
         assert tile.y() == pytest.approx(fg_rect.top())
         assert tile.y() + tile.height() <= box.height()
 

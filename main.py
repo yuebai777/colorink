@@ -70,14 +70,60 @@ def _acquire_instance_lock() -> QSharedMemory | None:
     return shared_mem
 
 def _log_exception(exc_type, exc_value, exc_tb):
-    """Global exception hook — write to stderr.log so crashes leave a trace."""
+    """Global exception hook — write to stderr.log so crashes leave a trace,
+    and drop a crash marker for the next-launch prompt."""
     import traceback
+    text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb)) + "\n"
     try:
         with open("stderr.log", "a", encoding="utf-8") as f:
-            f.write("".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
-            f.write("\n")
+            f.write(text)
     except Exception:
         traceback.print_exc()
+    # Best-effort marker for the next-launch "上次运行发生异常" prompt.
+    # Never let marker-writing itself raise out of the exception hook.
+    try:
+        from core import crash_report
+        crash_report.write_crash_marker(text, log_path=os.path.abspath("stderr.log"))
+    except Exception:
+        pass
+
+
+def _prompt_previous_crash(crash):
+    """Show a one-time dialog when the previous run ended with an uncaught
+    exception, offering to copy or open the saved log."""
+    from PyQt6.QtGui import QGuiApplication
+    from PyQt6.QtWidgets import QMessageBox
+    from core import i18n
+
+    tb = (crash.get("traceback") or "").strip()
+    snippet = tb if len(tb) <= 1200 else tb[:1200] + "\n\u2026"
+    box = QMessageBox()
+    box.setWindowTitle("Colorink")
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setText(i18n.tr("检测到 Colorink 上次运行发生异常。"))
+    box.setInformativeText(i18n.tr("已保存错误日志，可复制或打开查看：") + "\n\n" + snippet)
+    copy_btn = box.addButton(i18n.tr("复制错误信息"), QMessageBox.ButtonRole.ActionRole)
+    open_btn = box.addButton(i18n.tr("打开日志文件"), QMessageBox.ButtonRole.ActionRole)
+    box.addButton(i18n.tr("关闭"), QMessageBox.ButtonRole.RejectRole)
+    box.exec()
+    clicked = box.clickedButton()
+    if clicked is copy_btn:
+        try:
+            QGuiApplication.clipboard().setText(tb)
+        except Exception:
+            pass
+    elif clicked is open_btn:
+        log_path = crash.get("log_path")
+        if log_path and os.path.exists(log_path):
+            target = log_path
+        elif log_path:
+            target = os.path.dirname(log_path)
+        else:
+            target = "."
+        try:
+            os.startfile(target)
+        except Exception:
+            pass
 
 def main():
     # Install global exception hook early
@@ -108,6 +154,15 @@ def main():
     # Launch main window
     window = MainWindow()
     window.show()
+
+    # If the previous run crashed (uncaught exception), offer to inspect the
+    # log once, then clear the marker so it is never announced twice.
+    from core import crash_report
+    crash = crash_report.detect_previous_crash()
+    if crash:
+        crash_report.clear_crash_marker()
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(600, lambda c=crash: _prompt_previous_crash(c))
 
     # Execute application main loop
     sys.exit(app.exec())

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
@@ -28,6 +28,12 @@ class SlicePrewarmRequest:
     # The box can be wider than the radius in ringless mode so the gamut
     # region has more pixels to pick from.
     width: float | None = None
+    # Pre-computed C→pixel scale for the OKLCh slice. When provided, the
+    # per-hue boundary scan is skipped (the caller already computed it).
+    scale: float | None = None
+    # Render at 1/subsample of the device resolution. The caller upscales
+    # the returned image to the logical size for interactive paints.
+    subsample: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,8 +131,9 @@ def _render_square(request: SlicePrewarmRequest, hsv: bool) -> SlicePrewarmResul
     width = max(1, half * 2)
     height = width
     ratio = max(1.0, request.pixel_ratio)
-    image_width = max(1, int(round(width * ratio)))
-    image_height = max(1, int(round(height * ratio)))
+    subsample = max(1, int(request.subsample))
+    image_width = max(1, int(round(width * ratio)) // subsample)
+    image_height = max(1, int(round(height * ratio)) // subsample)
     x = np.linspace(0.0, 1.0, image_width, dtype=np.float32)
     y = np.linspace(1.0, 0.0, image_height, dtype=np.float32)
     xx, yy = np.meshgrid(x, y)
@@ -163,8 +170,9 @@ def _triangle_grid(request: SlicePrewarmRequest, right_extent: float) -> tuple[n
 def _render_hls_triangle(request: SlicePrewarmRequest) -> SlicePrewarmResult:
     _, _, _, _, min_x, min_y, width, height = _triangle_grid(request, 1.0)
     ratio = max(1.0, request.pixel_ratio)
-    image_width = max(1, int(round(width * ratio)))
-    image_height = max(1, int(round(height * ratio)))
+    subsample = max(1, int(request.subsample))
+    image_width = max(1, int(round(width * ratio)) // subsample)
+    image_height = max(1, int(round(height * ratio)) // subsample)
     hy = request.radius * 0.866
     grid_x = np.linspace(min_x, min_x + width, image_width, endpoint=False, dtype=np.float32)[None, :]
     grid_y = np.linspace(min_y, min_y + height, image_height, endpoint=False, dtype=np.float32)[:, None]
@@ -192,8 +200,9 @@ def _render_hls_triangle(request: SlicePrewarmRequest) -> SlicePrewarmResult:
 def _render_rgb_slice(request: SlicePrewarmRequest) -> SlicePrewarmResult:
     _, _, _, _, min_x, min_y, width, height = _triangle_grid(request, 1.5)
     ratio = max(1.0, request.pixel_ratio)
-    image_width = max(1, int(round(width * ratio)))
-    image_height = max(1, int(round(height * ratio)))
+    subsample = max(1, int(request.subsample))
+    image_width = max(1, int(round(width * ratio)) // subsample)
+    image_height = max(1, int(round(height * ratio)) // subsample)
     hy = request.radius * 0.866
     pure_h = request.hue % 360.0
     pure_r, pure_g, pure_b = _hsv_to_rgb(pure_h, np.asarray(1.0), np.asarray(1.0))
@@ -212,10 +221,13 @@ def _render_rgb_slice(request: SlicePrewarmRequest) -> SlicePrewarmResult:
     red, green, blue = lab_to_rgb_array(lightness, a, b)
     mask = (red >= 0.0) & (red <= 255.0) & (green >= 0.0) & (green <= 255.0) & (blue >= 0.0) & (blue <= 255.0)
     # Edge curve: one value per LOGICAL row (the outline is drawn in widget
-    # logical coordinates), sampled from the full-resolution mask.
+    # logical coordinates), sampled from the rendered mask. The image→logical
+    # scales cover subsampled renders, not just the device pixel ratio.
     last = np.where(mask, np.arange(image_width, dtype=np.int32)[None, :], -1).max(axis=1)
-    logical_rows = np.minimum(image_height - 1, (np.arange(height, dtype=np.float64) * ratio + 0.5).astype(np.int64))
-    edge_x = tuple((min_x + np.round(np.maximum(last[logical_rows], 0) / ratio)).astype(np.int32).tolist())
+    row_scale = image_height / float(height)
+    col_scale = image_width / float(width)
+    logical_rows = np.minimum(image_height - 1, (np.arange(height, dtype=np.float64) * row_scale + 0.5).astype(np.int64))
+    edge_x = tuple((min_x + np.round(np.maximum(last[logical_rows], 0) / col_scale)).astype(np.int32).tolist())
     return SlicePrewarmResult(
         request=request, min_x=min_x, min_y=min_y, width=width, height=height,
         image_width=image_width, image_height=image_height,
@@ -234,14 +246,20 @@ def _render_oklch_slice(request: SlicePrewarmRequest) -> SlicePrewarmResult:
     width = max(1, max_x - min_x)
     height = max(1, max_y - min_y)
     ratio = max(1.0, request.pixel_ratio)
-    image_width = max(1, int(round(width * ratio)))
-    image_height = max(1, int(round(height * ratio)))
+    subsample = max(1, int(request.subsample))
+    image_width = max(1, int(round(width * ratio)) // subsample)
+    image_height = max(1, int(round(height * ratio)) // subsample)
     hue = request.hue % 360.0
     # Per-hue scale (same 201-point C_max scan as ColorWheel.
     # _oklch_boundary_data): each hue's gamut fills the box width, and the
     # prewarmed image matches the widget's outline and indicator exactly.
-    max_c = max(find_max_oklch_c(v, hue) for v in np.linspace(0.0, 1.0, 201))
-    scale = box_w / max(max_c, 0.001)
+    # A caller-supplied scale skips the scan — the interactive fallback
+    # already computed the boundary for the outline in the same paint.
+    if request.scale is not None and request.scale > 0.0:
+        scale = float(request.scale)
+    else:
+        max_c = max(find_max_oklch_c(v, hue) for v in np.linspace(0.0, 1.0, 201))
+        scale = box_w / max(max_c, 0.001)
     x = np.linspace(min_x, min_x + width, image_width, endpoint=False, dtype=np.float32)[None, :]
     y = np.linspace(min_y, min_y + height, image_height, endpoint=False, dtype=np.float32)[:, None]
     lightness = np.clip((request.center_y + hy - y) / (2.0 * hy), 0.0, 1.0)
