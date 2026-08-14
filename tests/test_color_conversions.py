@@ -218,6 +218,64 @@ def test_srgb_gamma_encode_array_matches_scalar():
         assert abs(cc.srgb_gamma_encode(c) - float(cc.srgb_gamma_encode_array(np.array([c]))[0])) < 1e-12
 
 
+# ── HSV / HSL scalar helpers match colorsys and round-trip ────────────────
+
+
+def test_scalar_hsv_hsl_match_colorsys():
+    import colorsys
+    rng = random.Random(11)
+    for _ in range(200):
+        r, g, b = rng.randint(0, 255), rng.randint(0, 255), rng.randint(0, 255)
+        h, s, v = cc.rgb_to_hsv(r, g, b)
+        ch, cs, cv = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+        assert abs(h - ch * 360.0) < 1e-9
+        assert abs(s - cs * 100.0) < 1e-9
+        assert abs(v - cv * 100.0) < 1e-9
+        r2, g2, b2 = cc.hsv_to_rgb(h, s, v)
+        assert abs(r2 - r) < 1e-6 and abs(g2 - g) < 1e-6 and abs(b2 - b) < 1e-6
+
+        h2, l2, s2 = cc.rgb_to_hsl(r, g, b)
+        ch2, cl2, cs2 = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
+        assert abs(h2 - ch2 * 360.0) < 1e-9
+        assert abs(l2 - cl2 * 100.0) < 1e-9
+        assert abs(s2 - cs2 * 100.0) < 1e-9
+        r3, g3, b3 = cc.hsl_to_rgb(h2, l2, s2)
+        assert abs(r3 - r) < 1e-6 and abs(g3 - g) < 1e-6 and abs(b3 - b) < 1e-6
+
+
+def test_scalar_hsv_hsl_bridge_roundtrip():
+    for (h, s, v) in [(30.0, 80.0, 60.0), (200.0, 50.0, 90.0), (0.0, 0.0, 50.0), (330.0, 100.0, 100.0)]:
+        h2, l, s2 = cc.hsv_to_hsl(h, s, v)
+        hb, sb, vb = cc.hsl_to_hsv(h2, l, s2)
+        assert abs(hb - h) < 1e-9
+        assert abs(sb - s) < 1e-9
+        assert abs(vb - v) < 1e-9
+
+
+def test_vectorized_hsv_hls_match_colorsys():
+    import colorsys
+    from ui.slice_prewarm import _hls_to_rgb, _hsv_to_rgb
+    hue = 137.0
+    s_grid = np.linspace(0.0, 1.0, 7)
+    t_grid = np.linspace(0.0, 1.0, 7)
+    ss, vv = np.meshgrid(s_grid, t_grid)
+    r, g, b = _hsv_to_rgb(hue, ss, vv)
+    for i in range(ss.shape[0]):
+        for j in range(ss.shape[1]):
+            cr, cg, cb = colorsys.hsv_to_rgb(hue / 360.0, ss[i, j], vv[i, j])
+            assert abs(r[i, j] - cr) < 1e-9
+            assert abs(g[i, j] - cg) < 1e-9
+            assert abs(b[i, j] - cb) < 1e-9
+    ll, sl = np.meshgrid(t_grid, s_grid)
+    r2, g2, b2 = _hls_to_rgb(hue, ll, sl)
+    for i in range(ll.shape[0]):
+        for j in range(ll.shape[1]):
+            cr, cg, cb = colorsys.hls_to_rgb(hue / 360.0, ll[i, j], sl[i, j])
+            assert abs(r2[i, j] - cr) < 1e-9
+            assert abs(g2[i, j] - cg) < 1e-9
+            assert abs(b2[i, j] - cb) < 1e-9
+
+
 # ── Compatibility shim ──────────────────────────────────────────────────
 
 

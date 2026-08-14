@@ -28,6 +28,7 @@ u32 scaling, byte offsets) and must stay byte-compatible with CSP/UDM.
 
 from __future__ import annotations
 
+import colorsys
 import math
 
 import numpy as np
@@ -453,3 +454,54 @@ def hsv_to_hls_floats(h, s, v):
     else:
         hsl_s = 0.0
     return h_f, l_f, hsl_s
+
+
+# ── RGB ↔ HSV / HSL (scalar, human ranges) ────────────────────────────────
+# Single source of truth for the scalar HSV/HSL math.  These return floats;
+# the QColor(int, int, int)-friendly int wrapper lives in ui.color_wheel.
+
+
+def rgb_to_hsv(r: float, g: float, b: float) -> tuple[float, float, float]:
+    """Convert sRGB (0–255) to HSV (h 0–360, s 0–100, v 0–100)."""
+    h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+    return h * 360.0, s * 100.0, v * 100.0
+
+
+def hsv_to_rgb(h: float, s: float, v: float) -> tuple[float, float, float]:
+    """Convert HSV (h 0–360, s 0–100, v 0–100) to sRGB (0–255 floats)."""
+    r, g, b = colorsys.hsv_to_rgb((h % 360.0) / 360.0, s / 100.0, v / 100.0)
+    return r * 255.0, g * 255.0, b * 255.0
+
+
+def rgb_to_hsl(r: float, g: float, b: float) -> tuple[float, float, float]:
+    """Convert sRGB (0–255) to HSL (h 0–360, l 0–100, s 0–100)."""
+    h, l, s = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
+    return h * 360.0, l * 100.0, s * 100.0
+
+
+def hsl_to_rgb(h: float, l: float, s: float) -> tuple[float, float, float]:
+    """Convert HSL (h 0–360, l 0–100, s 0–100) to sRGB (0–255 floats)."""
+    r, g, b = colorsys.hls_to_rgb((h % 360.0) / 360.0, l / 100.0, s / 100.0)
+    return r * 255.0, g * 255.0, b * 255.0
+
+
+def hsv_to_hsl(h: float, s: float, v: float) -> tuple[float, float, float]:
+    """Convert HSV (h/s/v) to HSL (h 0–360, l 0–100, s 0–100)."""
+    v_f = v / 100.0
+    s_f = s / 100.0
+    l_f = v_f * (1.0 - s_f / 2.0)
+    hsl_s = 0.0
+    if 0.0 < l_f < 1.0:
+        hsl_s = (v_f - l_f) / min(l_f, 1.0 - l_f)
+    return h % 360.0, l_f * 100.0, hsl_s * 100.0
+
+
+def hsl_to_hsv(h: float, l: float, s: float) -> tuple[float, float, float]:
+    """Convert HSL (h 0–360, l 0–100, s 0–100) to HSV (h/s/v 0–100)."""
+    l_f = l / 100.0
+    s_f = s / 100.0
+    v = l_f + s_f * min(l_f, 1.0 - l_f)
+    hsv_s = 0.0
+    if v > 0.0001:
+        hsv_s = 2.0 * (1.0 - l_f / v)
+    return h % 360.0, hsv_s * 100.0, v * 100.0
