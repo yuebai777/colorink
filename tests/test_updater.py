@@ -64,8 +64,8 @@ def test_find_installer_asset_ignores_missing_names():
 
 def test_check_for_update_extracts_assets():
     fake_response = _FakeResponse(json.dumps({
-        "tag_name": "v1.6.6",
-        "html_url": "https://github.com/yuebai777/colorink/releases/tag/v1.6.6",
+        "tag_name": "v1.6.7",
+        "html_url": "https://github.com/yuebai777/colorink/releases/tag/v1.6.7",
         "body": "notes",
         "assets": [
             {"name": "Colorink.exe", "browser_download_url": "https://x/a.exe",
