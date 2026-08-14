@@ -1,7 +1,7 @@
 """Compact slider readout with hover-only +/-1 step controls."""
 
-from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QCursor, QMouseEvent, QPainter, QPalette, QPolygonF
+from PyQt6.QtCore import QPointF, Qt
+from PyQt6.QtGui import QCursor, QMouseEvent, QPainter, QPalette, QPolygonF
 from PyQt6.QtWidgets import QLabel
 
 
@@ -58,23 +58,16 @@ class SliderValueLabel(QLabel):
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        strip_left = max(0, self.width() - 12)
         half_height = self.height() / 2
         painter.setPen(Qt.PenStyle.NoPen)
 
-        # The active half gets a stronger tint so the click target is obvious.
+        # Draw only the +/-1 arrow glyphs as a translucent overlay on the
+        # right edge. There is no background tint, so the value text stays
+        # fully readable and nothing covers the number.
         for half, center_y in ((1, half_height * 0.5), (-1, half_height * 1.5)):
             is_active = half == self._hover_half
-            bg = QColor(90, 148, 226, 90 if is_active else 28)
-            painter.setBrush(bg)
-            painter.drawRoundedRect(
-                QRectF(strip_left + 1, center_y - half_height * 0.5 + 1,
-                       self.width() - strip_left - 2, half_height - 2),
-                2, 2,
-            )
-
             arrow_color = self.palette().color(QPalette.ColorRole.Text)
-            arrow_color.setAlpha(230 if is_active else 115)
+            arrow_color.setAlpha(150 if is_active else 70)
             painter.setBrush(arrow_color)
             x = self.width() - 6
             if half == 1:
