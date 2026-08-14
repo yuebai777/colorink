@@ -56,13 +56,17 @@ class SyncMixin:
             print(f"[Sync] {slot} color -> RGB({r}, {g}, {b})")
             return
         self.current_rgb = (r, g, b)
-        hsv_direct = None
-        if hasattr(self, 'sync_thread'):
+        # Companion mode reports its own HSV: honour it so picking a
+        # grayscale/black colour in CSP keeps the reported hue/saturation
+        # (RGB alone carries neither for gray/black).
+        hsv = None
+        if hasattr(self, 'sync_thread') and self.sync_thread.software_mode == 'companion':
             chsv = getattr(self.sync_thread, 'companion_hsv', None)
-            if chsv is not None and self.sync_thread.software_mode == 'companion':
-                hsv_direct = chsv
+            if chsv is not None:
+                hsv = chsv
         self._record_color_history()
-        self.update_ui_colors(r, g, b, source="sync", hsv=hsv_direct)
+        color = self.color_state.set_from("rgb", (r, g, b))
+        self._project_color(color, source="sync", hsv=hsv)
 
     @pyqtSlot(int)
     def on_external_active_slot_changed(self, color_index):

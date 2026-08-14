@@ -24,7 +24,9 @@ class ColorSlotsMixin:
             self._source_space = self._fg_source_space
             self._source_values = self._fg_source_values
             col = self.preview_box.fg_color
-            self.update_ui_colors(col.red(), col.green(), col.blue(), source="slot_change")
+            color = self._color_from_source(self._source_space, self._source_values,
+                                            (col.red(), col.green(), col.blue()))
+            self._project_color(color, source="slot_change")
 
     def select_bg_slot(self):
         # Clicking the bg swatch restores an opaque bg (see select_fg_slot).
@@ -39,7 +41,9 @@ class ColorSlotsMixin:
             self._source_space = self._bg_source_space
             self._source_values = self._bg_source_values
             col = self.preview_box.bg_color
-            self.update_ui_colors(col.red(), col.green(), col.blue(), source="slot_change")
+            color = self._color_from_source(self._source_space, self._source_values,
+                                            (col.red(), col.green(), col.blue()))
+            self._project_color(color, source="slot_change")
 
     def set_active_transparent(self):
         """Toggle the active slot's transparent state and push it to the
@@ -98,7 +102,8 @@ class ColorSlotsMixin:
         else:
             self._source_space = "rgb"
             self._source_values = {"r": float(r), "g": float(g), "b": float(b)}
-        self.update_ui_colors(r, g, b, source="history")
+        color = self._color_from_source(self._source_space, self._source_values, (r, g, b))
+        self._project_color(color, source="history")
         if hasattr(self, "color_history"):
             updated = self.color_history.mark_selected(color)
             self.cfg["historyColors"] = self._build_history_entries(updated)

@@ -94,6 +94,8 @@ class _Harness:
         self._bg_source_space = "rgb"
         self._bg_source_values = None
         self.update_ui_colors = MagicMock()
+        self._project_color = MagicMock()
+        self._color_from_source = MagicMock()
         self._lab_avoid_recorded: list[dict] = []
         self.cfg = {"hideHueRing": True, "ringlessControlsSide": "right",
                      "uiScale": 100, "showModuleSwitchButton": True,
@@ -254,7 +256,7 @@ class TestTransparentSlotClickRestoresHighlight:
         assert h.preview_box.fg_transparent is False
         # Already active → no slot-change re-push, but the sync write must
         # carry the cleared flag.
-        h.update_ui_colors.assert_not_called()
+        h._project_color.assert_not_called()
 
     def test_click_active_transparent_bg_restores_opaque(self, h):
         h.active_slot = "bg"
@@ -268,7 +270,7 @@ class TestTransparentSlotClickRestoresHighlight:
     def test_click_opaque_active_slot_changes_nothing(self, h):
         h.select_fg_slot()
         assert h._fg_transparent is False
-        h.update_ui_colors.assert_not_called()
+        h._project_color.assert_not_called()
 
     def test_click_fg_while_bg_active_switches_and_clears(self, h):
         h.active_slot = "bg"
@@ -277,8 +279,8 @@ class TestTransparentSlotClickRestoresHighlight:
         h.select_fg_slot()
         assert h.active_slot == "fg"
         assert h._fg_transparent is False
-        h.update_ui_colors.assert_called_once()
-        assert h.update_ui_colors.call_args.kwargs["source"] == "slot_change"
+        h._project_color.assert_called_once()
+        assert h._project_color.call_args.kwargs["source"] == "slot_change"
 
     def test_click_fg_keeps_other_slot_transparency(self, h):
         h.preview_box.set_transparent("fg", True)

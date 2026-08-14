@@ -22,8 +22,12 @@ from core import config
 from ui.color_conversions import (
     find_max_lab_c,
     find_max_oklch_c,
+    hsl_to_hsv,
+    hsv_to_hsl,
+    hsv_to_rgb as _hsv_to_rgb_float,
     lab_to_rgb,
     oklch_to_rgb,
+    rgb_to_hsv,
     rgb_to_lab,
     rgb_to_oklch,
 )
@@ -43,13 +47,12 @@ class SliceGeometry:
     radius: float
 
 def hsv_to_rgb(h, s, v):
-    # h: [0, 360], s: [0, 100], v: [0, 100]
-    r, g, b = colorsys.hsv_to_rgb(h / 360.0, s / 100.0, v / 100.0)
-    return int(r * 255), int(g * 255), int(b * 255)
+    """Integer RGB (0–255) — QColor-friendly wrapper over cc.hsv_to_rgb."""
+    r, g, b = _hsv_to_rgb_float(h, s, v)
+    return int(r), int(g), int(b)
 
-def rgb_to_hsv(r, g, b):
-    h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
-    return h * 360.0, s * 100.0, v * 100.0
+
+# rgb_to_hsv is imported from ui.color_conversions (single source of truth).
 
 def project_point_to_triangle(px, py, v0, v1, v2):
     denom = (v1.y() - v2.y()) * (v0.x() - v2.x()) + (v2.x() - v1.x()) * (v0.y() - v2.y())
@@ -95,10 +98,8 @@ def project_point_to_triangle(px, py, v0, v1, v2):
     return best_p.x(), best_p.y()
 
 def hls_to_hsv_floats(h, l, s):
-    # h: 0-360, l: 0-1, s: 0-1
-    v = l + s * min(l, 1.0 - l)
-    hsv_s = 2.0 * (1.0 - l / v) if v > 0.0001 else 0.0
-    return h, hsv_s * 100.0, v * 100.0
+    """Compatibility wrapper: l/s in 0–1 → HSV (h 0-360, s/v 0-100)."""
+    return hsl_to_hsv(h, l * 100.0, s * 100.0)
 
 
 class _PrewarmedSlice(TypedDict):
@@ -468,6 +469,25 @@ class ColorWheel(QWidget):
                 delattr(self, "_bdry_h")
         if update_widget:
             self.update()
+
+    def native_color_values(self):
+        """Return (space, values) for the colour currently shown by the wheel.
+
+        Lets MainWindow build a unified Color from the wheel's own native
+        space without an RGB round-trip (which would drift hue ~0.2 deg).
+        """
+        wm = self.wheel_mode
+        if wm == "oklch-slice" and self._oklch_h is not None:
+            L = self._oklch_L if self._oklch_L is not None else 0.5
+            C = self._oklch_C if self._oklch_C is not None else 0.0
+            return "oklch", (L, C, self._oklch_h)
+        if wm == "hls-triangle":
+            h, l, s = hsv_to_hsl(self.h, self.s, self.v)
+            return "hls", (h, l, s)
+        if wm == "rgb-slice":
+            # Legacy source semantics: the RGB module is labelled "rgb" for sync.
+            return "rgb", tuple(float(c) for c in self.get_color())
+        return "hsv", (self.h, self.s, self.v)
 
     def _oklch_slice_box_width(self, r: float) -> float:
         """Horizontal extent of the OKLCh slice box (the C axis).
