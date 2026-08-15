@@ -1,0 +1,13 @@
+# Line-ending policy: LF for all text files in the repository.
+# Overrides core.autocrlf on every platform so editors and git never churn
+# the tree with CRLF conversions (see 903a154).
+* text=auto eol=lf
+
+# Windows batch files must keep CRLF or cmd.exe mis-parses them.
+*.bat text eol=crlf
+
+# Binary assets: never normalize or text-diff.
+*.dll binary
+*.png binary
+*.ico binary
+*.icns binary
