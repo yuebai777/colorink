@@ -289,6 +289,15 @@ class PhotoshopSync:
         return result
 
     K32 = ctypes.windll.kernel32
+    # 64 位安全：HANDLE 是指针宽度，必须显式声明 restype/argtypes，
+    # 否则默认按 32 位 c_int 截断（OpenProcess 返回的句柄高 32 位非零时
+    # 会被截断，WaitForSingleObject 拿坏句柄返回 WAIT_FAILED，把已退出的
+    # Photoshop 误判为存活，进而触发挂死的 COM 调用）。
+    K32.OpenProcess.restype = ctypes.c_void_p
+    K32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+    K32.WaitForSingleObject.restype = ctypes.c_uint32
+    K32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+    K32.CloseHandle.argtypes = (ctypes.c_void_p,)
 
     def _is_process_alive(self) -> bool:
         """Check whether the cached Photoshop process is still running.

@@ -310,9 +310,10 @@ class ColorPreviewBox(QWidget):
         menu = QMenu()
         r, g, b = color.red(), color.green(), color.blue()
 
-        menu.addAction(f"Copy RGB: rgb({r}, {g}, {b})",
+        from core import i18n
+        menu.addAction(f"{i18n.tr('复制 RGB')}: rgb({r}, {g}, {b})",
                        lambda r=r, g=g, b=b: (cb := QApplication.clipboard()) is not None and cb.setText(f"rgb({r}, {g}, {b})"))
-        menu.addAction(f"Copy HEX: #{r:02X}{g:02X}{b:02X}",
+        menu.addAction(f"{i18n.tr('复制 HEX')}: #{r:02X}{g:02X}{b:02X}",
                        lambda r=r, g=g, b=b: (cb := QApplication.clipboard()) is not None and cb.setText(f"#{r:02X}{g:02X}{b:02X}"))
 
         menu.exec(QCursor.pos())

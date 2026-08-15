@@ -50,12 +50,23 @@ def get_user_data_dir():
     os.makedirs(path, exist_ok=True)
     return path
 
+def _atomic_write_json(path, data):
+    """Write JSON atomically (tmp + os.replace): a crash mid-write must not
+    truncate the config and silently wipe all user settings on next load."""
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+
+
 def load_window_config():
     path = os.path.join(get_user_data_dir(), CFG_NAME)
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                return loaded
         except Exception:
             pass
     return {}
@@ -63,8 +74,7 @@ def load_window_config():
 def save_window_config(cfg):
     path = os.path.join(get_user_data_dir(), CFG_NAME)
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        _atomic_write_json(path, cfg)
     except Exception:
         pass
 
@@ -205,6 +215,50 @@ def _merge_with_defaults(loaded: dict) -> dict:
     return loaded
 
 
+# Keys whose values must be real booleans / ints. Hand-edited or legacy
+# configs may carry strings ("false", "abc") that would silently break the
+# UI (e.g. ``cfg["uiScale"] / 100.0`` raising TypeError). Invalid values are
+# dropped so _merge_with_defaults re-fills the default.
+_BOOL_KEYS = frozenset({
+    "showSlidersRGB", "showSlidersHSV", "showSlidersHSL", "showSlidersLAB",
+    "showSlidersOKLab", "showSlidersOKLCh", "showSlidersHistory",
+    "showTitleBar", "showTaskbarIcon", "lockWindowSize", "lockWindowPosition",
+    "onlyShowInCsp", "openAtLogin", "checkUpdatesOnStartup",
+    "followMouseEnabled", "noFocusMode", "showLabLightnessSlider",
+    "flipColorWheelHorizontally", "hideHueRing", "showModuleSwitchButton",
+    "showLabToggleButton",
+})
+_INT_KEYS = frozenset({
+    "uiScale", "pickerZoom", "historyColumns", "historyRows",
+    "historySwatchSize", "sliderScrollStep", "sliderSameSpace",
+    "sliderDiffSpace",
+})
+
+
+def _sanitize_types(cfg: dict) -> dict:
+    """Coerce known keys to bool/int, dropping values that cannot convert."""
+    for key in _BOOL_KEYS:
+        value = cfg.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int) and value in (0, 1):
+            cfg[key] = bool(value)
+        elif key in cfg:
+            cfg.pop(key, None)  # 非法值删除 → merge 回填默认
+    for key in _INT_KEYS:
+        value = cfg.get(key)
+        if isinstance(value, bool):
+            cfg.pop(key, None)
+            continue
+        if isinstance(value, int):
+            continue
+        try:
+            cfg[key] = int(value)
+        except (TypeError, ValueError):
+            cfg.pop(key, None)
+    return cfg
+
+
 def load_hotkey_config():
     path = os.path.join(get_user_data_dir(), HOTKEY_CFG_NAME)
     if os.path.exists(path):
@@ -214,6 +268,7 @@ def load_hotkey_config():
                 if not isinstance(loaded, dict):
                     return dict(default_hotkey_config())
                 loaded = migrate_config(loaded)
+                loaded = _sanitize_types(loaded)
                 return normalize_slider_orders(_merge_with_defaults(loaded))
         except Exception:
             pass
@@ -223,8 +278,7 @@ def save_hotkey_config(cfg):
     cfg.setdefault(CONFIG_SCHEMA_KEY, CONFIG_SCHEMA_VERSION)
     path = os.path.join(get_user_data_dir(), HOTKEY_CFG_NAME)
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        _atomic_write_json(path, cfg)
     except Exception:
         pass
 
@@ -248,8 +302,9 @@ def export_settings(cfg: dict) -> dict:
 
 
 def merge_imported_config(imported: dict) -> dict:
-    """Migrate + back-fill + normalize a raw config dict for import."""
+    """Migrate + sanitize + back-fill + normalize a raw config dict for import."""
     merged = migrate_config(dict(imported))
+    merged = _sanitize_types(merged)
     return normalize_slider_orders(_merge_with_defaults(merged))
 
 

@@ -329,7 +329,9 @@ class CSPCompanionSync:
         self._port: int = 0
         self._password: str = ""
         self._generation: str = "G#1:2022.12"
-        self._current_color: dict[str, int] | None = None
+        # 最近写入颜色去重缓存——按槽位（color_index）独立存储：主槽写过的
+        # 颜色再次写副槽必须照常发送 SetCurrentColor，否则 CSP 副槽不更新。
+        self._current_color: dict[int, dict[str, int]] = {}
         self._last_status: dict[str, bool | str | int | None] = {"connected": False}
         self._last_hue_u32: int = 0     # survives grayscale writes
         self._last_sat_u32: int = 0     # survives black writes
@@ -498,7 +500,7 @@ class CSPCompanionSync:
                 pass
         self._sock = None
         self._recv_buf = b""
-        self._current_color = None
+        self._current_color = {}
 
     def _try_reconnect(self) -> bool:
         """Attempt reconnection with the saved session marker.
@@ -944,14 +946,16 @@ class CSPCompanionSync:
 
         self._ensure_heartbeat()
 
-        # Skip if same as last set color (dedup).
+        # Skip if same as last set color for THIS slot (dedup is per-slot:
+        # a single shared cache would wrongly suppress the sub-slot write
+        # when both slots are set to the same RGB).
         # But always send when explicit HSV is provided — the RGB may
         # be identical (e.g., black) while the HSV values changed.
         # Transparent requests must always go through: the flag changed
         # even when the RGB payload did not.
-        if not transparent and self._current_color and hsv_u32 is None:
-            cr = self._current_color
-            if cr["r"] == r and cr["g"] == g and cr["b"] == b:
+        if not transparent and hsv_u32 is None:
+            cr = self._current_color.get(color_index)
+            if cr is not None and cr["r"] == r and cr["g"] == g and cr["b"] == b:
                 return True
 
         try:
@@ -988,7 +992,7 @@ class CSPCompanionSync:
                 "ColorIndex": int(color_index),
             }))
             _ = self._recv_messages(timeout=0.2)
-            self._current_color = {"r": r, "g": g, "b": b}
+            self._current_color[color_index] = {"r": r, "g": g, "b": b}
             _log(f"set_color: RGB=[{r}, {g}, {b}] transparent={transparent} index={color_index} -> H={h_u32} S={s_u32} V={v_u32}")
             return True
         except Exception as exc:

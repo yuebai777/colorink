@@ -35,6 +35,8 @@ import sys
 import time
 from pathlib import Path
 
+from PyQt6.QtCore import QObject, pyqtSignal
+
 # Stale-camera recovery: bounded retries with short backoff (the old runtime
 # used 5 attempts × 1.0s sleeps, which turned a stuck previous camera into a
 # ~5s toggle failure).
@@ -43,15 +45,37 @@ _DX_CAMERA_RETRY_DELAY = 0.2
 _DX_CAMERA_STALE_RELEASE_WAIT = 2.0
 
 
-def _post_to_gui(widget, method_name: str) -> None:
-    """Invoke a Qt slot on the widget's GUI thread from a worker thread."""
-    from PyQt6.QtCore import QMetaObject, Qt
+class _GuiDispatcher(QObject):
+    """Cross-thread dispatch bridge (lives on the GUI thread).
 
-    QMetaObject.invokeMethod(
-        widget,
-        method_name,
-        Qt.ConnectionType.QueuedConnection,
-    )
+    The runtime's kick slot is injected onto the overlay class *after* class
+    creation, so PyQt6 never registers it in the metaobject and
+    ``QMetaObject.invokeMethod`` fails with "No such method" — which the
+    worker's safety net silently swallows, leaving the frame loop dead
+    (grayscale can never activate).  Emitting a signal on a GUI-thread
+    QObject uses AutoConnection → QueuedConnection, so the callback runs on
+    the GUI thread without needing a registered slot.
+    """
+
+    invoke = pyqtSignal(object, str)
+
+
+_gui_dispatcher = _GuiDispatcher()
+
+
+def _dispatch_invoke(widget, method_name: str) -> None:
+    try:
+        getattr(widget, method_name)(widget)
+    except Exception:
+        pass  # widget may have been torn down while the message was queued
+
+
+_gui_dispatcher.invoke.connect(_dispatch_invoke)
+
+
+def _post_to_gui(widget, method_name: str) -> None:
+    """Invoke a Python method on the widget's GUI thread from any thread."""
+    _gui_dispatcher.invoke.emit(widget, method_name)
 
 
 def _runtime_root() -> Path:
@@ -75,7 +99,18 @@ def _ensure_runtime_loaded():
         raise ImportError("无法创建 OKLCh 灰度运行时")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    loader.exec_module(module)
+    try:
+        loader.exec_module(module)
+    except ImportError as exc:
+        # 常见原因：pyc 字节码与当前 Python 版本不匹配（bad magic）。
+        # 给出可操作提示，而不是让 UI 只显示"加载失败"。
+        raise ImportError(
+            f"OKLCh 灰度运行时无法加载（{exc}）。\n"
+            f"当前 Python {sys.version.split()[0]} 无法运行 "
+            f"native_grayscale/runtime/grayscale_overlay.pyc——请用与运行环境\n"
+            f"相同的 Python 版本执行 python native_grayscale/build_runtime.py "
+            f"重新编译后重试。"
+        ) from exc
     _install_prewarm(module)
     return module
 
@@ -339,6 +374,55 @@ class NativeGrayscaleController:
             self._impl = runtime.GrayscaleOverlay(mode=self._mode)
         except Exception as exc:
             self.last_error = f"Native 滤镜加载失败: {exc}"
+        self._install_screen_watchers()
+
+    def _install_screen_watchers(self) -> None:
+        """Watch display layout/DPI changes so overlay geometry stays current.
+
+        The runtime snapshots ``screen.geometry()`` once at overlay creation;
+        without this, a resolution/DPI/monitor change while the filter is on
+        leaves the overlay windows at stale positions/sizes.
+        """
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None or getattr(self, "_screen_watchers_installed", False):
+            return
+        self._screen_watchers_installed = True
+        self._watched_screens = set()
+        app.screenAdded.connect(self._on_screen_layout_changed)
+        app.screenRemoved.connect(self._on_screen_layout_changed)
+        app.primaryScreenChanged.connect(self._on_screen_layout_changed)
+        self._watch_current_screens()
+
+    def _watch_current_screens(self) -> None:
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None:
+            return
+        for screen in app.screens():
+            if screen not in self._watched_screens:
+                try:
+                    screen.geometryChanged.connect(self._on_screen_layout_changed)
+                except Exception:
+                    pass
+                self._watched_screens.add(screen)
+
+    def _on_screen_layout_changed(self, *args) -> None:
+        """Re-apply the latest per-screen geometry to every overlay."""
+        self._watch_current_screens()
+        if self._impl is None or not self._impl.is_active:
+            return
+        for widget in list(getattr(self._impl, "_overlays", [])):
+            try:
+                screen = getattr(widget, "_screen", None)
+                if screen is None:
+                    continue
+                geometry = screen.geometry()
+                widget._colorink_target_geometry = geometry
+                if getattr(widget, "_colorink_reveal_ready", False):
+                    widget.setGeometry(geometry)
+            except Exception:
+                pass
 
     @property
     def is_available(self) -> bool:
@@ -499,6 +583,13 @@ class NativeGrayscaleController:
 
     def _poll_reveal(self) -> None:
         if self._impl is None or not self._impl.is_active:
+            # 预热期间运行时健康检查可能已把 impl 停掉：必须清掉预热状态，
+            # 否则 _warming 永久卡 True，之后任何 toggle 都无法启动滤镜。
+            if self._warming or self._pending_start:
+                self._warming = False
+                self._pending_start = False
+                if not self.last_error:
+                    self.last_error = "灰度预热被中断（运行时健康检查失败），请重试"
             return
         overlays = list(getattr(self._impl, "_overlays", []))
         error = next(

@@ -180,8 +180,18 @@ class MemorySyncThread(QThread):
             try:
                 # 1) Handle write request
                 if self._pending_writes:
-                    color_index = next(iter(self._pending_writes))
-                    pending = self._pending_writes.pop(color_index)
+                    # GUI 线程可能同时整体替换 _pending_writes（
+                    # set_sync_enabled/set_software_mode），判空与取键
+                    # 之间被替换会抛 StopIteration/KeyError——必须捕获，
+                    # 否则写入被裸 except 静默吞掉。
+                    try:
+                        color_index = next(iter(self._pending_writes))
+                    except StopIteration:
+                        continue
+                    try:
+                        pending = self._pending_writes.pop(color_index)
+                    except KeyError:
+                        continue
                     r, g, b = pending["rgb"]
                     hsv_override = pending["hsv_u32"]
                     src_space = pending["source_space"]
@@ -441,5 +451,9 @@ class MemorySyncThread(QThread):
                         self.signals.color_changed.emit(r, g, b, color_index)
                     
             except Exception as e:
-                # Avoid flooding console in thread
-                pass
+                # 轮询循环兜底：限频记录（每 5 秒最多一条），绝不静默——
+                # 之前裸 except 吞掉一切，任何后端/竞态故障都不可见。
+                now = time.time()
+                if now - getattr(self, "_last_loop_error_ts", 0.0) > 5.0:
+                    self._last_loop_error_ts = now
+                    print(f"[Sync] poll loop error: {e!r}")

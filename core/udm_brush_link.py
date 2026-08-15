@@ -257,6 +257,9 @@ class UDMSync:
         self.space_offsets = build_space_offsets(self.r_off)
         self._last_hsv_h: float = 0.0
         self._last_hsv_s: float = 0.0
+        # 连续解析失败计数：目标进程退出后达到阈值即主动断开重连。
+        self._resolve_fail_count: int = 0
+        self._RESOLVE_FAIL_LIMIT = 30  # ≈3 秒（100ms 轮询）
 
         # Absolute-address mode overrides.  In use_abs mode the user
         # supplies fixed addresses for each channel and we bypass the
@@ -403,6 +406,7 @@ class UDMSync:
         self.pid = None
         self.module_base = None
         self.target = None
+        self._resolve_fail_count = 0
 
     # ----- memory accessors ----------------------------------------------
     def _read_u32(self, address: int) -> int:
@@ -449,7 +453,20 @@ class UDMSync:
 
         if self.use_abs:
             if self.abs_r and self.abs_g and self.abs_b:
-                return build_space_addresses(self.abs_r)
+                addrs = build_space_addresses(self.abs_r)
+                # 配置提供的是三个独立通道地址：RGB 三通道使用各自的
+                # 绝对地址（可能不连续）；HSV/HLS/CMYK 仍以 abs_r 为
+                # 结构锚点连续排布（配置只给通道级地址）。
+                rgb_addrs = list(addrs["rgb"])
+                rgb_addrs[1] = self.abs_g
+                rgb_addrs[2] = self.abs_b
+                addrs["rgb"] = tuple(rgb_addrs)
+                self._resolve_fail_count = 0
+                return addrs
+            self._resolve_fail_count += 1
+            if self._resolve_fail_count >= self._RESOLVE_FAIL_LIMIT:
+                _log("_resolve_space_addresses: abs addresses invalid for too long — dropping")
+                self._drop_connection()
             return None
 
         if self.module_base is None:
@@ -468,6 +485,7 @@ class UDMSync:
             pass
 
         if self.target is None:
+            self._count_resolve_failure()
             return None
 
         # Validate the cached target is still readable.
@@ -476,12 +494,24 @@ class UDMSync:
         except Exception as exc:
             _log(f"_resolve_space_addresses: target 0x{self.target:X} unreadable: {exc}")
             self.target = None
+            self._count_resolve_failure()
             return None
 
+        self._resolve_fail_count = 0
         return {
             name: tuple(self.target + off for off in offsets)
             for name, offsets in self.space_offsets.items()
         }
+
+    def _count_resolve_failure(self) -> None:
+        """Increment the failure counter; drop the connection when the
+        target process is very likely gone, so the next access reconnects
+        (pm 残留非 None 时重连入口永远不触发，UDM 重启后一直未连接)."""
+        self._resolve_fail_count += 1
+        if self._resolve_fail_count >= self._RESOLVE_FAIL_LIMIT:
+            _log(f"_resolve_space_addresses: {self._resolve_fail_count} consecutive "
+                 f"failures — dropping connection")
+            self._drop_connection()
 
     # ----- public color access -------------------------------------------
     def get_color(self) -> dict[str, int] | None:

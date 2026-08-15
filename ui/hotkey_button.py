@@ -125,7 +125,8 @@ class HotkeyButton(QPushButton):
         self.hotkey_type = hotkey_type
         self.allow_mouse = allow_mouse
         self.val = initial_val
-        self.setText(display_hotkey(initial_val) if initial_val else "未绑定")
+        from core import i18n
+        self.setText(i18n.tr(display_hotkey(initial_val)) if initial_val else i18n.tr("未绑定"))
         self.waiting_for_key = False
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         # Keep a comfortable minimum width for hotkey labels.
@@ -143,7 +144,8 @@ class HotkeyButton(QPushButton):
         if event.button() == Qt.MouseButton.LeftButton:
             self.waiting_for_key = True
             _set_capture_active(True)
-            self.setText("请按键盘或鼠标键..." if self.allow_mouse else "请按键盘...")
+            from core import i18n
+            self.setText(i18n.tr("请按键盘或鼠标键...") if self.allow_mouse else i18n.tr("请按键盘..."))
             self.grabKeyboard()
             self.grabMouse()
         else:
@@ -160,8 +162,10 @@ class HotkeyButton(QPushButton):
             return
 
         hotkey = parse_key_event(event)
-        # Standalone modifier press — keep waiting for a real key
-        if not hotkey and key in [Qt.Key.Key_Control, Qt.Key.Key_Shift, Qt.Key.Key_Alt, Qt.Key.Key_Meta]:
+        # 独立修饰键 / 不支持的键（Insert/Home/End/PrtSc/F13+ 等）：
+        # 继续等待下一个按键，绝不 _finish_capture("")——否则会把已绑定的
+        # 热键静默清空并写进配置，重启后热键丢失。
+        if not hotkey:
             return
 
         self._finish_capture(hotkey)
@@ -178,6 +182,7 @@ class HotkeyButton(QPushButton):
     def _cancel_capture(self):
         self.waiting_for_key = False
         _set_capture_active(False)
-        self.setText(display_hotkey(self.val) if self.val else "未绑定")
+        from core import i18n
+        self.setText(i18n.tr(display_hotkey(self.val)) if self.val else i18n.tr("未绑定"))
         self.releaseKeyboard()
         self.releaseMouse()

@@ -377,6 +377,10 @@ class CSPSync:
         self.space_offsets = build_space_offsets(self.r_off)
         self._last_hsv_h: float = 0.0
         self._last_hsv_s: float = 0.0
+        # 连续解析/读取失败计数：目标进程退出后达到阈值即主动断开
+        # （pm 残留会让重连入口永远不触发，进程重启后一直显示未连接）。
+        self._resolve_fail_count: int = 0
+        self._RESOLVE_FAIL_LIMIT = 30  # ≈3 秒（100ms 轮询）
 
         # Honor CSP_SYNC_VERSION env override before applying user config.
         env_version = os.environ.get("CSP_SYNC_VERSION", DEFAULT_VERSION_KEY)
@@ -393,6 +397,13 @@ class CSPSync:
         self.intermediate_offset = profile.intermediate_offset
         self.aob_signature = profile.aob_signature
         self.color_format = profile.color_format
+        # 切换版本即切换进程/布局：清空色相记忆与副本缓存，避免
+        # 主/副槽或新旧版本之间串扰（旧值在新进程里没有意义）。
+        self._last_hsv_h = 0.0
+        self._last_hsv_s = 0.0
+        self._resolve_fail_count = 0
+        self._sub_copy_addrs = None
+        self._main_copy_addrs = None
 
     def _load_user_config(self) -> None:
         path = _resolve_config_file()
@@ -794,10 +805,17 @@ class CSPSync:
                 base_addr = self.target + base_off
                 if base_addr not in addrs:
                     addrs.append(base_addr)
+                setattr(self, cache_attr, addrs)
+                _log(f"_locate_hsv_copies: located {len(addrs)} copies")
             else:
+                # 平凡模式（黑=全 0、白=全 FF 等）在进程内存中命中数百处，
+                # 无法区分权威笔刷副本。此时只写镜像槽且【不缓存】：一旦
+                # 缓存，校验读到的总是自己刚写过的值（恒通过），会把
+                # "只写镜像槽"的降级状态永久锁死，之后所有写入都不再
+                # 更新笔刷。下一次写非平凡颜色时重新搜索即可恢复。
                 addrs = [self.target + base_off]
-            setattr(self, cache_attr, addrs)
-            _log(f"_locate_hsv_copies: located {len(addrs)} copies")
+                _log(f"_locate_hsv_copies: {len(hits)} hits > {self._SUB_COPY_LIMIT} "
+                     f"(trivial pattern) — mirror-only write, NOT cached")
         return addrs
 
     def _write_sub_color(self, r: int, g: int, b: int) -> bool:
@@ -836,14 +854,24 @@ class CSPSync:
             if dereferenced:
                 self.target = dereferenced
             if self.target is None:
-                return False
+                raise ValueError("target pointer not resolved")
             # Reading all three RGB channels validates the cached target.
             for off in self._RGB_U32_OFFS:
                 _ = self.pm.read_int(self.target + off)
+            self._resolve_fail_count = 0
             return True
         except Exception as exc:
             _log(f"_resolve_rgb_target: target unreadable: {exc}")
             self.target = None
+            self._resolve_fail_count += 1
+            if self._resolve_fail_count >= self._RESOLVE_FAIL_LIMIT:
+                # 目标进程大概率已退出：释放句柄，让下一次访问重新 connect。
+                # 否则 pm 一直非 None，重连入口（`if self.pm is None`）永远
+                # 不触发，CSP 重启后 Colorink 会永久显示未连接。
+                _log(f"_resolve_rgb_target: {self._resolve_fail_count} consecutive "
+                     f"failures — dropping connection")
+                self._drop_connection()
+                self._resolve_fail_count = 0
             return False
 
     def _read_rgb_u32(self) -> dict[str, int] | None:
@@ -875,21 +903,40 @@ class CSPSync:
             # three u32s). Like the sub slot, the brush reads the main color
             # from MULTIPLE in-memory copies — writing the base slot alone
             # does not reach CSP. Locate every copy and write all of them.
-            hsv = rgb_to_hsv_float(rgb)
-            if hsv["s"] < 1.0:
-                h_deg = self._last_hsv_h
+            if (source_space == "hsv" and source_values
+                    and "h" in source_values and "s" in source_values
+                    and "v" in source_values):
+                # 源空间直写：用户在 HSV 滑块上的精确浮点值直接编码，
+                # 不经 RGB 往返（避免色相精度损失），与 set_color 的
+                # docstring 承诺一致。
+                h_deg = float(source_values["h"]) % 360.0
+                s_pct = float(source_values["s"])
+                v_pct = float(source_values["v"])
+                if s_pct < 1.0:
+                    h_deg = self._last_hsv_h
+                else:
+                    self._last_hsv_h = h_deg
+                if v_pct < 1.0:
+                    s_pct = self._last_hsv_s
+                else:
+                    self._last_hsv_s = s_pct
             else:
-                h_deg = hsv["h"]
-                self._last_hsv_h = h_deg
-            if hsv["v"] < 1.0:
-                s_pct = self._last_hsv_s
-            else:
-                s_pct = hsv["s"]
-                self._last_hsv_s = s_pct
+                hsv = rgb_to_hsv_float(rgb)
+                if hsv["s"] < 1.0:
+                    h_deg = self._last_hsv_h
+                else:
+                    h_deg = hsv["h"]
+                    self._last_hsv_h = h_deg
+                if hsv["v"] < 1.0:
+                    s_pct = self._last_hsv_s
+                else:
+                    s_pct = hsv["s"]
+                    self._last_hsv_s = s_pct
+                v_pct = hsv["v"]
             new = b"".join(
                 u.to_bytes(4, "little")
                 for u in encode_space_values_float(
-                    "hsv", {"h": h_deg, "s": s_pct, "v": hsv["v"]}
+                    "hsv", {"h": h_deg, "s": s_pct, "v": v_pct}
                 )
             )
             old = b"".join(

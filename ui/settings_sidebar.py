@@ -1707,9 +1707,12 @@ class SettingsSidebar(QWidget):
         
         old_autostart = self.cfg.get("openAtLogin", False)
         new_autostart = self.cb_autostart.isChecked()
-        self.cfg["openAtLogin"] = new_autostart
         if old_autostart != new_autostart:
-            autostart.apply_autostart(new_autostart)
+            ok = autostart.apply_autostart(new_autostart)
+            if not ok:
+                # 注册表写入失败（windowed 下 print 不可见）：回滚配置与勾选
+                self.cfg["openAtLogin"] = old_autostart
+                self.cb_autostart.setChecked(old_autostart)
             
         self.cfg["onlyShowInCsp"] = self.cb_only_drawing.isChecked()
         self.cfg["showTaskbarIcon"] = self.cb_taskbar_icon.isChecked()
@@ -2380,8 +2383,14 @@ class SettingsSidebar(QWidget):
         )
         if not dest:
             return
+        # GitHub 对 release asset 提供 SHA-256 digest（"sha256:<hex>"）；
+        # 有则校验，老资产没有 digest 时退回仅字节数校验。
+        sha256 = None
+        digest = asset.get("digest") or ""
+        if isinstance(digest, str) and digest.startswith("sha256:"):
+            sha256 = digest[len("sha256:"):].strip()
         self._download_worker = _DownloadWorker(
-            asset["url"], dest, asset.get("size"), self
+            asset["url"], dest, asset.get("size"), self, sha256=sha256
         )
         self._download_worker.progress.connect(self._on_download_progress)
         self._download_worker.done.connect(self._on_download_done)
@@ -2532,11 +2541,13 @@ class _DownloadWorker(QThread):
     progress = pyqtSignal(int, int)
     done = pyqtSignal(dict)
 
-    def __init__(self, url: str, dest_path: str, total_size, parent=None):
+    def __init__(self, url: str, dest_path: str, total_size, parent=None,
+                 sha256: str | None = None):
         super().__init__(parent)
         self._url = url
         self._dest_path = dest_path
         self._total_size = total_size
+        self._sha256 = sha256
 
     def run(self):  # noqa: D401 - QThread override
         self.done.emit(updater.download_release(
@@ -2544,4 +2555,5 @@ class _DownloadWorker(QThread):
             self._dest_path,
             total_size=self._total_size,
             progress_cb=lambda downloaded, total: self.progress.emit(downloaded, total),
+            sha256=self._sha256,
         ))

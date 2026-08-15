@@ -2,7 +2,7 @@
 
 import os
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
@@ -10,8 +10,13 @@ from core import config, global_hotkeys, i18n
 
 
 class TrayMixin:
+    # Cross-thread result channel for the startup update check: emitted from
+    # the worker thread, delivered on the GUI thread (AutoConnection).
+    silent_update_result = pyqtSignal(dict)
+
     def init_tray(self):
         """Setup system tray icon with context menu for minimized window access."""
+        self.silent_update_result.connect(self._on_silent_update_result)
         self.tray_icon = QSystemTrayIcon(self)
         icon_path = os.path.join("icons", "icon.ico")
         if os.path.exists(icon_path):
@@ -29,8 +34,21 @@ class TrayMixin:
         self.tray_icon.show()
 
     def _build_tray_menu(self):
-        """(Re)build the tray context menu in the active language."""
-        tray_menu = QMenu()
+        """(Re)build the tray context menu in the active language.
+
+        The menu must be parented and kept referenced: QSystemTrayIcon does
+        NOT take ownership of the context menu, so a bare local QMenu would
+        be destroyed right after this method returns and the tray icon would
+        hold a dangling pointer (right-click crash / empty menu).
+        """
+        old_menu = getattr(self, "tray_menu", None)
+        if old_menu is not None:
+            try:
+                old_menu.deleteLater()
+            except Exception:
+                pass
+
+        tray_menu = QMenu(self)
 
         show_action = QAction(i18n.tr("显示/隐藏"), self)
         show_action.triggered.connect(self.toggle_visibility)
@@ -55,6 +73,7 @@ class TrayMixin:
         quit_action.triggered.connect(self.close_application)
         tray_menu.addAction(quit_action)
 
+        self.tray_menu = tray_menu
         self.tray_icon.setContextMenu(tray_menu)
 
     def retranslate(self):
@@ -66,11 +85,22 @@ class TrayMixin:
             sw._title_bar._label.setText(i18n.tr("设置"))
 
     def on_tray_activated(self, reason):
-        """Handle tray icon click: single left-click toggles visibility."""
+        """Handle tray icon click.
+
+        On Windows a double-click delivers ``Trigger`` first, then
+        ``DoubleClick`` — toggling on both would cancel out (visible flash,
+        no net effect). Trigger toggles; the DoubleClick that follows it
+        force-shows, so a double-click always ends with the panel visible.
+        """
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.toggle_visibility()
         elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            self.toggle_visibility()
+            # Trigger already toggled once above — show unconditionally.
+            if self.follow_mouse_active:
+                self.show_window_at_cursor()
+            else:
+                self.show()
+                self.raise_()
 
     def _check_updates_silently(self):
         """Background update check on startup; notify via tray, never a modal."""
@@ -84,8 +114,10 @@ class TrayMixin:
 
         def _run():
             result = _updater.check_for_update()
-            # Marshal the result back onto the GUI thread.
-            QTimer.singleShot(0, lambda: self._on_silent_update_result(result))
+            # Marshal the result back onto the GUI thread. A queued signal on
+            # this GUI-thread object works from any thread; QTimer.singleShot
+            # from a bare Python thread would never fire (no event loop there).
+            self.silent_update_result.emit(result)
 
         _threading.Thread(
             target=_run, daemon=True, name="colorink-update-check"
