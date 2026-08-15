@@ -51,9 +51,14 @@ class GradientSlider(QSlider):
         if delta < 0:
             steps_to_move = -step
 
-        new_val = self.value() + steps_to_move
+        old_val = self.value()
+        new_val = old_val + steps_to_move
         new_val = max(self.minimum(), min(self.maximum(), new_val))
-        self.setValue(new_val)
+        if new_val != old_val:
+            self.setValue(new_val)
+            # 滚轮路径没有鼠标释放事件：手动补发 sliderReleased，让
+            # 提交动作（记录历史 + 同步画图软件）与拖动/键盘路径一致。
+            self.sliderReleased.emit()
         event.accept()
 
     def update_scale(self, scale, theme=None):

@@ -96,7 +96,24 @@ class ContentHeightPolicyTests(unittest.TestCase):
 
         MainWindow._adjust_content_height(cast(MainWindow, window))
 
-        timer.start.assert_called_once_with(0)
+        # 隐藏时绝不启动 0ms 定时器（旧的"start(0) 自 arm"会让单核
+        # CPU 在窗口隐藏期间无限空转），只记录 pending，由 showEvent 补做。
+        timer.start.assert_not_called()
+        self.assertTrue(window._content_height_adjust_pending)
+
+    def test_hidden_window_does_not_rearm_deferred_timer(self):
+        timer = MagicMock()
+        window = SimpleNamespace(
+            _adjusting_content_height=False,
+            _content_height_adjust_pending=False,
+            _content_height_timer=timer,
+            isVisible=MagicMock(return_value=False),
+        )
+
+        MainWindow._run_deferred_content_height(cast(MainWindow, window))
+
+        # 定时器触发后发现仍隐藏：不再重 arm，保持 pending 等 showEvent。
+        timer.start.assert_not_called()
         self.assertTrue(window._content_height_adjust_pending)
 
     def test_explicit_stack_minimum_includes_ringless_control_bar(self):

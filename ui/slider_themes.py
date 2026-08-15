@@ -144,4 +144,5 @@ def get_slider_theme(name) -> SliderTheme:
 
 def list_slider_theme_names() -> list[tuple[str, str]]:
     """Return (key, display_name) pairs in insertion order — for settings UI."""
-    return [(key, str(theme["display_name"])) for key, theme in SLIDER_THEMES.items()]
+    from core import i18n
+    return [(key, i18n.tr(str(theme["display_name"]))) for key, theme in SLIDER_THEMES.items()]

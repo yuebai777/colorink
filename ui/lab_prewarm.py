@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -61,9 +61,9 @@ def _lab_to_rgb(lightness: np.ndarray, a: np.ndarray, b: np.ndarray) -> tuple[np
     x_val = 0.96422 * np.where(x > 0.206893, x ** 3, (x - 16.0 / 116.0) / 7.787)
     y_val = np.where(y_const > 0.206893, y_const ** 3, (y_const - 16.0 / 116.0) / 7.787)
     z_val = 0.82521 * np.where(z > 0.206893, z ** 3, (z - 16.0 / 116.0) / 7.787)
-    x65 = 0.9554734 * x_val - 0.0230984 * y_val + 0.0632595 * z_val
-    y65 = -0.0283697 * x_val + 1.0099956 * y_val + 0.0210414 * z_val
-    z65 = 0.0123140 * x_val - 0.0205077 * y_val + 1.3303659 * z_val
+    x65 = 0.9555766558 * x_val - 0.0230393428 * y_val + 0.0631636684 * z_val
+    y65 = -0.0282895469 * x_val + 1.0099416212 * y_val + 0.0210076609 * z_val
+    z65 = 0.0122981793 * x_val - 0.0204830040 * y_val + 1.3299098908 * z_val
     r = x65 * 3.2404542 - y65 * 1.5371385 - z65 * 0.4985314
     g = -x65 * 0.9692660 + y65 * 1.8760108 + z65 * 0.0415560
     blue = x65 * 0.0556434 - y65 * 0.2040259 + z65 * 1.0572252

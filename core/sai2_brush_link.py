@@ -109,12 +109,35 @@ class MODULEENTRY32(ctypes.Structure):
 
 _kernel32 = ctypes.windll.kernel32
 
+# ── 64 位安全：显式声明参数/返回类型 ─────────────────────────────
+# 不设 restype 时 OpenProcess/CreateToolhelp32Snapshot 的 HANDLE 按
+# 32 位 c_int 截断返回，高句柄值下会得到错误句柄或误判失败。
+_kernel32.OpenProcess.restype = ctypes.c_void_p
+_kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+_kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+_kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+_kernel32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+_kernel32.Process32First.argtypes = (ctypes.c_void_p, ctypes.POINTER(PROCESSENTRY32))
+_kernel32.Process32Next.argtypes = (ctypes.c_void_p, ctypes.POINTER(PROCESSENTRY32))
+_kernel32.Module32First.argtypes = (ctypes.c_void_p, ctypes.POINTER(MODULEENTRY32))
+_kernel32.Module32Next.argtypes = (ctypes.c_void_p, ctypes.POINTER(MODULEENTRY32))
+_kernel32.ReadProcessMemory.argtypes = (
+    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+    ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t),
+)
+_kernel32.ReadProcessMemory.restype = wintypes.BOOL
+_kernel32.WriteProcessMemory.argtypes = (
+    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+    ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t),
+)
+_kernel32.WriteProcessMemory.restype = wintypes.BOOL
+
 
 def _find_process(name: str) -> int | None:
     """Locate a process id by image name."""
     name_lower = name.lower().encode("utf-8")
     snapshot = _kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-    if snapshot == -1:
+    if not snapshot or snapshot == 0xFFFFFFFF:
         return None
 
     pe = PROCESSENTRY32()
@@ -137,7 +160,7 @@ def _get_module_info(pid: int, module_name: str) -> tuple[int | None, int | None
     """Return (base_addr, module_size) for the named module inside the process."""
     name_lower = module_name.lower().encode("utf-8")
     snapshot = _kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid)
-    if snapshot == -1 or snapshot == 0xFFFFFFFF:
+    if not snapshot or snapshot == 0xFFFFFFFF:
         return None, None
 
     me = MODULEENTRY32()
@@ -170,7 +193,9 @@ def _write_memory(handle, address: int, data) -> bool:
     buffer = ctypes.create_string_buffer(bytes(data))
     bytes_written = ctypes.c_size_t()
     result = _kernel32.WriteProcessMemory(handle, ctypes.c_void_p(address), buffer, len(data), ctypes.byref(bytes_written))
-    return result != 0
+    # 必须校验实际写入字节数：部分写入（跨页/权限边缘）会返回成功但
+    # 把 B/G/R 通道写错位，读回的是坏颜色。
+    return result != 0 and bytes_written.value == len(data)
 
 
 def _scan_pattern_masked(handle, base: int, size: int, pattern: list[int | None]) -> int | None:
@@ -335,9 +360,12 @@ class SAI2Sync:
             if data and len(data) == 3:
                 # SAI stores channels in memory order B, G, R
                 return {"r": data[2], "g": data[1], "b": data[0]}
+            # 进程退出/读失败：关闭句柄并清缓存，让下次访问重新 connect。
+            # 否则 _handle 残留非 None，重连入口永远不触发（SAI2 重启后
+            # 一直显示未连接），且每次失败都泄漏一个进程句柄。
+            self._reset_cache(close_handle=True)
         except Exception:
-            self._handle = None
-            self._color_addr = None
+            self._reset_cache(close_handle=True)
 
         return None
 
@@ -354,8 +382,7 @@ class SAI2Sync:
         try:
             return _write_memory(self._handle, self._color_addr, [b, g, r])
         except Exception:
-            self._handle = None
-            self._color_addr = None
+            self._reset_cache(close_handle=True)
             return False
 
     def status(self) -> dict[str, object]:

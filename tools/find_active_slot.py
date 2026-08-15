@@ -47,15 +47,15 @@ def _dump(a: bytes, b: bytes, label: str) -> None:
         print(f"  {label}: (无变化)")
         return
     print(f"  {label} ({len(changed)} 字节):")
-    # 4-byte grouped view
+    # 4-byte grouped view（groups 的 key 是组号 off//4，索引与标签都要 ×4）
     groups: dict[int, list[int]] = {}
     for off in changed:
         groups.setdefault(off // 4, []).append(off)
     for base in sorted(groups):
-        row_a = " ".join(f"{a[base + i]:02X}" for i in range(4))
-        row_b = " ".join(f"{b[base + i]:02X}" for i in range(4))
+        row_a = " ".join(f"{a[base * 4 + i]:02X}" for i in range(4))
+        row_b = " ".join(f"{b[base * 4 + i]:02X}" for i in range(4))
         if row_a != row_b:
-            print(f"    +0x{base:03X}:  {row_a}  ->  {row_b}")
+            print(f"    +0x{base * 4:03X}:  {row_a}  ->  {row_b}")
 
 
 def main() -> int:

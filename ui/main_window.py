@@ -181,6 +181,15 @@ class MainWindow(TrayMixin, SyncMixin, HotkeyMixin, ColorSlotsMixin, QMainWindow
             if mode not in ("oklch", "luma"):
                 mode = "oklch"
             self.grayscale_overlay = NativeGrayscaleController(mode=mode)
+            if not self.grayscale_overlay.is_available:
+                # 原生运行时缺失 / 字节码版本不匹配：自动回退到系统 Mag
+                # 后端（仅 Luma、作用于全部屏幕），保证默认配置下灰度
+                # 滤镜仍然可用；Mag 也不可用时保留 native 以便报错。
+                from core.mag_grayscale import MagFilterController as _Mag
+                fallback = _Mag(mode="luma")
+                if fallback.is_available:
+                    print("[Grayscale] Native backend unavailable — falling back to Mag (Luma)")
+                    self.grayscale_overlay = fallback
         screen_target = self.cfg.get("grayscaleFilterScreen", "all")
         self.grayscale_overlay.set_target(screen_target)
         # Warm the OKLCh capture/OpenGL/PBO chain off-screen so Ctrl+G only
@@ -1206,15 +1215,19 @@ class MainWindow(TrayMixin, SyncMixin, HotkeyMixin, ColorSlotsMixin, QMainWindow
 
     def _run_deferred_content_height(self):
         self._content_height_adjust_pending = False
+        if not self.isVisible():
+            # 仍处于隐藏状态：不重 arm 定时器（否则 0ms 定时器会无限自旋，
+            # 单核 CPU 打满），把调整留到 showEvent 补做。
+            self._content_height_adjust_pending = True
+            return
         self._adjust_content_height()
 
     def _adjust_content_height(self):
         if getattr(self, "_adjusting_content_height", False):
             return
         if not self.isVisible():
-            if not self._content_height_adjust_pending:
-                self._content_height_adjust_pending = True
-                self._content_height_timer.start(0)
+            # 隐藏时只记录 pending，绝不启动 0ms 定时器；showEvent 会补一次。
+            self._content_height_adjust_pending = True
             return
         self._content_height_adjust_pending = False
         required = 0
@@ -1603,6 +1616,14 @@ class MainWindow(TrayMixin, SyncMixin, HotkeyMixin, ColorSlotsMixin, QMainWindow
         # 5) Push to drawing software — delegated to SyncMixin so the god
         # class no longer owns the companion/memory write path.
         self._push_color_to_sync(r, g, b, source, hsv)
+
+    def showEvent(self, event):
+        """On show, run any content-height adjustment deferred while hidden."""
+        super().showEvent(event)
+        if self._content_height_adjust_pending:
+            self._content_height_adjust_pending = False
+            from PyQt6.QtCore import QTimer as _QTimer
+            _QTimer.singleShot(0, self._adjust_content_height)
 
     def resizeEvent(self, event):
         """Handle resize, preventing DPI-induced size drift when dragged between monitors.

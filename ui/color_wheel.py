@@ -49,7 +49,8 @@ class SliceGeometry:
 def hsv_to_rgb(h, s, v):
     """Integer RGB (0–255) — QColor-friendly wrapper over cc.hsv_to_rgb."""
     r, g, b = _hsv_to_rgb_float(h, s, v)
-    return int(r), int(g), int(b)
+    # round() 而非 int()：int 向零截断会让信号里的 RGB 系统性偏暗 1/255。
+    return round(r), round(g), round(b)
 
 
 # rgb_to_hsv is imported from ui.color_conversions (single source of truth).

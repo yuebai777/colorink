@@ -112,22 +112,37 @@ def check_for_update(timeout: float = 8.0) -> dict:
     except json.JSONDecodeError:
         return {"error": "GitHub 响应解析失败"}
 
-    tag = data.get("tag_name", "")
-    if not tag:
+    # 防御畸形 200 响应（代理/镜像返回数组、空对象等）——函数契约是
+    # "caller never has to handle exceptions"，解析后的访问必须同样兜底。
+    if not isinstance(data, dict):
+        return {"error": "GitHub 响应解析失败"}
+
+    tag = data.get("tag_name")
+    if not isinstance(tag, str) or not tag.strip():
         return {"error": "未在响应中找到版本号"}
 
+    assets_raw = data.get("assets")
+    if not isinstance(assets_raw, list):
+        assets_raw = []
     assets = [
         {"name": a.get("name"), "url": a.get("browser_download_url"),
-         "size": a.get("size")}
-        for a in data.get("assets", [])
-        if a.get("browser_download_url")
+         "size": a.get("size"), "digest": a.get("digest")}
+        for a in assets_raw
+        if isinstance(a, dict) and a.get("browser_download_url")
     ]
+
+    body = data.get("body") or ""
+    if not isinstance(body, str):
+        body = ""
+    release_url = data.get("html_url") or GITHUB_URL
+    if not isinstance(release_url, str):
+        release_url = GITHUB_URL
 
     return {
         "current_version": APP_VERSION,
         "latest_version": tag,
-        "release_url": data.get("html_url") or GITHUB_URL,
-        "release_notes": (data.get("body") or "").strip(),
+        "release_url": release_url,
+        "release_notes": body.strip(),
         "has_update": _normalize_version(tag) > _normalize_version(APP_VERSION),
         "assets": assets,
     }
@@ -315,11 +330,15 @@ def build_self_replace_script(new_exe: str, current_exe: str) -> str:
     falls back to launching the new file directly so the user still gets the
     update even if the old file stays put.
     """
-    new_exe = os.path.abspath(new_exe)
-    current_exe = os.path.abspath(current_exe)
+    new_exe = os.path.abspath(new_exe).replace("%", "%%")
+    current_exe = os.path.abspath(current_exe).replace("%", "%%")
     return "\r\n".join([
         "@echo off",
         "rem Colorink self-update helper (auto-generated).",
+        # cmd.exe 默认按 OEM 代码页（如 GBK）逐行解码 batch 文件；脚本以
+        # UTF-8 写入，非 ASCII（中文用户名/安装路径）会被解析成乱码导致
+        # move/start 失败。chcp 65001 后后续行按 UTF-8 解码。
+        "chcp 65001 >nul",
         "ping 127.0.0.1 -n 3 >nul",
         f"move /Y \"{new_exe}\" \"{current_exe}\" >nul 2>&1",
         f"if exist \"{new_exe}\" (",

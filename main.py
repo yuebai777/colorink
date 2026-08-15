@@ -24,6 +24,11 @@ def _is_process_running(pid: int) -> bool:
     """Check if a Windows process with the given PID is still running."""
     kernel32 = ctypes.windll.kernel32
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    # 64 位安全：HANDLE 必须按 c_void_p 接收，否则高句柄值会被截断成 0，
+    # 把仍在运行的实例误判为"已死"并放行第二个实例。
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
     handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if handle:
         kernel32.CloseHandle(handle)
@@ -62,11 +67,17 @@ def _acquire_instance_lock() -> QSharedMemory | None:
         return None  # Duplicate — exit
 
     # Dead process from previous crash — take over
-    if shared_mem.create(4):
-        pid_bytes = struct.pack('I', os.getpid())
-        shared_mem.lock()
-        ctypes.memmove(int(shared_mem.data()), pid_bytes, 4)
-        shared_mem.unlock()
+    for attempt in range(3):
+        if shared_mem.create(4):
+            pid_bytes = struct.pack('I', os.getpid())
+            shared_mem.lock()
+            ctypes.memmove(int(shared_mem.data()), pid_bytes, 4)
+            shared_mem.unlock()
+            return shared_mem
+        # 旧进程的段可能尚未被系统完全释放（僵尸句柄等）——短暂重试，
+        # 避免直接落回"无锁运行"放行第二个实例。
+        import time as _time
+        _time.sleep(0.5)
     return shared_mem
 
 def _log_exception(exc_type, exc_value, exc_tb):
@@ -74,8 +85,16 @@ def _log_exception(exc_type, exc_value, exc_tb):
     and drop a crash marker for the next-launch prompt."""
     import traceback
     text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb)) + "\n"
+    # onefile 打包后 __file__/cwd 指向 _MEIxxxx 临时解包目录，进程退出即被
+    # 删除——崩溃日志必须写到用户数据目录，否则"打开日志文件"永远找不到。
+    if getattr(sys, "frozen", False):
+        from core import config as _config
+        log_dir = _config.get_user_data_dir()
+    else:
+        log_dir = "."
+    log_path = os.path.abspath(os.path.join(log_dir, "stderr.log"))
     try:
-        with open("stderr.log", "a", encoding="utf-8") as f:
+        with open(log_path, "a", encoding="utf-8") as f:
             f.write(text)
     except Exception:
         traceback.print_exc()
@@ -83,7 +102,7 @@ def _log_exception(exc_type, exc_value, exc_tb):
     # Never let marker-writing itself raise out of the exception hook.
     try:
         from core import crash_report
-        crash_report.write_crash_marker(text, log_path=os.path.abspath("stderr.log"))
+        crash_report.write_crash_marker(text, log_path=log_path)
     except Exception:
         pass
 

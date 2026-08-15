@@ -65,6 +65,15 @@ def _resolve_process_exe(pid: int) -> str:
         import ctypes
         kernel32 = ctypes.windll.kernel32
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        # 64 位安全：HANDLE 按 c_void_p 接收，避免句柄截断。
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        kernel32.QueryFullProcessImageNameW.argtypes = (
+            ctypes.c_void_p, ctypes.c_uint32,
+            ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_ulong),
+        )
+        kernel32.QueryFullProcessImageNameW.restype = ctypes.c_int
         handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
             return ""

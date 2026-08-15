@@ -11,3 +11,4 @@
 *.png binary
 *.ico binary
 *.icns binary
+*.pyc binary

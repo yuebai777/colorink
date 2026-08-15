@@ -82,8 +82,9 @@ def main() -> int:
     t._last_read_transparent = {}
 
     print("── memory_sync 链路写副色=绿 (color_index=1) ──")
-    # 模拟 run() 的写分支调用
-    if t._ensure_companion():
+    # 模拟 run() 的写分支调用：companion 会话可用则走官方路径，
+    # 否则走内存回退（_ensure_companion 是旧残留，实际不存在）。
+    if t.companion_sync.connect():
         print("  companion 已连接 → 走官方路径")
         t.companion_sync.set_color(0, 255, 0, color_index=1)
     else:

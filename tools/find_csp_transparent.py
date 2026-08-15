@@ -117,11 +117,15 @@ def main() -> int:
 
     print("\n================= 完整快照 =================")
     for off in range(0, _WINDOW, 4):
-        row = " ".join(
-            f"{snap[off + i]:02X}" for snap in (a, b, c, d) for i in range(4)
-        )
         marker = " *" if off in both else ""
-        print(f"+0x{off:03X}:  A={a[off]:04X}  B={b[off]:04X}  C={c[off]:04X}  D={d[off]:04X}{marker}")
+        # 每行 4 个快照 × 4 字节；列头必须与 16 字节行数据对齐
+        print(
+            f"+0x{off:03X}:  "
+            f"A0-3={a[off]:02X}{a[off + 1]:02X}{a[off + 2]:02X}{a[off + 3]:02X}  "
+            f"B0-3={b[off]:02X}{b[off + 1]:02X}{b[off + 2]:02X}{b[off + 3]:02X}  "
+            f"C0-3={c[off]:02X}{c[off + 1]:02X}{c[off + 2]:02X}{c[off + 3]:02X}  "
+            f"D0-3={d[off]:02X}{d[off + 1]:02X}{d[off + 2]:02X}{d[off + 3]:02X}{marker}"
+        )
     return 0
 
 
