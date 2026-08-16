@@ -4,6 +4,27 @@
 
 当前版本：**v1.6.7**
 
+## 下载与安装（不会用 GitHub 也能看懂）
+
+不想研究 GitHub 也没关系，按下面这几步做就行：
+
+1. **打开下载页**：点击或复制这个链接到浏览器 → **https://github.com/yuebai777/colorink/releases/latest**
+   - 如果链接打不开，也可以直接打开 `https://github.com/yuebai777/colorink`，在页面右侧找到 **Releases** 并点击进入。
+2. 在最新版本下方找到 **Assets**（英文，意思是“附件 / 资源”），点一下展开。
+3. 下载下面两个文件中的**任意一个**：
+   - `Colorink-1.6.7-onefile.exe` —— **推荐**，单文件版。下载完**直接双击运行**，不用安装、不用解压。
+   - `Colorink-1.6.7-onedir.zip` —— 目录版。下载完先**右键解压**，再打开解压出的文件夹，双击里面的 `Colorink.exe`。
+4. 如果 Windows 弹出蓝色提示“**Windows 已保护你的电脑**”，点击 **更多信息** → **仍要运行**。
+   - 这是正常现象：个人开发者发布的程序没有微软官方签名，Windows 会多问一句。
+5. 打开后即可使用。以后应用内自带“**检查更新**”，有新版本会提示你下载，不用每次手动来 GitHub。
+
+> 💡 **只记一句话**：不会用 GitHub 就只下载 `onefile.exe`，下载完双击就能用。
+
+### 环境要求
+
+- Windows 10 或更高版本（64 位）
+- 不需要安装 Python，也不需要安装其它依赖（发布版已内置）
+
 ## 功能特性
 
 - **全局取色** — 任意位置按 `F11` 打开全屏取色放大镜，先截图再取色，预览中不会出现窗口自身；高分屏 / 多显示器 / 不同 DPR 自动适配
@@ -32,19 +53,9 @@
 
 ![Colorink 截图](screenshots/screenshot.png)
 
-## 下载
+## 从源码运行（给开发者 / 想改代码的人）
 
-发布版（无需 Python）从 [GitHub Releases](https://github.com/yuebai777/colorink/releases) 获取：
-
-- `Colorink-<版本>-onedir.zip`：目录版，便于排查问题
-- `Colorink-<版本>-onefile.exe`：单文件版，推荐
-
-## 环境要求
-
-- Windows 10+（64 位）
-- Python 3.10+（仅源码运行需要）
-
-## 从源码运行
+需要先安装 Python 3.10+。
 
 ```bash
 git clone https://github.com/yuebai777/colorink.git
