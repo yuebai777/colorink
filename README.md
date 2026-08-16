@@ -4,21 +4,13 @@
 
 当前版本：**v1.6.7**
 
-## 下载与安装
+## 下载
 
-按下面这几步操作即可：
+最新版下载页：**https://github.com/yuebai777/colorink/releases/latest**
 
-1. **打开下载页**：点击或复制这个链接到浏览器 → **https://github.com/yuebai777/colorink/releases/latest**
-   - 如果链接打不开，也可以直接打开 `https://github.com/yuebai777/colorink`，在页面右侧找到 **Releases** 并点击进入。
-2. 在最新版本下方找到 **Assets**（英文，意思是“附件 / 资源”），点一下展开。
-3. 下载下面两个文件中的**任意一个**：
-   - `Colorink-1.6.7-onefile.exe` —— **推荐**，单文件版。下载完**直接双击运行**，不用安装、不用解压。
-   - `Colorink-1.6.7-onedir.zip` —— 目录版。下载完先**右键解压**，再打开解压出的文件夹，双击里面的 `Colorink.exe`。
-4. 如果 Windows 弹出蓝色提示“**Windows 已保护你的电脑**”，点击 **更多信息** → **仍要运行**。
-   - 这是正常现象：个人开发者发布的程序没有微软官方签名，Windows 会多问一句。
-5. 打开后即可使用。以后应用内自带“**检查更新**”，有新版本会提示你下载，不用每次手动来 GitHub。
+下载 `Colorink-1.6.7-onefile.exe`，双击即可运行，无需安装、无需解压。
 
-> 💡 **推荐**：直接下载 `onefile.exe`，下载完双击就能用。
+> 如果 Windows 提示“Windows 已保护你的电脑”，点击“更多信息”→“仍要运行”。
 
 ### 环境要求
 
