@@ -42,6 +42,8 @@ class _FakeSync:
         self.active_slot = "fg"
         self._fg_transparent = False
         self._bg_transparent = False
+        self._source_space = "rgb"
+        self._source_values = {"r": 255.0, "g": 0.0, "b": 0.0}
         self._fg_source_space = "rgb"
         self._fg_source_values = {"r": 255.0, "g": 0.0, "b": 0.0}
         self._bg_source_space = "hsv"

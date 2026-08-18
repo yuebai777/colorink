@@ -6,6 +6,8 @@ persisting the recently-used color grid lives here. Methods operate on
 shared ``self`` state set up by MainWindow.init_ui / setup_sliders.
 """
 
+from PyQt6.QtGui import QColor
+
 from core import config
 
 
@@ -105,7 +107,7 @@ class ColorSlotsMixin:
         color = self._color_from_source(self._source_space, self._source_values, (r, g, b))
         self._project_color(color, source="history")
         if hasattr(self, "color_history"):
-            updated = self.color_history.mark_selected(color)
+            updated = self.color_history.mark_selected(QColor(color.r, color.g, color.b))
             self.cfg["historyColors"] = self._build_history_entries(updated)
             config.save_hotkey_config(self.cfg)
 

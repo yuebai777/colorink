@@ -11,19 +11,24 @@ def test_default_grayscale_backend_is_validated_oklch():
 
 
 def test_settings_expose_validated_oklch_and_mag():
+    # The grayscale controls were extracted into the appearance-panel mixin;
+    # check both the sidebar facade and the panel module so the contract
+    # follows the code instead of pinning it to one file.
     sidebar = (PROJECT_ROOT / "ui" / "settings_sidebar.py").read_text(encoding="utf-8")
-    assert '"OKLCh (GPU兼容)"' in sidebar
-    assert '"系统 Luma (Mag)"' in sidebar
-    assert '"OKLCh (感知均匀)"' in sidebar
-    assert '"Luma (BT.709 标准)"' in sidebar
-    assert "_update_grayscale_screen_options" in sidebar
+    appearance = (PROJECT_ROOT / "ui" / "settings" / "appearance_panel.py").read_text(encoding="utf-8")
+    source = sidebar + "\n" + appearance
+    assert '"OKLCh (GPU兼容)"' in source
+    assert '"系统 Luma (Mag)"' in source
+    assert '"OKLCh (感知均匀)"' in source
+    assert '"Luma (BT.709 标准)"' in source
+    assert "_update_grayscale_screen_options" in source
     for removed in (
         "OpenGL Overlay",
         "DComp 直通",
         "Rust D3D11",
         "D3D11 零拷贝 (GL)",
     ):
-        assert removed not in sidebar
+        assert removed not in source
 
 
 def test_main_window_uses_validated_oklch_controller():

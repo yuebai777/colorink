@@ -92,11 +92,11 @@ class HotkeyMixin:
                     err = getattr(self.grayscale_overlay, "last_error", "")
                     if err:
                         from PyQt6.QtWidgets import QMessageBox
-                        QMessageBox.warning(self, "黑白滤镜", err)
+                        QMessageBox.warning(self, "灰度滤镜", err)
             except Exception as e:
                 print(f"[Hotkeys] Grayscale toggle error: {e}")
                 from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.warning(self, "黑白滤镜", f"切换失败: {e}")
+                QMessageBox.warning(self, "灰度滤镜", f"切换失败: {e}")
 
     def _on_picker_color_picked(self, r, g, b):
         """Handle color picked from the global magnifier overlay."""

@@ -54,7 +54,7 @@ class TitleBar(QWidget):
             act_follow.setChecked(cast(bool, p.cfg.get("followMouseEnabled", False)))
             act_follow.triggered.connect(lambda checked: self._toggle_follow_mouse(checked))
 
-        act_no_focus = menu.addAction(i18n.tr("无焦点选色模式"))
+        act_no_focus = menu.addAction(i18n.tr("无焦点取色模式"))
         if act_no_focus is not None:
             act_no_focus.setCheckable(True)
             act_no_focus.setChecked(cast(bool, p.cfg.get("noFocusMode", False)))

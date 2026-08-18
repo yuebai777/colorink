@@ -40,7 +40,7 @@ in-memory list is `cols * rows`; older entries are dropped FIFO.
 """
 
 from PyQt6.QtCore import QPoint, QRectF, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QBrush, QColor, QCursor, QPainter, QPen
+from PyQt6.QtGui import QBrush, QColor, QCursor, QPainter, QPen
 from PyQt6.QtWidgets import QApplication, QMenu, QWidget
 
 # Maximum grid extent. The settings sidebar caps the configuration at these
@@ -83,9 +83,6 @@ class _SwatchCell(QWidget):
         self._color = QColor(0, 0, 0, 0)  # transparent → "empty"
         self._selected = False
         self._hovered = False
-        # Device-pixel rects (local coords) painted blue by the container's
-        # hover-frame assembly; empty by default.
-        self._hover_blue_rects = []
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(20, 20)
@@ -191,26 +188,86 @@ class _SwatchCell(QWidget):
                 painter.setBrush(QBrush(QColor(127, 127, 127)))
                 painter.drawRect(QRectF(dev_w - 1, 0, 1, dev_h))  # right edge
                 painter.drawRect(QRectF(0, dev_h - 1, dev_w, 1))  # bottom edge
-
-                # 3) Selected state: 1 device-px red frame inside the fill.
-                if self._selected:
-                    painter.setPen(QPen(QColor(220, 40, 40), 1.0))
-                    painter.setBrush(Qt.BrushStyle.NoBrush)
-                    painter.drawRect(QRectF(0.5, 0.5, dev_w - 2, dev_h - 2))
-
-            # 4) Hover frame: a 2 device-px blue ring assembled from pieces
-            #    that live inside each cell's own bounds. The container
-            #    assigns `_hover_blue_rects` (device px, local coords) to the
-            #    hovered cell, its edge neighbors (their seams turn blue) and
-            #    its diagonal neighbors (the ring corner pixels), so all four
-            #    gray seams around the hovered cell are covered exactly.
-            if self._hover_blue_rects:
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(QColor(55, 88, 255)))
-                for rx, ry, rw, rh in self._hover_blue_rects:
-                    painter.drawRect(QRectF(rx, ry, rw, rh))
         finally:
             painter.end()
+
+
+class _HoverOverlay(QWidget):
+    """Transparent overlay that paints selection/hover frames above cells.
+
+    This replaces the previous "distribute small blue rects to neighbouring
+    cells" approach.  The overlay sits above every swatch, ignores mouse
+    events, and draws a single crisp frame around the selected/hovered cell.
+    Because it paints on top of the whole grid it can cover the 1px seams
+    between cells without any per-cell piece bookkeeping.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+    def paintEvent(self, event):
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            dpr = self.devicePixelRatioF()
+            if dpr <= 0:
+                dpr = 1.0
+            painter.scale(1.0 / dpr, 1.0 / dpr)
+
+            def dev_edge(v):
+                return int(v * dpr + 0.5)  # qRound, same as Qt's widget rounding
+
+            # Selected red frame (2 device px).
+            sel_idx = getattr(parent, "_selected_index", -1)
+            if sel_idx >= 0:
+                cells = parent._visible_cells()
+                if sel_idx < len(cells):
+                    self._draw_frame(painter, cells[sel_idx], dev_edge,
+                                     QColor(220, 40, 40), 2)
+
+            # Hover blue frame (2 device px) — drawn after red so it takes
+            # visual priority when the hovered cell is also selected.
+            hovered = getattr(parent, "_hovered_cell", None)
+            if hovered is not None and hovered.isVisible():
+                self._draw_frame(painter, hovered, dev_edge,
+                                 QColor(55, 88, 255), 2)
+        finally:
+            painter.end()
+
+    def _draw_frame(self, painter, cell, dev_edge, color, width):
+        """Draw a square frame of *width* device pixels around *cell*.
+
+        Coordinates are converted to overlay-local device pixels so the
+        frame aligns exactly with the color tile regardless of where the
+        history widget sits inside the window.
+        """
+        cell_origin = cell.mapTo(cell.window(), QPoint(0, 0))
+        overlay_origin = self.mapTo(self.window(), QPoint(0, 0))
+        x0 = dev_edge(cell_origin.x()) - dev_edge(overlay_origin.x())
+        y0 = dev_edge(cell_origin.y()) - dev_edge(overlay_origin.y())
+        x1 = dev_edge(cell_origin.x() + cell.width()) - dev_edge(overlay_origin.x())
+        y1 = dev_edge(cell_origin.y() + cell.height()) - dev_edge(overlay_origin.y())
+        dw = max(1, x1 - x0)
+        dh = max(1, y1 - y0)
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(color))
+        if width == 1:
+            painter.drawRect(QRectF(x0, y0, dw, 1))
+            painter.drawRect(QRectF(x0, y1 - 1, dw, 1))
+            painter.drawRect(QRectF(x0, y0, 1, dh))
+            painter.drawRect(QRectF(x1 - 1, y0, 1, dh))
+        else:
+            painter.drawRect(QRectF(x0, y0, dw, width))
+            painter.drawRect(QRectF(x0, y1 - width, dw, width))
+            painter.drawRect(QRectF(x0, y0, width, dh))
+            painter.drawRect(QRectF(x1 - width, y0, width, dh))
 
 
 class ColorHistoryWidget(QWidget):
@@ -254,6 +311,7 @@ class ColorHistoryWidget(QWidget):
         self._cells = []
         self._hovered_cell = None  # cell whose blue hover frame is showing
         self._init_pool()
+        self._overlay = _HoverOverlay(self)
         self._relayout()
 
     # ───────────────────────── public configuration ─────────────────────────
@@ -332,94 +390,10 @@ class ColorHistoryWidget(QWidget):
                 self._cells.append(cell)
 
     def _on_cell_hovered(self, cell):
-        """Track the hovered cell and (re)assemble the blue hover frame from
-        per-cell pieces (see _apply_hover_frame)."""
+        """Track the hovered cell and repaint the overlay frame."""
         self._hovered_cell = cell
-        self._apply_hover_frame()
-
-    def _apply_hover_frame(self):
-        """Distribute the hover frame over the hovered cell + its neighbors.
-
-        The 2 device-px blue ring around the hovered cell is assembled from
-        pieces that lie inside each cell's own bounds, because a widget can
-        only paint inside itself:
-
-        * hovered cell      — 1px strips on left/top (the seams there are
-                              painted blue by the neighbors) + 2px strips on
-                              right/bottom (which cover its own seams)
-        * left/top neighbor — their right/bottom gray seam turns blue
-        * diagonal neighbors — the ring's corner pixels
-
-        Every piece is stored on the owning cell as device-pixel rects
-        (`_hover_blue_rects`), so painting is exact at any display DPI.
-        """
-        # Clear the previous assignment first.
-        for cell in self._cells:
-            if cell._hover_blue_rects:
-                cell._hover_blue_rects = []
-                cell.update()
-        hovered = self._hovered_cell
-        if hovered is None:
-            return
-        try:
-            h_idx = self._cells.index(hovered)
-        except ValueError:
-            return
-        hr, hc = divmod(h_idx, MAX_COLS)
-
-        for dr in (-1, 0, 1):
-            for dc in (-1, 0, 1):
-                r, c = hr + dr, hc + dc
-                if not (0 <= r < MAX_ROWS and 0 <= c < MAX_COLS):
-                    continue
-                cell = self._cells[r * MAX_COLS + c]
-                if not cell.isVisible():
-                    continue
-                rects = self._hover_rects_for(cell, hr, hc)
-                if rects:
-                    cell._hover_blue_rects = rects
-                    cell.update()
-
-    def _hover_rects_for(self, cell, hr, hc):
-        """Return the device-pixel rects (local coords) `cell` must paint
-        blue to form the hover frame around the hovered cell at (hr, hc)."""
-        try:
-            idx = self._cells.index(cell)
-        except ValueError:
-            return []
-        r, c = divmod(idx, MAX_COLS)
-        dr, dc = r - hr, c - hc
-        dpr = cell.devicePixelRatioF()
-
-        def dev_edge(v):
-            return int(v * dpr + 0.5)  # qRound, same as Qt's widget rounding
-
-        x, y = cell.pos().x(), cell.pos().y()
-        w, h = cell.width(), cell.height()
-        dw = max(1, dev_edge(x + w) - dev_edge(x))
-        dh = max(1, dev_edge(y + h) - dev_edge(y))
-
-        if dr == 0 and dc == 0:
-            # The hovered cell itself. Left/top strips are 1px because the
-            # neighboring cells paint those seams blue; without a neighbor
-            # they become 2px so the ring stays uniform.
-            left_w = 1 if hc > 0 else 2
-            top_h = 1 if hr > 0 else 2
-            return [(0, 0, left_w, dh), (0, 0, dw, top_h),
-                    (dw - 2, 0, 2, dh), (0, dh - 2, dw, 2)]
-        if dr == 0 and dc == -1:
-            return [(dw - 1, 0, 1, dh)]      # cell left → its right seam
-        if dr == -1 and dc == 0:
-            return [(0, dh - 1, dw, 1)]      # cell above → its bottom seam
-        if dr == -1 and dc == -1:
-            return [(dw - 1, dh - 1, 1, 1)]  # top-left corner pixel
-        if dr == -1 and dc == 1:
-            return [(0, dh - 1, 1, 1)]       # top-right corner pixel
-        if dr == 1 and dc == -1:
-            return [(dw - 1, 0, 1, 1)]       # bottom-left corner pixel
-        if dr == 1 and dc == 1:
-            return [(0, 0, 1, 1)]            # bottom-right corner pixel
-        return []
+        if hasattr(self, "_overlay"):
+            self._overlay.update()
 
     def _relayout(self):
         """Reposition + resize + show/hide cells to fill the *current* width.
@@ -479,9 +453,10 @@ class ColorHistoryWidget(QWidget):
         self.update()
         # Repaint the cells with the new (possibly clipped) color set
         self._refill_cells()
-        # Cell sizes/positions changed → recompute the hover frame pieces.
-        if self._hovered_cell is not None:
-            self._apply_hover_frame()
+        # Keep the overlay sized/raised above the cells after any geometry change.
+        self._overlay.setGeometry(self.rect())
+        self._overlay.raise_()
+        self._overlay.update()
 
     def resizeEvent(self, event):
         """Widget width changed (parent layout reflowed, or window resized)
@@ -504,6 +479,8 @@ class ColorHistoryWidget(QWidget):
             else:
                 cell.clear()
             cell.set_selected(i == self._selected_index)
+        if hasattr(self, "_overlay"):
+            self._overlay.update()
 
     def _visible_cells(self):
         """Return the pool cells that are currently shown, in row-major order."""
@@ -532,12 +509,18 @@ class ColorHistoryWidget(QWidget):
         for i, cell in enumerate(visible):
             cell.set_selected(i == 0)
         self._selected_index = 0
+        if hasattr(self, "_overlay"):
+            self._overlay.update()
         return list(self._colors)
 
-    def mark_selected(self, color):
+    def mark_selected(self, color: QColor):
         """Called by MainWindow when the user clicks a history swatch.
-        Moves the color to newest position and returns the full list for
-        persistence."""
+
+        The contract is explicit: *color* must already be a ``QColor``.
+        MainWindow is responsible for converting its internal ``Color``
+        model to ``QColor`` before calling this method.  Keeping one input
+        type avoids a hidden fallback path.
+        """
         return self._apply_selection_by_color(QColor(color))
 
     # ─────────────────────────── painting + sizing ─────────────────────────

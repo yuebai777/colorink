@@ -173,6 +173,10 @@ def qapp():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PyQt6.QtWidgets import QApplication
 
+    from core import i18n
+
+    i18n.set_language(i18n.LANG_ZH)
+
     app = QApplication.instance()
     if app is None:
         app = QApplication([])
@@ -252,7 +256,7 @@ class TestRinglessSettingsWidget:
         from ui.ringless_settings import RinglessSettingsWidget
 
         widget = RinglessSettingsWidget()
-        assert widget.side_label.text() == "无色环双色位置"
+        assert widget.side_label.text() == "前景/背景色位置"
 
     def test_changed_signal_emitted_on_checkbox_toggle(self, qapp):
         from ui.ringless_settings import RinglessSettingsWidget
