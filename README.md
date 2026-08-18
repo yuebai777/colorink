@@ -2,13 +2,13 @@
 
 基于 PyQt6 的 Windows 桌面取色器 / 调色工具，为绘画与设计工作流设计：全局取色、多色空间精确调色、绘画软件颜色同步，以及系统级灰度滤镜。
 
-当前版本：**v1.6.7**
+当前版本：**v1.6.8**
 
 ## 下载
 
 最新版下载页：**https://github.com/yuebai777/colorink/releases/latest**
 
-下载 `Colorink-1.6.7-onefile.exe`，双击即可运行，无需安装、无需解压。
+下载 `Colorink.exe`（onefile 单文件版），双击即可运行，无需安装、无需解压；另提供 `Colorink-Onedir.zip` 便携目录版。
 
 > 如果 Windows 提示“Windows 已保护你的电脑”，点击“更多信息”→“仍要运行”。
 
