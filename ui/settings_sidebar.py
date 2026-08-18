@@ -2366,6 +2366,12 @@ class SettingsSidebar(QWidget):
         if has_update:
             current_flavor = updater.build_flavor(sys.executable)
             other_flavor = "onedir" if current_flavor == "onefile" else "onefile"
+            assets = result.get("assets", [])
+            # Only offer a download button when a usable asset actually exists
+            # for that flavor.  This prevents the “switch” button from sending
+            # the user to a GitHub source archive when no onedir zip exists.
+            current_asset = updater.find_installer_asset(assets, flavor=current_flavor)
+            other_asset = updater.find_installer_asset(assets, flavor=other_flavor)
             msg = (
                 f"{i18n.tr('发现新版本')} {latest}！\n"
                 f"{i18n.tr('当前版本')}: v{current}\n\n"
@@ -2377,22 +2383,26 @@ class SettingsSidebar(QWidget):
             box = QMessageBox(self)
             box.setWindowTitle(i18n.tr("发现新版本"))
             box.setText(msg)
-            dl_btn = box.addButton(
-                i18n.tr("下载更新 ({flavor})", flavor=current_flavor),
-                QMessageBox.ButtonRole.AcceptRole,
-            )
-            switch_btn = box.addButton(
-                i18n.tr("下载 {flavor} 版（切换）", flavor=other_flavor),
-                QMessageBox.ButtonRole.ActionRole,
-            )
+            dl_btn = None
+            if current_asset is not None:
+                dl_btn = box.addButton(
+                    i18n.tr("下载更新 ({flavor})", flavor=current_flavor),
+                    QMessageBox.ButtonRole.AcceptRole,
+                )
+            switch_btn = None
+            if other_asset is not None:
+                switch_btn = box.addButton(
+                    i18n.tr("下载 {flavor} 版（切换）", flavor=other_flavor),
+                    QMessageBox.ButtonRole.ActionRole,
+                )
             open_btn = box.addButton(i18n.tr("前往下载"), QMessageBox.ButtonRole.ActionRole)
             skip_btn = box.addButton(i18n.tr("跳过此版本"), QMessageBox.ButtonRole.ActionRole)
             box.addButton(i18n.tr("稍后"), QMessageBox.ButtonRole.RejectRole)
             box.exec()
             clicked = box.clickedButton()
-            if clicked is dl_btn:
+            if dl_btn is not None and clicked is dl_btn:
                 self._download_release(result, flavor=current_flavor)
-            elif clicked is switch_btn:
+            elif switch_btn is not None and clicked is switch_btn:
                 self._download_release(result, flavor=other_flavor)
             elif clicked is open_btn:
                 webbrowser.open(url)

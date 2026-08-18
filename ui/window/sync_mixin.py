@@ -45,13 +45,21 @@ class SyncMixin:
         # swatch regardless of the local active slot.
         slot = "fg" if color_index == 0 else "bg"
         if slot != self.active_slot:
-            # Off-slot change: update the swatch only, keep the wheel state.
+            # Off-slot change: update the swatch and that slot's source
+            # tracking.  If we only update the QColor, switching to this slot
+            # later would rebuild from stale source coords and revert the
+            # externally changed color.
+            rgb_values = {"r": float(r), "g": float(g), "b": float(b)}
             if slot == "fg":
                 self.preview_box.fg_color = QColor(r, g, b)
                 self._fg_transparent = False
+                self._fg_source_space = "rgb"
+                self._fg_source_values = rgb_values
             else:
                 self.preview_box.bg_color = QColor(r, g, b)
                 self._bg_transparent = False
+                self._bg_source_space = "rgb"
+                self._bg_source_values = rgb_values
             self.preview_box.set_transparent(slot, False)
             return
         self.current_rgb = (r, g, b)
@@ -72,7 +80,8 @@ class SyncMixin:
         """The drawing software switched its active slot (e.g. user pressed
         X in CSP / picked the sub swatch). Follow it locally WITHOUT
         writing anything back — the swatch border, transparent-tile
-        highlight and source tracking switch to the new slot.
+        highlight, source tracking and the whole UI state switch to the
+        new slot.
         """
         slot = "fg" if color_index == 0 else "bg"
         if slot == self.active_slot:
@@ -91,12 +100,15 @@ class SyncMixin:
             col = self.preview_box.bg_color
         self.active_slot = slot
         self.preview_box.update_slot_borders(slot)
-        # 静默更新色轮显示对应槽颜色（block_signals → 不触发写入）
-        try:
-            self.color_wheel.set_color(col.red(), col.green(), col.blue(),
-                                       block_signals=True)
-        except Exception:
-            pass
+        # Rebuild the active slot's full Color and fan it out to every widget
+        # (wheel, LAB, sliders, current_rgb, color_state).  `_project_color`
+        # updates color_state.current as well, so later UI actions and the
+        # right-click menu see the newly active slot's color.
+        color = self._color_from_source(
+            self._source_space, self._source_values,
+            (col.red(), col.green(), col.blue()),
+        )
+        self._project_color(color, source="slot_change")
 
     @pyqtSlot(int, bool)
     def on_external_transparent_changed(self, color_index, transparent):

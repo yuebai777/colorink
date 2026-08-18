@@ -150,13 +150,34 @@ def check_for_update(timeout: float = 8.0) -> dict:
     }
 
 
+def _is_installer_zip_name(name: str) -> bool:
+    """Return True for zip names that look like a Windows build artifact.
+
+    GitHub auto-generates ``<repo>-<tag>.zip`` source archives for every
+    release; those are not installers and must never be used by the onedir
+    updater.  We only accept zips that carry an explicit build marker
+    (``onedir``/``win``/``windows``/``portable``/``x64``/``amd64``) and do
+    not look like source archives.
+    """
+    lower = (name or "").lower()
+    if not lower.endswith(".zip"):
+        return False
+    if any(token in lower for token in ("source", "src", "archive", "github")):
+        return False
+    return any(token in lower for token in (
+        "onedir", "win", "windows", "portable", "x64", "amd64", "release",
+        "build", "dist", "installer",
+    ))
+
+
 def find_installer_asset(assets: list[dict], name_hint: str = "colorink", flavor: str = "onefile") -> dict | None:
     """Pick the Windows installer asset from a release asset list.
 
     For *flavor* ``"onedir"`` this prefers a ``*-onedir.zip`` archive, then
-    any zip that mentions *name_hint*, so a directory build can update its
-    whole ``_internal`` payload instead of accidentally grabbing the onefile
-    EXE. If no zip exists it falls back to the EXE rules (which lets a onedir
+    a zip that looks like a Windows build artifact and mentions *name_hint*,
+    so a directory build can update its whole ``_internal`` payload instead
+    of accidentally grabbing the onefile EXE or a GitHub source archive. If
+    no usable zip exists it falls back to the EXE rules (which lets a onedir
     user still switch to the onefile build).
 
     For *flavor* ``"onefile"`` this prefers an explicitly onefile EXE, then
@@ -169,7 +190,7 @@ def find_installer_asset(assets: list[dict], name_hint: str = "colorink", flavor
     hint = (name_hint or "").lower()
 
     if flavor == "onedir":
-        zips = [a for a in assets if (a.get("name") or "").lower().endswith(".zip")]
+        zips = [a for a in assets if _is_installer_zip_name(a.get("name") or "")]
         if zips:
             onedir_zips = [
                 a for a in zips if "onedir" in (a.get("name") or "").lower()
@@ -446,6 +467,7 @@ def build_onedir_update_script(new_zip: str, current_exe: str, current_pid: int 
         "            Start-Sleep -Milliseconds 500",
         "        }",
         "    }",
+        "    throw \"Failed to remove old file: $path\"",
         "}",
         "# Wait for the old process to release its file locks.",
         "Wait-Process -Id $currentPid -ErrorAction SilentlyContinue",
@@ -453,26 +475,35 @@ def build_onedir_update_script(new_zip: str, current_exe: str, current_pid: int 
         "# Extract into a unique temp dir on the same volume as the app first,",
         "# so a bad/corrupt zip cannot destroy the running installation.",
         "$tempRoot = Join-Path $appDir ('.colorink-update-' + [guid]::NewGuid().ToString('N'))",
-        "New-Item -ItemType Directory -Path $tempRoot | Out-Null",
-        "Expand-Archive -LiteralPath $zip -DestinationPath $tempRoot -Force",
-        "# Only now remove the old onedir payload, keeping unrelated user files.",
-        "$oldExe = Join-Path $appDir 'Colorink.exe'",
-        "Remove-WithRetry $oldExe",
-        "$oldInternal = Join-Path $appDir '_internal'",
-        "Remove-WithRetry $oldInternal",
-        "# Move the freshly extracted payload into place (same volume).",
-        "$extracted = Join-Path $tempRoot 'Colorink'",
-        "if (Test-Path -LiteralPath $extracted) {",
+        "try {",
+        "    New-Item -ItemType Directory -Path $tempRoot | Out-Null",
+        "    Expand-Archive -LiteralPath $zip -DestinationPath $tempRoot -Force",
+        "    # Locate the payload root and verify it really is a Colorink build before",
+        "    # touching the current installation.",
+        "    $extracted = Join-Path $tempRoot 'Colorink'",
+        "    if (-not (Test-Path -LiteralPath (Join-Path $extracted 'Colorink.exe'))) {",
+        "        $extracted = $tempRoot",
+        "    }",
+        "    if (-not (Test-Path -LiteralPath (Join-Path $extracted 'Colorink.exe'))) {",
+        "        throw 'Update package does not contain Colorink.exe; update aborted'",
+        "    }",
+        "    # Only now remove the old onedir payload, keeping unrelated user files.",
+        "    $oldExe = Join-Path $appDir 'Colorink.exe'",
+        "    Remove-WithRetry $oldExe",
+        "    $oldInternal = Join-Path $appDir '_internal'",
+        "    Remove-WithRetry $oldInternal",
+        "    # Move the freshly extracted payload into place (same volume).",
         "    Get-ChildItem -LiteralPath $extracted -Force | Move-Item -Destination $appDir -Force",
-        "} else {",
-        "    Get-ChildItem -LiteralPath $tempRoot -Force | Move-Item -Destination $appDir -Force",
+        "    # Launch the updated app.",
+        "    Start-Process -FilePath (Join-Path $appDir 'Colorink.exe')",
         "}",
-        "# Launch the updated app.",
-        "Start-Process -FilePath (Join-Path $appDir 'Colorink.exe')",
-        "# Cleanup the private zip copy, temp extraction and this helper.",
-        "Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue",
-        "Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue",
-        "Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
+        "finally {",
+        "    # Cleanup the private zip copy, temp extraction and this helper even",
+        "    # when the update is aborted (missing exe / locked old files).",
+        "    Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue",
+        "    Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue",
+        "    Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
+        "}",
     ]) + "\r\n"
 
 
