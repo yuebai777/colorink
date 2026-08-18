@@ -248,10 +248,10 @@ class TestTabStructure:
     def test_pages_exist(self, sidebar):
         assert hasattr(sidebar, "stack")
         assert sidebar.stack is not None
-        assert sidebar.stack.count() == 5
+        assert sidebar.stack.count() == 6
 
     def test_nav_labels(self, sidebar):
-        expected = ["快捷键", "界面", "取色器", "软件", "关于"]
+        expected = ["快捷键", "界面", "取色器", "滤镜", "同步", "关于"]
         for i, text in enumerate(expected):
             assert sidebar.nav.item(i).text() == text
 
@@ -269,6 +269,16 @@ class TestTabStructure:
         # Page index 1 = "界面"
         interface_page = sidebar.stack.widget(1)
         assert interface_page.isAncestorOf(sidebar.combo_theme)
+
+    def test_language_combo_in_interface_page(self, sidebar):
+        # 语言已从“关于”移到“界面”
+        interface_page = sidebar.stack.widget(1)
+        assert interface_page.isAncestorOf(sidebar.cmb_language)
+
+    def test_grayscale_in_filter_page(self, sidebar):
+        # Page index 3 = "滤镜"
+        filter_page = sidebar.stack.widget(3)
+        assert filter_page.isAncestorOf(sidebar.combo_grayscale_backend)
 
     def test_btn_pick_in_hotkeys_page(self, sidebar):
         # Page index 0 = "快捷键"
@@ -440,7 +450,7 @@ class TestReorganizedSettings:
         assert sidebar.btn_hist_down.isEnabled() is False   # bottom of the list
 
     def test_sync_and_versions_share_one_card(self, sidebar):
-        software_page = sidebar.stack.widget(3)
+        software_page = sidebar.stack.widget(4)
         assert software_page.isAncestorOf(sidebar.combo_software)
         assert software_page.isAncestorOf(sidebar.combo_csp)
 

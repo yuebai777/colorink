@@ -19,9 +19,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core import i18n
 from ui.ringless_mode import ControlBarPosition, ControlsSide, RinglessConfig
 
-_SIDE_LABEL: Final[str] = "无色环双色位置"
+_SIDE_LABEL: Final[str] = "前景/背景色位置"
 _SIDE_ITEMS: Final[list[tuple[str, ControlsSide]]] = [
     ("左侧", "left"),
     ("右侧", "right"),
@@ -84,7 +85,7 @@ class RinglessSettingsWidget(QWidget):
         layout.setSpacing(4)
 
         # -- checkbox -----------------------------------------------------
-        self.enabled_checkbox = QCheckBox("隐藏色相环并放大切片")
+        self.enabled_checkbox = QCheckBox(i18n.tr("隐藏色环并放大取色切片"))
         self.enabled_checkbox.stateChanged.connect(self._on_checkbox_changed)
         layout.addWidget(self.enabled_checkbox)
 
@@ -93,10 +94,10 @@ class RinglessSettingsWidget(QWidget):
         position_layout = QHBoxLayout(self.control_bar_position_row)
         position_layout.setContentsMargins(0, 0, 0, 0)
         position_layout.setSpacing(6)
-        position_layout.addWidget(QLabel("切片控制栏位置"))
+        position_layout.addWidget(QLabel(i18n.tr("控制栏位置")))
         self.control_bar_position_combo = QComboBox()
-        self.control_bar_position_combo.addItem("上方", "top")
-        self.control_bar_position_combo.addItem("下方", "bottom")
+        self.control_bar_position_combo.addItem(i18n.tr("上方"), "top")
+        self.control_bar_position_combo.addItem(i18n.tr("下方"), "bottom")
         self.control_bar_position_combo.currentIndexChanged.connect(
             self._on_control_bar_position_changed
         )
@@ -110,11 +111,11 @@ class RinglessSettingsWidget(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(6)
 
-        self.side_label = QLabel(_SIDE_LABEL)
+        self.side_label = QLabel(i18n.tr(_SIDE_LABEL))
         row.addWidget(self.side_label)
         self.side_combo = QComboBox()
         for display, key in _SIDE_ITEMS:
-            self.side_combo.addItem(display, key)
+            self.side_combo.addItem(i18n.tr(display), key)
         self.side_combo.currentIndexChanged.connect(self._on_side_changed)
         row.addWidget(self.side_combo)
         row.addStretch()

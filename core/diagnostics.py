@@ -104,7 +104,7 @@ def collect_diagnostics(sync_thread=None, cfg=None, mixin=None,
     add(f"Python: {sys.version.split()[0]}  打包: {'是 (onefile/onedir)' if getattr(sys, 'frozen', False) else '否 (源码)'}")
     if cfg:
         add(f"界面语言: {cfg.get('language', 'auto')}")
-        add(f"同步软件: {_MODE_NAMES.get(cfg.get('syncSoftware', ''), cfg.get('syncSoftware', '<未设置>'))}")
+        add(f"同步目标: {_MODE_NAMES.get(cfg.get('syncSoftware', ''), cfg.get('syncSoftware', '<未设置>'))}")
     if mixin is not None:
         dpr = getattr(mixin, "devicePixelRatio", None)
         if callable(dpr):
