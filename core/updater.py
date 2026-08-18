@@ -12,8 +12,10 @@ without needing to handle exceptions.
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 
@@ -151,17 +153,37 @@ def check_for_update(timeout: float = 8.0) -> dict:
 def find_installer_asset(assets: list[dict], name_hint: str = "colorink", flavor: str = "onefile") -> dict | None:
     """Pick the Windows installer asset from a release asset list.
 
-    Prefers the onefile EXE, then — when *flavor* is "onefile" — the largest
-    EXE (the self-contained build dwarfs the onedir stub, so a name-only
-    match can never hand the stub to a running onefile build), then any EXE
-    whose name mentions *name_hint*, then any EXE. Returns ``None`` when no
-    EXE asset exists. Entries without a usable ``name`` are skipped so
-    malformed assets never crash the picker.
+    For *flavor* ``"onedir"`` this prefers a ``*-onedir.zip`` archive, then
+    any zip that mentions *name_hint*, so a directory build can update its
+    whole ``_internal`` payload instead of accidentally grabbing the onefile
+    EXE. If no zip exists it falls back to the EXE rules (which lets a onedir
+    user still switch to the onefile build).
+
+    For *flavor* ``"onefile"`` this prefers an explicitly onefile EXE, then
+    the largest EXE (the self-contained build dwarfs the onedir stub, so a
+    name-only match can never hand the stub to a running onefile build), then
+    any EXE whose name mentions *name_hint*, then any EXE. Returns ``None``
+    when no usable asset exists. Entries without a usable ``name`` are
+    skipped so malformed assets never crash the picker.
     """
+    hint = (name_hint or "").lower()
+
+    if flavor == "onedir":
+        zips = [a for a in assets if (a.get("name") or "").lower().endswith(".zip")]
+        if zips:
+            onedir_zips = [
+                a for a in zips if "onedir" in (a.get("name") or "").lower()
+            ]
+            hinted_zips = [a for a in zips if hint in (a.get("name") or "").lower()]
+            candidates = onedir_zips or hinted_zips or zips
+            sized = [a for a in candidates if a.get("size")]
+            if sized:
+                return max(sized, key=lambda a: a["size"])
+            return candidates[0]
+
     exes = [a for a in assets if (a.get("name") or "").lower().endswith(".exe")]
     if not exes:
         return None
-    hint = (name_hint or "").lower()
     for a in exes:
         if "onefile" in (a.get("name") or "").lower():
             return a
@@ -305,6 +327,26 @@ def _dir_writable(directory: str) -> bool:
         return False
 
 
+def can_self_update(current_exe: str | None = None, frozen: bool | None = None) -> bool:
+    """Return True when the running app can update itself in place.
+
+    Unlike :func:`can_self_replace`, this also allows onedir builds: they can
+    be updated by replacing ``Colorink.exe`` and the ``_internal`` directory
+    after the process exits. The exe's directory must be writable so the
+    helper can remove old files and move the new payload in.
+
+    ``frozen`` defaults to the real ``sys.frozen`` so the check is a no-op
+    under the source tree (nothing to replace), but tests can inject it.
+    """
+    exe = getattr(sys, "executable", "") if current_exe is None else current_exe
+    if frozen is None:
+        frozen = bool(getattr(sys, "frozen", False))
+    if not exe or not frozen:
+        return False
+    exe_dir = os.path.dirname(exe)
+    return _dir_writable(exe_dir)
+
+
 def build_flavor(exe: str | None = None) -> str:
     """Return "onedir" when *exe* sits next to a PyInstaller ``_internal``
     folder, else "onefile".
@@ -368,4 +410,101 @@ def launch_self_replace(new_exe: str, current_exe: str) -> str | None:
         )
         return bat_path
     except Exception:
+        return None
+
+
+def _ps_quote(value: str) -> str:
+    """Quote a path as a PowerShell single-quoted string literal."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def build_onedir_update_script(new_zip: str, current_exe: str, current_pid: int | None = None) -> str:
+    """Return the text of a PowerShell helper that updates an onedir build.
+
+    The helper waits for the running process to exit, removes the old
+    ``Colorink.exe`` and ``_internal`` payload, extracts the new onedir zip
+    into the same directory, relaunches Colorink, then cleans up after itself.
+
+    ``new_zip`` should point at a private copy outside the app directory so
+    the old-payload cleanup cannot delete the downloaded archive.
+    """
+    zip_path = os.path.abspath(new_zip)
+    app_dir = os.path.dirname(os.path.abspath(current_exe))
+    pid = int(os.getpid() if current_pid is None else current_pid)
+    return "\r\n".join([
+        "$ErrorActionPreference = 'Stop'",
+        f"$zip = {_ps_quote(zip_path)}",
+        f"$appDir = {_ps_quote(app_dir)}",
+        f"$currentPid = {pid}",
+        "function Remove-WithRetry($path) {",
+        "    for ($i = 0; $i -lt 10; $i++) {",
+        "        if (-not (Test-Path -LiteralPath $path)) { return }",
+        "        try {",
+        "            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop",
+        "            return",
+        "        } catch {",
+        "            Start-Sleep -Milliseconds 500",
+        "        }",
+        "    }",
+        "}",
+        "# Wait for the old process to release its file locks.",
+        "Wait-Process -Id $currentPid -ErrorAction SilentlyContinue",
+        "Start-Sleep -Milliseconds 800",
+        "# Extract into a unique temp dir on the same volume as the app first,",
+        "# so a bad/corrupt zip cannot destroy the running installation.",
+        "$tempRoot = Join-Path $appDir ('.colorink-update-' + [guid]::NewGuid().ToString('N'))",
+        "New-Item -ItemType Directory -Path $tempRoot | Out-Null",
+        "Expand-Archive -LiteralPath $zip -DestinationPath $tempRoot -Force",
+        "# Only now remove the old onedir payload, keeping unrelated user files.",
+        "$oldExe = Join-Path $appDir 'Colorink.exe'",
+        "Remove-WithRetry $oldExe",
+        "$oldInternal = Join-Path $appDir '_internal'",
+        "Remove-WithRetry $oldInternal",
+        "# Move the freshly extracted payload into place (same volume).",
+        "$extracted = Join-Path $tempRoot 'Colorink'",
+        "if (Test-Path -LiteralPath $extracted) {",
+        "    Get-ChildItem -LiteralPath $extracted -Force | Move-Item -Destination $appDir -Force",
+        "} else {",
+        "    Get-ChildItem -LiteralPath $tempRoot -Force | Move-Item -Destination $appDir -Force",
+        "}",
+        "# Launch the updated app.",
+        "Start-Process -FilePath (Join-Path $appDir 'Colorink.exe')",
+        "# Cleanup the private zip copy, temp extraction and this helper.",
+        "Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue",
+        "Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue",
+        "Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
+    ]) + "\r\n"
+
+
+def launch_onedir_update(new_zip: str, current_exe: str, current_pid: int | None = None) -> str | None:
+    """Copy the onedir zip to a private temp file and spawn a detached
+    PowerShell helper that performs the in-place directory update.
+
+    Returns the PowerShell script path on success, ``None`` on failure. The
+    caller is responsible for exiting the current process afterwards.
+    """
+    temp_zip = None
+    ps_path = None
+    try:
+        fd, temp_zip = tempfile.mkstemp(prefix="colorink-onedir-", suffix=".zip")
+        os.close(fd)
+        shutil.copyfile(new_zip, temp_zip)
+
+        fd, ps_path = tempfile.mkstemp(prefix="colorink-onedir-", suffix=".ps1")
+        os.close(fd)
+        with open(ps_path, "w", encoding="utf-8-sig") as f:
+            f.write(build_onedir_update_script(temp_zip, current_exe, current_pid))
+
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps_path],
+            creationflags=flags,
+            close_fds=True,
+        )
+        return ps_path
+    except Exception:
+        if temp_zip and os.path.exists(temp_zip):
+            _remove_file(temp_zip)
+        if ps_path and os.path.exists(ps_path):
+            _remove_file(ps_path)
         return None

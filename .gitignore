@@ -32,6 +32,9 @@ Thumbs.db
 scratch/
 *.log
 
+# Stray Windows temp file that was accidentally committed once
+mag_filter_mode.txt
+
 # AI agent session files
 .omo/
 .reasonix/
