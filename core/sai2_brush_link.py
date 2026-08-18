@@ -256,6 +256,7 @@ class SAI2Sync:
 
     def __init__(self, version: str | None = None) -> None:
         self.version: str = _normalize_version(version or os.environ.get("SAI2_SYNC_VERSION", DEFAULT_VERSION))
+        self.process_name: str = self.PROCESS_NAME
         self._handle = None
         self._pid: int | None = None
         self._color_addr: int | None = None

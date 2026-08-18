@@ -98,6 +98,37 @@ class TestBuildColorMenu:
         assert len(labels) == 2
         assert "复制 HEX: #0A141E" in labels[1]
 
+    def test_inactive_slot_precise_menu_with_dict_source(self, qapp):
+        """Non-active slots store source values as dicts; the menu must still
+        resolve them into HSL/OKLCh/LAB instead of silently showing RGB/HEX."""
+        from PyQt6.QtGui import QColor
+        from ui.color_preview_box import ColorPreviewBox
+
+        box = ColorPreviewBox()
+        box.resize(120, 40)
+        box.fg_color = QColor(255, 0, 0)
+        box.bg_color = QColor(0, 0, 255)
+
+        class FakeParent:
+            active_slot = "fg"
+            color_state = None
+            _SOURCE_CHANNELS = {
+                "rgb": ("r", "g", "b"),
+                "hsv": ("h", "s", "v"),
+            }
+            _fg_source_space = "rgb"
+            _fg_source_values = {"r": 255.0, "g": 0.0, "b": 0.0}
+            _bg_source_space = "hsv"
+            _bg_source_values = {"h": 240.0, "s": 100.0, "v": 100.0}
+
+        box._parent = FakeParent()
+        menu = build_color_menu(box, box.bg_color)
+        labels = [a.text() for a in menu.actions()]
+        assert len(labels) == 5
+        assert any(l.startswith("复制 HSL: hsl(240.0, 100.0%, 50.0%)") for l in labels)
+        assert any(l.startswith("复制 OKLCh: oklch(") for l in labels)
+        assert any(l.startswith("复制 LAB: lab(") for l in labels)
+
     def test_action_copies_to_clipboard(self, qapp):
         box = _preview_box_with_state(qapp, Color.from_rgb(10, 200, 30))
         menu = build_color_menu(box, box.fg_color)

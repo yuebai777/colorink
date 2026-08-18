@@ -36,6 +36,24 @@ def _copy_text(text: str):
     return _do_copy
 
 
+def _coerce_source_values(parent, space, values):
+    """Normalize per-slot source values to the tuple Color.from_space expects.
+
+    MainWindow stores source values as dicts keyed by channel name
+    (``{"h": ..., "s": ..., "v": ...}``), while Color.from_space wants an
+    ordered tuple.  History/legacy code may also pass tuples/lists.
+    """
+    if not isinstance(values, dict):
+        return values
+    channels = (getattr(parent, "_SOURCE_CHANNELS", None) or {}).get(space)
+    if not channels:
+        return None
+    try:
+        return tuple(float(values[ch]) for ch in channels)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _resolve_color(owner, color) -> Color | None:
     """Best-effort precise Color for the clicked swatch.
 
@@ -63,10 +81,12 @@ def _resolve_color(owner, color) -> Color | None:
     space = getattr(parent, f"_{slot}_source_space", None)
     values = getattr(parent, f"_{slot}_source_values", None)
     if space and values:
-        try:
-            return Color.from_space(space, values)
-        except Exception:
-            return None
+        coerced = _coerce_source_values(parent, space, values)
+        if coerced is not None:
+            try:
+                return Color.from_space(space, coerced)
+            except Exception:
+                return None
     return None
 
 

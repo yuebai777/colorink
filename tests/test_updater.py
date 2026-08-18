@@ -109,6 +109,34 @@ def test_find_installer_asset_onedir_ignores_unrelated_source_zip():
     assert picked["name"] == "Colorink-Onedir.zip"
 
 
+def test_find_installer_asset_onedir_ignores_github_source_zip_and_falls_back_to_exe():
+    """GitHub auto-generates ``colorink-<tag>.zip`` source archives.  Without
+    a real onedir zip the updater must fall back to the EXE, not download the
+    source archive and later destroy the onedir installation."""
+    assets = [
+        {"name": "colorink-1.6.7.zip", "url": "https://x/source.zip", "size": 12_345},
+        {"name": "Colorink.exe", "url": "https://x/Colorink.exe", "size": 39_318_700},
+    ]
+
+    picked = updater.find_installer_asset(assets, flavor="onedir")
+
+    assert picked is not None
+    assert picked["name"] == "Colorink.exe"
+
+
+def test_find_installer_asset_onedir_accepts_windows_build_zip():
+    assets = [
+        {"name": "colorink-1.6.7.zip", "url": "https://x/source.zip", "size": 12_345},
+        {"name": "Colorink-Windows.zip", "url": "https://x/Colorink-Windows.zip", "size": 39_403_439},
+        {"name": "Colorink.exe", "url": "https://x/Colorink.exe", "size": 39_318_700},
+    ]
+
+    picked = updater.find_installer_asset(assets, flavor="onedir")
+
+    assert picked is not None
+    assert picked["name"] == "Colorink-Windows.zip"
+
+
 def test_build_flavor_detects_onedir(tmp_path):
     exe_dir = tmp_path / "Colorink"
     exe_dir.mkdir()

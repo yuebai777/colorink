@@ -1418,6 +1418,11 @@ class MainWindow(TrayMixin, SyncMixin, HotkeyMixin, ColorSlotsMixin, QMainWindow
         companion sync read-back to honour CSP's reported hue/saturation
         through grayscale/black (where RGB carries no hue/sat info).
         """
+        # Keep color_state.current in sync with every projected color.  Some
+        # callers (slot changes, history picks, external active-slot changes)
+        # build a Color directly and would otherwise leave color_state pointing
+        # at the previous active slot's color.
+        self.color_state.apply(color)
         self._source_space = color.source_space
         self._source_values = self._color_source_dict(color)
         self.update_ui_colors(color.r, color.g, color.b, source=source,

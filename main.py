@@ -22,8 +22,9 @@ SINGLE_INSTANCE_KEY = "ColorinkPaletteLitePyQt_SingleInstance_v1"
 
 def _is_process_running(pid: int) -> bool:
     """Check if a Windows process with the given PID is still running."""
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    ERROR_ACCESS_DENIED = 5
     # 64 位安全：HANDLE 必须按 c_void_p 接收，否则高句柄值会被截断成 0，
     # 把仍在运行的实例误判为"已死"并放行第二个实例。
     kernel32.OpenProcess.restype = ctypes.c_void_p
@@ -33,7 +34,10 @@ def _is_process_running(pid: int) -> bool:
     if handle:
         kernel32.CloseHandle(handle)
         return True
-    return False
+    # OpenProcess can return access-denied for a live elevated process.  In
+    # that case the PID is almost certainly still running; treat it as alive
+    # instead of allowing a second instance to take over the lock.
+    return ctypes.get_last_error() == ERROR_ACCESS_DENIED
 
 def _acquire_instance_lock() -> QSharedMemory | None:
     """

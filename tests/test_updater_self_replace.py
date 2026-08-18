@@ -90,3 +90,8 @@ def test_build_onedir_update_script_contains_powershell_flow(tmp_path):
     assert "$currentPid = 1234" in script
     assert "_internal" in script
     assert "Start-Process" in script
+    # Safety: retry exhaustion must abort, the payload must be verified
+    # before the old installation is deleted, and cleanup runs even on abort.
+    assert "throw" in script
+    assert "does not contain Colorink.exe" in script
+    assert "finally {" in script
