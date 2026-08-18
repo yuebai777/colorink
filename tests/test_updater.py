@@ -74,6 +74,41 @@ def test_find_installer_asset_onefile_prefers_largest_exe():
     assert picked["name"] == "Colorink_setup.exe"
 
 
+def test_find_installer_asset_onedir_prefers_onedir_zip():
+    assets = [
+        {"name": "Colorink.exe", "url": "https://x/Colorink.exe", "size": 39_318_700},
+        {"name": "Colorink-Onedir.zip", "url": "https://x/Colorink-Onedir.zip", "size": 39_403_439},
+    ]
+
+    picked = updater.find_installer_asset(assets, flavor="onedir")
+
+    assert picked is not None
+    assert picked["name"] == "Colorink-Onedir.zip"
+
+
+def test_find_installer_asset_onedir_falls_back_to_exe_without_zip():
+    assets = [
+        {"name": "Colorink.exe", "url": "https://x/Colorink.exe", "size": 39_318_700},
+    ]
+
+    picked = updater.find_installer_asset(assets, flavor="onedir")
+
+    assert picked is not None
+    assert picked["name"] == "Colorink.exe"
+
+
+def test_find_installer_asset_onedir_ignores_unrelated_source_zip():
+    assets = [
+        {"name": "Source code.zip", "url": "https://x/source.zip", "size": 999},
+        {"name": "Colorink-Onedir.zip", "url": "https://x/Colorink-Onedir.zip", "size": 39_403_439},
+    ]
+
+    picked = updater.find_installer_asset(assets, flavor="onedir")
+
+    assert picked is not None
+    assert picked["name"] == "Colorink-Onedir.zip"
+
+
 def test_build_flavor_detects_onedir(tmp_path):
     exe_dir = tmp_path / "Colorink"
     exe_dir.mkdir()

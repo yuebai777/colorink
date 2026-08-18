@@ -53,7 +53,6 @@ class SyncMixin:
                 self.preview_box.bg_color = QColor(r, g, b)
                 self._bg_transparent = False
             self.preview_box.set_transparent(slot, False)
-            print(f"[Sync] {slot} color -> RGB({r}, {g}, {b})")
             return
         self.current_rgb = (r, g, b)
         # Companion mode reports its own HSV: honour it so picking a
@@ -98,7 +97,6 @@ class SyncMixin:
                                        block_signals=True)
         except Exception:
             pass
-        print(f"[Sync] active slot followed: {slot}")
 
     @pyqtSlot(int, bool)
     def on_external_transparent_changed(self, color_index, transparent):
@@ -132,7 +130,6 @@ class SyncMixin:
             else:
                 self._bg_transparent = False
         self.preview_box.set_transparent(slot, transparent)
-        print(f"[Transparent] external read-back: {slot} transparent={transparent}")
         if slot != self.active_slot:
             if slot == "fg":
                 self.select_fg_slot()
@@ -141,7 +138,6 @@ class SyncMixin:
 
     @pyqtSlot(str, bool)
     def on_sync_status_changed(self, mode, connected):
-        print(f"[Sync] Software status changed: {mode} -> connected={connected}")
         self._sync_status = (mode, connected)
         # Optionally update title bar text or border to show connection status
         mode_display = {"csp": "CSP", "sai": "SAI", "udm": "UDM", "ps": "PS", "companion": "手机"}.get(mode, mode.upper())

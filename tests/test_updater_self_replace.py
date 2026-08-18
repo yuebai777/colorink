@@ -54,3 +54,39 @@ def test_can_self_replace_readonly_dir(tmp_path, monkeypatch):
     exe = str(tmp_path / "Colorink.exe")
     monkeypatch.setattr(updater, "_dir_writable", lambda _d: False)
     assert updater.can_self_replace(exe, frozen=True) is False
+
+
+def test_can_self_update_onefile(tmp_path):
+    exe = str(tmp_path / "Colorink.exe")
+    assert updater.can_self_update(exe, frozen=True) is True
+
+
+def test_can_self_update_onedir(tmp_path):
+    exe_dir = tmp_path / "Colorink"
+    exe_dir.mkdir()
+    (exe_dir / "_internal").mkdir()
+    exe = str(exe_dir / "Colorink.exe")
+    assert updater.can_self_update(exe, frozen=True) is True
+
+
+def test_can_self_update_not_frozen(tmp_path):
+    exe = str(tmp_path / "Colorink.exe")
+    assert updater.can_self_update(exe, frozen=False) is False
+
+
+def test_can_self_update_readonly_dir(tmp_path, monkeypatch):
+    exe = str(tmp_path / "Colorink.exe")
+    monkeypatch.setattr(updater, "_dir_writable", lambda _d: False)
+    assert updater.can_self_update(exe, frozen=True) is False
+
+
+def test_build_onedir_update_script_contains_powershell_flow(tmp_path):
+    zip_path = str(tmp_path / "Colorink-Onedir.zip")
+    current_exe = str(tmp_path / "Colorink" / "Colorink.exe")
+    script = updater.build_onedir_update_script(zip_path, current_exe, current_pid=1234)
+
+    assert "Expand-Archive" in script
+    assert "Wait-Process -Id $currentPid" in script
+    assert "$currentPid = 1234" in script
+    assert "_internal" in script
+    assert "Start-Process" in script

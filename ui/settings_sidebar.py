@@ -578,9 +578,18 @@ class SettingsSidebar(QWidget):
         # ═══════════════════ Page 4: 软件 ═══════════════════
         card_sync, cl_sync = self._begin_card(page_software, i18n.tr("同步与版本"))
 
+        row_sync_status = QHBoxLayout()
+        row_sync_status.setSpacing(6)
         self.lbl_sync_status = QLabel("")
         self.lbl_sync_status.setObjectName("StatusHint")
-        cl_sync.addWidget(self.lbl_sync_status)
+        row_sync_status.addWidget(self.lbl_sync_status, 1)
+        self.btn_copy_diagnostics = QPushButton(i18n.tr("复制诊断信息"))
+        self.btn_copy_diagnostics.setToolTip(
+            i18n.tr("把版本、同步状态与最近日志复制到剪贴板，"
+            "用于排查同步 / 崩溃问题"))
+        self.btn_copy_diagnostics.clicked.connect(self._on_copy_diagnostics)
+        row_sync_status.addWidget(self.btn_copy_diagnostics, 0)
+        cl_sync.addLayout(row_sync_status)
 
         grid_sync = QGridLayout()
         grid_sync.setSpacing(6)
@@ -1969,6 +1978,27 @@ class SettingsSidebar(QWidget):
             self._set_label_state(self.lbl_sync_status, "muted")
         self._refresh_ps_bridge_status()
 
+    def _on_copy_diagnostics(self):
+        """Copy a diagnostics report to the clipboard (for bug reports)."""
+        from core import diagnostics
+        parent = self._parent
+        report = diagnostics.collect_diagnostics(
+            sync_thread=getattr(parent, "sync_thread", None) if parent is not None else None,
+            cfg=self.cfg,
+            mixin=parent,
+        )
+        QApplication.clipboard().setText(report)
+        # Brief in-place confirmation, then restore the label.
+        self.btn_copy_diagnostics.setText(i18n.tr("已复制 ✓"))
+        QTimer.singleShot(1500, self._restore_copy_diagnostics_label)
+
+    def _restore_copy_diagnostics_label(self):
+        """Restore the button label; safe even if the sidebar was closed."""
+        try:
+            self.btn_copy_diagnostics.setText(i18n.tr("复制诊断信息"))
+        except RuntimeError:
+            pass  # widget already deleted (settings window closed)
+
     # -- Green/portable Photoshop script-bridge notice ----------------------
 
     def _ps_sync(self):
@@ -2334,6 +2364,8 @@ class SettingsSidebar(QWidget):
         has_update = result.get("has_update", False)
 
         if has_update:
+            current_flavor = updater.build_flavor(sys.executable)
+            other_flavor = "onedir" if current_flavor == "onefile" else "onefile"
             msg = (
                 f"{i18n.tr('发现新版本')} {latest}！\n"
                 f"{i18n.tr('当前版本')}: v{current}\n\n"
@@ -2345,14 +2377,23 @@ class SettingsSidebar(QWidget):
             box = QMessageBox(self)
             box.setWindowTitle(i18n.tr("发现新版本"))
             box.setText(msg)
-            dl_btn = box.addButton(i18n.tr("下载到本地"), QMessageBox.ButtonRole.AcceptRole)
+            dl_btn = box.addButton(
+                i18n.tr("下载更新 ({flavor})", flavor=current_flavor),
+                QMessageBox.ButtonRole.AcceptRole,
+            )
+            switch_btn = box.addButton(
+                i18n.tr("下载 {flavor} 版（切换）", flavor=other_flavor),
+                QMessageBox.ButtonRole.ActionRole,
+            )
             open_btn = box.addButton(i18n.tr("前往下载"), QMessageBox.ButtonRole.ActionRole)
             skip_btn = box.addButton(i18n.tr("跳过此版本"), QMessageBox.ButtonRole.ActionRole)
             box.addButton(i18n.tr("稍后"), QMessageBox.ButtonRole.RejectRole)
             box.exec()
             clicked = box.clickedButton()
             if clicked is dl_btn:
-                self._download_release(result)
+                self._download_release(result, flavor=current_flavor)
+            elif clicked is switch_btn:
+                self._download_release(result, flavor=other_flavor)
             elif clicked is open_btn:
                 webbrowser.open(url)
             elif clicked is skip_btn:
@@ -2368,18 +2409,24 @@ class SettingsSidebar(QWidget):
         """Translate a structured updater error (source-as-key + detail)."""
         return i18n.tr(result.get("error", ""), detail=result.get("error_detail", ""))
 
-    def _download_release(self, result: dict):
-        """Download the picked installer asset to a user-chosen path."""
-        flavor = updater.build_flavor(sys.executable)
+    def _download_release(self, result: dict, flavor: str | None = None):
+        """Download the picked installer asset to a user-chosen path.
+
+        ``flavor`` selects which build to download: ``"onefile"`` or
+        ``"onedir"``. It defaults to the currently running build.
+        """
+        flavor = flavor or updater.build_flavor(sys.executable)
         asset = updater.find_installer_asset(result.get("assets", []), flavor=flavor)
         if asset is None:
             # No installer asset on the release — fall back to the page.
             webbrowser.open(result.get("release_url", updater.GITHUB_URL))
             return
-        name = asset.get("name") or "Colorink.exe"
+        name = asset.get("name") or ("Colorink-Onedir.zip" if flavor == "onedir" else "Colorink.exe")
         default_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+        is_zip = name.lower().endswith(".zip")
+        file_filter = i18n.tr("更新包 (*.exe *.zip)") if is_zip else i18n.tr("程序 (*.exe)")
         dest, _ = QFileDialog.getSaveFileName(
-            self, i18n.tr("保存安装包"), os.path.join(default_dir, name), i18n.tr("程序 (*.exe)")
+            self, i18n.tr("保存安装包"), os.path.join(default_dir, name), file_filter
         )
         if not dest:
             return
@@ -2389,6 +2436,9 @@ class SettingsSidebar(QWidget):
         digest = asset.get("digest") or ""
         if isinstance(digest, str) and digest.startswith("sha256:"):
             sha256 = digest[len("sha256:"):].strip()
+        # The actual downloaded flavor follows the asset extension: a onedir
+        # request may fall back to the onefile EXE when no zip is published.
+        self._pending_download_flavor = "onedir" if is_zip else "onefile"
         self._download_worker = _DownloadWorker(
             asset["url"], dest, asset.get("size"), self, sha256=sha256
         )
@@ -2439,27 +2489,52 @@ class SettingsSidebar(QWidget):
         self.btn_check_update.setText(i18n.tr("检查更新"))
         self.btn_check_update.setEnabled(True)
         self._download_worker = None
+        downloaded_flavor = getattr(self, "_pending_download_flavor", None) or updater.build_flavor(sys.executable)
+        self._pending_download_flavor = None
         if "error" in result:
             QMessageBox.warning(self, i18n.tr("下载失败"), self._update_error_text(result))
             return
         path = result["path"]
-        can_replace = updater.can_self_replace(sys.executable)
+        is_zip = path.lower().endswith(".zip")
+        current_flavor = updater.build_flavor(sys.executable)
+        same_flavor = downloaded_flavor == current_flavor
+        can_update = same_flavor and updater.can_self_update(sys.executable)
+        # A onedir update must be a zip; an onefile update must be an exe.
+        if (downloaded_flavor == "onedir") != is_zip:
+            can_update = False
+
         box = QMessageBox(self)
         box.setWindowTitle(i18n.tr("下载完成"))
-        box.setText(i18n.tr("已下载到:\n{path}", path=path))
+        text = i18n.tr("已下载到:\n{path}", path=path)
+        if not same_flavor:
+            if is_zip:
+                text += "\n\n" + i18n.tr(
+                    "这是 onedir 版。请先退出当前 Colorink，解压 zip 后运行其中的 Colorink.exe 以切换。"
+                )
+            else:
+                text += "\n\n" + i18n.tr(
+                    "这是 onefile 版。请先退出当前 Colorink，再运行该文件以切换。"
+                )
+        box.setText(text)
         install_btn = None
-        if can_replace:
+        if can_update:
             install_btn = box.addButton(i18n.tr("更新并重启"), QMessageBox.ButtonRole.AcceptRole)
         folder_btn = box.addButton(i18n.tr("打开所在文件夹"), QMessageBox.ButtonRole.ActionRole)
-        run_btn = box.addButton(i18n.tr("立即运行"), QMessageBox.ButtonRole.ActionRole)
+        run_btn = None
+        if not is_zip:
+            run_btn = box.addButton(i18n.tr("立即运行"), QMessageBox.ButtonRole.ActionRole)
         box.addButton(i18n.tr("关闭"), QMessageBox.ButtonRole.RejectRole)
         box.exec()
         clicked = box.clickedButton()
         if install_btn is not None and clicked is install_btn:
-            # Hand the update over to a detached batch helper, then exit. The
-            # helper waits for our lock to release, replaces the exe and
+            # Hand the update over to a detached helper, then exit. The helper
+            # waits for our lock to release, replaces the app payload and
             # relaunches. If spawning fails, fall back to just running it.
-            if updater.launch_self_replace(path, sys.executable):
+            if downloaded_flavor == "onedir":
+                launched = updater.launch_onedir_update(path, sys.executable)
+            else:
+                launched = updater.launch_self_replace(path, sys.executable)
+            if launched:
                 self._flush_state_before_update()
                 os._exit(0)
             os.startfile(path)

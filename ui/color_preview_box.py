@@ -10,7 +10,7 @@ from typing import Any, cast
 
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QBrush, QColor, QCursor, QPainter, QPen
-from PyQt6.QtWidgets import QApplication, QMenu, QWidget
+from PyQt6.QtWidgets import QWidget
 
 from ui.ringless_mode import (
     RINGLESS_ACTIVE_BORDER,
@@ -307,16 +307,8 @@ class ColorPreviewBox(QWidget):
     # 鈹€鈹€ Context menu 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     def _show_color_context_menu(self, color):
-        menu = QMenu()
-        r, g, b = color.red(), color.green(), color.blue()
-
-        from core import i18n
-        menu.addAction(f"{i18n.tr('复制 RGB')}: rgb({r}, {g}, {b})",
-                       lambda r=r, g=g, b=b: (cb := QApplication.clipboard()) is not None and cb.setText(f"rgb({r}, {g}, {b})"))
-        menu.addAction(f"{i18n.tr('复制 HEX')}: #{r:02X}{g:02X}{b:02X}",
-                       lambda r=r, g=g, b=b: (cb := QApplication.clipboard()) is not None and cb.setText(f"#{r:02X}{g:02X}{b:02X}"))
-
-        menu.exec(QCursor.pos())
+        from ui.color_context_menu import build_color_menu
+        build_color_menu(self, color).exec(QCursor.pos())
 
     # 鈹€鈹€ Mouse events 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
