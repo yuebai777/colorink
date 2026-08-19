@@ -25,9 +25,12 @@ def _exe_matches_drawing_app(exe_name: str) -> bool:
     """True if a lowercased process basename belongs to a drawing app.
 
     The extension is stripped first so "sai2.exe" and "sai.exe" both match
-    the same "sai" marker.
+    the same "sai" marker.  The stem is lowercased here as well, so callers
+    may pass either the raw Windows basename ("CLIPStudioPaint.exe") or the
+    already-lowercased form used by the foreground tracker.
     """
     stem = exe_name[:-4] if exe_name.lower().endswith(".exe") else exe_name
+    stem = stem.lower()
     return any(marker in stem for marker in _DRAWING_APP_EXE_MARKERS)
 
 
@@ -38,6 +41,7 @@ def _title_matches_drawing_app(title: str) -> bool:
     "Photosai" can't false-positive on the "sai" marker, while real-world
     titles such as "SAI Ver.2" or "paint tool sai" still match.
     """
+    title = (title or "").lower()
     if "clip studio paint" in title or "优动漫" in title or "photoshop" in title:
         return True
     if re.search(r"(?<![a-z0-9])sai", title):  # SAI / SAI Ver.2 / paint tool sai
