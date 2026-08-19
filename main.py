@@ -174,9 +174,13 @@ def main():
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
 
-    # Launch main window
+    # Launch main window.  With "仅在绘画软件前台时显示" enabled, the
+    # foreground tracker may have already decided the window should stay
+    # hidden (no drawing app is in the foreground); don't override that
+    # decision with an unconditional show().
     window = MainWindow()
-    window.show()
+    if not getattr(window, "auto_hidden", False):
+        window.show()
 
     # If the previous run crashed (uncaught exception), offer to inspect the
     # log once, then clear the marker so it is never announced twice.

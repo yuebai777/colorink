@@ -43,6 +43,16 @@ class TestExeMatching:
     def test_extension_is_optional(self):
         assert _exe_matches_drawing_app("sai2")
 
+    def test_mixed_case_drawing_apps(self):
+        # Windows returns original-case basenames; matching must not depend
+        # on the caller pre-lowercasing the exe name.
+        assert _exe_matches_drawing_app("CLIPStudioPaint.exe")
+        assert _exe_matches_drawing_app("ClipStudioPaintApp.exe")
+        assert _exe_matches_drawing_app("SAI.exe")
+        assert _exe_matches_drawing_app("SAI2.exe")
+        assert _exe_matches_drawing_app("UDMPaintPro.exe")
+        assert _exe_matches_drawing_app("Photoshop.exe")
+
     def test_non_drawing_apps(self):
         assert not _exe_matches_drawing_app("chrome.exe")
         assert not _exe_matches_drawing_app("explorer.exe")
@@ -77,6 +87,13 @@ class TestTitleMatching:
     def test_sai_marker_respects_word_boundary(self):
         # "Photosai" must not false-positive on the "sai" marker.
         assert not _title_matches_drawing_app("photosai")
+
+    def test_mixed_case_titles(self):
+        # The matcher should accept raw window titles, not only pre-lowered.
+        assert _title_matches_drawing_app("CLIP STUDIO PAINT")
+        assert _title_matches_drawing_app("SAI Ver.2")
+        assert _title_matches_drawing_app("Adobe Photoshop 2025")
+        assert _title_matches_drawing_app("UDM Paint")
 
     def test_non_drawing_titles(self):
         assert not _title_matches_drawing_app("微信")
@@ -214,6 +231,47 @@ class TestCheckForegroundWindow:
         fs.visible = False
         mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
         assert fs.visible is True
+        assert fs.auto_hidden is False
+
+    def test_already_hidden_non_drawing_marks_auto_hidden(self, monkeypatch):
+        """When onlyShowInCsp is enabled and the window is already hidden
+        (e.g. during startup before main.py calls show()), a non-drawing
+        foreground must still record auto_hidden so the unconditional startup
+        show() does not override the restriction."""
+        import ui.main_window as mw
+
+        self._stub_win32(monkeypatch, "chrome - google chrome", 424242)
+        fs = self._make_self()
+        fs.visible = False
+        fs.auto_hidden = False  # fresh window before the tracker has run
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
+        assert fs.visible is False, "already-hidden window must stay hidden"
+        assert fs.auto_hidden is True
+
+    def test_transient_exe_resolution_failure_retries(self, monkeypatch):
+        """A failed process-exe lookup must not be cached permanently; the
+        next tick should retry and recognize the drawing app once the lookup
+        succeeds."""
+        import ui.main_window as mw
+        import ui.window.picker_actions as pa
+
+        self._stub_win32(monkeypatch, "non-drawing title", 424242)
+        calls = {"n": 0}
+
+        def fake_resolve(pid):
+            calls["n"] += 1
+            return "" if calls["n"] == 1 else "clipstudiopaint.exe"
+
+        monkeypatch.setattr(pa, "_resolve_process_exe", fake_resolve)
+
+        fs = self._make_self()
+        fs.visible = False
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
+        assert fs.visible is False
+        assert fs.auto_hidden is True
+
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
+        assert fs.visible is True, "empty exe cache must not block re-resolution"
         assert fs.auto_hidden is False
 
     def test_follow_mouse_does_not_block_hide_when_only_show_in_csp(

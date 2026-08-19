@@ -276,13 +276,17 @@ class PickerActionsMixin:
 
             if pid:
                 # Cache the resolved exe per PID so an unchanged foreground
-                # window doesn't re-query the process on every tick.
+                # window doesn't re-query the process on every tick.  Only
+                # cache successful resolutions: a transient failure (process
+                # still starting, antivirus, protected process) must not pin
+                # an empty result for the whole foreground session.
                 if getattr(self, "_fg_exe_cache_pid", None) == pid:
                     exe_name = getattr(self, "_fg_exe_cache", "")
                 else:
                     exe_name = _resolve_process_exe(pid)
-                    self._fg_exe_cache_pid = pid
-                    self._fg_exe_cache = exe_name
+                    if exe_name:
+                        self._fg_exe_cache_pid = pid
+                        self._fg_exe_cache = exe_name
                 if _exe_matches_drawing_app(exe_name):
                     is_drawing_active = True
 
@@ -325,7 +329,11 @@ class PickerActionsMixin:
         else:
             if self.isVisible():
                 self.hide()
-                self.auto_hidden = True
+            # Record that the foreground restriction wants the window hidden
+            # even when it is already hidden.  This lets main.py avoid an
+            # unconditional show() at startup when onlyShowInCsp is enabled
+            # and no drawing app is in the foreground.
+            self.auto_hidden = True
 
     def on_settings_saved(self):
         # Reload configs
