@@ -2,7 +2,7 @@
 
 基于 PyQt6 的 Windows 桌面取色器 / 调色工具，为绘画与设计工作流设计：全局取色、多色空间精确调色、绘画软件颜色同步，以及系统级灰度滤镜。
 
-当前版本：**v1.6.8**
+当前版本：**v1.6.9**
 
 ## 下载
 
@@ -97,6 +97,7 @@ python build_pyqt.py
 
 - 灰度原生运行时（`native_grayscale/runtime/grayscale_overlay.pyc`）随仓库分发，`python native_grayscale/build_runtime.py` 可复现编译；原生灰度不可用时自动回退 Mag 后端
 - `tests/` 含发布契约测试（版本一致性、首次启动默认值、配置合并等），`python -m pytest` 运行
+- 改动后要跑哪些测试、发版前要过哪些关，见 [TESTING.md](TESTING.md)
 - `tools/` 含同步诊断与端到端稳定性脚本（内存探针、写路径对比等），便于排查 CSP / PS 同步问题
 - 架构与设计说明见 [DESIGN.md](DESIGN.md)，色彩转换管道见 [OKLCH_CONVERSION_PIPELINE.md](OKLCH_CONVERSION_PIPELINE.md)
 
