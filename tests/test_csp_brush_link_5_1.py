@@ -165,3 +165,57 @@ def test_sub_color_transparent_write_activates_sub_then_flag():
     assert sync.set_color(255, 0, 0, transparent=True, color_index=1)
     # 透明 = 激活槽(副色=1) 被透明标志覆盖为全 FF
     assert sync.pm.u32[0x2000 + 0x08] == 0xFFFFFFFF
+
+
+# ── version pinning vs. auto-detection ────────────────────────────────────
+# "auto" is not a profile: connect() detects the build from the running exe.
+# _normalize_version_key maps anything unrecognised to the csp4.x default, so
+# set_version("auto") used to switch a live CSP 5.1 connection to the 4.x
+# profile, drop the process handle and clear the copy caches — on every
+# settings apply, because update_versions() runs with "auto" as the default.
+
+def test_set_version_auto_keeps_the_detected_profile():
+    sync = CSPSync()
+    sync._apply_profile("csp5.1")
+    sync.pm = object()
+    sync.pid = 4321
+    sync.target = 0x2000
+    sync._main_copy_addrs = [0x1000, 0x2000]
+
+    assert sync.set_version("auto") is False
+    assert sync.current_version == "csp5.1"
+    assert sync.color_format == "rgb_u32"
+    assert sync.pm is not None
+    assert sync.pid == 4321
+    assert sync._main_copy_addrs == [0x1000, 0x2000]
+
+
+def test_set_version_explicit_pin_still_switches_and_reconnects():
+    sync = CSPSync()
+    sync._apply_profile("csp5.1")
+    sync.pm = object()
+    sync.pid = 4321
+
+    assert sync.set_version("csp4.x") is True
+    assert sync.current_version == "csp4.x"
+    assert sync.pm is None
+    assert sync.pid is None
+
+
+def test_drop_connection_clears_copy_caches():
+    """A restarted CSP gets a fresh address space; stale copy addresses would
+    make the next write land in unrelated memory of the new process."""
+    sync = CSPSync()
+    sync._main_copy_addrs = [0x1000]
+    sync._sub_copy_addrs = [0x2000]
+    sync._main_copy_addrs_known = [0x1000]
+    sync._sub_copy_addrs_known = [0x2000]
+    sync._copy_scan_ts = {"_main_copy_addrs": 12.0}
+
+    sync._drop_connection()
+
+    assert sync._main_copy_addrs is None
+    assert sync._sub_copy_addrs is None
+    assert sync._main_copy_addrs_known is None
+    assert sync._sub_copy_addrs_known is None
+    assert sync._copy_scan_ts == {}

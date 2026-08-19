@@ -88,6 +88,16 @@ class CSPSync(ProfileMixin, ProcessMixin, MemoryMixin, SlotMixin):
         self._sub_copy_addrs: list[int] | None = None
         # Same for the MAIN color slot (+0x3C HSV u32 copies).
         self._main_copy_addrs: list[int] | None = None
+        # Last *verified* copy sets. Kept separately from the live cache as
+        # the fallback for writes whose value is a trivial pattern (pure
+        # black is twelve zero bytes and matches everywhere, so a scan can
+        # no longer identify the copies) — see SlotMixin._remembered_copies.
+        self._sub_copy_addrs_known: list[int] | None = None
+        self._main_copy_addrs_known: list[int] | None = None
+        # Per-slot monotonic timestamp of the last copy-locate scan, so a
+        # failed locate can not re-scan the whole address space on every
+        # single write (that is what wedged the polling thread).
+        self._copy_scan_ts: dict[str, float] = {}
 
         # Currently selected build profile + the per-channel layout we
         # resolved from config.ini (or the defaults).
