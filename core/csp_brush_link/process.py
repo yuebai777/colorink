@@ -184,3 +184,11 @@ class ProcessMixin:
         self.pid = None
         self.module_base = None
         self.target = None
+        # Copy addresses belong to the process we just let go of: a restarted
+        # CSP gets a fresh address space, so keeping them risks writing into
+        # unrelated memory of the new process.
+        self._sub_copy_addrs = None
+        self._main_copy_addrs = None
+        self._sub_copy_addrs_known = None
+        self._main_copy_addrs_known = None
+        self._copy_scan_ts = {}

@@ -71,6 +71,12 @@ class SyncMixin:
             chsv = getattr(self.sync_thread, 'companion_hsv', None)
             if chsv is not None:
                 hsv = chsv
+        # Record the just-read RGB as the active source BEFORE projecting.
+        # _record_color_history reads self._source_space/_source_values; if
+        # they still hold the previous interaction's coordinates they end up
+        # stored against the wrong RGB (external change gets stale source).
+        self._source_space = "rgb"
+        self._source_values = {"r": float(r), "g": float(g), "b": float(b)}
         self._record_color_history()
         color = self.color_state.set_from("rgb", (r, g, b))
         self._project_color(color, source="sync", hsv=hsv)

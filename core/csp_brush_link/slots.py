@@ -6,6 +6,7 @@ multi-copy HSV writes, public get/set/status/dump and the diagnostic dump.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Mapping
 
 try:
@@ -42,6 +43,22 @@ from core.csp_brush_link.profiles import _log
 
 
 class SlotMixin:
+    # A copy-locate scan walks CSP's whole address space and costs seconds
+    # even when it ends up finding nothing usable. When the previous attempt
+    # could not identify the authoritative copies, retry at most once per
+    # this many seconds — writes in between go to the remembered copy set
+    # (or the mirror slot), so a rescan can never stall the polling thread
+    # write after write.
+    _COPY_RESCAN_INTERVAL = 3.0
+
+    # Distance between the main and the sub colour sub-object inside one
+    # colour struct (verified live on CSP 5.1: RGB 0x20 -> 0x80, HSV
+    # 0x3C -> 0x9C, i.e. the sub object is a copy of the main object 0x60
+    # bytes further on). A copy scan matches by value, so when both slots
+    # hold the SAME colour every struct yields two hits 0x60 apart and the
+    # slots become indistinguishable — writing one would clobber the other.
+    _SLOT_STRIDE = 0x60
+
     def get_sub_color(self) -> dict[str, int] | None:
         """Public facade for the 5.1 sub-color slot (index 1)."""
         return self._read_sub_color()
@@ -142,7 +159,7 @@ class SlotMixin:
                 self._read_u32(self.target + off).to_bytes(4, "little")
                 for off in self._SUB_HSV_OFFS
             )
-            hits = self._search_pattern(old)
+            hits = self._search_pattern(old, max_hits=self._SUB_COPY_LIMIT + 1)
             base_addr = self.target + self._SUB_HSV_OFFS[0]
             if len(hits) <= self._SUB_COPY_LIMIT:
                 addrs = list(hits)
@@ -150,12 +167,107 @@ class SlotMixin:
                     addrs.append(base_addr)
             else:
                 addrs = [base_addr]
-            self._sub_copy_addrs = addrs
+            if len(addrs) > 1:
+                self._sub_copy_addrs = addrs
+                # Verified copy set: also keep it as the fallback a later
+                # trivial-pattern (black/white) write can reuse.
+                self._sub_copy_addrs_known = list(addrs)
+            else:
+                # Mirror only — the copies could not be identified. Caching
+                # that would re-validate against our own writes forever and
+                # lock the degradation in (same invariant as
+                # :meth:`_locate_hsv_copies`).
+                self._sub_copy_addrs = None
             _log(f"capture_sub_copies: {len(addrs)} copies of current sub color")
             return len(addrs)
         except Exception as exc:
             _log(f"capture_sub_copies: exception: {exc}")
             return 0
+
+    def _copy_cache_is_live(self, addrs: list[int], expected: bytes) -> bool:
+        """True while every cached copy address still holds *expected*."""
+        pm = self.pm
+        if pm is None or not addrs:
+            return False
+        for addr in addrs:
+            try:
+                if pm.read_bytes(addr, 12) != expected:
+                    return False
+            except Exception:
+                return False
+        return True
+
+    def _remembered_copies(self, cache_attr: str,
+                           base_addr: int) -> list[int] | None:
+        """Last verified copy set for this slot, if it still looks coherent.
+
+        Needed whenever a scan can no longer identify the copies:
+
+        * the value is a *trivial* pattern (pure black is twelve zero bytes
+          and matches everywhere), or
+        * only the mirror slot holds the value, because a previous degraded
+          write updated the mirror alone.
+
+        Those addresses were verified while the color still was distinctive,
+        so reusing them is what lets such a write reach the brush instead of
+        only the UI mirror.
+
+        Guards: the set must belong to the current slot pointer (a stored set
+        always contains its ``base_addr``) and the authoritative copies must
+        still be readable and hold one and the same value — CSP keeps its
+        copies in sync, a recycled allocation would not.  The mirror itself
+        is excluded from that check: it is the one address a degraded write
+        has already changed.
+        """
+        known = getattr(self, cache_attr + "_known", None)
+        pm = self.pm
+        if not known or pm is None or base_addr not in known:
+            return None
+        others = [addr for addr in known if addr != base_addr]
+        if not others:
+            return None
+        try:
+            reference = pm.read_bytes(others[0], 12)
+            for addr in others[1:]:
+                if pm.read_bytes(addr, 12) != reference:
+                    return None
+        except Exception:
+            setattr(self, cache_attr + "_known", None)
+            return None
+        return list(known)
+
+    def _drop_sibling_slot_hits(self, hits: list[int], base_off: int,
+                                base_addr: int) -> list[int]:
+        """Remove hits that belong to the OTHER colour slot.
+
+        The main and the sub colour live in two sub-objects of one struct,
+        ``_SLOT_STRIDE`` bytes apart. The scan matches by value, so while
+        both slots hold the same colour (very common — e.g. both black)
+        every struct produces two hits ``_SLOT_STRIDE`` apart and writing
+        the main slot would silently overwrite the sub slot (verified live:
+        a main write turned the sub colour magenta too).
+
+        A hit is the sibling's field when its counterpart at the matching
+        stride distance is also a hit, so it can be dropped without ever
+        touching the case where the two slots hold different colours (then
+        the sibling's bytes simply do not match and nothing is filtered).
+        """
+        if not hits:
+            return hits
+        # Locating the sub slot? Then the main field sits _SLOT_STRIDE lower,
+        # and a hit whose counterpart above it also matched is the main one.
+        locating_sub = base_off == self._SUB_HSV_OFFS[0]
+        delta = self._SLOT_STRIDE if locating_sub else -self._SLOT_STRIDE
+        hit_set = set(hits)
+        kept = [
+            addr for addr in hits
+            if addr == base_addr or (addr + delta) not in hit_set
+        ]
+        if len(kept) != len(hits):
+            _log(f"_locate_hsv_copies: dropped {len(hits) - len(kept)} hits "
+                 f"belonging to the other colour slot (both slots hold the "
+                 f"same colour)")
+        return kept
 
     def _locate_hsv_copies(self, old: bytes, cache_attr: str,
                            base_off: int) -> list[int]:
@@ -165,43 +277,74 @@ class SlotMixin:
         copies for both slots on CSP 5.1); the base slot alone is not the
         brush source. The cached address list is trusted only while every
         address still holds *old* (CSP may create/destroy copies at
-        runtime). Falls back to the base slot when the hit count explodes.
+        runtime).
+
+        A scan can fail to identify the copies in two ways, and neither may
+        be cached — a cached degraded set would be re-validated against the
+        value we wrote ourselves (always passing) and would lock the
+        degradation in forever:
+
+        * the pattern is trivial (black/white) and matches far too often,
+        * only the mirror holds the pattern, i.e. the authoritative copies
+          are momentarily out of sync (typically right after a degraded
+          write of our own).
+
+        Both cases fall back to the remembered copy set, then to the mirror,
+        and are retried on a later write (see ``_COPY_RESCAN_INTERVAL``).
         """
         if self.target is None or self.pm is None:
             return []
-        pm = self.pm
+        base_addr = self.target + base_off
+
         addrs = getattr(self, cache_attr, None)
         if addrs:
-            ok_cache = True
-            for addr in addrs:
-                try:
-                    if pm.read_bytes(addr, 12) != old:
-                        ok_cache = False
-                        break
-                except Exception:
-                    ok_cache = False
-                    break
-            if not ok_cache:
-                addrs = None
-        if not addrs:
-            hits = self._search_pattern(old)
-            if len(hits) <= self._SUB_COPY_LIMIT:
-                addrs = list(hits)
-                base_addr = self.target + base_off
-                if base_addr not in addrs:
-                    addrs.append(base_addr)
-                setattr(self, cache_attr, addrs)
-                _log(f"_locate_hsv_copies: located {len(addrs)} copies")
-            else:
-                # 平凡模式（黑=全 0、白=全 FF 等）在进程内存中命中数百处，
-                # 无法区分权威笔刷副本。此时只写镜像槽且【不缓存】：一旦
-                # 缓存，校验读到的总是自己刚写过的值（恒通过），会把
-                # "只写镜像槽"的降级状态永久锁死，之后所有写入都不再
-                # 更新笔刷。下一次写非平凡颜色时重新搜索即可恢复。
-                addrs = [self.target + base_off]
-                _log(f"_locate_hsv_copies: {len(hits)} hits > {self._SUB_COPY_LIMIT} "
-                     f"(trivial pattern) — mirror-only write, NOT cached")
-        return addrs
+            if self._copy_cache_is_live(addrs, old):
+                return addrs
+            setattr(self, cache_attr, None)
+
+        scan_ts = getattr(self, "_copy_scan_ts", None)
+        if scan_ts is None:
+            scan_ts = {}
+            self._copy_scan_ts = scan_ts
+        last = scan_ts.get(cache_attr)
+        now = time.monotonic()
+        if last is not None and now - last < self._COPY_RESCAN_INTERVAL:
+            # 扫描冷却中：写记住的副本集（没有就只写镜像槽）。全地址空间
+            # 扫描每次要几秒，逐次写入都重扫会把轮询线程彻底堵死。
+            return self._remembered_copies(cache_attr, base_addr) or [base_addr]
+        scan_ts[cache_attr] = now
+
+        hits = self._search_pattern(old, max_hits=self._SUB_COPY_LIMIT + 1)
+        if len(hits) > self._SUB_COPY_LIMIT:
+            # 平凡模式（黑 = 全 0，12 个零字节；白 / 灰同理）在进程内存里
+            # 处处命中，无法区分权威笔刷副本。改写上一次已验证的副本集，
+            # 这样纯黑也能同步进笔刷；没有记录时退化为只写镜像槽。
+            remembered = self._remembered_copies(cache_attr, base_addr)
+            _log(f"_locate_hsv_copies: >{self._SUB_COPY_LIMIT} hits (trivial "
+                 f"pattern) — "
+                 f"{'remembered copy set' if remembered else 'mirror-only'} "
+                 f"write, NOT cached")
+            return remembered or [base_addr]
+
+        hits = self._drop_sibling_slot_hits(hits, base_off, base_addr)
+        addrs = list(hits)
+        if base_addr not in addrs:
+            addrs.append(base_addr)
+        if len(addrs) > 1:
+            setattr(self, cache_attr, addrs)
+            setattr(self, cache_attr + "_known", list(addrs))
+            _log(f"_locate_hsv_copies: located {len(addrs)} copies")
+            return addrs
+
+        # 只有镜像槽持有该值：权威副本此刻不同步（通常是上一次降级写入
+        # 只写了镜像）。改写上一次已验证的副本集，并且【不缓存】这个降级
+        # 结果——一旦缓存，校验读到的总是自己刚写过的值（恒通过），会把
+        # 降级状态永久锁死。
+        remembered = self._remembered_copies(cache_attr, base_addr)
+        _log("_locate_hsv_copies: only the mirror holds the pattern — "
+             f"{'remembered copy set' if remembered else 'mirror-only'} "
+             "write, NOT cached")
+        return remembered or addrs
 
     def _write_sub_color(self, r: int, g: int, b: int) -> bool:
         """Write the 5.1 sub-color slot (HSV u32) to EVERY in-memory copy.

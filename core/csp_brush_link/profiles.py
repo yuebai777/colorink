@@ -34,6 +34,10 @@ AOB_MAP: dict[str, str] = {
 SECTION_NAME       = "ClipStudioPaint"
 DEFAULT_VERSION_KEY = "csp4.x"
 
+# Values that mean "let connect() detect the build from the running exe"
+# rather than pinning a specific profile.
+AUTO_VERSION_KEYS: frozenset[str] = frozenset({"", "auto"})
+
 _DEFAULT_RED_OFFSET   = 0x20
 _DEFAULT_GREEN_OFFSET = 0x24
 _DEFAULT_BLUE_OFFSET  = 0x28
@@ -86,7 +90,12 @@ def _normalize_version_key(raw: object) -> str:
     return "csp4.x"
 
 
-_DEBUG = False
+# Memory-sync tracing. Off by default (the polling thread logs per write);
+# set COLORINK_CSP_DEBUG=1 to get the copy-locate / write decisions on stderr
+# when diagnosing a "colour does not sync" report, without editing code.
+_DEBUG = os.environ.get("COLORINK_CSP_DEBUG", "").strip().lower() not in (
+    "", "0", "false", "no", "off",
+)
 
 
 def _log(message: str) -> None:
@@ -141,6 +150,9 @@ class ProfileMixin:
         self._resolve_fail_count = 0
         self._sub_copy_addrs = None
         self._main_copy_addrs = None
+        self._sub_copy_addrs_known = None
+        self._main_copy_addrs_known = None
+        self._copy_scan_ts = {}
 
     def _load_user_config(self) -> None:
         path = _resolve_config_file()
@@ -173,7 +185,18 @@ class ProfileMixin:
         )
 
     def set_version(self, key: str) -> bool:
-        """Switch to a different CSP build profile. Returns True if it changed."""
+        """Switch to a different CSP build profile. Returns True if it changed.
+
+        ``"auto"`` (and an empty value) is NOT a profile: the build is
+        detected from the running exe in :meth:`connect`. It must therefore
+        leave the current profile alone — ``_normalize_version_key`` maps
+        anything unrecognised to the ``csp4.x`` default, so treating "auto"
+        as a request used to tear down a live CSP 5.1 connection, reset the
+        hue memory and drop the copy caches every time settings were applied
+        (``update_versions`` runs on each apply, with "auto" as the default).
+        """
+        if str(key or "").strip().lower() in AUTO_VERSION_KEYS:
+            return False
         normalized = _normalize_version_key(key)
         if normalized == self.current_version:
             return False
