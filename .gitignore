@@ -51,6 +51,3 @@ out.txt
 # AI agent local config (contains machine-specific paths)
 .opencode/
 pyrightconfig.json
-
-# QA wizard output
-test-reports/

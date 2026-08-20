@@ -97,7 +97,7 @@ python build_pyqt.py
 
 - 灰度原生运行时（`native_grayscale/runtime/grayscale_overlay.pyc`）随仓库分发，`python native_grayscale/build_runtime.py` 可复现编译；原生灰度不可用时自动回退 Mag 后端
 - `tests/` 含发布契约测试（版本一致性、首次启动默认值、配置合并等），`python -m pytest` 运行
-- **测试向导**：`python tools/test_wizard.py all` 一条龙跑「环境自检 → 自动化守卫 → 半自动引导（按键+截图）→ 手测打勾 → 报告结论」；`... panel` 开本地网页打勾面板（http://127.0.0.1:8799/）；测试条目统一维护在 `tools/qa/checklist.json`。常用参数见 `python tools/test_wizard.py -h`
+- 改动后要跑哪些测试、发版前要过哪些关，见 [TESTING.md](TESTING.md)；纯手动打勾清单见 [CHECKLIST.md](CHECKLIST.md)
 - `tools/` 含同步诊断与端到端稳定性脚本（内存探针、写路径对比等），便于排查 CSP / PS 同步问题
 - 架构与设计说明见 [DESIGN.md](DESIGN.md)，色彩转换管道见 [OKLCH_CONVERSION_PIPELINE.md](OKLCH_CONVERSION_PIPELINE.md)
 
