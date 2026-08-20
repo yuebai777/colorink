@@ -1,3 +1,22 @@
+## v1.6.11
+
+原生灰度滤镜相机启动修复发布。
+
+### 修复
+
+- **灰度滤镜切换后无画面 / 无法激活**：GUI 线程调度桥 `_dispatch_invoke` 原先调用 `getattr(widget, name)(widget)`，而实例方法已是绑定方法，多传的 `widget` 触发 TypeError；异常又被 except 静默吞掉，导致相机启动 kick 从未执行、帧循环永远不开始。现在改为 `getattr(widget, name)()`，kick 真正执行，覆盖层能收到第一帧
+
+### 新增
+
+- **调度桥回归测试**：`test_dispatch_invoke_calls_bound_method_without_extra_arg`，锁定绑定方法不得再传 widget 的调用约定
+
+### 变更
+
+- 测试总数 641 → 642
+- **版本号**：应用内更新检查版本与 Windows 文件版本统一到 `1.6.11` / `1.6.11.0`
+
+---
+
 ## v1.6.10
 
 前台检测与绘画软件识别修复发布。
