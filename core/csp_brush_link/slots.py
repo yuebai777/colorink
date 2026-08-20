@@ -269,6 +269,149 @@ class SlotMixin:
                  f"same colour)")
         return kept
 
+    def _main_copies_for_derivation(self, allow_scan: bool) -> list[int] | None:
+        """Locate the MAIN colour copies, to derive the sub copies from.
+
+        Free when the cached (or last-verified) set still holds the current
+        main pattern. Otherwise a capped scan is run only if *allow_scan*, and
+        only once per ``_COPY_RESCAN_INTERVAL`` — a main-pattern scan walks the
+        whole address space, and repeating one per write is what froze the
+        polling thread before v1.6.7. Returns ``None`` when the main colour is
+        itself too trivial to identify.
+        """
+        if self.pm is None or self.target is None:
+            return None
+        main_base = self.target + self._RGB_U32_OFFS[0]
+        main_pat = b"".join(
+            self._read_u32(self.target + off).to_bytes(4, "little")
+            for off in self._RGB_U32_OFFS
+        )
+        for attr in ("_main_copy_addrs", "_main_copy_addrs_known"):
+            cached = getattr(self, attr, None)
+            if cached and self._copy_cache_is_live(cached, main_pat):
+                return list(cached)
+        if not allow_scan:
+            return None
+        scan_ts = getattr(self, "_copy_scan_ts", None)
+        if scan_ts is None:
+            scan_ts = {}
+            self._copy_scan_ts = scan_ts
+        key = "_main_copy_addrs_derive"
+        last = scan_ts.get(key)
+        now = time.monotonic()
+        if last is not None and now - last < self._COPY_RESCAN_INTERVAL:
+            return None
+        scan_ts[key] = now
+        hits = self._search_pattern(main_pat, max_hits=self._SUB_COPY_LIMIT + 1)
+        if len(hits) > self._SUB_COPY_LIMIT:
+            return None
+        hits = self._drop_sibling_slot_hits(hits, self._RGB_U32_OFFS[0], main_base)
+        addrs = list(hits)
+        if main_base not in addrs:
+            addrs.append(main_base)
+        return addrs if len(addrs) > 1 else None
+
+    def _sub_copies_from_main(self, old: bytes, base_addr: int,
+                              allow_scan: bool) -> list[int] | None:
+        """Derive the sub-colour copy set from the main-colour copy set.
+
+        The main HSV block (+0x3C) and the sub HSV block (+0x9C) are two
+        sub-objects of one colour struct ``_SLOT_STRIDE`` bytes apart — the
+        same relationship :meth:`_drop_sibling_slot_hits` already depends on.
+
+        This matters because the two slots fail differently. The main colour is
+        the one the user actively edits, so its pattern is normally distinctive
+        and its scan succeeds; CSP's default *background* is white, whose
+        12-byte HSV-u32 pattern (eight 0x00 then four 0xFF) matches far past
+        ``_SUB_COPY_LIMIT``. So the first background write of a session reached
+        the +0x9C UI mirror only — CSP's brush kept the old colour — and the
+        remembered-set recovery had nothing to fall back on yet.
+
+        Safety: every derived address must currently hold *old* (the live sub
+        pattern), and the mirror must be among the siblings. That is what
+        proves these really are the sub fields of the current colour structs
+        rather than an unrelated allocation. Returns ``None`` whenever that
+        cannot be established, leaving the caller on its previous behaviour.
+        """
+        pm = self.pm
+        if pm is None or self.target is None:
+            return None
+        main_addrs = self._main_copies_for_derivation(allow_scan)
+        if not main_addrs:
+            return None
+        derived = []
+        for addr in main_addrs:
+            candidate = addr + self._SLOT_STRIDE
+            try:
+                if pm.read_bytes(candidate, 12) != old:
+                    return None
+            except Exception:
+                return None
+            derived.append(candidate)
+        if len(derived) < 2 or base_addr not in derived:
+            return None
+        return derived
+
+    def _degraded_copy_fallback(self, old: bytes, cache_attr: str,
+                                base_off: int, base_addr: int, reason: str,
+                                allow_scan: bool = True) -> list[int]:
+        """Best copy set available when the value scan identified nothing.
+
+        Order: the last verified set, then (sub slot only) the set derived
+        from the main copies via ``_SLOT_STRIDE``, then the UI mirror alone —
+        which does not reach the brush.
+        """
+        remembered = self._remembered_copies(cache_attr, base_addr)
+        if remembered:
+            _log(f"_locate_hsv_copies: {reason} — remembered copy set, NOT cached")
+            return remembered
+        if base_off == self._SUB_HSV_OFFS[0]:
+            derived = self._sub_copies_from_main(old, base_addr, allow_scan)
+            if derived:
+                # Validated against the live sub pattern at every address, so
+                # this is a genuine copy set and may be cached (unlike a
+                # mirror-only result, which would re-validate against our own
+                # writes forever and lock the degradation in).
+                setattr(self, cache_attr, derived)
+                setattr(self, cache_attr + "_known", list(derived))
+                _log(f"_locate_hsv_copies: {reason} — derived {len(derived)} "
+                     f"sub copies from the main copy set "
+                     f"(+0x{self._SLOT_STRIDE:X})")
+                return derived
+        _log(f"_locate_hsv_copies: {reason} — mirror-only write, NOT cached")
+        return [base_addr]
+
+    def _remember_sub_siblings(self, main_addrs: list[int]) -> None:
+        """Piggyback: remember the sub copies implied by a main locate.
+
+        Costs no scan — the main copy set was just identified, so the sub
+        fields ``_SLOT_STRIDE`` further on are known too. Recording them means
+        a later background write whose own pattern is trivial (white/black)
+        already has a verified set to fall back on.
+        """
+        pm = self.pm
+        if pm is None or self.target is None or getattr(self, "_sub_copy_addrs_known", None):
+            return
+        sub_base = self.target + self._SUB_HSV_OFFS[0]
+        try:
+            expected = pm.read_bytes(sub_base, 12)
+        except Exception:
+            return
+        derived = []
+        for addr in main_addrs:
+            candidate = addr + self._SLOT_STRIDE
+            try:
+                if pm.read_bytes(candidate, 12) != expected:
+                    return
+            except Exception:
+                return
+            derived.append(candidate)
+        if len(derived) < 2 or sub_base not in derived:
+            return
+        self._sub_copy_addrs_known = list(derived)
+        _log(f"_locate_hsv_copies: remembered {len(derived)} sub copies "
+             f"alongside the main copy set (+0x{self._SLOT_STRIDE:X})")
+
     def _locate_hsv_copies(self, old: bytes, cache_attr: str,
                            base_off: int) -> list[int]:
         """Locate every in-memory copy of the current HSV u32 pattern.
@@ -309,22 +452,22 @@ class SlotMixin:
         last = scan_ts.get(cache_attr)
         now = time.monotonic()
         if last is not None and now - last < self._COPY_RESCAN_INTERVAL:
-            # 扫描冷却中：写记住的副本集（没有就只写镜像槽）。全地址空间
-            # 扫描每次要几秒，逐次写入都重扫会把轮询线程彻底堵死。
-            return self._remembered_copies(cache_attr, base_addr) or [base_addr]
+            # 扫描冷却中：写记住的副本集，或由【已缓存】的主色副本推导
+            # （不触发新扫描）；都没有才只写镜像槽。全地址空间扫描每次要
+            # 几秒，逐次写入都重扫会把轮询线程彻底堵死。
+            return self._degraded_copy_fallback(
+                old, cache_attr, base_off, base_addr,
+                "scan on cooldown", allow_scan=False)
         scan_ts[cache_attr] = now
 
         hits = self._search_pattern(old, max_hits=self._SUB_COPY_LIMIT + 1)
         if len(hits) > self._SUB_COPY_LIMIT:
             # 平凡模式（黑 = 全 0，12 个零字节；白 / 灰同理）在进程内存里
-            # 处处命中，无法区分权威笔刷副本。改写上一次已验证的副本集，
-            # 这样纯黑也能同步进笔刷；没有记录时退化为只写镜像槽。
-            remembered = self._remembered_copies(cache_attr, base_addr)
-            _log(f"_locate_hsv_copies: >{self._SUB_COPY_LIMIT} hits (trivial "
-                 f"pattern) — "
-                 f"{'remembered copy set' if remembered else 'mirror-only'} "
-                 f"write, NOT cached")
-            return remembered or [base_addr]
+            # 处处命中，无法区分权威笔刷副本。退回已验证的副本集 / 由主色
+            # 副本按 _SLOT_STRIDE 推导；都不行才只写镜像槽。
+            return self._degraded_copy_fallback(
+                old, cache_attr, base_off, base_addr,
+                f">{self._SUB_COPY_LIMIT} hits (trivial pattern)")
 
         hits = self._drop_sibling_slot_hits(hits, base_off, base_addr)
         addrs = list(hits)
@@ -334,17 +477,21 @@ class SlotMixin:
             setattr(self, cache_attr, addrs)
             setattr(self, cache_attr + "_known", list(addrs))
             _log(f"_locate_hsv_copies: located {len(addrs)} copies")
+            if base_off == self._RGB_U32_OFFS[0]:
+                # Free: the sub fields sit _SLOT_STRIDE further on, so record
+                # them now while they are still coherent. A later background
+                # write whose own pattern is trivial then has a verified set to
+                # fall back on instead of degrading to the UI mirror.
+                self._remember_sub_siblings(addrs)
             return addrs
 
         # 只有镜像槽持有该值：权威副本此刻不同步（通常是上一次降级写入
-        # 只写了镜像）。改写上一次已验证的副本集，并且【不缓存】这个降级
-        # 结果——一旦缓存，校验读到的总是自己刚写过的值（恒通过），会把
-        # 降级状态永久锁死。
-        remembered = self._remembered_copies(cache_attr, base_addr)
-        _log("_locate_hsv_copies: only the mirror holds the pattern — "
-             f"{'remembered copy set' if remembered else 'mirror-only'} "
-             "write, NOT cached")
-        return remembered or addrs
+        # 只写了镜像）。同样退回已验证副本集 / 主色推导，绝不缓存降级结果
+        # ——一旦缓存，校验读到的总是自己刚写过的值（恒通过），会把降级
+        # 状态永久锁死。
+        return self._degraded_copy_fallback(
+            old, cache_attr, base_off, base_addr,
+            "only the mirror holds the pattern")
 
     def _write_sub_color(self, r: int, g: int, b: int) -> bool:
         """Write the 5.1 sub-color slot (HSV u32) to EVERY in-memory copy.
