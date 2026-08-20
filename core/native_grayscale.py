@@ -115,7 +115,52 @@ def _ensure_runtime_loaded():
             f"重新编译后重试。"
         ) from exc
     _install_prewarm(module)
+    _disarm_fault_watchdog(module)
     return module
+
+
+# Set to "1" to arm the runtime's freeze watchdog anyway (see below).
+_WATCHDOG_ENV = "COLORINK_GRAYSCALE_WATCHDOG"
+
+
+def _disarm_fault_watchdog(runtime) -> bool:
+    """Keep the runtime's freeze watchdog from starting.
+
+    The runtime arms it from ``GrayscaleOverlay.__init__`` — so at app startup,
+    whether or not the filter is ever switched on — but its heartbeat
+    (``_touch_fault_heartbeat``) is only touched from
+    ``_ShaderOverlay._on_frame_swapped``, which runs *only* while an overlay is
+    rendering. With the filter off the heartbeat therefore stays at its initial
+    ``0.0``, ``idle = monotonic() - 0.0`` grows without bound, and the watchdog
+    decides the render loop is frozen on its very first check and then every
+    3 seconds for the rest of the session.
+
+    Each "detection" appends every thread's traceback to
+    ``%TEMP%\\colorink_fault.log``. Measured on this machine: 63,070 dumps and a
+    147 MB log, and every one a false positive — the dumps show the main thread
+    sitting normally in ``main()`` with the reported idle time climbing 3 s per
+    entry (1321.3s, 1324.3s, 1327.3s ...) and one entry at 92,800 s.
+
+    Beyond the disk churn, ``faulthandler.dump_traceback()`` walks every
+    thread's stack, so this also cost a hitch every 3 seconds in an app used
+    for drawing.
+
+    Fixing the heartbeat semantics properly needs the runtime source, which is
+    not in the tree, so the watchdog is simply not armed. Set
+    ``COLORINK_GRAYSCALE_WATCHDOG=1`` to arm it anyway when chasing a genuine
+    render-loop freeze.
+
+    Returns True when the watchdog was disarmed.
+    """
+    if os.environ.get(_WATCHDOG_ENV) == "1":
+        return False
+    if not hasattr(runtime, "_fault_watchdog_started"):
+        return False
+    # The runtime's own re-entry guard: _install_fault_watchdog() returns
+    # immediately when this is already true, so no thread is ever started and
+    # faulthandler is never pointed at the log.
+    runtime._fault_watchdog_started = True
+    return True
 
 
 def _install_prewarm(runtime):
