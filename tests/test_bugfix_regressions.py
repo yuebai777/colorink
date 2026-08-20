@@ -586,3 +586,102 @@ class TestStartAfterFailedPreheat:
 
         assert not c.is_active
         assert "dxcam" in c.last_error
+
+
+# ── Native grayscale: screen watchers are released on close() ─────────────
+
+
+class TestScreenWatchersAreReleased:
+    """close() must leave the controller inert.
+
+    __init__ connects QApplication/QScreen signals to bound methods. PyQt holds
+    those weakly, so a discarded controller is NOT leaked — that is asserted
+    below so the rationale here stays honest. What it did do is leave the
+    connections armed until collection, and _on_screen_layout_changed
+    re-registers geometryChanged on every screen each time it runs, so an
+    explicitly closed controller kept re-arming its own watchers on every
+    display change.
+    """
+
+    def _controller(self, monkeypatch):
+        from PyQt6.QtCore import QTimer
+
+        import core.native_grayscale as ng
+
+        from .test_native_grayscale import _FakeRuntime, _TimerQueue
+
+        queue = _TimerQueue()
+        monkeypatch.setattr(QTimer, "singleShot", queue.singleShot)
+        monkeypatch.setattr(ng, "_ensure_runtime_loaded", lambda: _FakeRuntime())
+        return ng.NativeGrayscaleController()
+
+    def test_watchers_are_installed_on_construction(self, qapp, monkeypatch):
+        c = self._controller(monkeypatch)
+        assert c._screen_watchers_installed is True
+        assert c._watched_screens, "no QScreen was watched"
+
+    def test_close_disconnects_application_signals(self, qapp, monkeypatch):
+        from PyQt6.QtWidgets import QApplication
+
+        c = self._controller(monkeypatch)
+        c.close()
+
+        assert c._screen_watchers_installed is False
+        assert not c._watched_screens
+        app = QApplication.instance()
+        for signal in (app.screenAdded, app.screenRemoved, app.primaryScreenChanged):
+            with pytest.raises(TypeError):
+                # Already disconnected → PyQt refuses a second disconnect.
+                signal.disconnect(c._on_screen_layout_changed)
+
+    def test_close_disconnects_screen_geometry_signals(self, qapp, monkeypatch):
+        from PyQt6.QtWidgets import QApplication
+
+        c = self._controller(monkeypatch)
+        screens = list(c._watched_screens)
+        c.close()
+
+        assert screens, "test needs at least one screen"
+        for screen in screens:
+            with pytest.raises(TypeError):
+                screen.geometryChanged.disconnect(c._on_screen_layout_changed)
+
+    def test_close_is_idempotent(self, qapp, monkeypatch):
+        c = self._controller(monkeypatch)
+        c.close()
+        c.close()  # must not raise
+        assert c._screen_watchers_installed is False
+
+    def test_pyqt_holds_the_slots_weakly_so_there_was_no_leak(self, qapp, monkeypatch):
+        """Documents why this is a teardown fix, not a leak fix.
+
+        A discarded controller is collectable even WITHOUT the disconnect,
+        because PyQt bound-method slots are weak references. Keeping this
+        assertion stops the commit message and docstring from drifting into
+        claiming a memory leak that never existed.
+        """
+        import gc
+        import weakref
+
+        c = self._controller(monkeypatch)
+        assert c._screen_watchers_installed is True
+        ref = weakref.ref(c)
+        del c            # no close() — the connections are still in place
+        gc.collect()
+        assert ref() is None, (
+            "a still-connected controller stayed reachable: PyQt would be "
+            "holding bound-method slots strongly, making this a real leak"
+        )
+
+    def test_closed_controller_stops_re_arming_its_watchers(self, qapp, monkeypatch):
+        """The actual defect: the handler re-registers screen watchers."""
+        c = self._controller(monkeypatch)
+        c.close()
+
+        # Simulate a display-layout change reaching the stale handler.
+        c._on_screen_layout_changed()
+
+        assert not c._watched_screens, (
+            "a closed controller re-registered geometryChanged watchers"
+        )
+        assert c._screen_watchers_installed is False

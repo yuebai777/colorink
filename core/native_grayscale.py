@@ -397,8 +397,45 @@ class NativeGrayscaleController:
         app.primaryScreenChanged.connect(self._on_screen_layout_changed)
         self._watch_current_screens()
 
+    def _remove_screen_watchers(self) -> None:
+        """Undo :meth:`_install_screen_watchers` so a closed controller is inert.
+
+        PyQt holds bound-method slots weakly, so these connections do NOT keep
+        a discarded controller alive — but they stay armed for as long as it has
+        not been collected, and ``_on_screen_layout_changed`` re-registers
+        ``geometryChanged`` on every screen whenever it runs. A controller that
+        was explicitly closed (the startup Mag fallback, or either direction of
+        a backend switch in the settings) would therefore keep re-arming its own
+        watchers on each display change until the GC got to it. close() should
+        mean closed.
+        """
+        from PyQt6.QtWidgets import QApplication
+        if not getattr(self, "_screen_watchers_installed", False):
+            return
+        self._screen_watchers_installed = False
+        app = QApplication.instance()
+        if app is not None:
+            for signal in (app.screenAdded, app.screenRemoved,
+                           app.primaryScreenChanged):
+                try:
+                    signal.disconnect(self._on_screen_layout_changed)
+                except Exception:
+                    # Never let teardown fail on an already-dropped connection.
+                    pass
+        for screen in list(getattr(self, "_watched_screens", ())):
+            try:
+                screen.geometryChanged.disconnect(self._on_screen_layout_changed)
+            except Exception:
+                pass
+        self._watched_screens = set()
+
     def _watch_current_screens(self) -> None:
         from PyQt6.QtWidgets import QApplication
+        # A closed controller must stay closed: _on_screen_layout_changed calls
+        # this on every display change, which would otherwise re-arm the very
+        # connections _remove_screen_watchers() just dropped.
+        if not getattr(self, "_screen_watchers_installed", False):
+            return
         app = QApplication.instance()
         if app is None:
             return
@@ -753,6 +790,7 @@ class NativeGrayscaleController:
         self._warming = False
         self._warm_releasing = False
         self._stopping_overlays.clear()
+        self._remove_screen_watchers()
         if self._impl is not None:
             if self._impl.is_active:
                 self._impl.set_active(False)
