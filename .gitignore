@@ -43,6 +43,19 @@ mag_filter_mode.txt
 _test_log.txt
 err.txt
 out.txt
+test-reports/
+
+# Local-only QA wizard (kept on disk, intentionally out of the repo -- see 5b45cef)
+tools/qa/
+tools/test_wizard.py
+测试.bat
+
+# Throwaway debug scratch (machine-specific paths, one-off memory probes)
+_debug_run.bat
+_rs_before.bat
+_rs_after.bat
+_slotback.py
+_state_*.json
 
 # PyInstaller
 *.manifest
