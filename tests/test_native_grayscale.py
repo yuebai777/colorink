@@ -401,3 +401,23 @@ def test_async_camera_init_kicks_gui_capture_loop(monkeypatch):
     assert kicked.wait(2.0)
     assert widget._camera is camera
     assert not widget._camera_error
+
+
+def test_dispatch_invoke_calls_bound_method_without_extra_arg():
+    """The GUI dispatcher must not pass the widget twice to a bound method.
+
+    Regression: ``_dispatch_invoke`` used to call ``getattr(widget, name)(widget)``,
+    which raised TypeError for the injected ``_colorink_kick_capture`` bound
+    method. The exception was swallowed, so the camera-start kick never woke
+    the frame loop and the grayscale overlay never received its first frame.
+    """
+    class DummyOverlay:
+        def __init__(self):
+            self.called = False
+
+        def _colorink_kick_capture(self):
+            self.called = True
+
+    widget = DummyOverlay()
+    ng._dispatch_invoke(widget, "_colorink_kick_capture")
+    assert widget.called
