@@ -201,6 +201,35 @@ class ColorPreviewBox(QWidget):
         painter.setPen(QPen(self.active_border_color, 2.5) if active else QPen(self.inactive_border_color, 1.0))
         painter.drawRoundedRect(rect, radius, radius)
 
+    def legacy_circle_geometry(self):
+        """Centres and radii of the legacy fg/bg circles.
+
+        Single source of truth for the non-ringless preview: painting, click
+        hit-testing and the mouse-input mask all derive from this, so they can
+        never disagree about where the circles are. The constants mirror
+        ``resize_and_position`` (box 60, fg 40, bg 30 at 100% wheel scale).
+
+        Returns ``(fg_cx, fg_cy, fg_r, bg_cx, bg_cy, bg_r)``.
+        """
+        scale = self.width() / 60.0
+        fg_r = (40.0 * scale) / 2.0
+        bg_r = (30.0 * scale) / 2.0
+        box_size = float(self.width())
+        border = 2.0 * scale
+        if self.position_mode == "top-left":
+            # Foreground (large) at bottom-left, background (small) top-right
+            fg_cx = fg_r + border
+            fg_cy = box_size - fg_r - border
+            bg_cx = box_size - bg_r - border
+            bg_cy = bg_r + border
+        else:
+            # Foreground (large) at top-left, background (small) bottom-right
+            fg_cx = fg_r + border
+            fg_cy = fg_r + border
+            bg_cx = box_size - bg_r - border
+            bg_cy = box_size - bg_r - border
+        return fg_cx, fg_cy, fg_r, bg_cx, bg_cy, bg_r
+
     def paintEvent(self, event):
         painter = QPainter(self)
         try:
@@ -210,30 +239,7 @@ class ColorPreviewBox(QWidget):
                 self._draw_ringless_paint(painter)
                 return
 
-            scale = self.width() / 60.0
-            
-            # Sizes
-            fg_r = (40.0 * scale) / 2.0
-            bg_r = (30.0 * scale) / 2.0
-            
-            box_size = float(self.width())
-            border = 2.0 * scale
-            
-            # Calculate positions
-            if self.position_mode == "top-left":
-                # Foreground (large) at bottom-left
-                fg_cx = fg_r + border
-                fg_cy = box_size - fg_r - border
-                # Background (small) at top-right
-                bg_cx = box_size - bg_r - border
-                bg_cy = bg_r + border
-            else:
-                # Foreground (large) at top-left
-                fg_cx = fg_r + border
-                fg_cy = fg_r + border
-                # Background (small) at bottom-right
-                bg_cx = box_size - bg_r - border
-                bg_cy = box_size - bg_r - border
+            fg_cx, fg_cy, fg_r, bg_cx, bg_cy, bg_r = self.legacy_circle_geometry()
 
             # Draw circles in correct z-order (active on top). A transparent
             # active slot shows no blue border — only the tile is highlighted.
@@ -268,23 +274,12 @@ class ColorPreviewBox(QWidget):
                     return "fg"
             return None
 
-        # Legacy circle hit-testing
-        scale = self.width() / 53.0
-        fg_r = (40.0 * scale) / 2.0
-        bg_r = (26.0 * scale) / 2.0
-        box_size = float(self.width())
-        border = 2.0 * scale
-
-        if self.position_mode == "top-left":
-            fg_cx = fg_r + border
-            fg_cy = box_size - fg_r - border
-            bg_cx = box_size - bg_r - border
-            bg_cy = bg_r + border
-        else:
-            fg_cx = fg_r + border
-            fg_cy = fg_r + border
-            bg_cx = box_size - bg_r - border
-            bg_cy = box_size - bg_r - border
+        # Legacy circle hit-testing. Shares legacy_circle_geometry() with the
+        # paint path — this used to carry its own stale constants (box 53,
+        # bg 26), which put the fg hit circle ~13% oversized and shifted a few
+        # pixels up/right of the drawn swatch: clicks in the empty margin
+        # selected fg, and the outer rim of the bg circle was dead to clicks.
+        fg_cx, fg_cy, fg_r, bg_cx, bg_cy, bg_r = self.legacy_circle_geometry()
 
         d_fg = (px - fg_cx)**2 + (py - fg_cy)**2
         d_bg = (px - bg_cx)**2 + (py - bg_cy)**2

@@ -437,11 +437,13 @@ class PickerActionsMixin:
 
         self.color_wheel.reload_config()
 
-        # Update lab visualizer mode
+        # Update lab visualizer mode. The plane's own axis limit is owned by
+        # LabSquare.set_render_mode (110.0 / 0.3); this used to also write a
+        # "labVisualizerMaxVal" config key that nothing ever read and whose
+        # oklab value (0.4) disagreed with the real limit.
         viz_mode = self.cfg.get("visualizerMode", "lab")
         if hasattr(self, 'lab_square'):
             self.lab_square.set_render_mode(viz_mode)
-            self.cfg["labVisualizerMaxVal"] = 110 if viz_mode == "lab" else 0.4
 
         # Update module button visibility
         if hasattr(self, 'btn_module'):

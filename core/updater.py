@@ -265,11 +265,15 @@ def download_release(
         return {"error": "下载失败：{detail}", "error_detail": str(e)}
 
     # A partial download must never reach the self-replace/install step.
-    if total_size and downloaded != total_size:
+    # Check against the RESOLVED total: when the release asset carries no
+    # "size" (older GitHub assets), *total* still holds the Content-Length, and
+    # testing total_size alone silently skipped the check for exactly the
+    # responses most likely to truncate.
+    if total and downloaded != total:
         _remove_file(part_path)
         return {
             "error": "下载不完整：{detail}",
-            "error_detail": f"收到 {downloaded} 字节，应为 {total_size} 字节",
+            "error_detail": f"收到 {downloaded} 字节，应为 {total} 字节",
         }
 
     if sha256 is not None and _sha256_file(part_path) != sha256.lower():

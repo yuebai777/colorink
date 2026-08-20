@@ -10,7 +10,7 @@ HOTKEY_CFG_NAME = "hotkey-config.json"
 # when the shape of the config changes and register a migration below; old
 # configs are migrated forward on load instead of relying on ad-hoc key pops.
 CONFIG_SCHEMA_KEY = "schemaVersion"
-CONFIG_SCHEMA_VERSION = 2
+CONFIG_SCHEMA_VERSION = 3
 
 # Envelope marker for the settings backup/restore JSON export.
 SETTINGS_EXPORT_FORMAT = "colorink-settings"
@@ -129,7 +129,6 @@ def default_hotkey_config():
         "orderSlidersOKLab": 5,
         "orderSlidersOKLCh": 6,
         "visualizerMode": "lab",
-        "labVisualizerMaxVal": 110,
         "colorWheelMode": "hsv",
         "colorSpaceModule": "hsv",          # "hsv" | "hls" | "rgb" | "lch"
         "showModuleSwitchButton": True,     # floating button next to ⊙/△
@@ -204,10 +203,24 @@ def _migrate_1_to_2(cfg: dict) -> dict:
     return cfg
 
 
+def _migrate_2_to_3(cfg: dict) -> dict:
+    """Drop ``labVisualizerMaxVal``, which was write-only.
+
+    The settings-reload path stamped this key on every load but nothing ever
+    read it back: the LAB/OKLab plane's axis limit is owned by
+    ``LabSquare.set_render_mode`` (110.0 / 0.3), and the stored oklab value
+    (0.4) did not even match. Removing it keeps saved configs honest about
+    which keys actually drive behaviour.
+    """
+    cfg.pop("labVisualizerMaxVal", None)
+    return cfg
+
+
 # Registered migrations, keyed by the target schema version they produce.
 _CONFIG_MIGRATIONS: dict[int, Callable[[dict], dict]] = {
     1: _migrate_0_to_1,
     2: _migrate_1_to_2,
+    3: _migrate_2_to_3,
 }
 
 

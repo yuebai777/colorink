@@ -626,6 +626,16 @@ class CSPCompanionSync:
             _log(f"recv error: {exc}")
             self._connected = False
             return []
+        # A graceful close by the peer (user closed CSP's "connect smartphone"
+        # dialog, CSP exited) arrives as an empty recv, NOT as an exception.
+        # Falling through as "no data" left _connected True, so status() kept
+        # reporting a healthy link and every read silently returned None until
+        # a later heartbeat sendall finally raised — and the dead socket was
+        # never closed. Treat EOF as the disconnect it is.
+        if chunk == b"":
+            _log("recv: peer closed the connection (EOF)")
+            self._disconnect()
+            return []
         # Always drain any additional fragments, then parse whatever we have.
         chunk = chunk or b""
         try:
@@ -856,15 +866,19 @@ class CSPCompanionSync:
           H is identical in both models.
         """
         if idx == 0:
-            h_u32 = d.get("HLSColorMainH", 0)
-            l_u32 = d.get("HLSColorMainL", 0)
-            s_u32 = d.get("HLSColorMainS", 0)
+            keys = ("HLSColorMainH", "HLSColorMainL", "HLSColorMainS")
         else:
-            h_u32 = d.get("HLSColorSubH", 0)
-            l_u32 = d.get("HLSColorSubL", 0)
-            s_u32 = d.get("HLSColorSubS", 0)
-        if h_u32 == 0 and l_u32 == 0 and s_u32 == 0:
+            keys = ("HLSColorSubH", "HLSColorSubL", "HLSColorSubS")
+        # Skip responses that carry no HLS fields at all (CSP reported the HLS
+        # model but sent an unrelated payload). Testing the VALUES for all-zero
+        # instead would discard pure black, which in HLS is exactly
+        # H=0, L=0, S=0 — black then never reached the UI while CSP's colour
+        # wheel was in HLS mode. The HSV parser makes the same distinction.
+        if not any(k in d for k in keys):
             return None
+        h_u32 = d.get(keys[0], 0)
+        l_u32 = d.get(keys[1], 0)
+        s_u32 = d.get(keys[2], 0)
         # CSP uint32 → 0..1
         h_norm = h_u32 / _MAX_U32
         l_norm = l_u32 / _MAX_U32
@@ -952,10 +966,17 @@ class CSPCompanionSync:
         # But always send when explicit HSV is provided — the RGB may
         # be identical (e.g., black) while the HSV values changed.
         # Transparent requests must always go through: the flag changed
-        # even when the RGB payload did not.
+        # even when the RGB payload did not. That cuts BOTH ways — the
+        # cache therefore also remembers the transparent flag, because
+        # toggling transparency never changes the slot's RGB. Without it a
+        # transparent→opaque clear (transparent tile toggled off, or an
+        # fg/bg swatch click restoring an opaque slot) matched the cached
+        # RGB and returned early, so CSP kept IsColorTransparent=ON and the
+        # next poll snapped the UI tile straight back to transparent.
         if not transparent and hsv_u32 is None:
             cr = self._current_color.get(color_index)
-            if cr is not None and cr["r"] == r and cr["g"] == g and cr["b"] == b:
+            if (cr is not None and cr["r"] == r and cr["g"] == g and cr["b"] == b
+                    and not cr.get("transparent")):
                 return True
 
         try:
@@ -992,7 +1013,9 @@ class CSPCompanionSync:
                 "ColorIndex": int(color_index),
             }))
             _ = self._recv_messages(timeout=0.2)
-            self._current_color[color_index] = {"r": r, "g": g, "b": b}
+            self._current_color[color_index] = {
+                "r": r, "g": g, "b": b, "transparent": int(bool(transparent)),
+            }
             _log(f"set_color: RGB=[{r}, {g}, {b}] transparent={transparent} index={color_index} -> H={h_u32} S={s_u32} V={v_u32}")
             return True
         except Exception as exc:
