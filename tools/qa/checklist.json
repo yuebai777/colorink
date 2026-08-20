@@ -1,0 +1,229 @@
+{
+  "baseline": {
+    "pytest_min_passed": 706,
+    "window_title": "Colorink"
+  },
+  "areas": {
+    "color": {
+      "label": "色彩转换 / 统一模型",
+      "pytest": ["tests/test_color_conversions.py", "tests/test_color_model.py", "tests/test_color_projection.py"]
+    },
+    "wheel": {
+      "label": "色环 / 切片 / LAB",
+      "pytest": ["tests/test_ringless_geometry.py", "tests/test_ringless_interaction.py", "tests/test_slice_prewarm.py", "tests/test_picker_components.py"]
+    },
+    "ringless": {
+      "label": "Ringless 模式",
+      "pytest": ["tests/test_ringless_panes.py", "tests/test_ringless_settings.py", "tests/test_ringless_preview_geometry.py", "tests/test_ringless_preview_rendering.py", "tests/test_ringless_preview_interaction.py", "tests/test_ringless_visible_geometry.py", "tests/test_ringless_invalidation.py"]
+    },
+    "window": {
+      "label": "主窗口",
+      "pytest": ["tests/test_window_height.py", "tests/test_title_bar_toggle.py", "tests/test_ringless_integration.py", "tests/test_ringless_lifecycle.py", "tests/test_sync_mixin.py"]
+    },
+    "picker": {
+      "label": "取色器 / 前台检测",
+      "pytest": ["tests/test_picker_zoom.py", "tests/test_picker_components.py", "tests/test_foreground_detection.py"]
+    },
+    "grayscale": {
+      "label": "灰度滤镜（Native+Mag）",
+      "pytest": ["tests/test_native_grayscale.py", "tests/test_native_grayscale_contract.py", "tests/test_mag_grayscale.py"]
+    },
+    "csp": {
+      "label": "CSP 内存同步",
+      "pytest": ["tests/test_csp_brush_link_5_1.py", "tests/test_memory_sync_transparent_readback.py", "tests/test_memory_sync_ps_echo.py"]
+    },
+    "companion": {
+      "label": "CSP Companion",
+      "pytest": ["tests/test_companion_protocol.py", "tests/test_memory_sync_companion_active_echo.py"]
+    },
+    "photoshop": {
+      "label": "Photoshop 桥接",
+      "pytest": ["tests/test_photoshop_color_sync.py", "tests/test_photoshop_instances.py", "tests/test_photoshop_script_bridge.py"]
+    },
+    "config": {
+      "label": "配置 / 发布契约",
+      "pytest": ["tests/test_config_schema.py", "tests/test_release_contract.py"]
+    },
+    "settings": {
+      "label": "设置窗口",
+      "pytest": ["tests/test_settings_window.py", "tests/test_settings_window_crash_regression.py"]
+    },
+    "i18n": {
+      "label": "界面语言",
+      "pytest": ["tests/test_i18n.py"]
+    },
+    "updater": {
+      "label": "更新器",
+      "pytest": ["tests/test_updater.py", "tests/test_updater_self_replace.py"]
+    },
+    "diag": {
+      "label": "崩溃报告 / 诊断",
+      "pytest": ["tests/test_crash_report.py", "tests/test_diagnostics.py"]
+    },
+    "packaging": {
+      "label": "打包契约",
+      "pytest": ["tests/test_packaging_contract.py", "tests/test_release_contract.py"]
+    }
+  },
+  "auto_checks": [
+    {"id": "version_consistency", "text": "APP_VERSION / file_version_info / release_notes / README 四处一致"},
+    {"id": "pytest_all", "text": "pytest 全量 ≥ 617 passed（或 --area 定向）"},
+    {"id": "src_smoke", "text": "python main.py 冷启动冒烟（不崩、出窗口、无 traceback）"},
+    {"id": "exe_smoke", "text": "dist/Onefile/Colorink.exe 冒烟 + 文件版本资源一致"},
+    {"id": "single_instance", "text": "EXE 单实例锁（连开两次只有一个进程）"},
+    {"id": "stderr_delta", "text": "stderr.log 无新增内容"}
+  ],
+  "phases": [
+    {
+      "id": "P1",
+      "title": "启动与主窗口",
+      "release_only": false,
+      "items": [
+        {"id": "1.1", "kind": "guided", "text": "F11 全屏放大镜出现、跟着鼠标；取一次色落到前景槽",
+         "action": {"steps": [{"keys": ["F11"], "wait": 1.2}], "judge": "picker_fullscreen", "screenshot": true, "restore": [{"keys": ["Esc"], "wait": 0.8}], "always_confirm": true, "prompt": "放大镜出现了吗？取色正常吗？"}},
+        {"id": "1.2", "kind": "manual", "text": "切色空间模块 HSV → HLS → LCH 各一次"},
+        {"id": "1.3", "kind": "manual", "text": "拖任一滑块，数值实时变"},
+        {"id": "1.4", "kind": "manual", "text": "前景 / 背景交换"},
+        {"id": "1.5", "kind": "manual", "text": "改一项设置 → 完全退出 → 重开，设置还在"},
+        {"id": "1.6", "kind": "guided", "text": "Ctrl+Shift+T 标题栏显隐",
+         "action": {"steps": [{"keys": ["Ctrl", "Shift", "T"], "wait": 0.8}], "judge": "titlebar_toggle", "restore": [{"keys": ["Ctrl", "Shift", "T"], "wait": 0.5}]}},
+        {"id": "1.7", "kind": "guided", "text": "Ctrl+H 窗口显隐",
+         "action": {"steps": [{"keys": ["Ctrl", "H"], "wait": 0.8}], "judge": "window_visible", "expect_visible": false, "restore": [{"keys": ["Ctrl", "H"], "wait": 0.5}]}},
+        {"id": "1.8", "kind": "manual", "text": "窗口贴边隐藏后能拉回来"},
+        {"id": "1.9", "kind": "manual", "text": "拖到第二块屏布局不错位（单屏跳过）"},
+        {"id": "1.10", "kind": "manual", "text": "UI 缩放 125% / 150% 不错位"},
+        {"id": "1.11", "kind": "manual", "text": "设置 6 页逐页点开不崩"},
+        {"id": "1.12", "kind": "manual", "text": "语言切 English 扫一遍无中文残留 → 切回中文"},
+        {"id": "1.13", "kind": "manual", "text": "复制诊断信息内容完整"}
+      ]
+    },
+    {
+      "id": "P2",
+      "title": "取色器",
+      "release_only": false,
+      "items": [
+        {"id": "2.1", "kind": "manual", "text": "放大镜预览里不出现 Colorink 自己的窗口（看 1.1 截图）"},
+        {"id": "2.2", "kind": "manual", "text": "主屏 + 副屏各取一次，颜色准确（单屏跳过副屏）"},
+        {"id": "2.3", "kind": "manual", "text": "画画软件在前台时取色仍生效（无焦点取色）"},
+        {"id": "2.4", "kind": "manual", "text": "色轮拖拽跟手、不跳变"},
+        {"id": "2.5", "kind": "manual", "text": "鼠标悬停色环按 Space 切 LAB 视图"},
+        {"id": "2.6", "kind": "guided", "text": "Ctrl+L 全局切 LAB 视图",
+         "action": {"steps": [{"keys": ["Ctrl", "L"], "wait": 0.8}], "judge": "image_diff", "restore": [{"keys": ["Ctrl", "L"], "wait": 0.5}], "always_confirm": true, "prompt": "LAB 视图切换了吗？"}},
+        {"id": "2.7", "kind": "manual", "text": "Ringless：开「隐藏色环放大切片」→ 控制条左右侧 → 切 pane 按钮不跳 → 关回"}
+      ]
+    },
+    {
+      "id": "P3",
+      "title": "色彩模块",
+      "release_only": false,
+      "items": [
+        {"id": "3.1", "kind": "manual", "text": "六组滑块（RGB/HSV/HSL/LAB/OKLab/OKLCh）来回切，颜色不漂移"},
+        {"id": "3.2", "kind": "manual", "text": "OKLCh 色度拖到 0.321，超 sRGB 段轨道有标记"},
+        {"id": "3.3", "kind": "manual", "text": "取纯灰 / 白 → 改色相 → 色相被记住不丢"}
+      ]
+    },
+    {
+      "id": "P4",
+      "title": "灰度滤镜",
+      "release_only": false,
+      "items": [
+        {"id": "4.1", "kind": "guided", "text": "Ctrl+G 连开关 5 次不崩、屏幕灰度有响应",
+         "action": {"judge": "grayscale_cycle", "toggle": 5, "wait": 0.6, "screenshot": true}},
+        {"id": "4.2", "kind": "manual", "text": "Native：OKLCh 感知灰度、Luma 两种模式都对"},
+        {"id": "4.3", "kind": "manual", "text": "Native：限定只对一台显示器生效"},
+        {"id": "4.4", "kind": "manual", "text": "改分辨率 / DPI 后覆盖层还准"},
+        {"id": "4.5", "kind": "manual", "text": "后端不可用时有明确提示（不静默切换）"},
+        {"id": "4.6", "kind": "manual", "text": "Mag：全屏生效；退出完全恢复；与系统颜色滤镜同开不冲突"}
+      ]
+    },
+    {
+      "id": "P5",
+      "title": "全局热键（无自动化，必做）",
+      "release_only": false,
+      "items": [
+        {"id": "5.1", "kind": "manual", "text": "重绑一个键盘键（如取色改 F12）生效，再改回"},
+        {"id": "5.2", "kind": "manual", "text": "鼠标侧键 / 中键 / 数位板笔键各绑一次能触发"},
+        {"id": "5.3", "kind": "manual", "text": "绑了鼠标键后去 CSP 画一笔——点击不能被吞", "critical": true},
+        {"id": "5.4", "kind": "manual", "text": "绑不支持的键，原绑定不清空"},
+        {"id": "5.5", "kind": "manual", "text": "重复绑定同一键被拒绝"}
+      ]
+    },
+    {
+      "id": "P6",
+      "title": "软件同步",
+      "release_only": false,
+      "items": [
+        {"id": "6.1", "kind": "manual", "text": "CSP 改色 → Colorink 变；Colorink 改 → CSP 变", "critical": true},
+        {"id": "6.2", "kind": "manual", "text": "CSP 主色槽 / 副色槽分别测"},
+        {"id": "6.3", "kind": "manual", "text": "透明色透传"},
+        {"id": "6.4", "kind": "manual", "text": "关掉 CSP 再开，自动重连"},
+        {"id": "6.5", "kind": "manual", "text": "Companion：二维码自动扫描连上"},
+        {"id": "6.6", "kind": "manual", "text": "Companion：扫描失败手动 URL 也能连"},
+        {"id": "6.7", "kind": "manual", "text": "Companion：断开后能重连"},
+        {"id": "6.8", "kind": "manual", "text": "PS 注册版（COM 路径）同步"},
+        {"id": "6.9", "kind": "manual", "text": "PS 便携版（CEP 脚本桥）同步"},
+        {"id": "6.10", "kind": "manual", "text": "两个 PS 同时开，能选对实例"},
+        {"id": "6.11", "kind": "manual", "text": "PS 前景 / 背景双槽独立读写"},
+        {"id": "6.12", "kind": "manual", "text": "SAI2 改笔刷色 → Colorink 跟上；重启重连"},
+        {"id": "6.13", "kind": "manual", "text": "UDM 同 6.12"}
+      ]
+    },
+    {
+      "id": "P7",
+      "title": "配置与首启",
+      "release_only": false,
+      "items": [
+        {"id": "7.1", "kind": "manual", "text": "改设置后任务管理器强杀 → 重开，配置没损坏"},
+        {"id": "7.2", "kind": "manual", "text": "%APPDATA%\\Colorink 改名模拟新用户，默认值对（F11 / Ctrl+H / HSV / 8×2 历史）→ 改回"}
+      ]
+    },
+    {
+      "id": "P8",
+      "title": "托盘 / 开机启动",
+      "release_only": false,
+      "items": [
+        {"id": "8.1", "kind": "manual", "text": "托盘单击 / 双击 / 右键菜单各一次（右键菜单重点）"},
+        {"id": "8.2", "kind": "manual", "text": "开机启动：开 → 重启电脑自启 → 关 → 不再自启", "release_only": true}
+      ]
+    },
+    {
+      "id": "P9",
+      "title": "打包版 EXE 冒烟",
+      "release_only": true,
+      "items": [
+        {"id": "9.1", "kind": "manual", "text": "EXE 启动无报错、无缺 DLL 弹窗"},
+        {"id": "9.2", "kind": "manual", "text": "窗口图标 + 托盘图标都显示"},
+        {"id": "9.3", "kind": "manual", "text": "EXE 上 F11 取色正常"},
+        {"id": "9.4", "kind": "manual", "text": "EXE 上 Ctrl+G 灰度正常（Native 后端）"},
+        {"id": "9.5", "kind": "manual", "text": "EXE 上 CSP 同步能连（dll / pyc 资源都在）"},
+        {"id": "9.6", "kind": "manual", "text": "EXE 上 Companion 二维码能扫（pyzbar / Pillow / mss 都在）"},
+        {"id": "9.7", "kind": "manual", "text": "EXE 上检查更新能连上"},
+        {"id": "9.8", "kind": "manual", "text": "再双击一次不开第二个窗口（单实例锁）"},
+        {"id": "9.9", "kind": "manual", "text": "EXE English 界面扫一眼"},
+        {"id": "9.10", "kind": "manual", "text": "Onedir 版 Colorink.exe 同样快过一遍"},
+        {"id": "9.11", "kind": "manual", "text": "恢复 %APPDATA%\\Colorink"}
+      ]
+    },
+    {
+      "id": "P10",
+      "title": "更新链路（真机）",
+      "release_only": true,
+      "items": [
+        {"id": "10.1", "kind": "manual", "text": "装上一版 → 检查更新看到新版和说明"},
+        {"id": "10.2", "kind": "manual", "text": "下载 → 校验 → 自替换 → 自重启 → 版本变新"},
+        {"id": "10.3", "kind": "manual", "text": "「跳过此版本」之后不再提示"},
+        {"id": "10.4", "kind": "manual", "text": "onedir 形态更新挑 Colorink-Onedir.zip，不是源码 zip"}
+      ]
+    },
+    {
+      "id": "P11",
+      "title": "发布",
+      "release_only": true,
+      "items": [
+        {"id": "11.1", "kind": "manual", "text": "资产名对：Colorink.exe + Colorink-Onedir.zip"},
+        {"id": "11.2", "kind": "manual", "text": "Release 说明与本版 release_notes 一致"},
+        {"id": "11.3", "kind": "manual", "text": "README 功能列表与实际一致"}
+      ]
+    }
+  ]
+}
