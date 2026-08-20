@@ -43,16 +43,10 @@ class MemorySyncSignals(QObject):
     error_changed = pyqtSignal(str, str, bool)
 
 class MemorySyncThread(QThread):
-    # A CSP copy-locate scan costs ~1s; when it cannot identify anything (both
-    # slots holding a trivial colour) retry at most this often.
-    _CSP_PRIME_INTERVAL = 30.0
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.signals = MemorySyncSignals()
         self.running = True
-        # Last attempt at warming CSP's copy-address caches (see run()).
-        self._csp_prime_ts = 0.0
         
         # State variables
         self.software_mode = "csp"  # "csp" | "sai" | "udm" | "ps" | "companion"
@@ -146,28 +140,6 @@ class MemorySyncThread(QThread):
             "old_color": old_color,
         }
         self.last_write_time = time.time()
-
-    def _prime_csp_copy_caches(self) -> None:
-        """Warm CSP's copy-address caches off the interactive path.
-
-        Throttled, and a no-op once the cache is warm. Uses ``getattr`` so a
-        backend double without the copy-cache API simply skips priming instead
-        of raising into the poll loop's error handler.
-        """
-        has_cache = getattr(self.csp_sync, "sub_copies_are_known", None)
-        prime = getattr(self.csp_sync, "prime_copy_caches", None)
-        if not callable(has_cache) or not callable(prime):
-            return
-        try:
-            if has_cache():
-                return
-        except Exception:
-            return
-        now = time.time()
-        if now - self._csp_prime_ts <= self._CSP_PRIME_INTERVAL:
-            return
-        self._csp_prime_ts = now
-        prime()
 
     def get_active_pid(self):
         if not self.sync_enabled or self.paused:
@@ -330,17 +302,16 @@ class MemorySyncThread(QThread):
                         self.signals.active_slot_changed.emit(active)
                     status = self.csp_sync.status()
                     connected = status.get('connected', False)
-                    # Warm the copy-address caches while nothing is waiting on
-                    # them. A cold locate scan costs ~1s and sits on the WRITE
-                    # path, so without this the first colour write after
-                    # connecting lands up to a second late: the user switches
-                    # slot, starts drawing at once, and the first brush stroke
-                    # still paints the previous colour. Re-primes whenever CSP
-                    # invalidates the cache (new document, struct realloc),
-                    # throttled so a state that cannot be primed does not scan
-                    # in a loop.
-                    if connected and not self._pending_writes:
-                        self._prime_csp_copy_caches()
+                    # NOTE: this used to proactively warm CSP's copy-address
+                    # caches here. A locate scan reads every committed page of
+                    # the CSP process (2.4 GB working set observed, ~1.1s per
+                    # scan, two scans per prime), and paying that at connect
+                    # made the app feel worse right when the user starts
+                    # working. The copy set is now established for free instead:
+                    # a successful MAIN locate — which the first foreground
+                    # colour change performs anyway — also remembers the sub
+                    # siblings via _remember_sub_siblings(), so no extra scan is
+                    # ever run on Colorink's behalf.
                 elif self.software_mode == 'sai':
                     color = self.sai2_sync.get_color()
                     if color is not None:
