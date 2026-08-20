@@ -10,8 +10,12 @@ and CSP memory-mode sync (i.e. everything except companion/smartphone mode)
 stopped syncing colors altogether.
 """
 
+from pathlib import Path
+
 from core.csp_brush_link import CSPSync
 from core.csp_brush_link.memory import _collect_window_hits
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 MODULE_BASE = 0x1000
 BASE_OFFSET = 0x0556BFC8
@@ -467,102 +471,48 @@ def test_cooldown_still_uses_a_cached_main_set_without_scanning():
     written = {addr for addr, _ in sync.pm.writes}
     assert written == {MAIN_MIRROR + 0x60, COPY_A + 0x60}
 
-
-# ── priming: the ~1s locate scan must not sit on the interactive path ──────
-# Measured on a live CSP 5.1 process: a cold locate is ~980 ms, a warm one is
-# 0.1 ms, and the copies are spread over ~84 MB so a bounded local scan cannot
-# replace the full one. That second was paid by the first colour WRITE, so the
-# user switched slot, drew immediately, and the first stroke still used the
-# previous colour.
+# ── no proactive scanning on Colorink's behalf ─────────────────────────────
+# A locate scan reads every committed page of the CSP process (2.4 GB working
+# set observed, ~1.1 s per scan). Colorink must never run one just because it
+# connected -- only because a write actually needs the copy set.
 
 
-def test_prime_populates_both_caches_without_writing_to_csp():
-    sync = _make_sync()
-    _seed_struct(sync.pm, MAIN_MIRROR, RED, BLUE)
-    _seed_struct(sync.pm, COPY_A, RED, BLUE)
-    sync._search_pattern = lambda pattern, max_hits=0: (
-        [COPY_A, MAIN_MIRROR] if pattern == RED
-        else [COPY_A + 0x60, MAIN_MIRROR + 0x60]
-    )
-    sync.pm.writes.clear()
-
-    assert sync.prime_copy_caches() is True
-    assert sync.has_sub_copy_cache() is True
-    assert sync.sub_copies_are_known() is True
-    assert sync._main_copy_addrs
-    assert sync.pm.writes == [], "priming must never write to CSP"
+def test_sync_worker_never_scans_just_because_it_connected():
+    """The poll loop must not warm the copy caches proactively."""
+    source = (PROJECT_ROOT / "core" / "memory_sync.py").read_text(encoding="utf-8")
+    for banned in ("prime_copy_caches", "_prime_csp_copy_caches"):
+        assert banned not in source, (
+            f"{banned} is back in the poll loop: connecting would again read "
+            f"CSP's whole address space before the user asked for anything"
+        )
 
 
-def test_prime_makes_the_next_sub_write_scan_free():
-    """The point of priming: the interactive write is on the warm path."""
-    sync = _make_sync()
-    _seed_struct(sync.pm, MAIN_MIRROR, RED, BLUE)
-    _seed_struct(sync.pm, COPY_A, RED, BLUE)
-    calls = []
+def test_main_locate_is_what_establishes_the_sub_set_for_free():
+    """The zero-scan path that replaced priming.
 
-    def search(pattern, max_hits=0):
-        calls.append(pattern)
-        return ([COPY_A, MAIN_MIRROR] if pattern == RED
-                else [COPY_A + 0x60, MAIN_MIRROR + 0x60])
-
-    sync._search_pattern = search
-    assert sync.prime_copy_caches() is True
-    scans_during_prime = len(calls)
-    assert scans_during_prime > 0
-
-    sync.pm.writes.clear()
-    assert sync.set_color(10, 20, 30, color_index=1) is True
-
-    assert len(calls) == scans_during_prime, \
-        "the write rescanned despite a primed cache"
-    written = {addr for addr, _ in sync.pm.writes}
-    assert written == {MAIN_MIRROR + 0x60, COPY_A + 0x60}
-
-
-def test_prime_recovers_the_sub_set_when_the_background_is_trivial():
-    """CSP's default background is white -> only the main scan can identify."""
-    sync = _make_sync()
-    _seed_struct(sync.pm, MAIN_MIRROR, RED, WHITE)
-    _seed_struct(sync.pm, COPY_A, RED, WHITE)
-    sync._search_pattern = lambda pattern, max_hits=0: (
-        _trivial_search(pattern, max_hits) if pattern == WHITE
-        else [COPY_A, MAIN_MIRROR]
-    )
-
-    sync.prime_copy_caches()
-
-    assert sync._sub_copy_addrs_known is not None, \
-        "priming did not recover a sub copy set from the main copies"
-    assert sorted(sync._sub_copy_addrs_known) == sorted(
-        [MAIN_MIRROR + 0x60, COPY_A + 0x60])
-
-
-def test_prime_is_a_noop_for_legacy_slot_layouts():
-    sync = _make_sync()
-    sync.color_format = "u16x2_dup"
-    called = []
-    sync._search_pattern = lambda pattern, max_hits=0: called.append(pattern) or []
-    assert sync.prime_copy_caches() is False
-    assert called == []
-
-
-def test_trivial_background_prime_is_not_repeated_forever():
-    """A remembered-only result still counts as primed.
-
-    Otherwise ``prime_copy_caches`` reports failure, the worker's throttle lets
-    it through again, and a ~1s scan runs every 30 s for as long as the
-    background stays white.
+    A foreground colour change performs a main locate anyway; that locate must
+    hand us the sub copy set without any additional scan, so a later background
+    switch is already covered.
     """
     sync = _make_sync()
     _seed_struct(sync.pm, MAIN_MIRROR, RED, WHITE)
     _seed_struct(sync.pm, COPY_A, RED, WHITE)
-    sync._search_pattern = lambda pattern, max_hits=0: (
-        _trivial_search(pattern, max_hits) if pattern == WHITE
-        else [COPY_A, MAIN_MIRROR]
-    )
+    scans = []
 
-    assert sync.prime_copy_caches() is True, \
-        "a recovered (remembered) sub set must report as primed"
-    assert sync.has_sub_copy_cache() is False, \
-        "a remembered set must NOT be installed as the live cache"
-    assert sync.sub_copies_are_known() is True
+    def search(pattern, max_hits=0):
+        scans.append(pattern)
+        return [COPY_A, MAIN_MIRROR]
+
+    sync._search_pattern = search
+    assert sync.set_color(255, 0, 0) is True          # one foreground write
+    assert len(scans) == 1, f"expected exactly one scan, got {len(scans)}"
+    assert sync._sub_copy_addrs_known is not None, \
+        "the main locate did not remember the sub siblings"
+
+    # The background write that used to be broken now costs no further scan.
+    before = len(scans)
+    sync.pm.writes.clear()
+    assert sync.set_color(10, 20, 30, color_index=1) is True
+    assert len(scans) == before, "the background write triggered a new scan"
+    written = {addr for addr, _ in sync.pm.writes}
+    assert written == {MAIN_MIRROR + 0x60, COPY_A + 0x60}
