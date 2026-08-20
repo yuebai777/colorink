@@ -68,6 +68,12 @@ def test_hotkey_trigger_toggles_title_bar():
     fake.toggle_title_bar.assert_called_once_with()
 
 
+def test_hotkey_trigger_hide_window_uses_toggle_visibility():
+    fake = SimpleNamespace(toggle_visibility=MagicMock())
+    MainWindow.on_hotkey_triggered(fake, "hideWindowKey")
+    fake.toggle_visibility.assert_called_once_with()
+
+
 def test_set_title_bar_visible_hides_and_persists():
     fake = SimpleNamespace(
         cfg={"showTitleBar": True},

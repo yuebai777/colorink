@@ -104,6 +104,9 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         # Dragging state (mouse click-through toggle override)
         self.follow_mouse_active = self.cfg.get("followMouseEnabled", False)
         self.auto_hidden = False
+        # True after the user explicitly hides via hotkey/tray/close-to-tray.
+        # The foreground tracker must not immediately re-show the window.
+        self._user_hidden = False
 
         self.slider_row_layouts = []
         self.slider_labels = {}

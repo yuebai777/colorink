@@ -125,6 +125,10 @@ class PickerActionsMixin:
             self.settings_window.hide()
         else:
             self._show_settings_window()
+        # Keep the no-focus window flags in sync with settings visibility:
+        # opening settings disables no-focus so the settings window can be
+        # used normally; closing it restores no-focus immediately.
+        self.update_window_flags()
         self.update_no_focus_policies()
 
     def _schedule_module_layout_refresh(self):
@@ -212,6 +216,7 @@ class PickerActionsMixin:
         self._adjust_content_height()
 
     def show_window_at_cursor(self):
+        self._user_hidden = False
         if self.cfg.get("lockWindowPosition", False):
             self.show()
             return
@@ -322,7 +327,9 @@ class PickerActionsMixin:
             should_be_visible = True
 
         if should_be_visible:
-            if not self.isVisible():
+            # 用户手动隐藏（热键/托盘/关闭到托盘）后，前台追踪器不能立刻又把它
+            # 拉出来；只有用户再次手动显示时才清除 _user_hidden。
+            if not self.isVisible() and not getattr(self, "_user_hidden", False):
                 self.show()
                 self.raise_()
             self.auto_hidden = False
@@ -391,7 +398,7 @@ class PickerActionsMixin:
 
         # Restore visibility if onlyShowInCsp is turned off while auto_hidden
         if not self.cfg.get("onlyShowInCsp", False):
-            if getattr(self, "auto_hidden", False):
+            if getattr(self, "auto_hidden", False) and not getattr(self, "_user_hidden", False):
                 self.show()
                 self.auto_hidden = False
         
@@ -411,6 +418,7 @@ class PickerActionsMixin:
         # Update settings dialog variables in thread
         self.sync_thread.csp_version = self.cfg.get("cspVersion", "auto")
         self.sync_thread.sai2_version = self.cfg.get("sai2Version", "auto")
+        self.sync_thread.sai_ui_refresh = self.cfg.get("saiUiRefresh", "full")
         self.sync_thread.udm_version = self.cfg.get("udmVersion", "auto")
         setattr(self.sync_thread, "ps_version", self.cfg.get("psVersion", "auto"))
         self.sync_thread.update_versions()
@@ -456,40 +464,77 @@ class PickerActionsMixin:
         self._sync_ringless_mode()
         self._adjust_content_height()
 
+    def _apply_ws_ex_noactivate(self, enabled: bool) -> None:
+        """Add or remove WS_EX_NOACTIVATE on the native window.
+
+        Qt's WindowDoesNotAcceptFocus is not always enough on Windows, so the
+        extended style is forced directly and refreshed with SetWindowPos so
+        the change takes effect immediately.
+        """
+        try:
+            # Avoid creating the native window just to toggle the style: at
+            # startup update_window_flags() runs before WA_TranslucentBackground
+            # is set, and creating winId() too early would break transparency.
+            # showEvent() re-applies this once the native handle exists.
+            if self.windowHandle() is None:
+                return
+            import win32con
+            import win32gui
+            hwnd = int(self.winId())
+            ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            new_style = ex_style
+            if enabled:
+                new_style |= win32con.WS_EX_NOACTIVATE
+            else:
+                new_style &= ~win32con.WS_EX_NOACTIVATE
+            if new_style != ex_style:
+                win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, new_style)
+                win32gui.SetWindowPos(
+                    hwnd, 0, 0, 0, 0, 0,
+                    win32con.SWP_NOMOVE | win32con.SWP_NOSIZE
+                    | win32con.SWP_NOZORDER | win32con.SWP_FRAMECHANGED,
+                )
+        except Exception:
+            pass
+
     def update_window_flags(self):
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
         if not self.cfg.get("showTaskbarIcon", False):
             flags |= Qt.WindowType.Tool
-            
+
         # Only apply no-focus mode if settings sidebar is CLOSED
         no_focus = self.cfg.get("noFocusMode", False) and not (hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible())
         if no_focus:
             flags |= Qt.WindowType.WindowDoesNotAcceptFocus
-            
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, no_focus)
+
         if self.windowFlags() != flags:
             was_visible = self.isVisible()
             self.setWindowFlags(flags)
             if was_visible:
+                # Re-show without activating: this is a programmatic flag
+                # refresh (e.g. opening settings while no-focus is enabled),
+                # not a user-initiated show, so it must not steal focus.
+                self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
                 self.show()
-                
-        # Double safety: Force WS_EX_NOACTIVATE via Win32 API
-        if no_focus:
-            try:
-                import win32con
-                import win32gui
-                hwnd = int(self.winId())
-                ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-                if not (ex_style & win32con.WS_EX_NOACTIVATE):
-                    win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex_style | win32con.WS_EX_NOACTIVATE)
-            except Exception:
-                pass
+                self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, no_focus)
+
+        # Double safety: force WS_EX_NOACTIVATE via Win32 API, and also clear
+        # it when no-focus is disabled so disabling the mode really restores
+        # normal activation behavior.
+        self._apply_ws_ex_noactivate(no_focus)
 
     def update_no_focus_policies(self):
         is_settings_open = hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible()
         enabled = self.cfg.get("noFocusMode", False) and not is_settings_open
         
         policy = Qt.FocusPolicy.NoFocus if enabled else Qt.FocusPolicy.StrongFocus
-        
+
+        # Prevent Qt from activating the top-level window when it is shown.
+        # Combined with WS_EX_NOACTIVATE this keeps the drawing app focused
+        # while the picker is used (无焦点取色模式).
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, enabled)
+
         self.setFocusPolicy(policy)
         if hasattr(self, 'color_wheel'):
             self.color_wheel.setFocusPolicy(policy)

@@ -96,6 +96,7 @@ class TrayMixin:
             self.toggle_visibility()
         elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             # Trigger already toggled once above — show unconditionally.
+            self._user_hidden = False
             if self.follow_mouse_active:
                 self.show_window_at_cursor()
             else:
@@ -158,7 +159,9 @@ class TrayMixin:
         """Toggle window visibility — same logic as hotkey hide/show."""
         if self.isVisible():
             self.hide()
+            self._user_hidden = True
         else:
+            self._user_hidden = False
             if self.follow_mouse_active:
                 self.show_window_at_cursor()
             else:
@@ -183,6 +186,7 @@ class TrayMixin:
     def closeEvent(self, event):
         """Override: hide to tray instead of closing the application."""
         self.hide()
+        self._user_hidden = True
         event.ignore()
 
     def save_window_geometry(self):

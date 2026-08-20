@@ -46,6 +46,24 @@ _CSP_VERSION_TIPS: dict[str, str] = {
     "csp5.1": "CSP 5.1 内存模式支持前景/背景色与透明状态同步（推荐）。",
 }
 
+# SAI 界面刷新选项：内存写入只改画笔取色，SAI 自己的控件不会重绘。
+# full  = 重绘画笔色块 + 给笔刷预览发一次点击（预览是缓存位图，只有点击才重画）
+# repaint = 只重绘色块，完全不注入输入
+# off   = 不动 SAI 界面
+_SAI_REFRESH_ITEMS: list[tuple[str, str]] = [
+    ("repaint", "重绘色块（推荐）"),
+    ("full", "色块 + 笔刷预览"),
+    ("off", "关闭"),
+]
+_SAI_REFRESH_TIPS: dict[str, str] = {
+    "repaint": "写入颜色后重绘 SAI 的画笔色块，让它跟着变色。纯重绘请求，"
+               "不向 SAI 发送任何鼠标消息，不影响绘画。",
+    "full": "额外让笔刷预览也跟着变色——它是缓存位图，只有点击才会用新颜色重画。"
+            "点击会顺带切换预览背景（浅色→粉→黑），所以每次连发三下走完一轮，"
+            "背景回到原样。仍属于向 SAI 注入输入，如遇异常改回「重绘色块」。",
+    "off": "不刷新 SAI 界面：颜色照常写入，但 SAI 的色块与笔刷预览仍显示旧颜色。",
+}
+
 
 class NonScrollComboBox(QComboBox):
     def wheelEvent(self, event):

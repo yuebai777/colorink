@@ -209,6 +209,14 @@ class LayoutMixin:
     def showEvent(self, event):
         """On show, run any content-height adjustment deferred while hidden."""
         super().showEvent(event)
+        # Re-apply WS_EX_NOACTIVATE now that the native window exists. This
+        # covers startup/hotkey-show paths where update_window_flags() ran
+        # before winId()/show() created the native handle.
+        apply_noactivate = getattr(self, "_apply_ws_ex_noactivate", None)
+        if callable(apply_noactivate):
+            cfg = getattr(self, "cfg", {})
+            is_settings_open = hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible()
+            apply_noactivate(cfg.get("noFocusMode", False) and not is_settings_open)
         if self._content_height_adjust_pending:
             self._content_height_adjust_pending = False
             from PyQt6.QtCore import QTimer as _QTimer

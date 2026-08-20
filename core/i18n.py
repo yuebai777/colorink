@@ -165,6 +165,29 @@ _EN: dict[str, str] = {
     "连接智能手机": "Connect smartphone",
     "CSP 版本": "CSP version",
     "SAI2 版本": "SAI2 version",
+    "SAI 界面刷新": "SAI UI refresh",
+    "重绘色块（推荐）": "Repaint swatch (recommended)",
+    "色块 + 笔刷预览": "Swatch + brush preview",
+    "写入颜色后顺便刷新 SAI 自己的画笔色块，让 SAI 界面上的颜色跟着变":
+        "After a colour write, also refresh SAI's own brush swatch so the "
+        "colour shown inside SAI follows along",
+    "写入颜色后重绘 SAI 的画笔色块，让它跟着变色。纯重绘请求，不向 SAI 发送任何鼠标消息，"
+    "不影响绘画。":
+        "Repaints SAI's brush swatch after a colour write so it follows the "
+        "colour. A pure redraw request: no mouse message is sent to SAI and "
+        "drawing is unaffected.",
+    "额外让笔刷预览也跟着变色——它是缓存位图，只有点击才会用新颜色重画。"
+    "点击会顺带切换预览背景（浅色→粉→黑），所以每次连发三下走完一轮，"
+    "背景回到原样。仍属于向 SAI 注入输入，如遇异常改回「重绘色块」。":
+        "Also keeps the brush preview in colour — it is a cached bitmap, so "
+        "only a click redraws it. That click also cycles the preview "
+        "background (light, pink, black), so three are posted at once to "
+        "complete the cycle and leave the background as it was. This is still "
+        "synthetic input into SAI; switch back to \"Repaint swatch\" if "
+        "anything misbehaves.",
+    "不刷新 SAI 界面：颜色照常写入，但 SAI 的色块与笔刷预览仍显示旧颜色。":
+        "Leaves SAI's UI untouched: the colour is still written, but SAI's "
+        "swatch and brush preview keep showing the previous colour.",
     "UDM 版本": "UDM version",
     "PS 版本": "PS version",
     "Photoshop 版本": "Photoshop version",

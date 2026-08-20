@@ -39,13 +39,9 @@ class HotkeyMixin:
     @pyqtSlot(str)
     def on_hotkey_triggered(self, hotkey_type):
         if hotkey_type == "hideWindowKey":
-            if self.isVisible():
-                self.hide()
-            else:
-                if self.follow_mouse_active:
-                    self.show_window_at_cursor()
-                else:
-                    self.show()
+            # 统一走 toggle_visibility，确保手动隐藏时设置 _user_hidden，
+            # 前台追踪器不会立刻又把窗口拉出来。
+            self.toggle_visibility()
         elif hotkey_type == "toggleTitleBarKey":
             self.toggle_title_bar()
         elif hotkey_type == "followMouseKey":

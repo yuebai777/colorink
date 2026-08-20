@@ -57,6 +57,9 @@ class MemorySyncThread(QThread):
         self.csp_version = "auto"
         self.sai2_version = "auto"
         self.udm_version = "auto"
+        # How hard to nudge SAI into repainting its own colour widgets after a
+        # memory write: "off" | "repaint" | "full" (see core.sai2_ui_refresh).
+        self.sai_ui_refresh = "full"
         
         # Cache to prevent loops
         self._last_synced_color: dict[int, tuple[int, int, int]] = {}  # per slot
@@ -92,6 +95,7 @@ class MemorySyncThread(QThread):
         # Set versions in backend scripts/instances
         self.csp_sync.set_version(self.csp_version)
         self.sai2_sync.set_version(self.sai2_version)
+        self.sai2_sync.set_ui_refresh(self.sai_ui_refresh)
         self.udm_sync.set_version(self.udm_version)
         self.ps_sync.set_version(getattr(self, 'ps_version', 'auto'))
         
@@ -304,6 +308,10 @@ class MemorySyncThread(QThread):
                         colors = [color]
                     status = self.sai2_sync.status()
                     connected = status.get('connected', False)
+                    # Land a UI refresh that the write path had to throttle or
+                    # defer (drag bursts, or SAI mid-interaction), so the last
+                    # colour of a drag still reaches SAI's widgets.
+                    self.sai2_sync.tick_ui_refresh()
                 elif self.software_mode == 'udm':
                     color = self.udm_sync.get_color()
                     if color is not None:
