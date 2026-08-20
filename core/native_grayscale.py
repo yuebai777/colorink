@@ -569,7 +569,17 @@ class NativeGrayscaleController:
             self._schedule_reveal()
             return
         if self._impl.is_active:
+            # The overlay stack is alive but this controller holds no warm
+            # cache — the state a preheat lands in when it fails, since its
+            # stop() releases the cameras without deactivating the impl.
+            # Restarting capture is what clears the failed attempt's
+            # _camera_error and reseeds the frame counters; without it
+            # _poll_reveal re-consumed the stale startup error (and an expired
+            # _reveal_deadline) and swallowed the toggle in silence, because
+            # toggle() still reports success on that path.
             self._user_active = True
+            self._start_capture_all()
+            self._reveal_deadline = time.monotonic() + 2.0
             self._schedule_reveal()
             return
         self.set_mode(self._mode)

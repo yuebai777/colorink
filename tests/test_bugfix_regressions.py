@@ -492,3 +492,97 @@ class TestFillRatioReleasesItsBitmap:
         assert [c[0] for c in gdi.calls].count("SelectObject") == 2
         assert gdi._selected == _FakeGdi.DEFAULT_BITMAP
         assert ("ReleaseDC", 0x4000) in user.calls
+
+
+# ── Native grayscale: a failed preheat must not eat the next toggle ────────
+
+
+class TestStartAfterFailedPreheat:
+    """A preheat that fails leaves the overlay stack active but with no warm
+    cache, and start()'s ``_impl.is_active`` shortcut used to neither clear the
+    previous attempt's ``_camera_error`` nor refresh ``_reveal_deadline``.
+    _poll_reveal then re-consumed the stale startup error, so the user's first
+    Ctrl+G reported a failure from the past and turned nothing on — silently,
+    because toggle() still returns True.
+    """
+
+    def _controller(self, monkeypatch, fail_attempts):
+        """Controller whose dxcam fails for the first *fail_attempts* starts."""
+        from PyQt6.QtCore import QTimer
+
+        import core.native_grayscale as ng
+
+        from .test_native_grayscale import _FakeImpl, _FakeWidget, _TimerQueue
+
+        attempts = {"n": 0}
+
+        class FlakyWidget(_FakeWidget):
+            def _colorink_start_capture(self):
+                self.start_calls += 1
+                attempts["n"] += 1
+                if attempts["n"] <= fail_attempts:
+                    self._frame_count = 0
+                    self._camera_error = "dxcam 采集初始化失败: transient"
+                else:
+                    self._camera = object()
+                    self._frame_count = 1
+                    self._camera_error = ""
+
+        class FlakyImpl(_FakeImpl):
+            def set_active(self, active, mode=None):
+                self.is_active = active
+                if active and not self._overlays:
+                    self._overlays = [FlakyWidget(0), FlakyWidget(1)]
+                    for widget in self._overlays:
+                        widget._colorink_start_capture()
+                elif not active:
+                    for widget in self._overlays:
+                        widget._colorink_stop_capture()
+                    self._overlays = []
+
+        class FlakyRuntime:
+            GrayscaleOverlay = FlakyImpl
+
+        queue = _TimerQueue()
+        monkeypatch.setattr(QTimer, "singleShot", queue.singleShot)
+        monkeypatch.setattr(ng, "_ensure_runtime_loaded", lambda: FlakyRuntime())
+        return ng.NativeGrayscaleController(), queue
+
+    def test_failed_preheat_leaves_the_overlay_stack_active(self, monkeypatch):
+        """Pins the state that makes the shortcut reachable."""
+        c, queue = self._controller(monkeypatch, fail_attempts=2)
+        c.prepare()
+        queue.run_all()
+
+        assert c._impl.is_active is True
+        assert c._warming is False and c._warmed is False
+        assert not c.is_active
+
+    def test_first_toggle_after_failed_preheat_makes_a_fresh_attempt(self, monkeypatch):
+        """dxcam recovers after the preheat, so the first Ctrl+G must work."""
+        c, queue = self._controller(monkeypatch, fail_attempts=2)
+        c.prepare()
+        queue.run_all()
+
+        c.last_error = ""
+        c.toggle()
+        queue.run_all()
+
+        assert c.is_active, (
+            "first toggle after a failed preheat was consumed by the stale "
+            f"startup error ({c.last_error!r}) instead of retrying capture"
+        )
+        assert not c.last_error
+
+    def test_a_persistent_failure_still_surfaces_an_error(self, monkeypatch):
+        """The retry must not paper over a genuinely broken dxcam."""
+        c, queue = self._controller(monkeypatch, fail_attempts=99)
+        c.prepare()
+        queue.run_all()
+
+        c.last_error = ""
+        c.toggle()
+        queue.run_all()
+
+        assert not c.is_active
+        assert "dxcam" in c.last_error
