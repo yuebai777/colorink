@@ -258,6 +258,15 @@ def test_write_from_a_degraded_state_reaches_the_brush_copies():
 
 
 def test_sub_slot_shares_the_capped_locate_path():
+    """Every scan stays capped, and the next write does not rescan.
+
+    A degraded SUB locate additionally tries to derive the copy set from the
+    MAIN copies (see ``_sub_copies_from_main``), which costs one further capped
+    scan when the main set is not already cached. Here BOTH slots hold black,
+    so that derivation scan also comes back trivial and the write still falls
+    back to the mirror. What must hold is that no scan is uncapped and that the
+    second write triggers none at all.
+    """
     sync = _make_sync()
     calls = []
 
@@ -268,8 +277,15 @@ def test_sub_slot_shares_the_capped_locate_path():
     sync._search_pattern = counting_search
     sync.pm.seed(TARGET + 0x9C, BLACK)
     assert sync.set_color(0, 0, 0, color_index=1) is True
+    scans_after_first = len(calls)
     assert sync.set_color(10, 20, 30, color_index=1) is True
-    assert calls == [CSPSync._SUB_COPY_LIMIT + 1]
+
+    assert all(cap == CSPSync._SUB_COPY_LIMIT + 1 for cap in calls), \
+        f"an uncapped scan slipped through: {calls}"
+    assert scans_after_first <= 2, \
+        f"a single degraded sub write must not scan more than twice: {calls}"
+    assert len(calls) == scans_after_first, \
+        f"the second write rescanned instead of using the cooldown: {calls}"
     assert sync._sub_copy_addrs is None
 
 
@@ -330,3 +346,123 @@ def test_main_write_does_not_leak_into_the_sub_slot():
     # The sub mirror still holds the original colour.
     assert sync.pm.read_bytes(MAIN_MIRROR_B, 12) == RED
     assert sync.pm.read_bytes(COPY_A_SUB, 12) == RED
+
+# ── first background switch of a session must reach the brush ──────────────
+# Reported symptom: switching foreground -> background the FIRST time left
+# CSP's brush on the old colour; the second switch worked. _sync_debug.log:
+#     _locate_hsv_copies: >200 hits (trivial pattern) - mirror-only, NOT cached
+#     set_color (rgb_u32 sub): RGB=[255, 255, 255] -> 1 copies
+#     _locate_hsv_copies: located 7 copies
+#     set_color (rgb_u32): RGB=[143, 73, 111] -> 7 copies
+# CSP's default background is WHITE, whose 12-byte HSV-u32 pattern matches far
+# past _SUB_COPY_LIMIT, so the sub scan could not identify the brush copies and
+# there was no verified set to fall back on yet.
+
+WHITE = bytes.fromhex("00000000" "00000000" "ffffffff")  # H=0 S=0 V=max
+
+
+def _seed_struct(mem, main_addr, main_raw, sub_raw):
+    """Seed one CSP colour struct: main block + its sub block 0x60 further on."""
+    mem.seed(main_addr, main_raw)
+    mem.seed(main_addr + 0x60, sub_raw)
+
+
+def test_first_sub_write_reaches_the_brush_via_the_main_copy_stride():
+    """The reported bug: a trivial (white) background still reaches the brush."""
+    sync = _make_sync()
+    # Two structs: distinctive main colour, trivial white background.
+    _seed_struct(sync.pm, MAIN_MIRROR, RED, WHITE)
+    _seed_struct(sync.pm, COPY_A, RED, WHITE)
+
+    def search(pattern, max_hits=0):
+        if pattern == WHITE:
+            return _trivial_search(pattern, max_hits)   # >200 hits, unusable
+        return [COPY_A, MAIN_MIRROR]                     # main locates fine
+
+    sync._search_pattern = search
+    sync.pm.writes.clear()
+    assert sync.set_color(10, 20, 30, color_index=1) is True
+
+    written = {addr for addr, _ in sync.pm.writes}
+    assert written == {MAIN_MIRROR + 0x60, COPY_A + 0x60}, (
+        "the first background write did not reach the authoritative sub copy "
+        f"(wrote {[hex(a) for a in sorted(written)]})"
+    )
+
+
+def test_derived_sub_set_is_cached_so_later_writes_need_no_scan():
+    sync = _make_sync()
+    _seed_struct(sync.pm, MAIN_MIRROR, RED, WHITE)
+    _seed_struct(sync.pm, COPY_A, RED, WHITE)
+    calls = []
+
+    def search(pattern, max_hits=0):
+        calls.append(pattern)
+        if pattern == WHITE:
+            return _trivial_search(pattern, max_hits)
+        return [COPY_A, MAIN_MIRROR]
+
+    sync._search_pattern = search
+    assert sync.set_color(10, 20, 30, color_index=1) is True
+    scans = len(calls)
+    # The derived set is verified against live memory, so it may be cached.
+    assert sync._sub_copy_addrs is not None
+    assert sorted(sync._sub_copy_addrs) == sorted([MAIN_MIRROR + 0x60, COPY_A + 0x60])
+    assert sync.set_color(40, 50, 60, color_index=1) is True
+    assert len(calls) == scans, "a cached derived set must not trigger a rescan"
+
+
+def test_derivation_is_rejected_when_the_sibling_does_not_match():
+    """Safety guard: never write to addresses that are not really sub fields."""
+    sync = _make_sync()
+    _seed_struct(sync.pm, MAIN_MIRROR, RED, WHITE)
+    # COPY_A's sibling holds something else -> not a coherent sub copy set.
+    sync.pm.seed(COPY_A, RED)
+    sync.pm.seed(COPY_A + 0x60, BLUE)
+
+    sync._search_pattern = lambda pattern, max_hits=0: (
+        _trivial_search(pattern, max_hits) if pattern == WHITE
+        else [COPY_A, MAIN_MIRROR]
+    )
+    sync.pm.writes.clear()
+    assert sync.set_color(10, 20, 30, color_index=1) is True
+
+    written = {addr for addr, _ in sync.pm.writes}
+    assert written == {TARGET + 0x9C}, "must fall back to the mirror only"
+    assert sync._sub_copy_addrs is None
+
+
+def test_main_locate_remembers_the_sub_siblings_for_free():
+    """A successful main locate records the sub set without any extra scan."""
+    sync = _make_sync()
+    _seed_struct(sync.pm, MAIN_MIRROR, RED, WHITE)
+    _seed_struct(sync.pm, COPY_A, RED, WHITE)
+    calls = []
+
+    def search(pattern, max_hits=0):
+        calls.append(pattern)
+        return [COPY_A, MAIN_MIRROR]
+
+    sync._search_pattern = search
+    assert sync.set_color(255, 0, 0) is True          # main write
+    assert len(calls) == 1, "remembering the siblings must not cost a scan"
+    assert sync._sub_copy_addrs_known is not None
+    assert sorted(sync._sub_copy_addrs_known) == sorted(
+        [MAIN_MIRROR + 0x60, COPY_A + 0x60])
+
+
+def test_cooldown_still_uses_a_cached_main_set_without_scanning():
+    sync = _make_sync()
+    _seed_struct(sync.pm, MAIN_MIRROR, RED, WHITE)
+    _seed_struct(sync.pm, COPY_A, RED, WHITE)
+    sync._main_copy_addrs = [COPY_A, MAIN_MIRROR]
+    sync._copy_scan_ts = {"_sub_copy_addrs": __import__("time").monotonic()}
+    calls = []
+    sync._search_pattern = lambda pattern, max_hits=0: calls.append(pattern) or []
+
+    sync.pm.writes.clear()
+    assert sync.set_color(10, 20, 30, color_index=1) is True
+
+    assert calls == [], "the cooldown branch must never scan"
+    written = {addr for addr, _ in sync.pm.writes}
+    assert written == {MAIN_MIRROR + 0x60, COPY_A + 0x60}
