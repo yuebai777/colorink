@@ -685,3 +685,70 @@ class TestScreenWatchersAreReleased:
             "a closed controller re-registered geometryChanged watchers"
         )
         assert c._screen_watchers_installed is False
+
+
+# ── CSP copy-cache priming is throttled and off the interactive path ───────
+
+
+class TestCspCachePriming:
+    """The sync worker warms CSP's copy-address caches so the ~1s locate scan
+    is not paid by the first colour write (which made the first brush stroke
+    after a slot switch paint the previous colour).
+    """
+
+    def _thread(self, csp):
+        from core.memory_sync import MemorySyncThread
+
+        t = MemorySyncThread.__new__(MemorySyncThread)
+        t.csp_sync = csp
+        t._csp_prime_ts = 0.0
+        return t
+
+    class _Csp:
+        def __init__(self, warm=False, primes_ok=True):
+            self._warm = warm
+            self._primes_ok = primes_ok
+            self.prime_calls = 0
+
+        def sub_copies_are_known(self):
+            return self._warm
+
+        def prime_copy_caches(self):
+            self.prime_calls += 1
+            if self._primes_ok:
+                self._warm = True
+            return self._warm
+
+    def test_primes_once_when_cold(self):
+        csp = self._Csp(warm=False)
+        t = self._thread(csp)
+        t._prime_csp_copy_caches()
+        assert csp.prime_calls == 1
+        # Now warm -> further polls must not scan again.
+        for _ in range(5):
+            t._prime_csp_copy_caches()
+        assert csp.prime_calls == 1
+
+    def test_never_primes_when_already_warm(self):
+        csp = self._Csp(warm=True)
+        t = self._thread(csp)
+        t._prime_csp_copy_caches()
+        assert csp.prime_calls == 0
+
+    def test_failed_prime_is_throttled_not_retried_every_poll(self):
+        """A state that cannot be primed must not scan in a loop."""
+        csp = self._Csp(warm=False, primes_ok=False)
+        t = self._thread(csp)
+        for _ in range(20):          # 20 polls == 2 seconds of the 100ms loop
+            t._prime_csp_copy_caches()
+        assert csp.prime_calls == 1, (
+            "a failing prime rescanned on later polls; each scan costs ~1s on "
+            "the sync thread"
+        )
+
+    def test_backend_without_the_api_is_skipped_silently(self):
+        class Bare:
+            pass
+
+        t = self._thread(Bare())
+        t._prime_csp_copy_caches()   # must not raise into the poll loop

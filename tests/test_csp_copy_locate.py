@@ -466,3 +466,103 @@ def test_cooldown_still_uses_a_cached_main_set_without_scanning():
     assert calls == [], "the cooldown branch must never scan"
     written = {addr for addr, _ in sync.pm.writes}
     assert written == {MAIN_MIRROR + 0x60, COPY_A + 0x60}
+
+
+# ── priming: the ~1s locate scan must not sit on the interactive path ──────
+# Measured on a live CSP 5.1 process: a cold locate is ~980 ms, a warm one is
+# 0.1 ms, and the copies are spread over ~84 MB so a bounded local scan cannot
+# replace the full one. That second was paid by the first colour WRITE, so the
+# user switched slot, drew immediately, and the first stroke still used the
+# previous colour.
+
+
+def test_prime_populates_both_caches_without_writing_to_csp():
+    sync = _make_sync()
+    _seed_struct(sync.pm, MAIN_MIRROR, RED, BLUE)
+    _seed_struct(sync.pm, COPY_A, RED, BLUE)
+    sync._search_pattern = lambda pattern, max_hits=0: (
+        [COPY_A, MAIN_MIRROR] if pattern == RED
+        else [COPY_A + 0x60, MAIN_MIRROR + 0x60]
+    )
+    sync.pm.writes.clear()
+
+    assert sync.prime_copy_caches() is True
+    assert sync.has_sub_copy_cache() is True
+    assert sync.sub_copies_are_known() is True
+    assert sync._main_copy_addrs
+    assert sync.pm.writes == [], "priming must never write to CSP"
+
+
+def test_prime_makes_the_next_sub_write_scan_free():
+    """The point of priming: the interactive write is on the warm path."""
+    sync = _make_sync()
+    _seed_struct(sync.pm, MAIN_MIRROR, RED, BLUE)
+    _seed_struct(sync.pm, COPY_A, RED, BLUE)
+    calls = []
+
+    def search(pattern, max_hits=0):
+        calls.append(pattern)
+        return ([COPY_A, MAIN_MIRROR] if pattern == RED
+                else [COPY_A + 0x60, MAIN_MIRROR + 0x60])
+
+    sync._search_pattern = search
+    assert sync.prime_copy_caches() is True
+    scans_during_prime = len(calls)
+    assert scans_during_prime > 0
+
+    sync.pm.writes.clear()
+    assert sync.set_color(10, 20, 30, color_index=1) is True
+
+    assert len(calls) == scans_during_prime, \
+        "the write rescanned despite a primed cache"
+    written = {addr for addr, _ in sync.pm.writes}
+    assert written == {MAIN_MIRROR + 0x60, COPY_A + 0x60}
+
+
+def test_prime_recovers_the_sub_set_when_the_background_is_trivial():
+    """CSP's default background is white -> only the main scan can identify."""
+    sync = _make_sync()
+    _seed_struct(sync.pm, MAIN_MIRROR, RED, WHITE)
+    _seed_struct(sync.pm, COPY_A, RED, WHITE)
+    sync._search_pattern = lambda pattern, max_hits=0: (
+        _trivial_search(pattern, max_hits) if pattern == WHITE
+        else [COPY_A, MAIN_MIRROR]
+    )
+
+    sync.prime_copy_caches()
+
+    assert sync._sub_copy_addrs_known is not None, \
+        "priming did not recover a sub copy set from the main copies"
+    assert sorted(sync._sub_copy_addrs_known) == sorted(
+        [MAIN_MIRROR + 0x60, COPY_A + 0x60])
+
+
+def test_prime_is_a_noop_for_legacy_slot_layouts():
+    sync = _make_sync()
+    sync.color_format = "u16x2_dup"
+    called = []
+    sync._search_pattern = lambda pattern, max_hits=0: called.append(pattern) or []
+    assert sync.prime_copy_caches() is False
+    assert called == []
+
+
+def test_trivial_background_prime_is_not_repeated_forever():
+    """A remembered-only result still counts as primed.
+
+    Otherwise ``prime_copy_caches`` reports failure, the worker's throttle lets
+    it through again, and a ~1s scan runs every 30 s for as long as the
+    background stays white.
+    """
+    sync = _make_sync()
+    _seed_struct(sync.pm, MAIN_MIRROR, RED, WHITE)
+    _seed_struct(sync.pm, COPY_A, RED, WHITE)
+    sync._search_pattern = lambda pattern, max_hits=0: (
+        _trivial_search(pattern, max_hits) if pattern == WHITE
+        else [COPY_A, MAIN_MIRROR]
+    )
+
+    assert sync.prime_copy_caches() is True, \
+        "a recovered (remembered) sub set must report as primed"
+    assert sync.has_sub_copy_cache() is False, \
+        "a remembered set must NOT be installed as the live cache"
+    assert sync.sub_copies_are_known() is True
