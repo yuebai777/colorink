@@ -183,6 +183,20 @@ class TestCheckForegroundWindow:
         assert fs.visible is False, "non-drawing foreground must hide"
         assert fs.auto_hidden is True
 
+    def test_user_hidden_blocks_foreground_autoshow(self, monkeypatch):
+        """When the user explicitly hid the window (hotkey/tray/close), the
+        foreground tracker must not immediately re-show it just because the
+        foreground is a drawing app or our own process."""
+        import ui.main_window as mw
+
+        self._stub_win32(monkeypatch, "clip studio paint", 424242)
+        fs = self._make_self()
+        fs.visible = False
+        fs._user_hidden = True
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
+        assert fs.visible is False, "user-hidden window must stay hidden"
+        assert fs.auto_hidden is False
+
     def test_own_process_foreground_only_counts_for_our_pid(self, monkeypatch):
         """A drawing-app foreground keeps the window visible regardless."""
         import ui.main_window as mw

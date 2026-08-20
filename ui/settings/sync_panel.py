@@ -20,6 +20,8 @@ from core import i18n
 from ui.settings.settings_helpers import (
     _CSP_VERSION_ITEMS,
     _CSP_VERSION_TIPS,
+    _SAI_REFRESH_ITEMS,
+    _SAI_REFRESH_TIPS,
     NonScrollComboBox,
 )
 
@@ -51,6 +53,7 @@ class SyncPanelMixin:
         self.row_csp_widget.setVisible(selected == "csp")
         self.row_csp_hint_widget.setVisible(selected == "csp")
         self.row_sai_widget.setVisible(selected == "sai")
+        self.row_sai_refresh_widget.setVisible(selected == "sai")
         self.row_udm_widget.setVisible(selected == "udm")
         self.row_ps_widget.setVisible(selected == "ps")
         self.row_companion_widget.setVisible(selected == "companion")
@@ -400,6 +403,26 @@ class SyncPanelMixin:
         self.combo_sai.currentTextChanged.connect(self.save_settings)
         row_sai_layout.addWidget(self.combo_sai)
         cl_sync.addWidget(self.row_sai_widget)
+
+        # SAI 界面刷新：内存写入不会让 SAI 自己重绘，需要主动推一下
+        self.row_sai_refresh_widget = QWidget()
+        row_sai_refresh = QHBoxLayout(self.row_sai_refresh_widget)
+        row_sai_refresh.setContentsMargins(0, 0, 0, 0)
+        row_sai_refresh.addWidget(QLabel(i18n.tr("SAI 界面刷新")))
+        self.combo_sai_refresh = NonScrollComboBox()
+        for _val, _disp in _SAI_REFRESH_ITEMS:
+            self.combo_sai_refresh.addItem(i18n.tr(_disp), _val)
+        for _i, (_val, _disp) in enumerate(_SAI_REFRESH_ITEMS):
+            self.combo_sai_refresh.setItemData(
+                _i, i18n.tr(_SAI_REFRESH_TIPS.get(_val, "")), Qt.ItemDataRole.ToolTipRole
+            )
+        self.combo_sai_refresh.setToolTip(
+            i18n.tr("写入颜色后顺便刷新 SAI 自己的画笔色块，"
+                    "让 SAI 界面上的颜色跟着变")
+        )
+        self.combo_sai_refresh.currentTextChanged.connect(self.save_settings)
+        row_sai_refresh.addWidget(self.combo_sai_refresh)
+        cl_sync.addWidget(self.row_sai_refresh_widget)
 
         # UDM Version Container
         self.row_udm_widget = QWidget()

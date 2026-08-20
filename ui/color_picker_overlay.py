@@ -66,9 +66,24 @@ class CursorDot(QWidget):
     def __init__(self):
         super().__init__(None)
         self.setFixedSize(16,16)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint|Qt.WindowType.WindowStaysOnTopHint|Qt.WindowType.Tool|Qt.WindowType.WindowTransparentForInput)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint|Qt.WindowType.WindowStaysOnTopHint|Qt.WindowType.Tool|Qt.WindowType.WindowTransparentForInput|Qt.WindowType.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents,True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+    def _apply_noactivate(self):
+        """Ensure the crosshair dot never activates/steals foreground focus."""
+        try:
+            import win32con
+            import win32gui
+            hwnd = int(self.winId())
+            ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            if not (ex_style & win32con.WS_EX_NOACTIVATE):
+                win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex_style | win32con.WS_EX_NOACTIVATE)
+                win32gui.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                                      win32con.SWP_NOMOVE | win32con.SWP_NOSIZE
+                                      | win32con.SWP_NOZORDER | win32con.SWP_FRAMECHANGED)
+        except Exception:
+            pass
     def paintEvent(self,ev):
         p=QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing,False)
@@ -93,8 +108,9 @@ class ColorPickerOverlay(QWidget):
         self._shots=[]  # list of (QScreen, QImage, QRect geometry, float dpr) snapshots captured at start()
         self._panel_w=_GRID_PX+_PAD*2; self._panel_h=_PAD+_GRID_PX+_PAD+_PREVIEW+_PAD+10+11+_PAD
         self.setFixedSize(self._panel_w,self._panel_h)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint|Qt.WindowType.WindowStaysOnTopHint|Qt.WindowType.Tool)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint|Qt.WindowType.WindowStaysOnTopHint|Qt.WindowType.Tool|Qt.WindowType.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         # Qt's own cursor is made transparent here — see _hide_cursor() for the
         # system-wide replacement that hides the cursor on the rest of desktop too
         self.setCursor(Qt.CursorShape.BlankCursor)
@@ -170,6 +186,16 @@ class ColorPickerOverlay(QWidget):
         # was there before we overwrote it.
         try:
             ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0)
+            # SPI_SETCURSORS resets the system cursor table; nudge the cursor
+            # so the foreground drawing app re-evaluates and re-applies its
+            # brush cursor without requiring an extra click.
+            try:
+                pos = win32api.GetCursorPos()
+                if pos:
+                    win32api.SetCursorPos((pos[0] + 1, pos[1]))
+                    win32api.SetCursorPos(pos)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -185,6 +211,21 @@ class ColorPickerOverlay(QWidget):
         """
         self._zoom = max(1, int(zoom))
 
+    def _apply_noactivate(self):
+        """Ensure the picker overlay never activates/steals foreground focus."""
+        try:
+            import win32con
+            import win32gui
+            hwnd = int(self.winId())
+            ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            if not (ex_style & win32con.WS_EX_NOACTIVATE):
+                win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex_style | win32con.WS_EX_NOACTIVATE)
+                win32gui.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                                      win32con.SWP_NOMOVE | win32con.SWP_NOSIZE
+                                      | win32con.SWP_NOZORDER | win32con.SWP_FRAMECHANGED)
+        except Exception:
+            pass
+
     def start(self):
         self._active=True
         # Recalc source region + panel from the injected zoom level. The
@@ -199,8 +240,15 @@ class ColorPickerOverlay(QWidget):
         self._capture_all_screens()
         _hook_dll.install() if _hook_dll else None
         self._hide_cursor();          # hide the system cursor — leave only the custom cross-hair dot
+        # Apply no-activate before show() so the native windows are created
+        # with WS_EX_NOACTIVATE and Qt cannot activate them while showing;
+        # re-apply after show() in case show recreated the native handle.
+        self._dot._apply_noactivate()
         self._dot.show(); self._dot.raise_()
+        self._dot._apply_noactivate()
+        self._apply_noactivate()
         self.show(); self.raise_()
+        self._apply_noactivate()
         self._timer.start(); self._tick()
     def stop(self):
         self._active=False; self._timer.stop()

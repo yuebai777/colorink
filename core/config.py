@@ -10,7 +10,7 @@ HOTKEY_CFG_NAME = "hotkey-config.json"
 # when the shape of the config changes and register a migration below; old
 # configs are migrated forward on load instead of relying on ad-hoc key pops.
 CONFIG_SCHEMA_KEY = "schemaVersion"
-CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 2
 
 # Envelope marker for the settings backup/restore JSON export.
 SETTINGS_EXPORT_FORMAT = "colorink-settings"
@@ -107,6 +107,12 @@ def default_hotkey_config():
         "previewBoxPosition": "top-left",
         "cspVersion": "auto",
         "sai2Version": "auto",
+        # SAI 内存写入后，把 SAI 自己的画笔色块也刷新一次：
+        # "repaint"（默认）= 只重绘色块，纯重绘、不注入任何输入；
+        # "full" = 额外给笔刷预览发一次点击（SAI 会记住这次按下点，
+        #          下一笔可能出现楔形起笔，需要自行权衡）；
+        # "off" = 完全不动 SAI 界面（旧行为）
+        "saiUiRefresh": "repaint",
         "udmVersion": "auto",
         "ui-theme": "auto",
         "language": "auto",
@@ -183,9 +189,25 @@ def _migrate_0_to_1(cfg: dict) -> dict:
     return cfg
 
 
+def _migrate_1_to_2(cfg: dict) -> dict:
+    """Take SAI UI refresh off the click-injecting mode.
+
+    ``saiUiRefresh`` briefly defaulted to ``"full"``, which posts a mouse click
+    to SAI's brush preview so it re-renders. SAI treats that click as real
+    input and remembers its button-down point, so the next canvas stroke can
+    start with a wedge sweeping from it. Nobody chose that deliberately — it
+    was the default — so the stored value is moved to the input-free mode.
+    Anyone who wants the preview refresh can opt in again in the settings.
+    """
+    if str(cfg.get("saiUiRefresh", "")).strip().lower() == "full":
+        cfg["saiUiRefresh"] = "repaint"
+    return cfg
+
+
 # Registered migrations, keyed by the target schema version they produce.
 _CONFIG_MIGRATIONS: dict[int, Callable[[dict], dict]] = {
     1: _migrate_0_to_1,
+    2: _migrate_1_to_2,
 }
 
 

@@ -16,6 +16,8 @@ import sys
 from ctypes import wintypes
 from typing import Any, Dict, List, Optional, Tuple
 
+from core import sai2_ui_refresh
+
 # Windows API constants for process memory access
 PROCESS_VM_READ = 0x0010
 PROCESS_VM_WRITE = 0x0020
@@ -262,6 +264,21 @@ class SAI2Sync:
         self._color_addr: int | None = None
         self._base: int | None = None
         self._size: int | None = None
+        # Writing the slot changes what SAI paints with, but SAI never learns
+        # its own widgets went stale — the refresher nudges them.
+        self.ui_refresher = sai2_ui_refresh.SAIUiRefresher(
+            mode=os.environ.get("SAI2_UI_REFRESH", sai2_ui_refresh.DEFAULT_MODE),
+        )
+
+    def set_ui_refresh(self, mode: object) -> bool:
+        """Configure how aggressively SAI's own widgets get refreshed."""
+        return self.ui_refresher.set_mode(mode)
+
+    def tick_ui_refresh(self) -> bool:
+        """Deliver a refresh that was throttled or deferred (poll-loop hook)."""
+        if self._pid is None:
+            return False
+        return self.ui_refresher.tick(self._pid)
 
     def set_version(self, version: str) -> bool:
         """Switch SAI2 signature mode. Returns True if the version changed."""
@@ -284,6 +301,11 @@ class SAI2Sync:
         self._color_addr = None
         self._base = None
         self._size = None
+        # SAI restarting (or a signature switch) invalidates the resolved
+        # control handles as well, so discovery has to run again.
+        refresher = getattr(self, "ui_refresher", None)
+        if refresher is not None:
+            refresher.reset()
 
     def _connect(self) -> bool:
         """Attach to the running SAI2 process and locate the color slot."""
@@ -380,11 +402,40 @@ class SAI2Sync:
         g = _clamp8(g)
         b = _clamp8(b)
 
+        # SAI's pre-write colour identifies its stroke-preview control: that
+        # control caches a sample stroke drawn in the colour SAI last rendered
+        # it with. Reading 3 bytes is negligible, and only needed until the
+        # refresher has confirmed its target.
+        previous: tuple[int, int, int] | None = None
+        if self.ui_refresher.wants_previous_color():
+            current = self.get_color()
+            if current is not None:
+                previous = (current["r"], current["g"], current["b"])
+            elif not self._connect():
+                # The read failed, which drops the cached handle — the write
+                # must not go ahead against a stale one.
+                return False
+
+        handle, address = self._handle, self._color_addr
+        if not handle or not address:
+            return False
+
         try:
-            return _write_memory(self._handle, self._color_addr, [b, g, r])
+            ok = _write_memory(handle, address, [b, g, r])
         except Exception:
             self._reset_cache(close_handle=True)
             return False
+
+        if ok and self._pid:
+            # Best-effort UI sync: SAI's brush swatch and stroke preview keep
+            # showing the previous colour until they are nudged. The refresher
+            # already guards itself, but the colour write has *succeeded* by
+            # now — nothing beyond this point may change that outcome.
+            try:
+                self.ui_refresher.refresh(self._pid, (r, g, b), previous=previous)
+            except Exception:
+                pass
+        return ok
 
     def status(self) -> dict[str, object]:
         if not self._handle or not self._color_addr:

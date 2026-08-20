@@ -410,6 +410,13 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.combo_sai.blockSignals(True)
         self.combo_sai.setCurrentText(self.cfg.get("sai2Version", "auto"))
         self.combo_sai.blockSignals(False)
+
+        _sai_refresh_idx = self.combo_sai_refresh.findData(
+            str(self.cfg.get("saiUiRefresh", "full") or "full"))
+        self.combo_sai_refresh.blockSignals(True)
+        self.combo_sai_refresh.setCurrentIndex(
+            _sai_refresh_idx if _sai_refresh_idx >= 0 else 0)
+        self.combo_sai_refresh.blockSignals(False)
         
         udm_display_map = {"auto": "auto", "udm4.0": "udm4.0pro", "udm4.0-ex": "udm4.0ex"}
         self.combo_udm.blockSignals(True)
@@ -524,6 +531,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         
         self.cfg["cspVersion"] = self.combo_csp.currentData() or "auto"
         self.cfg["sai2Version"] = self.combo_sai.currentText()
+        self.cfg["saiUiRefresh"] = self.combo_sai_refresh.currentData() or "full"
         
         udm_val_map = {"auto": "auto", "udm4.0pro": "udm4.0", "udm4.0ex": "udm4.0-ex"}
         self.cfg["udmVersion"] = udm_val_map.get(self.combo_udm.currentText(), "auto")
@@ -727,10 +735,21 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
     def on_no_focus_clicked(self, checked):
         self.save_settings()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Settings are open: disable the main window's no-focus window flags
+        # so the settings window can be used normally.  Mirrors hideEvent()
+        # below and keeps every show/hide path (close button, hamburger,
+        # eyedropper theme-pick re-show) in sync with the picker window.
+        mv = self._parent
+        if mv is not None and callable(getattr(mv, "update_window_flags", None)):
+            mv.update_window_flags()
+            mv.update_no_focus_policies()
+
     def hideEvent(self, event):
         super().hideEvent(event)
         # Settings are closed: re-apply the no-focus window state if enabled.
         mv = self._parent
-        if mv is not None and self.cfg.get("noFocusMode", False):
+        if mv is not None and callable(getattr(mv, "update_window_flags", None)):
             mv.update_window_flags()
             mv.update_no_focus_policies()
