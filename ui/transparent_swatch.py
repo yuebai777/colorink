@@ -57,21 +57,7 @@ def apply_preview_mouse_mask(box) -> None:
         for rect in rects:
             region = region.united(QRegion(rect.toRect().adjusted(-3, -3, 3, 3)))
     else:
-        scale = box.width() / 60.0
-        fg_r = (40.0 * scale) / 2.0
-        bg_r = (30.0 * scale) / 2.0
-        box_size = float(box.width())
-        border = 2.0 * scale
-        if box.position_mode == "top-left":
-            fg_cx = fg_r + border
-            fg_cy = box_size - fg_r - border
-            bg_cx = box_size - bg_r - border
-            bg_cy = bg_r + border
-        else:
-            fg_cx = fg_r + border
-            fg_cy = fg_r + border
-            bg_cx = box_size - bg_r - border
-            bg_cy = box_size - bg_r - border
+        fg_cx, fg_cy, fg_r, bg_cx, bg_cy, bg_r = box.legacy_circle_geometry()
         # Centres must match the paint code EXACTLY (unpadded radii), only
         # the mask radius gets a small pad for the border stroke. Using the
         # padded radius as the centre offset shifted the ellipse 3px away

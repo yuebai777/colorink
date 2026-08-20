@@ -281,9 +281,29 @@ class ColorWheelRenderingMixin:
         painter.drawRect(int(cx - half), int(cy - half), width, height)
         painter.restore()
 
+    def _oklch_hue_for_ring(self) -> float:
+        """OKLCh hue currently represented on screen, in degrees.
+
+        Same resolution order as :meth:`draw_oklch_slice` and
+        :meth:`draw_oklch_indicator`: live drag cache, then stored OKLCh
+        state, then the current RGB. The RGB fallback matters — ``_oklch_h``
+        is only set by ``set_oklch()`` or a ring/slice drag, so it is still
+        ``None`` right after switching into the LCH module, and every OKLCh
+        drawing helper must agree on the hue for that first paint.
+        """
+        hue = getattr(self, "_drag_oklch_h", None)
+        if hue is None:
+            hue = self._oklch_h
+        if hue is None:
+            hue = rgb_to_oklch(*self.get_color())[2]
+        return hue
+
     def draw_hue_indicator(self, painter, cx, cy, inner_r, outer_r):
-        # In OKLCh mode the ring uses OKLCh hue angles, not HSV
-        hue = self._oklch_h if (self.wheel_mode == "oklch-slice" and self._oklch_h is not None) else self.h
+        # In OKLCh mode the ring gradient is built from OKLCh hue angles, not
+        # HSV ones, so the marker must use the OKLCh hue too. Falling back to
+        # self.h (the HSV hue) left the dot several degrees off the ring it is
+        # drawn on until the first drag or colour change.
+        hue = self._oklch_hue_for_ring() if self.wheel_mode == "oklch-slice" else self.h
         if self.cfg.get("flipColorWheelHorizontally", False):
             angle_deg = (150.0 - hue) % 360.0
         else:
@@ -505,12 +525,7 @@ class ColorWheelRenderingMixin:
 
     def draw_oklch_slice(self, painter, cx, cy, r):
         # Derive OKLCh hue from drag cache, stored state, or current RGB color
-        oklch_h = getattr(self, '_drag_oklch_h', None)
-        if oklch_h is None:
-            oklch_h = self._oklch_h
-        if oklch_h is None:
-            rgb_r, rgb_g, rgb_b = self.get_color()
-            _, _, oklch_h = rgb_to_oklch(rgb_r, rgb_g, rgb_b)
+        oklch_h = self._oklch_hue_for_ring()
 
         hy = r * 0.866
         box_w = self._oklch_slice_box_width(r)
@@ -597,13 +612,7 @@ class ColorWheelRenderingMixin:
         min_x = int(math.floor(cx - box_w * 0.5))
 
         # Hue from drag cache or stored OKLCh state (avoids round-trip drift)
-        oklch_h = getattr(self, '_drag_oklch_h', None)
-        if oklch_h is None:
-            oklch_h = self._oklch_h
-
-        if oklch_h is None:
-            rgb_r, rgb_g, rgb_b = self.get_color()
-            _, _, oklch_h = rgb_to_oklch(rgb_r, rgb_g, rgb_b)
+        oklch_h = self._oklch_hue_for_ring()
 
         scale = self._oklch_scale_for_hue(oklch_h, r)
 

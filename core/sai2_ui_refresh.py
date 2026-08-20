@@ -423,12 +423,13 @@ class Win32Backend:
         if not hdc_screen:
             return 0.0
         hdc_mem = hbmp = None
+        old_bmp = None
         try:
             hdc_mem = self._gdi32.CreateCompatibleDC(hdc_screen)
             hbmp = self._gdi32.CreateCompatibleBitmap(hdc_screen, width, height)
             if not hdc_mem or not hbmp:
                 return 0.0
-            self._gdi32.SelectObject(hdc_mem, hbmp)
+            old_bmp = self._gdi32.SelectObject(hdc_mem, hbmp)
             if not self._user32.PrintWindow(hwnd, hdc_mem, self.PW_RENDERFULLCONTENT):
                 return 0.0
 
@@ -447,6 +448,14 @@ class Win32Backend:
                 return 0.0
             return _count_matches(buf.raw, rgb, tolerance) / float(width * height)
         finally:
+            # DeleteObject refuses to free a bitmap that is still selected into
+            # a DC, and DeleteDC does not free it either — so the bitmap has to
+            # be swapped back out first. Without this the 32bpp bitmap (up to
+            # MAX_CANDIDATE_AREA * 4 = 1.6 MB) leaked on every probe, and swatch
+            # discovery runs several probes per pass, re-running on panel
+            # re-dock / SAI restart until the process hit the GDI handle cap.
+            if hdc_mem and old_bmp:
+                self._gdi32.SelectObject(hdc_mem, old_bmp)
             if hbmp:
                 self._gdi32.DeleteObject(hbmp)
             if hdc_mem:
