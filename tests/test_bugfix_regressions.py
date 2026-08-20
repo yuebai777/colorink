@@ -752,3 +752,78 @@ class TestCspCachePriming:
 
         t = self._thread(Bare())
         t._prime_csp_copy_caches()   # must not raise into the poll loop
+
+
+# ── Native grayscale: the freeze watchdog is not armed ─────────────────────
+
+
+class TestFaultWatchdogIsDisarmed:
+    """The runtime arms a freeze watchdog from GrayscaleOverlay.__init__ (app
+    startup), but only touches its heartbeat from _on_frame_swapped (rendering).
+    With the filter off the heartbeat stays at 0.0, so the watchdog declared a
+    freeze on its first check and every 3 s after, appending every thread's
+    traceback to %TEMP%\\colorink_fault.log. Measured on the reporting machine:
+    63,070 dumps, 147 MB, all false positives.
+    """
+
+    class _Runtime:
+        def __init__(self):
+            self._fault_watchdog_started = False
+
+    def test_disarms_by_default(self, monkeypatch):
+        from core import native_grayscale as ng
+
+        monkeypatch.delenv(ng._WATCHDOG_ENV, raising=False)
+        rt = self._Runtime()
+        assert ng._disarm_fault_watchdog(rt) is True
+        assert rt._fault_watchdog_started is True, (
+            "the runtime's re-entry guard must be pre-set so "
+            "_install_fault_watchdog() returns before starting a thread"
+        )
+
+    def test_env_var_re_arms_for_diagnosis(self, monkeypatch):
+        from core import native_grayscale as ng
+
+        monkeypatch.setenv(ng._WATCHDOG_ENV, "1")
+        rt = self._Runtime()
+        assert ng._disarm_fault_watchdog(rt) is False
+        assert rt._fault_watchdog_started is False
+
+    def test_other_env_values_still_disarm(self, monkeypatch):
+        from core import native_grayscale as ng
+
+        monkeypatch.setenv(ng._WATCHDOG_ENV, "0")
+        rt = self._Runtime()
+        assert ng._disarm_fault_watchdog(rt) is True
+
+    def test_runtime_without_the_guard_is_a_noop(self, monkeypatch):
+        from core import native_grayscale as ng
+
+        monkeypatch.delenv(ng._WATCHDOG_ENV, raising=False)
+
+        class Bare:
+            pass
+
+        rt = Bare()
+        assert ng._disarm_fault_watchdog(rt) is False
+        assert not hasattr(rt, "_fault_watchdog_started")
+
+    def test_runtime_loader_disarms_before_returning(self, monkeypatch):
+        """_ensure_runtime_loaded must disarm before GrayscaleOverlay is built."""
+        from core import native_grayscale as ng
+
+        monkeypatch.delenv(ng._WATCHDOG_ENV, raising=False)
+        runtime = ng._ensure_runtime_loaded()
+        assert runtime._fault_watchdog_started is True
+
+    def test_constructing_the_overlay_starts_no_watchdog_thread(self, monkeypatch):
+        """End-to-end against the shipped runtime."""
+        import threading
+
+        from core import native_grayscale as ng
+
+        monkeypatch.delenv(ng._WATCHDOG_ENV, raising=False)
+        runtime = ng._ensure_runtime_loaded()
+        runtime.GrayscaleOverlay(mode="oklch")
+        assert not any("watchdog" in t.name for t in threading.enumerate()), \
+            "the freeze watchdog thread was started"
