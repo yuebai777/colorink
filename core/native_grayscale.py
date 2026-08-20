@@ -65,7 +65,10 @@ _gui_dispatcher = _GuiDispatcher()
 
 def _dispatch_invoke(widget, method_name: str) -> None:
     try:
-        getattr(widget, method_name)(widget)
+        # `method_name` is looked up on the instance, so it is already bound;
+        # passing `widget` again would raise TypeError and silently kill the
+        # camera kick (the frame loop then never starts).
+        getattr(widget, method_name)()
     except Exception:
         pass  # widget may have been torn down while the message was queued
 
