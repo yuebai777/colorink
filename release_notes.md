@@ -1,3 +1,29 @@
+## v1.6.12
+
+SAI 界面刷新、无焦点取色加固与 QA 测试向导发布。
+
+### 新增
+
+- **SAI 界面刷新**：内存写入颜色后，SAI 自己的画笔色块会跟着重绘，不再停留在旧颜色。三档可选：`repaint`（默认，纯重绘请求、不注入任何输入）、`full`（额外刷新缓存位图的笔刷预览，需连发三下点击走完整背景循环，副作用自担）、`off`（旧行为）；设置页同步页签内新增下拉框与悬停说明
+- **配置 schema v2 迁移**：早期把 `saiUiRefresh` 默认成 `full` 的用户自动迁移回 `repaint`，避免 SAI 记住合成点击的按下点、下一笔出现楔形起笔；想用 `full` 可重新手动开启
+- **QA 测试向导**：新增 `tools/test_wizard.py` + `tools/qa/`，一条龙执行「环境自检 → 自动化守卫 → 半自动引导 → 手测打勾 → 报告结论」，也支持本地网页打勾面板（`http://127.0.0.1:8799/`）与断点续测；根目录 `测试.bat` 双击即可使用
+- **SAI 探针工具**：`tools/probe_sai_ui_refresh.py` / `tools/probe_sai_windows.py`，测量 SAI 控件渲染与刷新方式，复现并定位界面不同步问题
+
+### 修复
+
+- **无焦点取色仍抢焦点**：取色放大镜与十字光标补 `WindowDoesNotAcceptFocus`、`WA_ShowWithoutActivating` 并直接加 `WS_EX_NOACTIVATE` 扩展样式，show 前后双重应用；设置窗口打开/关闭时同步主窗口 flags，避免设置面板无法正常操作
+- **取色结束绘画软件笔刷光标不恢复**：恢复系统光标后微移再复位鼠标位置，促使前台绘画软件重新应用笔刷光标，无需额外点击
+- **用户手动隐藏被立刻拉回**：热键隐藏统一走 `toggle_visibility`，托盘单击隐藏、双击显示、关闭到托盘都维护 `_user_hidden`；前台追踪器在用户手动隐藏期间不再自动重新显示窗口
+- **无焦点模式开关不彻底**：禁用 no-focus 时现在会清除 `WS_EX_NOACTIVATE`，真正恢复正常激活行为；程序化刷新 flags 时用 `WA_ShowWithoutActivating` 防止抢焦点
+
+### 变更
+
+- 删除 `TESTING.md` 与 `CHECKLIST.md`，测试清单统一由 `tools/qa/checklist.json` 维护（README 链接已更新）；`.gitignore` 增加 `test-reports/`（QA 报告产物不提交）
+- 新增 SAI UI 刷新相关单测（模式归一化、安全护栏、设置联动、SAI2 写入钩子），测试总数 642 → 706
+- **版本号**：应用内更新检查版本与 Windows 文件版本统一到 `1.6.12` / `1.6.12.0`
+
+---
+
 ## v1.6.11
 
 原生灰度滤镜相机启动修复发布。
