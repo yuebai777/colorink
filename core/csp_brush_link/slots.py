@@ -145,6 +145,71 @@ class SlotMixin:
         """True once the sub-color copy addresses are known."""
         return bool(getattr(self, "_sub_copy_addrs", None))
 
+    def sub_copies_are_known(self) -> bool:
+        """True when *some* usable sub-colour copy set is available.
+
+        Either the live cache or the last verified set. The degraded write path
+        falls back to the remembered set (``_remembered_copies``), which is what
+        carries a trivial-pattern background write to the brush — so both count
+        as primed and neither warrants paying another ~1s locate scan.
+
+        Kept separate from :meth:`has_sub_copy_cache` because a remembered set
+        is deliberately NOT installed as the live cache: re-validating it would
+        read back the value we wrote ourselves and pass forever.
+        """
+        return bool(getattr(self, "_sub_copy_addrs", None)
+                    or getattr(self, "_sub_copy_addrs_known", None))
+
+    def prime_copy_caches(self) -> bool:
+        """Locate the main/sub copy addresses ahead of the first colour write.
+
+        A cold copy-locate scan costs ~1 s against a real CSP process (measured:
+        945 ms for the main pattern, 948 ms for the sub pattern, 8 and 2 hits
+        spread over ~84 MB, so a bounded local scan is not an option). That scan
+        sits on the WRITE path, so the first colour write after connecting lands
+        up to a second late — the user switches slot, starts drawing
+        immediately, and the first brush stroke still paints the previous
+        colour. A warm locate is 0.1 ms.
+
+        Priming moves that one-off cost to connection time, where nothing is
+        waiting on it. Locating the main copies also remembers the sub siblings
+        (:meth:`_remember_sub_siblings`), which is what lets a later background
+        write whose own pattern is trivial (CSP's default white) reach the brush
+        at all.
+
+        Read-only with respect to CSP: it scans and reads, never writes.
+        Returns True once the sub copy set is known.
+        """
+        if self.pm is None or not self._resolve_rgb_target() or self.target is None:
+            return False
+        if self.color_format != "rgb_u32":
+            return False
+        try:
+            main_pat = b"".join(
+                self._read_u32(self.target + off).to_bytes(4, "little")
+                for off in self._RGB_U32_OFFS
+            )
+            # Main first: its pattern is normally distinctive, and a successful
+            # locate hands us the sub siblings for free.
+            self._locate_hsv_copies(main_pat, "_main_copy_addrs",
+                                    self._RGB_U32_OFFS[0])
+            sub_pat = b"".join(
+                self._read_u32(self.target + off).to_bytes(4, "little")
+                for off in self._SUB_HSV_OFFS
+            )
+            self._locate_hsv_copies(sub_pat, "_sub_copy_addrs",
+                                    self._SUB_HSV_OFFS[0])
+            primed = self.sub_copies_are_known()
+            _log(f"prime_copy_caches: main="
+                 f"{len(getattr(self, '_main_copy_addrs', None) or [])} "
+                 f"sub={len(getattr(self, '_sub_copy_addrs', None) or [])} "
+                 f"remembered_sub="
+                 f"{len(getattr(self, '_sub_copy_addrs_known', None) or [])}")
+            return primed
+        except Exception as exc:
+            _log(f"prime_copy_caches: exception: {exc}")
+            return False
+
     def capture_sub_copies_from_current(self) -> int:
         """Search the process for the CURRENT sub-color value and cache the
         hit addresses (authoritative brush source + UI mirrors).
