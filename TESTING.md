@@ -34,7 +34,7 @@
       → 失败时看单个文件：`python -m pytest tests/test_xxx.py -v`
 - [ ] **A2 冷启动**：`python main.py` 能出窗口；控制台无 traceback；`stderr.log` 没有新增内容
 - [ ] **A3 四个基本动作**（10 秒扫一遍，防低级回归）：
-      按 `F11` 取一次色 → 切一次色空间模块（HSV/HLS/LCH）→ 拖任一滑块 → 前景/背景交换
+      按 `Ctrl+Alt+Q` 取一次色 → 切一次色空间模块（HSV/HLS/LCH）→ 拖任一滑块 → 前景/背景交换
 - [ ] **A4 配置往返**：改一项设置 → 完全退出 → 重开，设置还在（`core/config.py` 原子写没坏）
 - [ ] **A5 提交前**：`git status` 干净，`dist/` `build/` `__pycache__/` `stderr.log` 没混进去
 
@@ -47,18 +47,18 @@
 | # | 改动区域 | 定向自动化测试 | 必须手测 |
 |---|---|---|---|
 | B1 | `ui/color_conversions.py` `ui/color_model.py` `ui/oklab_colors.py` | `pytest tests/test_color_conversions.py tests/test_color_model.py tests/test_color_projection.py -q`（76 项） | 六组滑块之间来回切不漂移；OKLCh 色度到 0.321、超 sRGB 段轨道有标记；灰色/白色改色相后仍记得住 |
-| B2 | `ui/color_wheel*.py` `ui/slice_prewarm.py` `ui/lab_*.py` `ui/lab_visualizer.py` | `pytest tests/test_ringless_geometry.py tests/test_ringless_interaction.py tests/test_slice_prewarm.py tests/test_picker_components.py -q` | 色环拖拽跟手不跳；`Space`（悬停色环/LAB 区）和 `Ctrl+L` 都能切 LAB；UI 缩放调到 125% / 150% 不错位 |
+| B2 | `ui/color_wheel*.py` `ui/slice_prewarm.py` `ui/lab_*.py` `ui/lab_visualizer.py` | `pytest tests/test_ringless_geometry.py tests/test_ringless_interaction.py tests/test_slice_prewarm.py tests/test_picker_components.py -q` | 色环拖拽跟手不跳；`Space`（悬停色环/LAB 区）和 `Ctrl+Alt+L` 都能切 LAB；UI 缩放调到 125% / 150% 不错位 |
 | B3 | `ui/ringless_mode.py` `ui/picker_panes.py` `ui/color_preview_box.py` `ui/ringless_settings.py` | `pytest tests/test_ringless_panes.py tests/test_ringless_settings.py tests/test_ringless_preview_geometry.py tests/test_ringless_preview_rendering.py tests/test_ringless_preview_interaction.py tests/test_ringless_visible_geometry.py tests/test_ringless_invalidation.py -q`（107 项） | 「隐藏色环放大切片」开/关各走一遍；控制条左右侧都试；来回切 pane 时 LAB 按钮位置不跳 |
-| B4 | `ui/main_window.py` `ui/window/*.py` | `pytest tests/test_window_height.py tests/test_title_bar_toggle.py tests/test_ringless_integration.py tests/test_ringless_lifecycle.py tests/test_sync_mixin.py -q` | `Ctrl+Shift+T` 标题栏显隐；`Ctrl+H` 显隐窗口；贴边隐藏后能拉回；拖到第二块屏正常；窗口高度随内容变化 |
-| B5 | `ui/color_picker_overlay.py` `core/foreground.py` `core/picker_hook.c/.dll` | `pytest tests/test_picker_zoom.py tests/test_picker_components.py tests/test_foreground_detection.py -q` | **真机必测**：`F11` 全屏放大镜；预览里不出现 Colorink 自己的窗口；主副屏 + 不同缩放各取一次；画画软件在前台时无焦点取色仍生效 |
-| B6 | `core/native_grayscale.py` `native_grayscale/` | `pytest tests/test_native_grayscale.py tests/test_native_grayscale_contract.py -q` | `Ctrl+G` 连开关 5 次不崩；OKLCh 与 Luma 两种模式；限定单显示器生效；改分辨率/DPI 后覆盖层还对；不可用时**有明确提示**而不是静默 |
+| B4 | `ui/main_window.py` `ui/window/*.py` | `pytest tests/test_window_height.py tests/test_title_bar_toggle.py tests/test_ringless_integration.py tests/test_ringless_lifecycle.py tests/test_sync_mixin.py -q` | `Ctrl+Alt+K` 标题栏显隐；`Ctrl+Alt+Y` 显隐窗口；贴边隐藏后能拉回；拖到第二块屏正常；窗口高度随内容变化 |
+| B5 | `ui/color_picker_overlay.py` `core/foreground.py` `core/picker_hook.c/.dll` | `pytest tests/test_picker_zoom.py tests/test_picker_components.py tests/test_foreground_detection.py -q` | **真机必测**：`Ctrl+Alt+Q` 全屏放大镜；预览里不出现 Colorink 自己的窗口；主副屏 + 不同缩放各取一次；画画软件在前台时无焦点取色仍生效 |
+| B6 | `core/native_grayscale.py` `native_grayscale/` | `pytest tests/test_native_grayscale.py tests/test_native_grayscale_contract.py -q` | `Ctrl+Alt+D` 连开关 5 次不崩；OKLCh 与 Luma 两种模式；限定单显示器生效；改分辨率/DPI 后覆盖层还对；不可用时**有明确提示**而不是静默 |
 | B7 | `core/mag_grayscale.py` `mag_overlay/` | `pytest tests/test_mag_grayscale.py -q` | 全屏灰度生效；退出后颜色完全恢复；和系统颜色滤镜同时开不打架 |
 | B8 | `core/csp_brush_link/` `core/memory_sync.py` | `pytest tests/test_csp_brush_link_5_1.py tests/test_csp_copy_locate.py tests/test_csp_legacy_profiles.py tests/test_memory_sync_transparent_readback.py tests/test_memory_sync_ps_echo.py -q` | CSP 里改色 ↔ Colorink 双向同步；**主色槽 / 副色槽必须各自单独测一遍**（历史上出现过「前景色不同步、背景色正常」的单边坏）；**从 CSP 默认色起手**（黑前景 / 白背景，两个都是内存里到处命中的平凡模式）也要能同步；透明色标记透传；**把 CSP 关掉再开，能自动重连**；写入不落地时跑 `python tools/diag_fg_write.py` 定位（打印 mirror-only / located / derived），设置页「复制诊断信息」里的 `copy_locate_state` 是同一个判据；久跑用 `python tools/stability_test.py`、`python tools/e2e_bidirectional.py` |
 | B9 | `core/csp_companion_sync.py` | `pytest tests/test_companion_protocol.py tests/test_memory_sync_companion_active_echo.py -q` | CSP「连接智能手机」二维码自动扫描；扫描失败时手动粘贴 URL 也能连；断开后重连；`python tools/verify_companion_bridge.py` |
 | B10 | `core/photoshop_color_sync.py` `core/photoshop_instances.py` `core/photoshop_script_bridge.py` `core/photoshop_bridge.jsx` | `pytest tests/test_photoshop_color_sync.py tests/test_photoshop_instances.py tests/test_photoshop_script_bridge.py -q`（49 项） | 注册版 PS（COM 路径）+ 绿色便携版（CEP 脚本桥）各测一次；同时开两个 PS 实例能选对；前景/背景双槽独立读写 |
 | B11 | `core/sai2_brush_link.py` `core/udm_brush_link.py` | ⚠️ **无自动化覆盖** | 全靠手测：SAI2 / UDM 里改笔刷色 → Colorink 跟上；软件重启后重连 |
 | B12 | `core/global_hotkeys.py` `ui/hotkey_button.py` | ⚠️ **无自动化覆盖** | 键盘键、鼠标侧键、中键、数位板笔键各绑一次；**绑鼠标键后在 CSP 里画一笔，点击不能被吞**；绑一个不支持的键，原绑定不能被清空；重复绑定应被拒绝 |
-| B13 | `core/config.py` | `pytest tests/test_config_schema.py tests/test_release_contract.py -q` | 把 `%APPDATA%\Colorink` 改名模拟首启，默认值对（F11 / Ctrl+H / HSV / 8×2 历史）；旧配置升级不丢已有值；改设置后立刻任务管理器强杀，重开配置没损坏 |
+| B13 | `core/config.py` | `pytest tests/test_config_schema.py tests/test_release_contract.py -q` | 把 `%APPDATA%\Colorink` 改名模拟首启，默认值对（Ctrl+Alt+Q / Ctrl+Alt+Y / HSV / 8×2 历史）；旧配置升级不丢已有值；改设置后立刻任务管理器强杀，重开配置没损坏 |
 | B14 | `ui/settings_window.py` `ui/settings/` `ui/settings_sidebar.py` | `pytest tests/test_settings_window.py tests/test_settings_window_crash_regression.py -q`（45 项） | 6 页（快捷键/界面/取色器/滤镜/同步/关于）逐页点开不崩；改过的那几项当场生效；「复制诊断信息」内容完整 |
 | B15 | `core/i18n.py` + 任何加了新文案的地方 | `pytest tests/test_i18n.py -q` | 语言切到 English 逐页扫一遍，**新加的文案不能是中文写死或空白**；再切回中文 |
 | B16 | `core/updater.py` `ui/settings/update_panel.py` | `pytest tests/test_updater.py tests/test_updater_self_replace.py -q`（31 项） | 平时只跑自动化；真机下载/自替换放到 **C4** 发版时做 |
@@ -86,8 +86,8 @@
 用 `dist/Onefile/Colorink.exe`，最好先把 `%APPDATA%\Colorink` 改名，模拟新用户首启：
 - [ ] 双击能起，无控制台报错，无缺 DLL 弹窗
 - [ ] 窗口图标 + 托盘图标都显示（PyInstaller 漏图标是老回归）
-- [ ] `F11` 取色正常
-- [ ] `Ctrl+G` 灰度滤镜正常（Native 后端；打包版才会暴露 `.pyc` 运行时缺失）
+- [ ] `Ctrl+Alt+Q` 取色正常
+- [ ] `Ctrl+Alt+D` 灰度滤镜正常（Native 后端；打包版才会暴露 `.pyc` 运行时缺失）
 - [ ] CSP 同步能连（打包版才会暴露少了 `picker_hook.dll` / 运行时资源）
 - [ ] CSP Companion 二维码扫描（`pyzbar` / `Pillow` / `mss` 只在打包版才可能缺）
 - [ ] 设置 → 关于 → 检查更新，能连上 GitHub

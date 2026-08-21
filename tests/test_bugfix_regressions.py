@@ -502,7 +502,7 @@ class TestStartAfterFailedPreheat:
     cache, and start()'s ``_impl.is_active`` shortcut used to neither clear the
     previous attempt's ``_camera_error`` nor refresh ``_reveal_deadline``.
     _poll_reveal then re-consumed the stale startup error, so the user's first
-    Ctrl+G reported a failure from the past and turned nothing on — silently,
+    Ctrl+Alt+D reported a failure from the past and turned nothing on — silently,
     because toggle() still returns True.
     """
 
@@ -559,7 +559,7 @@ class TestStartAfterFailedPreheat:
         assert not c.is_active
 
     def test_first_toggle_after_failed_preheat_makes_a_fresh_attempt(self, monkeypatch):
-        """dxcam recovers after the preheat, so the first Ctrl+G must work."""
+        """dxcam recovers after the preheat, so the first Ctrl+Alt+D must work."""
         c, queue = self._controller(monkeypatch, fail_attempts=2)
         c.prepare()
         queue.run_all()

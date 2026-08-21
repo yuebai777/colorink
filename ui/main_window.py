@@ -142,7 +142,7 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
                     self.grayscale_overlay = fallback
         screen_target = self.cfg.get("grayscaleFilterScreen", "all")
         self.grayscale_overlay.set_target(screen_target)
-        # Warm the OKLCh capture/OpenGL/PBO chain off-screen so Ctrl+G only
+        # Warm the OKLCh capture/OpenGL/PBO chain off-screen so Ctrl+Alt+D only
         # reveals a prepared frame instead of paying initialization latency.
         if backend != "mag":
             prepare = getattr(self.grayscale_overlay, "prepare", None)
@@ -150,7 +150,7 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
                 # grayscale_overlay.prepare runs once the window is up:
                 # it warms the native GL overlay off-screen (light preheat).
                 QTimer.singleShot(800, prepare)
-            # Pre-import dxcam off the GUI thread so the first Ctrl+G does not
+            # Pre-import dxcam off the GUI thread so the first Ctrl+Alt+D does not
             # pay the one-time ~0.4s module/D3D11/comtypes import cost.
             if sys.modules.get("dxcam") is None:
                 import importlib as _importlib

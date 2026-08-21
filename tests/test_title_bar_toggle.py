@@ -44,12 +44,12 @@ class FakeTitleBar:
 
 def test_hotkey_binding_registers_title_bar_toggle():
     fake = SimpleNamespace(cfg={
-        "pickKey": "F11",
-        "hideWindowKey": "Ctrl+H",
-        "toggleTitleBarKey": "Ctrl+Shift+T",
-        "followMouseKey": "Ctrl+R",
-        "grayscaleFilterKey": "Ctrl+G",
-        "toggleLabGlobalKey": "Ctrl+L",
+        "pickKey": "Ctrl+Alt+Q",
+        "hideWindowKey": "Ctrl+Alt+Y",
+        "toggleTitleBarKey": "Ctrl+Alt+K",
+        "followMouseKey": "Ctrl+Alt+J",
+        "grayscaleFilterKey": "Ctrl+Alt+D",
+        "toggleLabGlobalKey": "Ctrl+Alt+L",
         "toggleLabKey": "Space",
     })
     with patch("ui.window.hotkey_mixin.global_hotkeys.unbind_all") as unbind, \

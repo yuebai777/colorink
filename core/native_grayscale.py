@@ -6,7 +6,7 @@ broken WGL shared-texture experiment: that runtime is deliberately excluded.
 
 Toggle latency
 --------------
-The first Ctrl+G used to pay, on the GUI thread: ``import dxcam`` (~0.4s),
+The first Ctrl+Alt+D used to pay, on the GUI thread: ``import dxcam`` (~0.4s),
 serial per-screen dxcam create/start, and — worst case — a 5 × 1s retry loop
 when ``dxcam.create()`` handed back the *previous* session's still-releasing
 camera (dxcam's DXFactory returns the cached camera until ``release()``
