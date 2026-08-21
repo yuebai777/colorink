@@ -2,7 +2,7 @@
 
 > 用法：改完东西对着这张表勾。**不是每次都要全测** —— 按下面三档执行。
 > 只想按顺序打勾跑手测 → **[CHECKLIST.md](CHECKLIST.md)**（纯手动项，自动化命令已剔除）。
-> 基线（2026-08，v1.6.12）：`python -m pytest -q` → **706 passed，约 40 秒**。
+> 基线（2026-08，v1.6.13）：`python -m pytest -q` → **755 passed，约 40 秒**。
 
 ## 0. 先决定要测哪一档
 
@@ -22,7 +22,7 @@
 - [ ] 测试必须用 **Windows 的 Python** 跑。WSL / Linux 上有 13 个测试文件在采集阶段就崩（`ctypes.WinDLL` 不存在），不是代码坏了。
 - [ ] 依赖：`pip install -r requirements.txt -r requirements-dev.txt`
       （`coloraide` 只用于测试，作为 `ui/color_conversions.py` 的独立对照实现）
-- [ ] 确认基线绿：`python -m pytest -q` → `706 passed`
+- [ ] 确认基线绿：`python -m pytest -q` → `755 passed`
 - 当前验证过的组合：Python 3.14 / PyQt6 6.7.1 / pytest 9.1.1
 
 ---
@@ -30,7 +30,7 @@
 ## 2. A 档 · 每次改完代码都做（约 3 分钟）
 
 - [ ] **A1 全量单测**：`python -m pytest -q`
-      → 必须 `706 passed`（加了功能就该 >706；**数字只许涨，不许跌**）
+      → 必须 `755 passed`（加了功能就该 >755；**数字只许涨，不许跌**）
       → 失败时看单个文件：`python -m pytest tests/test_xxx.py -v`
 - [ ] **A2 冷启动**：`python main.py` 能出窗口；控制台无 traceback；`stderr.log` 没有新增内容
 - [ ] **A3 四个基本动作**（10 秒扫一遍，防低级回归）：
