@@ -2,7 +2,7 @@
 
 基于 PyQt6 的 Windows 桌面取色器 / 调色工具，为绘画与设计工作流设计：全局取色、多色空间精确调色、绘画软件颜色同步，以及系统级灰度滤镜。
 
-当前版本：**v1.6.12**
+当前版本：**v1.6.13**
 
 ## 下载
 
@@ -101,6 +101,12 @@ python build_pyqt.py
 - `tools/` 含同步诊断与端到端稳定性脚本（内存探针、写路径对比等），便于排查 CSP / PS 同步问题
 - 架构与设计说明见 [DESIGN.md](DESIGN.md)，色彩转换管道见 [OKLCH_CONVERSION_PIPELINE.md](OKLCH_CONVERSION_PIPELINE.md)
 
+## 支持作者
+
+如果 Colorink 帮到了你，欢迎请我喝杯咖啡 ☕ —— 扫码即可，感谢支持！
+
+<img src="screenshots/buy-me-a-coffee.jpg" width="260" alt="请我喝杯咖啡" />
+
 ## License
 
-MIT — 详见 [LICENSE](LICENSE)。
+[GPL-3.0](LICENSE) —— 使用、修改或分发本项目代码时，你的衍生作品也必须以 GPL-3.0 开源（copyleft）。
