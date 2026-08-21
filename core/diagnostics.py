@@ -27,8 +27,12 @@ STDERR_LOG_NAME = "stderr.log"
 
 # Per-backend attributes worth reporting. Reading these is cheap and never
 # connects; ``status()`` on the memory backends is deliberately avoided.
+# ``copy_locate_state`` is the one fact that decides a CSP "颜色不同步" report:
+# it says whether the last write reached CSP's brush copies (``located`` /
+# ``cached`` / ``derived`` + a count) or only the UI mirror (``mirror-only``,
+# which CSP itself never reads back).
 _BACKEND_ATTRS = {
-    "csp": ("process_name", "current_version"),
+    "csp": ("process_name", "current_version", "copy_locate_state"),
     "sai": ("process_name", "version"),
     "udm": ("process_name", "current_version"),
 }

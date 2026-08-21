@@ -192,3 +192,6 @@ class ProcessMixin:
         self._sub_copy_addrs_known = None
         self._main_copy_addrs_known = None
         self._copy_scan_ts = {}
+        # 降级记忆同理属于旧进程：新进程的副本值与地址都不同。
+        self._stale_patterns = {}
+        self._copy_locate_notes = {}

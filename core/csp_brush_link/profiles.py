@@ -153,6 +153,8 @@ class ProfileMixin:
         self._sub_copy_addrs_known = None
         self._main_copy_addrs_known = None
         self._copy_scan_ts = {}
+        self._stale_patterns = {}
+        self._copy_locate_notes = {}
 
     def _load_user_config(self) -> None:
         path = _resolve_config_file()
