@@ -98,6 +98,14 @@ class CSPSync(ProfileMixin, ProcessMixin, MemoryMixin, SlotMixin):
         # failed locate can not re-scan the whole address space on every
         # single write (that is what wedged the polling thread).
         self._copy_scan_ts: dict[str, float] = {}
+        # Per-slot 12-byte pattern the authoritative copies still held when a
+        # write first degraded to the UI mirror. The mirror moves on with our
+        # own writes, so without this the copies could never be recognised
+        # again and the slot stayed dead for the rest of the session — see
+        # SlotMixin._copies_from_peer_slot.
+        self._stale_patterns: dict[str, bytes] = {}
+        # Last copy-locate outcome per slot ("main"/"sub"), for diagnostics.
+        self._copy_locate_notes: dict[str, str] = {}
 
         # Currently selected build profile + the per-channel layout we
         # resolved from config.ini (or the defaults).

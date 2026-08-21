@@ -308,9 +308,9 @@ class MemorySyncThread(QThread):
                     # scan, two scans per prime), and paying that at connect
                     # made the app feel worse right when the user starts
                     # working. The copy set is now established for free instead:
-                    # a successful MAIN locate — which the first foreground
-                    # colour change performs anyway — also remembers the sub
-                    # siblings via _remember_sub_siblings(), so no extra scan is
+                    # whichever slot the user changes first performs a locate
+                    # anyway, and that locate also remembers the OTHER slot's
+                    # copies via _remember_peer_siblings(), so no extra scan is
                     # ever run on Colorink's behalf.
                 elif self.software_mode == 'sai':
                     color = self.sai2_sync.get_color()

@@ -133,11 +133,19 @@ def test_trivial_pattern_is_not_rescanned_on_every_write():
     sync.pm.seed(MAIN_MIRROR, BLACK)
 
     first = sync._locate_hsv_copies(BLACK, "_main_copy_addrs", 0x3C)
+    scans_after_first = len(calls)
     second = sync._locate_hsv_copies(BLACK, "_main_copy_addrs", 0x3C)
     third = sync._locate_hsv_copies(BLACK, "_main_copy_addrs", 0x3C)
 
     assert first == second == third == [MAIN_MIRROR]
-    assert len(calls) == 1, "one full address-space scan per write wedges the sync thread"
+    # Both slots hold black here, so the degraded locate also tries to derive
+    # the main copies across _SLOT_STRIDE from the sub slot — one further capped
+    # scan, exactly what a degraded sub locate already pays. What wedged the
+    # polling thread is rescanning on EVERY write, and that must not happen.
+    assert scans_after_first <= 2, \
+        f"a single degraded write must not scan more than twice: {calls}"
+    assert len(calls) == scans_after_first, \
+        "one full address-space scan per write wedges the sync thread"
     # A degraded result must never be cached: it would validate against the
     # value we wrote ourselves and lock the degradation in forever.
     assert sync._main_copy_addrs is None
@@ -154,11 +162,15 @@ def test_scan_cooldown_expires():
     sync._search_pattern = counting_search
     sync.pm.seed(MAIN_MIRROR, BLACK)
     sync._locate_hsv_copies(BLACK, "_main_copy_addrs", 0x3C)
-    assert len(calls) == 1
-    # Pretend the cooldown elapsed — a later write may retry the locate.
-    sync._copy_scan_ts["_main_copy_addrs"] -= CSPSync._COPY_RESCAN_INTERVAL + 1
+    first_round = len(calls)
+    assert first_round >= 1
     sync._locate_hsv_copies(BLACK, "_main_copy_addrs", 0x3C)
-    assert len(calls) == 2
+    assert len(calls) == first_round, "the cooldown must suppress every rescan"
+    # Pretend the cooldown elapsed — a later write may retry the locate.
+    for key in list(sync._copy_scan_ts):
+        sync._copy_scan_ts[key] -= CSPSync._COPY_RESCAN_INTERVAL + 1
+    sync._locate_hsv_copies(BLACK, "_main_copy_addrs", 0x3C)
+    assert len(calls) > first_round
 
 
 def test_valid_cache_is_reused_without_scanning():
@@ -265,7 +277,7 @@ def test_sub_slot_shares_the_capped_locate_path():
     """Every scan stays capped, and the next write does not rescan.
 
     A degraded SUB locate additionally tries to derive the copy set from the
-    MAIN copies (see ``_sub_copies_from_main``), which costs one further capped
+    MAIN copies (see ``_copies_from_peer_slot``), which costs one further capped
     scan when the main set is not already cached. Here BOTH slots hold black,
     so that derivation scan also comes back trivial and the write still falls
     back to the mirror. What must hold is that no scan is uncapped and that the
@@ -516,3 +528,163 @@ def test_main_locate_is_what_establishes_the_sub_set_for_free():
     assert len(scans) == before, "the background write triggered a new scan"
     written = {addr for addr, _ in sync.pm.writes}
     assert written == {MAIN_MIRROR + 0x60, COPY_A + 0x60}
+
+# ── the FOREGROUND mirror image of the same bug ────────────────────────────
+# Reported on CSP 5.1 (v1.6.13): "内存模式下 CSP 前景色不同步" while the
+# background kept working. The two slots had asymmetric recovery — the sub slot
+# could derive its copy set from the main copies, the main slot could not derive
+# anything — so a single failed foreground locate degraded to the +0x3C UI
+# mirror, and from then on every scan searched for a value that ONLY the mirror
+# held (our own degraded write put it there). The foreground stayed dead for the
+# rest of the session; the background, which had a second fallback, did not.
+
+
+def test_first_main_write_reaches_the_brush_via_the_sub_copy_stride():
+    """Trivial (black) foreground + distinctive background: still reach CSP."""
+    sync = _make_sync()
+    _seed_struct(sync.pm, MAIN_MIRROR, BLACK, RED)
+    _seed_struct(sync.pm, COPY_A, BLACK, RED)
+
+    def search(pattern, max_hits=0):
+        if pattern == BLACK:
+            return _trivial_search(pattern, max_hits)     # >200 hits, unusable
+        return [COPY_A + 0x60, MAIN_MIRROR + 0x60]        # sub locates fine
+
+    sync._search_pattern = search
+    sync.pm.writes.clear()
+    assert sync.set_color(10, 20, 30, color_index=0) is True
+
+    written = {addr for addr, _ in sync.pm.writes}
+    assert written == {MAIN_MIRROR, COPY_A}, (
+        "the foreground write did not reach the authoritative main copy "
+        f"(wrote {[hex(a) for a in sorted(written)]})"
+    )
+    # The background must not be touched by a foreground write.
+    assert sync.pm.read_bytes(MAIN_MIRROR + 0x60, 12) == RED
+    assert sync.pm.read_bytes(COPY_A + 0x60, 12) == RED
+
+
+def test_sub_locate_remembers_the_main_siblings_for_free():
+    """Symmetry: a background locate must cover the foreground slot too."""
+    sync = _make_sync()
+    _seed_struct(sync.pm, MAIN_MIRROR, BLACK, RED)
+    _seed_struct(sync.pm, COPY_A, BLACK, RED)
+    calls = []
+
+    def search(pattern, max_hits=0):
+        calls.append(pattern)
+        return [COPY_A + 0x60, MAIN_MIRROR + 0x60]
+
+    sync._search_pattern = search
+    assert sync.set_color(0, 0, 255, color_index=1) is True   # background write
+    assert len(calls) == 1, "remembering the siblings must not cost a scan"
+    assert sync._main_copy_addrs_known is not None, \
+        "the sub locate did not remember the main siblings"
+    assert sorted(sync._main_copy_addrs_known) == sorted([MAIN_MIRROR, COPY_A])
+
+
+def test_polluted_main_mirror_recovers_through_the_sub_copies():
+    """The lock-in itself: the mirror alone moved on, so no scan can match.
+
+    State after one degraded foreground write: the brush copies still hold the
+    original colour, the mirror holds what we wrote. Scanning for the mirror's
+    value finds only the mirror, and scanning for the copies' value is not
+    something the old code ever tried — every later foreground write degraded
+    again. The recorded pre-degradation pattern plus the sub copy set is what
+    identifies the real main copies again.
+    """
+    sync = _make_sync()
+    # First write degrades: black foreground is unidentifiable, and there is no
+    # verified set yet. Only the mirror changes.
+    _seed_struct(sync.pm, MAIN_MIRROR, BLACK, RED)
+    _seed_struct(sync.pm, COPY_A, BLACK, RED)
+    sync._search_pattern = lambda pattern, max_hits=0: (
+        _trivial_search(pattern, max_hits) if pattern == BLACK else []
+    )
+    assert sync.set_color(10, 20, 30, color_index=0) is True
+    assert sync.pm.read_bytes(COPY_A, 12) == BLACK, "precondition: brush copy stale"
+    polluted = sync.pm.read_bytes(MAIN_MIRROR, 12)
+    assert polluted != BLACK
+
+    # Second write: the mirror's value exists nowhere else, the sub slot is
+    # locatable. The foreground must come back instead of staying mirror-only.
+    sync._copy_scan_ts = {}
+    sync._search_pattern = lambda pattern, max_hits=0: (
+        [MAIN_MIRROR] if pattern == polluted
+        else _trivial_search(pattern, max_hits) if pattern == BLACK
+        else [COPY_A + 0x60, MAIN_MIRROR + 0x60]
+    )
+    sync.pm.writes.clear()
+    assert sync.set_color(255, 0, 255, color_index=0) is True
+
+    written = {addr for addr, _ in sync.pm.writes}
+    assert written == {MAIN_MIRROR, COPY_A}, (
+        "the foreground stayed locked on the UI mirror "
+        f"(wrote {[hex(a) for a in sorted(written)]})"
+    )
+    assert sync.pm.read_bytes(COPY_A, 12) == sync.pm.read_bytes(MAIN_MIRROR, 12)
+
+
+def test_main_derivation_is_rejected_when_the_sibling_does_not_match():
+    """Safety guard: never write addresses that are not really main fields."""
+    sync = _make_sync()
+    _seed_struct(sync.pm, MAIN_MIRROR, BLACK, RED)
+    # COPY_A's main sibling holds something else -> not a coherent copy set.
+    sync.pm.seed(COPY_A, BLUE)
+    sync.pm.seed(COPY_A + 0x60, RED)
+
+    sync._search_pattern = lambda pattern, max_hits=0: (
+        _trivial_search(pattern, max_hits) if pattern == BLACK
+        else [COPY_A + 0x60, MAIN_MIRROR + 0x60]
+    )
+    sync.pm.writes.clear()
+    assert sync.set_color(10, 20, 30, color_index=0) is True
+
+    written = {addr for addr, _ in sync.pm.writes}
+    assert written == {MAIN_MIRROR}, "must fall back to the mirror only"
+    assert sync._main_copy_addrs is None
+
+
+def test_degraded_slot_is_reported_in_the_locate_state():
+    """A mirror-only write is invisible in CSP; diagnostics must say so."""
+    sync = _make_sync()
+    _seed_struct(sync.pm, MAIN_MIRROR, BLACK, RED)
+    sync._search_pattern = lambda pattern, max_hits=0: (
+        _trivial_search(pattern, max_hits) if pattern == BLACK else []
+    )
+    assert sync.set_color(10, 20, 30, color_index=0) is True
+    assert "main=mirror-only" in sync.copy_locate_state
+
+    # A healthy locate replaces it with the copy count.
+    sync._copy_scan_ts = {}
+    sync.pm.seed(MAIN_MIRROR, RED)
+    sync.pm.seed(COPY_A, RED)
+    sync._search_pattern = lambda pattern, max_hits=0: [COPY_A, MAIN_MIRROR]
+    assert sync.set_color(255, 0, 0, color_index=0) is True
+    assert "main=located 2" in sync.copy_locate_state
+
+
+def test_coherent_copies_recover_even_without_a_recorded_stale_pattern():
+    """Colorink attached AFTER the mirror had already drifted.
+
+    No degraded write of ours was ever observed, so there is no stale pattern to
+    match — but several copies at the expected stride agree with each other, and
+    that is what identifies them. One lone sibling stays rejected (see
+    ``test_main_derivation_is_rejected_when_the_sibling_does_not_match``).
+    """
+    sync = _make_sync()
+    _seed_struct(sync.pm, MAIN_MIRROR, BLUE, RED)     # mirror drifted alone
+    _seed_struct(sync.pm, COPY_A, BLACK, RED)
+    _seed_struct(sync.pm, COPY_B, BLACK, RED)
+    sync._search_pattern = lambda pattern, max_hits=0: (
+        [MAIN_MIRROR] if pattern == BLUE
+        else [COPY_A + 0x60, COPY_B + 0x60, MAIN_MIRROR + 0x60]
+    )
+    sync.pm.writes.clear()
+    assert sync.set_color(10, 20, 30, color_index=0) is True
+
+    written = {addr for addr, _ in sync.pm.writes}
+    assert written == {MAIN_MIRROR, COPY_A, COPY_B}
+    assert sync.pm.read_bytes(COPY_A, 12) == sync.pm.read_bytes(COPY_B, 12)
+    # The background slot is still untouched by a foreground write.
+    assert sync.pm.read_bytes(COPY_A + 0x60, 12) == RED

@@ -269,26 +269,52 @@ class SlotMixin:
                  f"same colour)")
         return kept
 
-    def _main_copies_for_derivation(self, allow_scan: bool) -> list[int] | None:
-        """Locate the MAIN colour copies, to derive the sub copies from.
+    def _slot_label(self, base_off: int) -> str:
+        """Human name of the colour slot a field offset belongs to."""
+        if base_off == self._RGB_U32_OFFS[0]:
+            return "main"
+        if base_off == self._SUB_HSV_OFFS[0]:
+            return "sub"
+        return f"0x{base_off:X}"
 
-        Free when the cached (or last-verified) set still holds the current
-        main pattern. Otherwise a capped scan is run only if *allow_scan*, and
-        only once per ``_COPY_RESCAN_INTERVAL`` — a main-pattern scan walks the
+    def _peer_slot(self, base_off: int) -> tuple[str, tuple[int, ...], int] | None:
+        """Describe the OTHER colour slot of the same struct.
+
+        Returns ``(peer cache attribute, peer field offsets, delta)`` where
+        ``this_address + delta`` is the peer's matching field: the main HSV
+        block (+0x3C) and the sub HSV block (+0x9C) are two sub-objects of one
+        colour struct ``_SLOT_STRIDE`` bytes apart — the same relationship
+        :meth:`_drop_sibling_slot_hits` already depends on. ``None`` for
+        anything that is not one of the two colour blocks.
+        """
+        if base_off == self._RGB_U32_OFFS[0]:
+            return ("_sub_copy_addrs", self._SUB_HSV_OFFS, self._SLOT_STRIDE)
+        if base_off == self._SUB_HSV_OFFS[0]:
+            return ("_main_copy_addrs", self._RGB_U32_OFFS, -self._SLOT_STRIDE)
+        return None
+
+    def _peer_copies_for_derivation(self, cache_attr: str,
+                                    offs: tuple[int, ...],
+                                    allow_scan: bool) -> list[int] | None:
+        """Locate the PEER slot's copies, to derive this slot's copies from.
+
+        Free when the peer's cached (or last-verified) set still holds its
+        current pattern. Otherwise a capped scan is run only if *allow_scan*,
+        and only once per ``_COPY_RESCAN_INTERVAL`` — such a scan walks the
         whole address space, and repeating one per write is what froze the
-        polling thread before v1.6.7. Returns ``None`` when the main colour is
-        itself too trivial to identify.
+        polling thread before v1.6.7. Returns ``None`` when the peer's colour
+        is itself too trivial to identify.
         """
         if self.pm is None or self.target is None:
             return None
-        main_base = self.target + self._RGB_U32_OFFS[0]
-        main_pat = b"".join(
+        peer_base = self.target + offs[0]
+        pattern = b"".join(
             self._read_u32(self.target + off).to_bytes(4, "little")
-            for off in self._RGB_U32_OFFS
+            for off in offs
         )
-        for attr in ("_main_copy_addrs", "_main_copy_addrs_known"):
+        for attr in (cache_attr, cache_attr + "_known"):
             cached = getattr(self, attr, None)
-            if cached and self._copy_cache_is_live(cached, main_pat):
+            if cached and self._copy_cache_is_live(cached, pattern):
                 return list(cached)
         if not allow_scan:
             return None
@@ -296,121 +322,214 @@ class SlotMixin:
         if scan_ts is None:
             scan_ts = {}
             self._copy_scan_ts = scan_ts
-        key = "_main_copy_addrs_derive"
+        key = cache_attr + "_derive"
         last = scan_ts.get(key)
         now = time.monotonic()
         if last is not None and now - last < self._COPY_RESCAN_INTERVAL:
             return None
         scan_ts[key] = now
-        hits = self._search_pattern(main_pat, max_hits=self._SUB_COPY_LIMIT + 1)
+        hits = self._search_pattern(pattern, max_hits=self._SUB_COPY_LIMIT + 1)
         if len(hits) > self._SUB_COPY_LIMIT:
             return None
-        hits = self._drop_sibling_slot_hits(hits, self._RGB_U32_OFFS[0], main_base)
+        hits = self._drop_sibling_slot_hits(hits, offs[0], peer_base)
         addrs = list(hits)
-        if main_base not in addrs:
-            addrs.append(main_base)
+        if peer_base not in addrs:
+            addrs.append(peer_base)
         return addrs if len(addrs) > 1 else None
 
-    def _sub_copies_from_main(self, old: bytes, base_addr: int,
-                              allow_scan: bool) -> list[int] | None:
-        """Derive the sub-colour copy set from the main-colour copy set.
+    def _copies_from_peer_slot(self, old: bytes, cache_attr: str,
+                               base_off: int, base_addr: int,
+                               allow_scan: bool) -> list[int] | None:
+        """Derive this slot's copy set from the OTHER slot's copy set.
 
-        The main HSV block (+0x3C) and the sub HSV block (+0x9C) are two
-        sub-objects of one colour struct ``_SLOT_STRIDE`` bytes apart — the
-        same relationship :meth:`_drop_sibling_slot_hits` already depends on.
+        Both slots fail the same way and must recover the same way — that
+        symmetry is the point. A value scan cannot identify the copies when the
+        colour is *trivial* (CSP's default foreground black is twelve zero
+        bytes, its default background white is eight 0x00 then four 0xFF; both
+        match far past ``_SUB_COPY_LIMIT``), and it cannot identify them either
+        once a previous degraded write has left a value that ONLY the UI mirror
+        holds. Deriving across ``_SLOT_STRIDE`` from the slot that *can* be
+        located is what carries the write to CSP's brush anyway.
 
-        This matters because the two slots fail differently. The main colour is
-        the one the user actively edits, so its pattern is normally distinctive
-        and its scan succeeds; CSP's default *background* is white, whose
-        12-byte HSV-u32 pattern (eight 0x00 then four 0xFF) matches far past
-        ``_SUB_COPY_LIMIT``. So the first background write of a session reached
-        the +0x9C UI mirror only — CSP's brush kept the old colour — and the
-        remembered-set recovery had nothing to fall back on yet.
+        Safety, in order:
 
-        Safety: every derived address must currently hold *old* (the live sub
-        pattern), and the mirror must be among the siblings. That is what
-        proves these really are the sub fields of the current colour structs
-        rather than an unrelated allocation. Returns ``None`` whenever that
-        cannot be established, leaving the caller on its previous behaviour.
+        * every derived address currently holds *old* (the live pattern of this
+          slot) — the normal case, proving these are really this slot's fields;
+        * or every derived address except the mirror holds the pattern recorded
+          when this slot first degraded (``_stale_patterns``). That is the
+          recovery case: our mirror-only writes never reached the authoritative
+          copies, so they still hold the pre-degradation value, and the mirror
+          is the one address a degraded write has already changed;
+        * or at least TWO derived addresses besides the mirror agree with each
+          other. CSP keeps its copies in sync, so agreement at the expected
+          stride identifies them even when we never observed the divergence
+          (a mirror already out of step when Colorink attached, or a slot
+          pointer that moved since). One lone sibling is not evidence — see
+          ``test_derivation_is_rejected_when_the_sibling_does_not_match`` — so
+          the bar is two.
+
+        The mirror must be among the derived addresses in every case: a set that
+        contains this slot's own known-good field at the expected stride proves
+        the geometry, not just the values. Returns ``None`` when none of them
+        can be established, leaving the caller on its previous behaviour.
         """
+        peer = self._peer_slot(base_off)
         pm = self.pm
-        if pm is None or self.target is None:
+        if peer is None or pm is None or self.target is None:
             return None
-        main_addrs = self._main_copies_for_derivation(allow_scan)
-        if not main_addrs:
+        peer_attr, peer_offs, delta = peer
+        peer_addrs = self._peer_copies_for_derivation(peer_attr, peer_offs,
+                                                     allow_scan)
+        if not peer_addrs:
             return None
-        derived = []
-        for addr in main_addrs:
-            candidate = addr + self._SLOT_STRIDE
+        derived: list[tuple[int, bytes]] = []
+        for addr in peer_addrs:
+            candidate = addr - delta
             try:
-                if pm.read_bytes(candidate, 12) != old:
-                    return None
+                derived.append((candidate, pm.read_bytes(candidate, 12)))
             except Exception:
                 return None
-            derived.append(candidate)
-        if len(derived) < 2 or base_addr not in derived:
+        addrs = [addr for addr, _ in derived]
+        if len(addrs) < 2 or base_addr not in addrs:
             return None
-        return derived
+        if all(value == old for _, value in derived):
+            return addrs
+        label = self._slot_label(base_off)
+        peer_label = self._slot_label(peer_offs[0])
+        others = [value for addr, value in derived if addr != base_addr]
+        stale = (getattr(self, "_stale_patterns", None) or {}).get(cache_attr)
+        if stale is not None and others and all(value == stale for value in others):
+            _log(f"_locate_hsv_copies: {label} copies still hold the "
+                 f"pre-degradation pattern — recovering through the "
+                 f"{peer_label} slot")
+            return addrs
+        if len(others) >= 2 and len(set(others)) == 1:
+            _log(f"_locate_hsv_copies: {len(others)} {label} copies agree with "
+                 f"each other but not with the mirror — recovering through the "
+                 f"{peer_label} slot")
+            return addrs
+        return None
 
     def _degraded_copy_fallback(self, old: bytes, cache_attr: str,
                                 base_off: int, base_addr: int, reason: str,
                                 allow_scan: bool = True) -> list[int]:
         """Best copy set available when the value scan identified nothing.
 
-        Order: the last verified set, then (sub slot only) the set derived
-        from the main copies via ``_SLOT_STRIDE``, then the UI mirror alone —
-        which does not reach the brush.
+        Order: the last verified set, then the set derived from the OTHER
+        slot's copies via ``_SLOT_STRIDE``, then the UI mirror alone — which
+        does not reach the brush.
         """
         remembered = self._remembered_copies(cache_attr, base_addr)
         if remembered:
+            self._note_locate(base_off, f"remembered {len(remembered)}")
+            self._clear_stale_pattern(cache_attr)
             _log(f"_locate_hsv_copies: {reason} — remembered copy set, NOT cached")
             return remembered
-        if base_off == self._SUB_HSV_OFFS[0]:
-            derived = self._sub_copies_from_main(old, base_addr, allow_scan)
-            if derived:
-                # Validated against the live sub pattern at every address, so
-                # this is a genuine copy set and may be cached (unlike a
-                # mirror-only result, which would re-validate against our own
-                # writes forever and lock the degradation in).
-                setattr(self, cache_attr, derived)
-                setattr(self, cache_attr + "_known", list(derived))
-                _log(f"_locate_hsv_copies: {reason} — derived {len(derived)} "
-                     f"sub copies from the main copy set "
-                     f"(+0x{self._SLOT_STRIDE:X})")
-                return derived
+        derived = self._copies_from_peer_slot(old, cache_attr, base_off,
+                                              base_addr, allow_scan)
+        if derived:
+            # Validated against live memory at every address, so this is a
+            # genuine copy set and may be cached (unlike a mirror-only result,
+            # which would re-validate against our own writes forever and lock
+            # the degradation in).
+            setattr(self, cache_attr, derived)
+            setattr(self, cache_attr + "_known", list(derived))
+            self._note_locate(base_off, f"derived {len(derived)}")
+            self._clear_stale_pattern(cache_attr)
+            _log(f"_locate_hsv_copies: {reason} — derived {len(derived)} "
+                 f"{self._slot_label(base_off)} copies from the peer slot "
+                 f"(±0x{self._SLOT_STRIDE:X})")
+            return derived
+        # The mirror is about to receive a write the brush will never read, so
+        # remember what the authoritative copies still hold: the NEXT locate
+        # can no longer scan for it (the mirror moves on), and that recorded
+        # pattern is what lets :meth:`_copies_from_peer_slot` recognise the
+        # real copies again instead of the slot staying dead for the session.
+        self._remember_stale_pattern(cache_attr, old)
+        self._note_locate(base_off, f"mirror-only ✗ ({reason})")
         _log(f"_locate_hsv_copies: {reason} — mirror-only write, NOT cached")
         return [base_addr]
 
-    def _remember_sub_siblings(self, main_addrs: list[int]) -> None:
-        """Piggyback: remember the sub copies implied by a main locate.
+    def _remember_peer_siblings(self, addrs: list[int], base_off: int) -> None:
+        """Piggyback: remember the PEER slot's copies implied by this locate.
 
-        Costs no scan — the main copy set was just identified, so the sub
-        fields ``_SLOT_STRIDE`` further on are known too. Recording them means
-        a later background write whose own pattern is trivial (white/black)
-        already has a verified set to fall back on.
+        Costs no scan — this slot's copy set was just identified, so the peer's
+        fields ``_SLOT_STRIDE`` away are known too. Recording them means a
+        later write to that slot whose own pattern is trivial (black/white)
+        already has a verified set to fall back on. Runs in both directions:
+        a foreground locate covers the background slot and vice versa.
         """
+        peer = self._peer_slot(base_off)
         pm = self.pm
-        if pm is None or self.target is None or getattr(self, "_sub_copy_addrs_known", None):
+        if peer is None or pm is None or self.target is None:
             return
-        sub_base = self.target + self._SUB_HSV_OFFS[0]
+        peer_attr, peer_offs, delta = peer
+        known_attr = peer_attr + "_known"
+        if getattr(self, known_attr, None):
+            return
+        peer_base = self.target + peer_offs[0]
         try:
-            expected = pm.read_bytes(sub_base, 12)
+            expected = pm.read_bytes(peer_base, 12)
         except Exception:
             return
         derived = []
-        for addr in main_addrs:
-            candidate = addr + self._SLOT_STRIDE
+        for addr in addrs:
+            candidate = addr + delta
             try:
                 if pm.read_bytes(candidate, 12) != expected:
                     return
             except Exception:
                 return
             derived.append(candidate)
-        if len(derived) < 2 or sub_base not in derived:
+        if len(derived) < 2 or peer_base not in derived:
             return
-        self._sub_copy_addrs_known = list(derived)
-        _log(f"_locate_hsv_copies: remembered {len(derived)} sub copies "
-             f"alongside the main copy set (+0x{self._SLOT_STRIDE:X})")
+        setattr(self, known_attr, list(derived))
+        _log(f"_locate_hsv_copies: remembered {len(derived)} "
+             f"{self._slot_label(peer_offs[0])} copies alongside the "
+             f"{self._slot_label(base_off)} copy set "
+             f"(±0x{self._SLOT_STRIDE:X})")
+
+    # ----- degraded-state bookkeeping -------------------------------------
+    def _remember_stale_pattern(self, cache_attr: str, old: bytes) -> None:
+        """Record the pattern the authoritative copies hold, once.
+
+        Only the FIRST degraded write sees a mirror that still agrees with the
+        copies; every later one reads back a value we wrote ourselves, so the
+        first record is the one worth keeping.
+        """
+        stale = getattr(self, "_stale_patterns", None)
+        if stale is None:
+            stale = {}
+            self._stale_patterns = stale
+        stale.setdefault(cache_attr, old)
+
+    def _clear_stale_pattern(self, cache_attr: str) -> None:
+        stale = getattr(self, "_stale_patterns", None)
+        if stale:
+            stale.pop(cache_attr, None)
+
+    def _note_locate(self, base_off: int, outcome: str) -> None:
+        """Record how the last copy-locate for this slot ended.
+
+        Surfaced through :attr:`copy_locate_state` in the copyable diagnostics,
+        so a "colour does not sync" report carries the one fact that decides
+        the case: whether the write reached CSP's brush copies or only the UI
+        mirror.
+        """
+        notes = getattr(self, "_copy_locate_notes", None)
+        if notes is None:
+            notes = {}
+            self._copy_locate_notes = notes
+        notes[self._slot_label(base_off)] = outcome
+
+    @property
+    def copy_locate_state(self) -> str:
+        """Last copy-locate outcome per colour slot, e.g. ``main=located 8``."""
+        notes = getattr(self, "_copy_locate_notes", None)
+        if not notes:
+            return ""
+        return "; ".join(f"{slot}={outcome}"
+                         for slot, outcome in sorted(notes.items()))
 
     def _locate_hsv_copies(self, old: bytes, cache_attr: str,
                            base_off: int) -> list[int]:
@@ -432,8 +551,15 @@ class SlotMixin:
           are momentarily out of sync (typically right after a degraded
           write of our own).
 
-        Both cases fall back to the remembered copy set, then to the mirror,
-        and are retried on a later write (see ``_COPY_RESCAN_INTERVAL``).
+        Both cases fall back to the remembered copy set, then to the copy set
+        derived from the OTHER slot across ``_SLOT_STRIDE``, then to the mirror,
+        and are retried on a later write (see ``_COPY_RESCAN_INTERVAL``). The
+        fallbacks are deliberately symmetric between the two slots: while only
+        the sub slot could derive its copies from the main slot, one failed
+        foreground locate degraded every later foreground write for the rest of
+        the session (the mirror moved on alone, so no scan could ever match the
+        copies again) while the background kept syncing — reported as "内存模式
+        下 CSP 前景色不同步，背景色正常".
         """
         if self.target is None or self.pm is None:
             return []
@@ -442,6 +568,8 @@ class SlotMixin:
         addrs = getattr(self, cache_attr, None)
         if addrs:
             if self._copy_cache_is_live(addrs, old):
+                self._note_locate(base_off, f"cached {len(addrs)}")
+                self._clear_stale_pattern(cache_attr)
                 return addrs
             setattr(self, cache_attr, None)
 
@@ -455,6 +583,8 @@ class SlotMixin:
         known = getattr(self, cache_attr + "_known", None)
         if known and base_addr in known and self._copy_cache_is_live(known, old):
             setattr(self, cache_attr, list(known))
+            self._note_locate(base_off, f"verified {len(known)}")
+            self._clear_stale_pattern(cache_attr)
             return list(known)
 
         scan_ts = getattr(self, "_copy_scan_ts", None)
@@ -464,7 +594,7 @@ class SlotMixin:
         last = scan_ts.get(cache_attr)
         now = time.monotonic()
         if last is not None and now - last < self._COPY_RESCAN_INTERVAL:
-            # 扫描冷却中：写记住的副本集，或由【已缓存】的主色副本推导
+            # 扫描冷却中：写记住的副本集，或由【已缓存】的另一槽副本推导
             # （不触发新扫描）；都没有才只写镜像槽。全地址空间扫描每次要
             # 几秒，逐次写入都重扫会把轮询线程彻底堵死。
             return self._degraded_copy_fallback(
@@ -475,8 +605,8 @@ class SlotMixin:
         hits = self._search_pattern(old, max_hits=self._SUB_COPY_LIMIT + 1)
         if len(hits) > self._SUB_COPY_LIMIT:
             # 平凡模式（黑 = 全 0，12 个零字节；白 / 灰同理）在进程内存里
-            # 处处命中，无法区分权威笔刷副本。退回已验证的副本集 / 由主色
-            # 副本按 _SLOT_STRIDE 推导；都不行才只写镜像槽。
+            # 处处命中，无法区分权威笔刷副本。退回已验证的副本集 / 由另一
+            # 槽副本按 _SLOT_STRIDE 推导；都不行才只写镜像槽。
             return self._degraded_copy_fallback(
                 old, cache_attr, base_off, base_addr,
                 f">{self._SUB_COPY_LIMIT} hits (trivial pattern)")
@@ -488,17 +618,20 @@ class SlotMixin:
         if len(addrs) > 1:
             setattr(self, cache_attr, addrs)
             setattr(self, cache_attr + "_known", list(addrs))
+            self._note_locate(base_off, f"located {len(addrs)}")
+            self._clear_stale_pattern(cache_attr)
             _log(f"_locate_hsv_copies: located {len(addrs)} copies")
-            if base_off == self._RGB_U32_OFFS[0]:
-                # Free: the sub fields sit _SLOT_STRIDE further on, so record
-                # them now while they are still coherent. A later background
-                # write whose own pattern is trivial then has a verified set to
-                # fall back on instead of degrading to the UI mirror.
-                self._remember_sub_siblings(addrs)
+            # Free: the peer slot's fields sit _SLOT_STRIDE away, so record
+            # them now while they are still coherent. A later write to that
+            # slot whose own pattern is trivial then has a verified set to fall
+            # back on instead of degrading to the UI mirror. Symmetric on
+            # purpose — a foreground locate covers the background slot and a
+            # background locate covers the foreground slot.
+            self._remember_peer_siblings(addrs, base_off)
             return addrs
 
         # 只有镜像槽持有该值：权威副本此刻不同步（通常是上一次降级写入
-        # 只写了镜像）。同样退回已验证副本集 / 主色推导，绝不缓存降级结果
+        # 只写了镜像）。同样退回已验证副本集 / 另一槽推导，绝不缓存降级结果
         # ——一旦缓存，校验读到的总是自己刚写过的值（恒通过），会把降级
         # 状态永久锁死。
         return self._degraded_copy_fallback(
