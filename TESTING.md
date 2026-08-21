@@ -2,7 +2,7 @@
 
 > 用法：改完东西对着这张表勾。**不是每次都要全测** —— 按下面三档执行。
 > 只想按顺序打勾跑手测 → **[CHECKLIST.md](CHECKLIST.md)**（纯手动项，自动化命令已剔除）。
-> 基线（2026-08，v1.6.13）：`python -m pytest -q` → **755 passed，约 40 秒**。
+> 基线（2026-08，v1.6.14）：`python -m pytest -q` → **761 passed，约 41 秒**。
 
 ## 0. 先决定要测哪一档
 
@@ -22,7 +22,7 @@
 - [ ] 测试必须用 **Windows 的 Python** 跑。WSL / Linux 上有 13 个测试文件在采集阶段就崩（`ctypes.WinDLL` 不存在），不是代码坏了。
 - [ ] 依赖：`pip install -r requirements.txt -r requirements-dev.txt`
       （`coloraide` 只用于测试，作为 `ui/color_conversions.py` 的独立对照实现）
-- [ ] 确认基线绿：`python -m pytest -q` → `755 passed`
+- [ ] 确认基线绿：`python -m pytest -q` → `761 passed`
 - 当前验证过的组合：Python 3.14 / PyQt6 6.7.1 / pytest 9.1.1
 
 ---
@@ -30,7 +30,7 @@
 ## 2. A 档 · 每次改完代码都做（约 3 分钟）
 
 - [ ] **A1 全量单测**：`python -m pytest -q`
-      → 必须 `755 passed`（加了功能就该 >755；**数字只许涨，不许跌**）
+      → 必须 `761 passed`（加了功能就该 >761；**数字只许涨，不许跌**）
       → 失败时看单个文件：`python -m pytest tests/test_xxx.py -v`
 - [ ] **A2 冷启动**：`python main.py` 能出窗口；控制台无 traceback；`stderr.log` 没有新增内容
 - [ ] **A3 四个基本动作**（10 秒扫一遍，防低级回归）：
@@ -53,7 +53,7 @@
 | B5 | `ui/color_picker_overlay.py` `core/foreground.py` `core/picker_hook.c/.dll` | `pytest tests/test_picker_zoom.py tests/test_picker_components.py tests/test_foreground_detection.py -q` | **真机必测**：`F11` 全屏放大镜；预览里不出现 Colorink 自己的窗口；主副屏 + 不同缩放各取一次；画画软件在前台时无焦点取色仍生效 |
 | B6 | `core/native_grayscale.py` `native_grayscale/` | `pytest tests/test_native_grayscale.py tests/test_native_grayscale_contract.py -q` | `Ctrl+G` 连开关 5 次不崩；OKLCh 与 Luma 两种模式；限定单显示器生效；改分辨率/DPI 后覆盖层还对；不可用时**有明确提示**而不是静默 |
 | B7 | `core/mag_grayscale.py` `mag_overlay/` | `pytest tests/test_mag_grayscale.py -q` | 全屏灰度生效；退出后颜色完全恢复；和系统颜色滤镜同时开不打架 |
-| B8 | `core/csp_brush_link/` `core/memory_sync.py` | `pytest tests/test_csp_brush_link_5_1.py tests/test_memory_sync_transparent_readback.py tests/test_memory_sync_ps_echo.py -q` | CSP 里改色 ↔ Colorink 双向同步；主色槽/副色槽分别测；透明色标记透传；**把 CSP 关掉再开，能自动重连**；久跑用 `python tools/stability_test.py`、`python tools/e2e_bidirectional.py` |
+| B8 | `core/csp_brush_link/` `core/memory_sync.py` | `pytest tests/test_csp_brush_link_5_1.py tests/test_csp_copy_locate.py tests/test_csp_legacy_profiles.py tests/test_memory_sync_transparent_readback.py tests/test_memory_sync_ps_echo.py -q` | CSP 里改色 ↔ Colorink 双向同步；**主色槽 / 副色槽必须各自单独测一遍**（历史上出现过「前景色不同步、背景色正常」的单边坏）；**从 CSP 默认色起手**（黑前景 / 白背景，两个都是内存里到处命中的平凡模式）也要能同步；透明色标记透传；**把 CSP 关掉再开，能自动重连**；写入不落地时跑 `python tools/diag_fg_write.py` 定位（打印 mirror-only / located / derived），设置页「复制诊断信息」里的 `copy_locate_state` 是同一个判据；久跑用 `python tools/stability_test.py`、`python tools/e2e_bidirectional.py` |
 | B9 | `core/csp_companion_sync.py` | `pytest tests/test_companion_protocol.py tests/test_memory_sync_companion_active_echo.py -q` | CSP「连接智能手机」二维码自动扫描；扫描失败时手动粘贴 URL 也能连；断开后重连；`python tools/verify_companion_bridge.py` |
 | B10 | `core/photoshop_color_sync.py` `core/photoshop_instances.py` `core/photoshop_script_bridge.py` `core/photoshop_bridge.jsx` | `pytest tests/test_photoshop_color_sync.py tests/test_photoshop_instances.py tests/test_photoshop_script_bridge.py -q`（49 项） | 注册版 PS（COM 路径）+ 绿色便携版（CEP 脚本桥）各测一次；同时开两个 PS 实例能选对；前景/背景双槽独立读写 |
 | B11 | `core/sai2_brush_link.py` `core/udm_brush_link.py` | ⚠️ **无自动化覆盖** | 全靠手测：SAI2 / UDM 里改笔刷色 → Colorink 跟上；软件重启后重连 |
