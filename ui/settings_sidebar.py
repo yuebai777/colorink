@@ -123,17 +123,17 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         grid_hotkeys.setColumnStretch(1, 1)
 
         grid_hotkeys.addWidget(QLabel(i18n.tr("全局取色")), 0, 0)
-        self.btn_pick = HotkeyButton("pickKey", self.cfg.get("pickKey", "F11"), allow_mouse=True)
+        self.btn_pick = HotkeyButton("pickKey", self.cfg.get("pickKey", "Ctrl+Alt+Q"), allow_mouse=True)
         self.btn_pick.hotkeyChanged.connect(self.save_hotkeys)
         grid_hotkeys.addWidget(self.btn_pick, 0, 1)
 
         grid_hotkeys.addWidget(QLabel(i18n.tr("隐藏窗口")), 1, 0)
-        self.btn_hide = HotkeyButton("hideWindowKey", self.cfg.get("hideWindowKey", "Ctrl+H"), allow_mouse=True)
+        self.btn_hide = HotkeyButton("hideWindowKey", self.cfg.get("hideWindowKey", "Ctrl+Alt+Y"), allow_mouse=True)
         self.btn_hide.hotkeyChanged.connect(self.save_hotkeys)
         grid_hotkeys.addWidget(self.btn_hide, 1, 1)
 
         grid_hotkeys.addWidget(QLabel(i18n.tr("跟随鼠标")), 2, 0)
-        self.btn_follow = HotkeyButton("followMouseKey", self.cfg.get("followMouseKey", "Ctrl+R"), allow_mouse=True)
+        self.btn_follow = HotkeyButton("followMouseKey", self.cfg.get("followMouseKey", "Ctrl+Alt+J"), allow_mouse=True)
         self.btn_follow.hotkeyChanged.connect(self.save_hotkeys)
         row_follow = QHBoxLayout()
         row_follow.setSpacing(6)
@@ -145,7 +145,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         grid_hotkeys.addLayout(row_follow, 2, 1)
 
         grid_hotkeys.addWidget(QLabel(i18n.tr("灰度滤镜")), 3, 0)
-        self.btn_grayscale = HotkeyButton("grayscaleFilterKey", self.cfg.get("grayscaleFilterKey", "Ctrl+G"), allow_mouse=True)
+        self.btn_grayscale = HotkeyButton("grayscaleFilterKey", self.cfg.get("grayscaleFilterKey", "Ctrl+Alt+D"), allow_mouse=True)
         self.btn_grayscale.hotkeyChanged.connect(self.save_hotkeys)
         grid_hotkeys.addWidget(self.btn_grayscale, 3, 1)
 
@@ -156,13 +156,13 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         grid_hotkeys.addWidget(self.btn_lab_toggle, 4, 1)
 
         grid_hotkeys.addWidget(QLabel(i18n.tr("LAB 切换（全局）")), 5, 0)
-        self.btn_lab_global = HotkeyButton("toggleLabGlobalKey", self.cfg.get("toggleLabGlobalKey", "Ctrl+L"), allow_mouse=True)
+        self.btn_lab_global = HotkeyButton("toggleLabGlobalKey", self.cfg.get("toggleLabGlobalKey", "Ctrl+Alt+L"), allow_mouse=True)
         self.btn_lab_global.setToolTip(i18n.tr("任意位置全局切换色轮/LAB视图，无需聚焦本窗口；支持键盘或鼠标按键（鼠标按键作为全局快捷键时不拦截点击，画画软件仍会收到）"))
         self.btn_lab_global.hotkeyChanged.connect(self.save_hotkeys)
         grid_hotkeys.addWidget(self.btn_lab_global, 5, 1)
 
         grid_hotkeys.addWidget(QLabel(i18n.tr("标题栏显示/隐藏")), 6, 0)
-        self.btn_title_bar = HotkeyButton("toggleTitleBarKey", self.cfg.get("toggleTitleBarKey", "Ctrl+Shift+T"), allow_mouse=True)
+        self.btn_title_bar = HotkeyButton("toggleTitleBarKey", self.cfg.get("toggleTitleBarKey", "Ctrl+Alt+K"), allow_mouse=True)
         self.btn_title_bar.setToolTip(i18n.tr("显示或隐藏标题栏（设置/最小化/关闭按钮那一栏）；隐藏后顶部边框与四周一致"))
         self.btn_title_bar.hotkeyChanged.connect(self.save_hotkeys)
         grid_hotkeys.addWidget(self.btn_title_bar, 6, 1)
@@ -208,19 +208,19 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cfg = config.load_hotkey_config()
         
         # 1. Hotkeys
-        _pick = self.cfg.get("pickKey", "F11")
+        _pick = self.cfg.get("pickKey", "Ctrl+Alt+Q")
         self.btn_pick.setText(display_hotkey(_pick) if _pick else i18n.tr("未绑定"))
         self.btn_pick.val = _pick
 
-        _hide = self.cfg.get("hideWindowKey", "Ctrl+H")
+        _hide = self.cfg.get("hideWindowKey", "Ctrl+Alt+Y")
         self.btn_hide.setText(display_hotkey(_hide) if _hide else i18n.tr("未绑定"))
         self.btn_hide.val = _hide
 
-        _follow = self.cfg.get("followMouseKey", "Ctrl+R")
+        _follow = self.cfg.get("followMouseKey", "Ctrl+Alt+J")
         self.btn_follow.setText(display_hotkey(_follow) if _follow else i18n.tr("未绑定"))
         self.btn_follow.val = _follow
 
-        _gray = self.cfg.get("grayscaleFilterKey", "Ctrl+G")
+        _gray = self.cfg.get("grayscaleFilterKey", "Ctrl+Alt+D")
         self.btn_grayscale.setText(display_hotkey(_gray) if _gray else i18n.tr("未绑定"))
         self.btn_grayscale.val = _gray
 
@@ -228,11 +228,11 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.btn_lab_toggle.setText(display_hotkey(_lab_key) if _lab_key else i18n.tr("未绑定"))
         self.btn_lab_toggle.val = _lab_key
 
-        _lab_global = self.cfg.get("toggleLabGlobalKey", "Ctrl+L")
+        _lab_global = self.cfg.get("toggleLabGlobalKey", "Ctrl+Alt+L")
         self.btn_lab_global.setText(display_hotkey(_lab_global) if _lab_global else i18n.tr("未绑定"))
         self.btn_lab_global.val = _lab_global
 
-        _title_bar = self.cfg.get("toggleTitleBarKey", "Ctrl+Shift+T")
+        _title_bar = self.cfg.get("toggleTitleBarKey", "Ctrl+Alt+K")
         self.btn_title_bar.setText(display_hotkey(_title_bar) if _title_bar else i18n.tr("未绑定"))
         self.btn_title_bar.val = _title_bar
         

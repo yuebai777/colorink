@@ -39,13 +39,13 @@ def test_first_run_defaults_are_compact_and_discoverable():
     with patch("core.config.get_user_data_dir", return_value=str(PROJECT_ROOT / "missing-config")):
         config = load_hotkey_config()
 
-    assert config["pickKey"] == "F11"
-    assert config["hideWindowKey"] == "Ctrl+H"
-    assert config["toggleTitleBarKey"] == "Ctrl+Shift+T"
-    assert config["followMouseKey"] == "Ctrl+R"
-    assert config["grayscaleFilterKey"] == "Ctrl+G"
+    assert config["pickKey"] == "Ctrl+Alt+Q"
+    assert config["hideWindowKey"] == "Ctrl+Alt+Y"
+    assert config["toggleTitleBarKey"] == "Ctrl+Alt+K"
+    assert config["followMouseKey"] == "Ctrl+Alt+J"
+    assert config["grayscaleFilterKey"] == "Ctrl+Alt+D"
     assert config["toggleLabKey"] == "Space"
-    assert config["toggleLabGlobalKey"] == "Ctrl+L"
+    assert config["toggleLabGlobalKey"] == "Ctrl+Alt+L"
     assert config["showLabToggleButton"] is True
     assert config["showTitleBar"] is True
     assert config["colorSpaceModule"] == "hsv"
@@ -132,9 +132,9 @@ def test_existing_config_values_survive_missing_key_merge(tmp_path):
     assert config["colorSpaceModule"] == "lch"
     assert config["showModuleSwitchButton"] is True
     assert config["showLabToggleButton"] is True
-    assert config["toggleTitleBarKey"] == "Ctrl+Shift+T"
+    assert config["toggleTitleBarKey"] == "Ctrl+Alt+K"
     assert config["showTitleBar"] is True
-    assert config["toggleLabGlobalKey"] == "Ctrl+L"
+    assert config["toggleLabGlobalKey"] == "Ctrl+Alt+L"
     assert config["hideHueRing"] is False
     assert config["ringlessControlsSide"] == "right"
 

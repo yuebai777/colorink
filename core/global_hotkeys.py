@@ -27,7 +27,7 @@ def bind_hotkey(hotkey_type: str, hotkey_str: str):
     if not hotkey_str:
         return
 
-    # Normalize shortcut (e.g. "Ctrl+R" -> "ctrl+r")
+    # Normalize shortcut (e.g. "Ctrl+Alt+J" -> "ctrl+alt+j")
     normalized = hotkey_str.lower().strip()
 
     # 拒绝同一组合绑定到两个功能：keyboard 库以组合名为字典键，
