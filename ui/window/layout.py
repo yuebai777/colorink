@@ -4,6 +4,7 @@ Extracted from ``ui.main_window``: content-height policy, resize/move
 handling, ringless layout propagation and the local LAB-switch event paths.
 """
 
+import os
 import time
 
 from PyQt6.QtCore import QEvent, QPoint, QRect, Qt
@@ -14,6 +15,33 @@ from core import config
 from ui.hotkey_button import MOUSE_BUTTON_NAME_BY_QT, capture_active, parse_key_event
 from ui.ringless_mode import RinglessConfig, resolve_ringless_layout
 from ui.widgets import _title_bar_content_offset, _visible_title_bar_height
+
+
+def _pen_debug(*parts):
+    """Print pen-hover diagnostics to stderr when COLORINK_DEBUG_PEN=1.
+
+    Used to observe what the pen-cursor fix actually receives on real
+    hardware (drivers vary wildly between Windows Ink and Wintab).
+    """
+    if os.environ.get("COLORINK_DEBUG_PEN"):
+        print("[pen]", *parts, flush=True)
+
+
+# Qt cursor shapes → Win32 OCR system-cursor resource IDs (used by
+# _force_cursor_shape to make pen-hover cursors switch natively).
+_OCR_CURSOR_BY_SHAPE = {
+    Qt.CursorShape.ArrowCursor: 32512,          # OCR_NORMAL
+    Qt.CursorShape.IBeamCursor: 32513,          # OCR_IBEAM
+    Qt.CursorShape.WaitCursor: 32514,           # OCR_WAIT
+    Qt.CursorShape.CrossCursor: 32515,          # OCR_CROSS
+    Qt.CursorShape.SizeVerCursor: 32645,        # OCR_SIZENS
+    Qt.CursorShape.SizeHorCursor: 32644,        # OCR_SIZEWE
+    Qt.CursorShape.SizeBDiagCursor: 32643,      # OCR_SIZENESW
+    Qt.CursorShape.SizeFDiagCursor: 32642,      # OCR_SIZENWSE
+    Qt.CursorShape.SizeAllCursor: 32646,        # OCR_SIZEALL
+    Qt.CursorShape.PointingHandCursor: 32649,   # OCR_HAND
+    Qt.CursorShape.ForbiddenCursor: 32648,      # OCR_NO
+}
 
 
 class LayoutMixin:
@@ -588,6 +616,19 @@ class LayoutMixin:
                         self._sync_resize_cursor(event.globalPosition().toPoint())
                     else:
                         self.unsetCursor()
+            # Pen hover arrives as QTabletEvent(TabletMove); on Windows Qt
+            # does not re-run its widget-cursor machinery for those events
+            # (synthetic mouse moves are compressed away), so the wheel's
+            # crosshair never appears with a tablet pen.  Mirror the mouse
+            # cursor logic for the pen.  The guard is intentionally loose:
+            # ``_sync_tablet_cursor`` re-resolves the real widget under the
+            # pen position, so it works no matter whether Qt routes the
+            # tablet event to the child widget or to the application.
+            elif (
+                event.type() == QEvent.Type.TabletMove
+                and not getattr(self, "resizing", False)
+            ):
+                self._sync_tablet_cursor(event.globalPosition().toPoint())
         except Exception:
             pass
         return super().eventFilter(watched, event)
@@ -617,6 +658,133 @@ class LayoutMixin:
                 self.unsetCursor()
             else:
                 self.setCursor(target)
+
+    def _force_cursor_shape(self, shape):
+        """Set the OS cursor immediately without touching Qt's cursor state.
+
+        Pen hover is delivered as QTabletEvent(TabletMove); Qt's Windows QPA
+        does not re-apply widget cursors on that path, so the OS cursor keeps
+        whatever shape Qt last applied (usually the arrow).  A direct
+        SetCursor mirrors what the mouse path does; Qt's own resolution takes
+        over again on the next real mouse event.
+        """
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            user32.SetCursor.restype = ctypes.c_void_p
+            user32.SetCursor.argtypes = [ctypes.c_void_p]
+            if shape == Qt.CursorShape.BlankCursor:
+                handle = self._blank_cursor_handle()
+                _pen_debug("force blank handle", handle)
+            else:
+                ocr = _OCR_CURSOR_BY_SHAPE.get(shape)
+                if ocr is None:
+                    _pen_debug("force skip unhandled shape", shape)
+                    return
+                user32.LoadCursorW.restype = ctypes.c_void_p
+                user32.LoadCursorW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+                handle = user32.LoadCursorW(None, ocr)
+                _pen_debug("force", shape, "ocr", ocr, "handle", handle)
+                if not handle:
+                    return
+            prev = user32.SetCursor(handle)
+            _pen_debug("SetCursor -> ok (prev", prev, ")")
+        except Exception as exc:  # noqa: BLE001
+            _pen_debug("force exception", type(exc).__name__, exc)
+
+    def _blank_cursor_handle(self):
+        """Create (once) and keep alive a 1×1 fully-transparent cursor.
+
+        Same technique as the picker overlay's ``_hide_cursor``.  The AND/XOR
+        masks must stay alive for the lifetime of the cursor — the cached
+        tuple keeps them referenced.
+        """
+        cached = getattr(self, "_forced_blank_cursor", None)
+        if cached is not None:
+            return cached[0]
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            user32.CreateCursor.restype = ctypes.c_void_p
+            andmask = (ctypes.c_ubyte * 4)(0xFF, 0xFF, 0xFF, 0xFF)
+            xormask = (ctypes.c_ubyte * 4)(0x00, 0x00, 0x00, 0x00)
+            handle = user32.CreateCursor(
+                None, 0, 0, 1, 1,
+                ctypes.cast(andmask, ctypes.c_void_p),
+                ctypes.cast(xormask, ctypes.c_void_p),
+            )
+            if handle:
+                self._forced_blank_cursor = (int(handle), andmask, xormask)
+                return int(handle)
+        except Exception:
+            pass
+        return None
+
+    def _sync_tablet_cursor(self, global_pos=None):
+        """Mirror the mouse cursor logic for pen hover (TabletMove).
+
+        On Windows, pen hover reaches the app as QTabletEvent(TabletMove)
+        (Windows Ink or Wintab) and Qt does not re-apply the widget cursor,
+        so the color wheel's crosshair never shows with a pen.  Resolve the
+        widget under the pen and force the same cursor the mouse would get,
+        so the pen behaves identically across tablet drivers/brands.
+        """
+        try:
+            if global_pos is None:
+                global_pos = QCursor.pos()
+            _pen_debug("TabletMove at", global_pos)
+            if getattr(self, "resizing", False):
+                _pen_debug("  (resizing, skip)")
+                return
+
+            # lockWindowSize only disables manual edge-resizing — it must NOT
+            # turn the pen cursor into an arrow.  Resize-border cursors are
+            # skipped when locked; the pen-under-widget shape still applies.
+            size_locked = bool(self.cfg.get("lockWindowSize", False))
+
+            # During an active drag the widgets blank the cursor themselves.
+            wheel_dragging = hasattr(self, "color_wheel") and bool(self.color_wheel.dragging)
+            slider_down = False
+            for _chan, (slider, _) in getattr(self, "slider_widgets", {}).items():
+                if slider.isSliderDown():
+                    slider_down = True
+                    break
+            if wheel_dragging or slider_down:
+                _pen_debug("  dragging, blank")
+                self._force_cursor_shape(Qt.CursorShape.BlankCursor)
+                return
+
+            # Resize border zones keep their own cursors — unless the window
+            # size is locked (then there is nothing to resize at the edge).
+            if not size_locked:
+                self._sync_resize_cursor(global_pos)
+                direction = self.get_resize_direction(self.mapFromGlobal(global_pos))
+                if direction:
+                    shape = {
+                        "left": Qt.CursorShape.SizeHorCursor,
+                        "right": Qt.CursorShape.SizeHorCursor,
+                        "bottom": Qt.CursorShape.SizeVerCursor,
+                        "bottom-left": Qt.CursorShape.SizeBDiagCursor,
+                        "bottom-right": Qt.CursorShape.SizeFDiagCursor,
+                    }[direction]
+                    _pen_debug("  resize zone", direction)
+                    self._force_cursor_shape(shape)
+                    return
+
+            # The widget under the pen decides the shape — same rule as the
+            # mouse.  widgetAt resolves from the native window hierarchy, so
+            # it is reliable even when Qt's mouse state is stale for pens.
+            w = QApplication.widgetAt(global_pos)
+            _pen_debug("  widgetAt ->", type(w).__name__ if w else None)
+            if w is None or self.window() != w.window():
+                _pen_debug("  not our window / none -> arrow")
+                self._force_cursor_shape(Qt.CursorShape.ArrowCursor)
+                return
+            shape = w.cursor().shape()
+            _pen_debug("  widget shape ->", shape)
+            self._force_cursor_shape(shape)
+        except Exception as exc:  # noqa: BLE001
+            _pen_debug("sync exception", type(exc).__name__, exc)
 
     def get_resize_direction(self, pos):
         w = self.width()
