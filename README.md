@@ -12,7 +12,7 @@
     <img src="community-qrcode.jpg" alt="Colorink QQ 交流群" width="220" title="扫描加入 Colorink QQ 交流群">
 </p>
 
-群号：**1108560464**（也可以在 QQ 里直接搜索群号加入）
+群号：**1108560464**
 
 ## 下载
 
