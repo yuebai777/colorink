@@ -32,7 +32,7 @@ STDERR_LOG_NAME = "stderr.log"
 # ``cached`` / ``derived`` + a count) or only the UI mirror (``mirror-only``,
 # which CSP itself never reads back).
 _BACKEND_ATTRS = {
-    "csp": ("process_name", "current_version", "copy_locate_state"),
+    "csp": ("process_name", "current_version", "copy_locate_state", "unsupported_reason"),
     "sai": ("process_name", "version"),
     "udm": ("process_name", "current_version"),
 }

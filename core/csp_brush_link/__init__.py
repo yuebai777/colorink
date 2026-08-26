@@ -127,6 +127,9 @@ class CSPSync(ProfileMixin, ProcessMixin, MemoryMixin, SlotMixin):
         # （pm 残留会让重连入口永远不触发，进程重启后一直显示未连接）。
         self._resolve_fail_count: int = 0
         self._RESOLVE_FAIL_LIMIT = 30  # ≈3 秒（100ms 轮询）
+        # 非空表示该版本被判定为不可用（如 CSP 5.1 内存同步已移除），
+        # 上层据此提示改用手机（Companion）模式。
+        self.unsupported_reason: str = ""
 
         # Honor CSP_SYNC_VERSION env override before applying user config.
         env_version = os.environ.get("CSP_SYNC_VERSION", DEFAULT_VERSION_KEY)

@@ -219,3 +219,71 @@ def test_drop_connection_clears_copy_caches():
     assert sync._main_copy_addrs_known is None
     assert sync._sub_copy_addrs_known is None
     assert sync._copy_scan_ts == {}
+
+
+# ── CSP 5.1 内存同步已移除：connect() 拒绝附接 + status() 短路径 ───────────
+
+def _patch_connect_5_1(monkeypatch):
+    """Force ``CSPSync.connect()`` to auto-detect a CSP 5.1 process."""
+    import core.csp_brush_link.process as _process
+
+    class _FakeModule:
+        lpBaseOfDll = 0x400000
+
+    class _FakePm:
+        process_id = 9001
+        process_handle = 0xABCD
+        def close_process(self):
+            pass
+
+    def _fake_pymem(name):
+        assert name == "CLIPStudioPaint.exe"
+        return _FakePm()
+
+    def _fake_version(path):
+        # (5, 1, 0, 0) -> _detect_build_from_version returns "csp5.1"
+        return (5, 1, 0, 0)
+
+    monkeypatch.setattr(_process, "Pymem", _fake_pymem)
+    monkeypatch.setattr(_process, "module_from_name", lambda pm, name: _FakeModule())
+    monkeypatch.setattr(
+        _process._ProcessVersionQuery, "image_path",
+        lambda handle: "C:\\Program Files\\CELSYS\\CLIPStudioPaint.exe")
+    monkeypatch.setattr(_process._ProcessVersionQuery, "exe_version", _fake_version)
+    return _FakeModule, _FakePm
+
+
+def test_connect_refuses_csp_5_1_memory_sync(monkeypatch):
+    from core.csp_brush_link.process import CSP51_MEMORY_UNSUPPORTED
+    _FakeModule, _FakePm = _patch_connect_5_1(monkeypatch)
+
+    sync = CSPSync()
+    assert sync.connect() is False
+    assert sync.pm is None
+    assert sync.unsupported_reason == CSP51_MEMORY_UNSUPPORTED
+
+
+def test_status_reports_5_1_unsupported_without_reattaching(monkeypatch):
+    from core.csp_brush_link.process import CSP51_MEMORY_UNSUPPORTED
+    _FakeModule, _FakePm = _patch_connect_5_1(monkeypatch)
+
+    sync = CSPSync()
+    status = sync.status()
+
+    assert status["connected"] is False
+    assert status["unsupported_reason"] == CSP51_MEMORY_UNSUPPORTED
+    # 短路径：拒绝后 status() 不应再尝试打开 CSP 进程（pm 保持 None）。
+    assert sync.pm is None
+
+
+def test_apply_profile_switch_clears_5_1_unsupported_flag(monkeypatch):
+    _FakeModule, _FakePm = _patch_connect_5_1(monkeypatch)
+    sync = CSPSync()
+    # 初始 profile 是 csp4.x；先拒一次，随后手动选 csp5.x（不同 profile）走
+    # _apply_profile 清掉标记。
+    sync.connect()
+    assert sync.unsupported_reason
+    sync.set_version("csp5.x")
+    assert sync.current_version == "csp5.x"
+    assert sync.unsupported_reason == ""
+

@@ -107,6 +107,10 @@ class MemorySyncThread(QThread):
         self._pending_writes = {}
         self._last_read_transparent = {}
         self._last_active_slot = None
+        # 切走 / 切回同步目标时清掉 CSP 5.1 的不可用标记，避免切回 csp 后
+        # 一直停在"5.1 内存同步已移除"而不再重新检测（比如换成了 5.0）。
+        self.csp_sync.unsupported_reason = ""
+        self._last_error_text = ("", False)
         
     def set_sync_enabled(self, enabled):
         self.sync_enabled = enabled
@@ -302,6 +306,14 @@ class MemorySyncThread(QThread):
                         self.signals.active_slot_changed.emit(active)
                     status = self.csp_sync.status()
                     connected = status.get('connected', False)
+                    # CSP 5.1 内存同步已移除：把原因抛给 UI（显示在同步页），
+                    # 引导改用手机（Companion）模式；恢复连接时同样把错误清掉。
+                    csp_unsupported = status.get('unsupported_reason') or ""
+                    err_pair = (csp_unsupported, False)
+                    if err_pair != self._last_error_text:
+                        self._last_error_text = err_pair
+                        self.signals.error_changed.emit(
+                            self.software_mode, csp_unsupported, False)
                     # NOTE: this used to proactively warm CSP's copy-address
                     # caches here. A locate scan reads every committed page of
                     # the CSP process (2.4 GB working set observed, ~1.1s per
