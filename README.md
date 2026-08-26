@@ -4,6 +4,16 @@
 
 当前版本：**v1.6.16**
 
+## 交流群
+
+遇到问题、想要反馈建议，或想跟其他用户交流使用心得？欢迎扫码加入 QQ 交流群：
+
+<p align="center">
+    <img src="community-qrcode.jpg" alt="Colorink QQ 交流群" width="220" title="扫描加入 Colorink QQ 交流群">
+</p>
+
+> 入群请备注在 **B 站 / GitHub** 的关注昵称，方便我们认识你。
+
 ## 下载
 
 最新版下载页：**https://github.com/yuebai777/colorink/releases/latest**
