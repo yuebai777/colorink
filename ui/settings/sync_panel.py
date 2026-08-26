@@ -34,18 +34,16 @@ class SyncPanelMixin:
         self._refresh_csp_version_hint()
 
     def _refresh_csp_version_hint(self):
-        """按所选 CSP 版本显示同步能力说明（5.0 与 5.1 的能力差异）。"""
+        """按所选 CSP 版本显示同步能力说明（5.1 内存同步已移除）。"""
         if not hasattr(self, "lbl_csp_hint"):
             return
         val = self.combo_csp.currentData() or "auto"
-        if val == "csp5.1":
-            text = i18n.tr("CSP 5.1 内存模式支持前景/背景色与透明状态同步。")
-        elif val == "csp5.x":
-            text = i18n.tr("CSP 5.0 内存模式仅支持主色同步；前景/背景色与透明状态同步需要 CSP 5.1。")
+        if val == "csp5.x":
+            text = i18n.tr("CSP 5.0 内存模式仅支持主色同步；CSP 5.1 不再内存同步，请改用手机（Companion）模式。")
         elif val == "csp4.x":
-            text = i18n.tr("CSP 4.x 内存模式仅支持主色同步；前景/背景色与透明状态同步需要 CSP 5.1。")
+            text = i18n.tr("CSP 4.x 内存模式仅支持主色同步；CSP 5.1 不再内存同步，请改用手机（Companion）模式。")
         else:
-            text = i18n.tr("自动检测 CSP 版本：检测为 5.1 时支持前景/背景色与透明状态同步，5.0 及以下仅主色同步。")
+            text = i18n.tr("自动检测 CSP 版本：内存模式仅 4.x/5.0 主色同步；检测为 5.1 时不再内存同步，请改用手机（Companion）模式。")
         self.lbl_csp_hint.setText(text)
 
     def update_version_visibility(self):
@@ -57,12 +55,26 @@ class SyncPanelMixin:
         self.row_udm_widget.setVisible(selected == "udm")
         self.row_ps_widget.setVisible(selected == "ps")
         self.row_companion_widget.setVisible(selected == "companion")
+        self._refresh_csp_mode_tip(selected)
         if selected == "companion":
             self._refresh_companion_status()
         if selected == "csp":
             self._refresh_csp_version_hint()
         self._refresh_sync_status()
         self._refresh_ps_bridge_status()
+
+    def _refresh_csp_mode_tip(self, selected):
+        """标注 CSP 各连接模式的问题与推荐（内存同步 vs 手机 Companion）。"""
+        if not hasattr(self, "lbl_csp_mode_tip"):
+            return
+        if selected in ("csp", "companion"):
+            self.lbl_csp_mode_tip.setText(i18n.tr(
+                "CSP 内存同步仅 4.x/5.0 主色，依赖内存扫描、易随 CSP 更新失效；"
+                "CSP 5.1 已移除内存同步。手机（Companion）模式连接稳定、"
+                "支持前景/背景与透明，推荐使用。"))
+            self.row_csp_mode_tip_widget.show()
+        else:
+            self.row_csp_mode_tip_widget.hide()
 
     def _refresh_ps_instances(self):
         """Populate the Photoshop version combo with detected running instances:
@@ -340,12 +352,24 @@ class SyncPanelMixin:
         self.combo_software = NonScrollComboBox()
         for _val, _disp in [("csp", "CLIP Studio Paint"), ("sai", "SAI2"),
                             ("udm", "UDM Paint"), ("ps", "Photoshop"),
-                            ("companion", "CSP Companion（手机）")]:
+                            ("companion", "CSP Companion（手机）·推荐")]:
             self.combo_software.addItem(i18n.tr(_disp), _val)
         self.combo_software.currentTextChanged.connect(self.save_settings)
         self.combo_software.currentTextChanged.connect(self._on_software_changed)
         grid_sync.addWidget(self.combo_software, 0, 1)
         cl_sync.addLayout(grid_sync)
+
+        # CSP 各连接模式的问题/推荐说明：5.1 内存同步已移除，推荐手机模式。
+        self.row_csp_mode_tip_widget = QWidget()
+        row_csp_mode_tip = QVBoxLayout(self.row_csp_mode_tip_widget)
+        row_csp_mode_tip.setContentsMargins(0, 0, 0, 0)
+        row_csp_mode_tip.setSpacing(4)
+        self.lbl_csp_mode_tip = QLabel("")
+        self.lbl_csp_mode_tip.setWordWrap(True)
+        self.lbl_csp_mode_tip.setObjectName("StatusHint")
+        row_csp_mode_tip.addWidget(self.lbl_csp_mode_tip)
+        cl_sync.addWidget(self.row_csp_mode_tip_widget)
+        self.row_csp_mode_tip_widget.hide()
 
         # Companion status row (visible only when "CSP 智能手机" selected)
         self.row_companion_widget = QWidget()
@@ -375,8 +399,8 @@ class SyncPanelMixin:
                 i, i18n.tr(_CSP_VERSION_TIPS.get(val, "")), Qt.ItemDataRole.ToolTipRole
             )
         self.combo_csp.setToolTip(
-            i18n.tr("前景/背景色与透明状态同步（内存模式）仅 CSP 5.1 支持；"
-            "自动检测失败时才需要手动指定版本")
+            i18n.tr("内存模式仅支持 CSP 4.x/5.0 主色同步；"
+            "CSP 5.1 已移除内存同步，请改用手机（Companion）模式")
         )
         self.combo_csp.currentTextChanged.connect(self._on_csp_version_changed)
         row_csp_layout.addWidget(self.combo_csp)

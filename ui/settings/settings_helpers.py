@@ -27,23 +27,22 @@ _CHECKBOX_CHECK_ICON = os.path.join(_ICONS_DIR, "checkbox_check.png").replace("\
 _ARROW_DOWN_DARK = os.path.join(_ICONS_DIR, "arrow_down_dark.png").replace("\\", "/")
 _ARROW_DOWN_LIGHT = os.path.join(_ICONS_DIR, "arrow_down_light.png").replace("\\", "/")
 
-# CSP 内存模式版本选项：显示文本 ↔ 配置存储值。前景/背景色与透明状态
-# 同步（rgb_u32 槽布局）只有 csp5.1 支持；csp4.x / csp5.x 仅主色同步。
+# CSP 内存模式版本选项：显示文本 ↔ 配置存储值。CSP 5.1 内存同步已移除，
+# 内存模式仅支持 csp4.x / csp5.x 主色同步；前景/背景与透明同步请用手机
+# （Companion）模式。
 _CSP_VERSION_ITEMS: list[tuple[str, str]] = [
     ("auto", "auto（自动检测）"),
     ("csp4.x", "CSP 4.x（仅主色）"),
     ("csp5.x", "CSP 5.0（仅主色）"),
-    ("csp5.1", "CSP 5.1（支持前景/背景/透明）"),
 ]
 _CSP_DISPLAY_TO_VALUE = {disp: val for val, disp in _CSP_VERSION_ITEMS}
 _CSP_VALUE_TO_DISPLAY = dict(_CSP_VERSION_ITEMS)
 # 每项的悬停说明
 _CSP_VERSION_TIPS: dict[str, str] = {
-    "auto": "自动检测 CSP 主版本；检测为 5.1 时支持前景/背景色与透明同步，"
-            "5.0 及以下仅主色同步。",
-    "csp4.x": "CSP 4.x 内存模式仅支持主色同步；前景/背景色与透明同步需要 CSP 5.1。",
-    "csp5.x": "CSP 5.0 内存模式仅支持主色同步；前景/背景色与透明同步需要 CSP 5.1。",
-    "csp5.1": "CSP 5.1 内存模式支持前景/背景色与透明状态同步（推荐）。",
+    "auto": "自动检测 CSP 主版本；内存模式仅 4.x/5.0 支持主色同步。"
+            "检测为 CSP 5.1 时不再内存同步，请改用手机（Companion）模式。",
+    "csp4.x": "CSP 4.x 内存模式仅支持主色同步（依赖内存扫描，可能随 CSP 更新失效）。",
+    "csp5.x": "CSP 5.0 内存模式仅支持主色同步（依赖内存扫描，可能随 CSP 更新失效）。",
 }
 
 # SAI 界面刷新选项：内存写入只改画笔取色，SAI 自己的控件不会重绘。

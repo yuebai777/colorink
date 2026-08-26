@@ -155,6 +155,8 @@ class ProfileMixin:
         self._copy_scan_ts = {}
         self._stale_patterns = {}
         self._copy_locate_notes = {}
+        # 版本/进程变化：清空不可用标记，允许重新尝试连接。
+        self.unsupported_reason = ""
 
     def _load_user_config(self) -> None:
         path = _resolve_config_file()

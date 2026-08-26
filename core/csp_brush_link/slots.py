@@ -976,6 +976,19 @@ class SlotMixin:
 
     # ----- introspection ---------------------------------------------------
     def status(self) -> dict[str, object]:
+        # CSP 5.1 内存同步已移除：拒绝后不再反复重连，直接报告未连接，
+        # 并把原因暴露给上层（memory_sync 据此提示改用手机模式）。
+        if getattr(self, "unsupported_reason", "") and self.pm is None:
+            return {
+                "connected": False,
+                "pid": None,
+                "baseOffset": f"0x{self.base_offset:X}",
+                "target": None,
+                "aob": self.aob_signature,
+                "version": self.current_version,
+                "processName": self.process_name,
+                "unsupported_reason": self.unsupported_reason,
+            }
         if self.pm is None:
             self.connect()
         connected = False
@@ -997,6 +1010,7 @@ class SlotMixin:
             "aob": self.aob_signature,
             "version": self.current_version,
             "processName": self.process_name,
+            "unsupported_reason": getattr(self, "unsupported_reason", ""),
         }
 
     def dump(self) -> dict[str, object]:

@@ -29,8 +29,8 @@ if TYPE_CHECKING:
 # Resolve resource paths relative to the repo root so packaged builds
 # (PyInstaller) work regardless of the current working directory.
 
-# CSP 内存模式版本选项：显示文本 ↔ 配置存储值。前景/背景色与透明状态
-# 同步（rgb_u32 槽布局）只有 csp5.1 支持；csp4.x / csp5.x 仅主色同步。
+# CSP 内存模式版本选项：显示文本 ↔ 配置存储值。CSP 5.1 内存同步已移除，
+# 内存模式仅 csp4.x / csp5.x 主色同步；前景/背景与透明请用手机（Companion）模式。
 # 每项的悬停说明
 
 
@@ -396,9 +396,11 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.combo_pos.setCurrentIndex(_idx if _idx >= 0 else 0)
         self.combo_pos.blockSignals(False)
         
-        # Migrate legacy CSP version keys to simplified 4.x / 5.x scheme
+        # Migrate legacy CSP version keys to simplified 4.x / 5.x scheme;
+        # csp5.1 memory sync was removed → force back to auto.
         _csp_migration = {"csp4.0": "csp4.x", "csp4.2.7-ex": "csp4.x",
-                          "csp5.0": "csp5.x", "csp5.0-ex": "csp5.x"}
+                          "csp5.0": "csp5.x", "csp5.0-ex": "csp5.x",
+                          "csp5.1": "auto"}
         raw_csp = str(self.cfg.get("cspVersion", "auto") or "auto")
         raw_csp = _csp_migration.get(raw_csp, raw_csp)
         _idx = self.combo_csp.findData(raw_csp)

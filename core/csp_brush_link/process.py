@@ -19,6 +19,13 @@ except ImportError:
 from core.csp_brush_link.profiles import _log
 
 
+# CSP 5.1 内存同步已移除：内存模式拒绝附接 5.1 布局，引导改为手机（Companion）
+# 模式。该文案会通过 MemorySyncThread 的 error_changed 呈现到同步页。
+CSP51_MEMORY_UNSUPPORTED = (
+    "CSP 5.1 内存同步已移除，请改用手机（Companion）模式连接。"
+)
+
+
 class _VS_FIXEDFILEINFO(ctypes.Structure):
     _fields_ = [
         ("dwSignature",         wintypes.DWORD),
@@ -134,6 +141,9 @@ class ProcessMixin:
         If the on-disk exe version doesn't match the currently selected
         profile, the profile is silently swapped to the detected one and
         the pointer is read against the new base offset.
+
+        CSP 5.1 内存同步已移除：检测到 5.1 时拒绝附接，设置
+        ``unsupported_reason`` 并返回 False，引导使用手机（Companion）模式。
         """
         try:
             if Pymem is None or module_from_name is None:
@@ -148,6 +158,15 @@ class ProcessMixin:
 
             image_path = _ProcessVersionQuery.image_path(self.pm.process_handle)
             detected = _detect_build_from_image_path(image_path)
+            if detected == "csp5.1":
+                # CSP 5.1 内存同步已移除：不附接 5.1 布局，提示改用手机模式。
+                self.unsupported_reason = CSP51_MEMORY_UNSUPPORTED
+                _log(
+                    "Refusing CSP 5.1 memory sync (removed); "
+                    "use Companion (phone) mode instead"
+                )
+                self._drop_connection()
+                return False
             if detected and detected != self.current_version:
                 requested = self.current_version
                 self._apply_profile(detected)
