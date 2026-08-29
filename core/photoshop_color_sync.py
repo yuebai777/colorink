@@ -249,6 +249,17 @@ class PhotoshopSync:
     def _connect_bridge(self, target: PhotoshopInstance) -> bool:
         """Deploy the ExtendScript bridge for a green/portable Photoshop."""
         ps_dir = os.path.dirname(target.exe_path)
+        # Remove stale bridge copies from any other running Photoshop
+        # install: the extension auto-loads there on its next start and,
+        # with a fixed extension ID, both panels then fight over the
+        # shared CEP runtime + ExtendScript engine (the "open genuine PS
+        # first, then green PS" workaround users found for TourBox).
+        try:
+            removed = PhotoshopScriptBridge.cleanup_other_installs(ps_dir)
+            if removed:
+                log(f"Removed stale ColorinkBridge from: {removed}")
+        except Exception:
+            pass
         self._bridge = PhotoshopScriptBridge(ps_dir)
         if not self._bridge.deploy():
             self.last_error = (
@@ -265,6 +276,17 @@ class PhotoshopSync:
         self.last_error = "脚本桥已部署：重启 Photoshop（绿色版）后生效"
         log("Script bridge deployed, awaiting Photoshop restart")
         return True
+
+    def remove_bridge(self) -> bool:
+        """Delete the deployed green-edition bridge extension (if any).
+
+        The running Photoshop keeps the already-loaded panel until it is
+        restarted, so callers should tell the user to restart Photoshop
+        after a successful removal.
+        """
+        if self._bridge is not None:
+            return self._bridge.remove()
+        return False
 
     # -- colour I/O --------------------------------------------------------------
 

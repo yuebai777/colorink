@@ -30,6 +30,7 @@ fresh while PS runs, since the panel polls every 0.1 s).
 from __future__ import annotations
 
 import os
+import shutil
 import time
 from typing import Final
 
@@ -44,7 +45,7 @@ PANEL_VERSION_FILENAME: Final = "panel_version.txt"
 # every poll; a running panel with an older protocol keeps writing the
 # old value (or nothing), so Colorink can tell "deployed file is new"
 # from "running panel is new" — only the latter clears the hint.
-PANEL_VERSION: Final = 2
+PANEL_VERSION: Final = 3
 
 EXTENSION_ID: Final = "com.colorink.bridge"
 EXTENSION_DIR_NAME: Final = "ColorinkBridge"
@@ -102,10 +103,20 @@ _MANIFEST_TEMPLATE: Final = """<?xml version="1.0" encoding="UTF-8" standalone="
 </ExtensionManifest>
 """
 
-# The panel polls every 0.1 s. All work runs through evalScript into
-# Photoshop's ExtendScript engine (File objects — no Node fs dependency,
-# which is unreliable in some CEP builds); the panel keeps the token
-# dedup state in its own persistent JS memory.
+# The panel polls every 1 s and writes as little as possible. All work
+# runs through evalScript into Photoshop's ExtendScript engine (File
+# objects — no Node fs dependency, which is unreliable in some CEP
+# builds); the panel keeps the token dedup state in its own persistent
+# JS memory (applied.txt doubles as the cross-restart dedup record).
+#
+# Why so slow: Photoshop's script engine is single-threaded and shared.
+# A 0.1 s poll that wrote five files every tick starved every other
+# ExtendScript consumer in the process (TourBox key injection, other CEP
+# panels such as Coolorus), so the panel now:
+#   * checks / applies the command mailbox every tick (1 s),
+#   * read-backs state every 2nd tick and immediately after a command,
+#   * writes heartbeat + panel_version every 4th tick (is_alive tolerates
+#     an 8 s gap, so a 4 s heartbeat is ample).
 _INDEX_TEMPLATE: Final = r"""<!DOCTYPE html>
 <html>
 <head>
@@ -144,6 +155,8 @@ function claimStaleCmd() {
     evalScript(s, function (code, result) { claimed = true; });
 }
 claimStaleCmd();
+var tick = 0;
+var POLL_MS = 1000;
 function poll() {
     try {
         var d = String(dir).replace(/\\/g, "/");
@@ -151,6 +164,8 @@ function poll() {
         // script itself: the evalScript return value is unreliable in
         // some CEP builds, so the panel must NOT depend on it to
         // remember which command was already applied.
+        var doState = (tick % 2 === 0);
+        var doBeat  = (tick % 4 === 0);
         var script =
             "var d='" + d + "';" +
             "var ap=new File(d+'/applied.txt');var last='';" +
@@ -158,6 +173,7 @@ function poll() {
             "var line='';var cf=new File(d+'/cmd.txt');" +
             "if(cf.exists){cf.open('r');line=cf.read();cf.close();}" +
             "var parts=String(line).split('|');" +
+            "var applied=false;" +
             "if(parts.length>=2&&parts[0]!=last){" +
             "if(parts[1]=='swap'){" +
             "var t=app.foregroundColor;" +
@@ -173,23 +189,30 @@ function poll() {
             "}" +
             "var a=new File(d+'/applied.txt');a.open('w');" +
             "a.write(parts[0]);a.close();" +
+            "applied=true;" +
             "}" +
+            (doState ? "if(applied||true){" : "if(applied){") +
             "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
             "var s=new File(d+'/state.txt');s.open('w');" +
             "s.write(Math.round(fg.rgb.red)+'|'+Math.round(fg.rgb.green)+'|'+Math.round(fg.rgb.blue)+'|'+Math.round(bg.rgb.red)+'|'+Math.round(bg.rgb.green)+'|'+Math.round(bg.rgb.blue));" +
             "s.close();" +
+            "}";
+        if (doBeat) {
             // Keep PANEL_VERSION in sync with PANEL_VERSION_FILENAME below
+            script +=
             "var pv=new File(d+'/panel_version.txt');pv.open('w');" +
-            "pv.write('2');pv.close();" +
+            "pv.write('3');pv.close();" +
             "var h=new File(d+'/heartbeat.txt');h.open('w');" +
             "h.write(String(new Date().getTime()));h.close();";
+        }
         evalScript(script, function (code, result) {});
     } catch (e) {}
 }
 setInterval(function () {
     if (!claimed) { return; }  // wait for the stale-command claim
+    tick++;
     poll();
-}, 100);
+}, POLL_MS);
 </script>
 </body>
 </html>
@@ -231,6 +254,55 @@ class PhotoshopScriptBridge:
                 f.write(_INDEX_TEMPLATE)
             self._suppress_script_warning()
             return True
+        except OSError:
+            return False
+
+    @staticmethod
+    def cleanup_other_installs(keep_ps_dir: str) -> list[str]:
+        """Remove ColorinkBridge from every *other* running Photoshop
+        install so a stale copy cannot auto-load there.
+
+        A deployed extension auto-loads whenever that Photoshop starts —
+        independent of which instance Colorink is currently syncing with.
+        With a fixed extension ID (``com.colorink.bridge``) and multiple
+        installs, both panels fight over the shared CEP runtime and the
+        single-threaded ExtendScript engine, which shows up as
+        load-order-dependent breakage (the "open genuine PS first, then
+        green PS" workaround).  Keeping only the target install's copy
+        avoids the fight entirely.
+
+        Returns the list of install dirs whose stale copy was removed.
+        """
+        removed: list[str] = []
+        try:
+            from core.photoshop_instances import detect_instances
+            keep = os.path.normcase(os.path.abspath(keep_ps_dir))
+            for inst in detect_instances():
+                other = os.path.dirname(os.path.abspath(inst.exe_path))
+                if os.path.normcase(other) == keep:
+                    continue
+                ext = os.path.join(other, *_CEP_RELATIVE_DIR.split(os.sep))
+                if (os.path.isdir(ext)
+                        and os.path.isfile(os.path.join(
+                            ext, "CSXS", MANIFEST_FILENAME))):
+                    shutil.rmtree(ext, ignore_errors=True)
+                    removed.append(other)
+        except Exception:
+            pass
+        return removed
+
+    def remove(self) -> bool:
+        """Delete the deployed extension directory for this install.
+
+        The running Photoshop keeps the already-loaded panel until it is
+        restarted, so callers should surface a "restart Photoshop" hint
+        after a successful removal.
+        """
+        try:
+            if os.path.isdir(self.dir) and os.path.isfile(self._manifest_path()):
+                shutil.rmtree(self.dir, ignore_errors=True)
+            return not (os.path.isdir(self.dir)
+                        and os.path.isfile(self._manifest_path()))
         except OSError:
             return False
 
