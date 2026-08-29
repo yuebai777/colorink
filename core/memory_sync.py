@@ -81,6 +81,14 @@ class MemorySyncThread(QThread):
         self._last_companion_hsv = (0.0, 0.0, 0.0)
         self.last_write_time = 0.0
         self._last_error_text = ("", False)
+        # PS read-back throttle: get_color/get_bg_color on the COM backend
+        # are real COM round-trips into Photoshop's UI thread (~6-8 calls
+        # per read); polling them every 100 ms (~60-80 COM calls/s) keeps a
+        # genuine Photoshop's engine permanently busy and can starve its
+        # CEP plugins (e.g. Coolorus) — the same failure mode as the old
+        # bridge panel. The script-bridge panel only rewrites state.txt
+        # every 0.5 s anyway, so a 0.5 s read cadence serves both backends.
+        self._last_ps_read = 0.0
         
         # Instantiate per-software sync backends
         self.csp_sync = csp_brush_link.CSPSync()
@@ -341,32 +349,41 @@ class MemorySyncThread(QThread):
                     status = self.udm_sync.status()
                     connected = status.get('connected', False)
                 elif self.software_mode == 'ps':
-                    fg = self.ps_sync.get_color()
-                    bg = self.ps_sync.get_bg_color()
-                    if fg is not None:
-                        colors.append(fg)
-                    if bg is not None:
-                        colors.append(bg)
-                    # External X-swap detection: the user pressed X in
-                    # Photoshop, so each slot now holds the OTHER slot's
-                    # previous value. Without clearing the write-echo
-                    # suppression here, the slot whose write timestamp is
-                    # still fresh keeps its stale swatch while the other
-                    # slot updates — both swatches then end up showing the
-                    # same color ("把前景色背景色同步成一样的").
-                    if fg is not None and bg is not None:
-                        prev_fg = self._last_synced_color.get(0)
-                        prev_bg = self._last_synced_color.get(1)
-                        if prev_fg is not None and prev_bg is not None:
-                            fg_rgb = (fg.get("r"), fg.get("g"), fg.get("b"))
-                            bg_rgb = (bg.get("r"), bg.get("g"), bg.get("b"))
-                            fg_is_old_bg = _rgb_close(fg_rgb, prev_bg)
-                            bg_is_old_fg = _rgb_close(bg_rgb, prev_fg)
-                            if fg_is_old_bg and bg_is_old_fg:
-                                # Genuine external swap, not a write echo:
-                                # let both slots refresh immediately.
-                                self._last_write_ts.pop(0, None)
-                                self._last_write_ts.pop(1, None)
+                    # Read-back throttled to 0.5 s (see _last_ps_read in
+                    # __init__): COM round-trips on every 100 ms loop would
+                    # keep a genuine Photoshop's engine permanently busy.
+                    # Writes (pending_writes above) are NOT throttled.
+                    if time.time() - self._last_ps_read >= 0.5:
+                        self._last_ps_read = time.time()
+                        fg = self.ps_sync.get_color()
+                        bg = self.ps_sync.get_bg_color()
+                        if fg is not None:
+                            colors.append(fg)
+                        if bg is not None:
+                            colors.append(bg)
+                        # External X-swap detection: the user pressed X in
+                        # Photoshop, so each slot now holds the OTHER slot's
+                        # previous value. Without clearing the write-echo
+                        # suppression here, the slot whose write timestamp is
+                        # still fresh keeps its stale swatch while the other
+                        # slot updates — both swatches then end up showing the
+                        # same color ("把前景色背景色同步成一样的").
+                        if fg is not None and bg is not None:
+                            prev_fg = self._last_synced_color.get(0)
+                            prev_bg = self._last_synced_color.get(1)
+                            if prev_fg is not None and prev_bg is not None:
+                                fg_rgb = (fg.get("r"), fg.get("g"), fg.get("b"))
+                                bg_rgb = (bg.get("r"), bg.get("g"), bg.get("b"))
+                                fg_is_old_bg = _rgb_close(fg_rgb, prev_bg)
+                                bg_is_old_fg = _rgb_close(bg_rgb, prev_fg)
+                                if fg_is_old_bg and bg_is_old_fg:
+                                    # Genuine external swap, not a write echo:
+                                    # let both slots refresh immediately.
+                                    self._last_write_ts.pop(0, None)
+                                    self._last_write_ts.pop(1, None)
+                    # status() is cheap on both backends (COM: no calls;
+                    # bridge: file/process checks) — keep the connection
+                    # flag fresh every loop.
                     status = self.ps_sync.status()
                     connected = status.get('connected', False)
                 elif self.software_mode == 'companion':
