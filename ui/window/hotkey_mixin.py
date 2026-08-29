@@ -94,6 +94,20 @@ class HotkeyMixin:
                 from PyQt6.QtWidgets import QMessageBox
                 QMessageBox.warning(self, "灰度滤镜", f"切换失败: {e}")
 
+    def _on_picker_activated(self):
+        """Picker overlay is up — pause the sync thread so its GIL
+        traffic and repaint signals cannot drop the picker's frames."""
+        st = getattr(self, "sync_thread", None)
+        if st is not None:
+            st.paused = True
+
+    def _on_picker_deactivated(self):
+        """Picker overlay is gone — resume the sync thread. The picked
+        colour is written after stop() emits this, so nothing is lost."""
+        st = getattr(self, "sync_thread", None)
+        if st is not None:
+            st.paused = False
+
     def _on_picker_color_picked(self, r, g, b):
         """Handle color picked from the global magnifier overlay."""
         self.current_rgb = (r, g, b)

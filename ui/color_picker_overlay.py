@@ -98,6 +98,12 @@ class CursorDot(QWidget):
 
 class ColorPickerOverlay(QWidget):
     colorPicked=pyqtSignal(int,int,int)
+    # Emitted when the picker becomes active / inactive so the owner can
+    # pause background work (e.g. the sync thread) — its GIL traffic and
+    # UI-repaint signals make the picker's 16 ms tick drop frames while
+    # the user sweeps the mouse, which shifts the picked position.
+    activated=pyqtSignal()
+    deactivated=pyqtSignal()
     def __init__(self,parent=None):
         super().__init__(parent)
         self._active=False; self._center_color=(128,128,128); self._pixel_grid=None
@@ -250,6 +256,7 @@ class ColorPickerOverlay(QWidget):
         self.show(); self.raise_()
         self._apply_noactivate()
         self._timer.start(); self._tick()
+        self.activated.emit()
     def stop(self):
         self._active=False; self._timer.stop()
         _hook_dll.uninstall() if _hook_dll else None
@@ -257,10 +264,12 @@ class ColorPickerOverlay(QWidget):
         self._dot.hide()
         self.hide()
         self._shots=[]  # free the snapshots
+        self.deactivated.emit()
     def closeEvent(self,ev):
         self._dot.close()
         self._show_cursor();          # ensure the cursor never gets stuck hidden if the widget is closed mid-pick
         if _hook_dll: _hook_dll.uninstall()
+        self.deactivated.emit()       # never leave the sync thread paused
         super().closeEvent(ev)
 
     def _tick(self):
