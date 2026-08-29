@@ -45,7 +45,7 @@ PANEL_VERSION_FILENAME: Final = "panel_version.txt"
 # every poll; a running panel with an older protocol keeps writing the
 # old value (or nothing), so Colorink can tell "deployed file is new"
 # from "running panel is new" — only the latter clears the hint.
-PANEL_VERSION: Final = 3
+PANEL_VERSION: Final = 4
 
 EXTENSION_ID: Final = "com.colorink.bridge"
 EXTENSION_DIR_NAME: Final = "ColorinkBridge"
@@ -103,20 +103,24 @@ _MANIFEST_TEMPLATE: Final = """<?xml version="1.0" encoding="UTF-8" standalone="
 </ExtensionManifest>
 """
 
-# The panel polls every 1 s and writes as little as possible. All work
-# runs through evalScript into Photoshop's ExtendScript engine (File
-# objects — no Node fs dependency, which is unreliable in some CEP
-# builds); the panel keeps the token dedup state in its own persistent
-# JS memory (applied.txt doubles as the cross-restart dedup record).
+# The panel uses a two-path design. All work runs through evalScript
+# into Photoshop's ExtendScript engine (File objects — no Node fs
+# dependency in the *script* itself), but the command-mailbox *check*
+# prefers Node fs (the manifest enables --enable-nodejs), so the panel
+# does not touch Photoshop's single-threaded script engine just to look
+# for work:
 #
-# Why so slow: Photoshop's script engine is single-threaded and shared.
-# A 0.1 s poll that wrote five files every tick starved every other
-# ExtendScript consumer in the process (TourBox key injection, other CEP
-# panels such as Coolorus), so the panel now:
-#   * checks / applies the command mailbox every tick (1 s),
-#   * read-backs state every 2nd tick and immediately after a command,
-#   * writes heartbeat + panel_version every 4th tick (is_alive tolerates
-#     an 8 s gap, so a 4 s heartbeat is ample).
+#   * command mailbox checked every 100 ms via Node fs.statSync (zero
+#     ExtendScript traffic while idle); a new command is applied on the
+#     next tick — the same perceived latency as the old 0.1 s design,
+#   * state read-back every 10 ticks (1 s) and immediately after a
+#     command (Photoshop foreground/background colours),
+#   * heartbeat + panel_version every 40 ticks (4 s) — is_alive() in
+#     Colorink tolerates an 8 s gap, so 4 s is ample,
+#   * fallback: CEP builds without a working Node fs probe the mailbox
+#     with a lightweight evalScript (reads cmd.txt only, no writes)
+#     instead of the full five-file-write-every-tick script that starved
+#     TourBox / Coolorus.
 _INDEX_TEMPLATE: Final = r"""<!DOCTYPE html>
 <html>
 <head>
@@ -136,6 +140,14 @@ try {
         try { dir = decodeURIComponent(dir); } catch (e) {}
     }
 } catch (e) {}
+// Prefer Node fs for the command-mailbox check so the panel never
+// enters Photoshop's ExtendScript engine just to look for work.
+// Some CEP builds lack a working Node fs — probe it and fall back.
+var useNodeFs = false;
+try {
+    var fs = require('fs');
+    useNodeFs = (typeof fs !== 'undefined' && typeof fs.statSync === 'function');
+} catch (e) { useNodeFs = false; }
 function evalScript(script, cb) {
     if (window.__adobe_cep__) {
         window.__adobe_cep__.evalScript(script, function (code, result) {
@@ -155,17 +167,45 @@ function claimStaleCmd() {
     evalScript(s, function (code, result) { claimed = true; });
 }
 claimStaleCmd();
+// Diagnostics: record whether Node fs is usable in this CEP runtime so
+// Colorink can tell which polling path is active.
+(function () {
+    var d0 = String(dir).replace(/\\/g, "/");
+    try {
+        if (useNodeFs) {
+            fs.writeFileSync(d0 + '/nodefs.txt', '1');
+        } else {
+            evalScript("var f=new File('" + d0 + "/nodefs.txt');f.open('w');f.write('0');f.close();", function () {});
+        }
+    } catch (e) {}
+})();
 var tick = 0;
-var POLL_MS = 1000;
+var FAST_MS = 100;     // command mailbox check interval
+var STATE_EVERY = 10;  // state read-back every 10 ticks (1 s)
+var BEAT_EVERY = 40;   // heartbeat + panel_version every 40 ticks (4 s)
+var cmdMtime = 0;
 function poll() {
     try {
+        tick++;
         var d = String(dir).replace(/\\/g, "/");
+        var doState = (tick % STATE_EVERY === 0);
+        var doBeat  = (tick % BEAT_EVERY === 0);
+        var changed = false;
+        if (useNodeFs) {
+            try {
+                var st = fs.existsSync(d + '/cmd.txt') ? fs.statSync(d + '/cmd.txt') : null;
+                var m = st ? (st.mtimeMs || st.mtime.getTime()) : 0;
+                changed = (m !== cmdMtime);
+                cmdMtime = m;
+            } catch (e) { changed = false; }
+        }
+        if (useNodeFs && !changed && !doState && !doBeat) {
+            return;  // zero ExtendScript-engine traffic while idle
+        }
         // Dedup state lives in applied.txt, read and written by the
         // script itself: the evalScript return value is unreliable in
         // some CEP builds, so the panel must NOT depend on it to
         // remember which command was already applied.
-        var doState = (tick % 2 === 0);
-        var doBeat  = (tick % 4 === 0);
         var script =
             "var d='" + d + "';" +
             "var ap=new File(d+'/applied.txt');var last='';" +
@@ -191,7 +231,7 @@ function poll() {
             "a.write(parts[0]);a.close();" +
             "applied=true;" +
             "}" +
-            (doState ? "if(applied||true){" : "if(applied){") +
+            (changed || doState ? "if(applied||true){" : "if(applied){") +
             "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
             "var s=new File(d+'/state.txt');s.open('w');" +
             "s.write(Math.round(fg.rgb.red)+'|'+Math.round(fg.rgb.green)+'|'+Math.round(fg.rgb.blue)+'|'+Math.round(bg.rgb.red)+'|'+Math.round(bg.rgb.green)+'|'+Math.round(bg.rgb.blue));" +
@@ -201,7 +241,7 @@ function poll() {
             // Keep PANEL_VERSION in sync with PANEL_VERSION_FILENAME below
             script +=
             "var pv=new File(d+'/panel_version.txt');pv.open('w');" +
-            "pv.write('3');pv.close();" +
+            "pv.write('4');pv.close();" +
             "var h=new File(d+'/heartbeat.txt');h.open('w');" +
             "h.write(String(new Date().getTime()));h.close();";
         }
@@ -210,9 +250,8 @@ function poll() {
 }
 setInterval(function () {
     if (!claimed) { return; }  // wait for the stale-command claim
-    tick++;
     poll();
-}, POLL_MS);
+}, FAST_MS);
 </script>
 </body>
 </html>
