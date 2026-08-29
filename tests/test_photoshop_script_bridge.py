@@ -70,18 +70,21 @@ class TestDeploy:
         assert "getSystemPath" in html
 
     def test_panel_routes_by_pid(self, bridge):
-        """The panel must address commands by Photoshop PID and write
-        per-PID state/heartbeat/version files (multi-instance routing)."""
+        """The panel must resolve its PID (appPid / $.pid) and use it for
+        per-instance routing, with a shared-file fallback."""
         bridge.deploy()
         with open(os.path.join(_bridge_dir(bridge), INDEX_FILENAME),
                   encoding="utf-8") as f:
             html = f.read()
+        # PID resolution: CEP host environment first, then $.pid.
+        assert "appPid" in html
         assert "$.pid" in html
-        assert "/state_'+p+'.txt'" in html
-        assert "/heartbeat_'+p+'.txt'" in html
-        assert "/panel_version_'+p+'.txt'" in html
-        assert "parts[1]==String(p)" in html or "parts[1]===myPid" in html
+        assert "pidSuffix" in html
+        # Node path filters by myPid; fallback path filters by my==''||parts[1]==my
+        assert "parts[1] === myPid" in html or "parts[1]==my" in html
         assert "lastToken" in html
+        # Per-PID + shared file names both present (suffix pattern).
+        assert "'/state" in html and "suff" in html
 
     def test_panel_claims_stale_command_on_load(self, bridge):
         """On load the panel must only delete a cmd.txt that predates the
@@ -185,13 +188,13 @@ class TestPanelVersion:
         assert bridge.panel_version(1) is None
 
     def test_index_template_writes_panel_version(self, bridge):
-        """The deployed panel must write panel_version_<pid>.txt and the
-        embedded version must match the Python constant."""
+        """The deployed panel must write panel_version (per-PID or
+        shared) and the embedded version must match the Python constant."""
         bridge.deploy()
         with open(os.path.join(_bridge_dir(bridge), INDEX_FILENAME),
                   encoding="utf-8") as f:
             html = f.read()
-        assert "panel_version_'+p+'.txt'" in html
+        assert "'/panel_version" in html
         assert f"pv.write('{PANEL_VERSION}')" in html
 
 
