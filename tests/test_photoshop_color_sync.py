@@ -94,41 +94,33 @@ class TestProcessAliveFallback:
         assert ps._is_process_alive() is False
 
 
-class TestComFallback:
-    """COM registrations are transient on green builds — a COM failure for
-    the selected instance must fall back to the script bridge."""
+class TestUnifiedBridge:
+    """Every Photoshop edition — genuine, green/portable, or
+    cracked-with-COM — shares ONE sync path: the user-level CEP bridge.
+    connect() must always route to _connect_bridge with the picked
+    instance's pid; COM automation is retired."""
 
-    def test_com_failure_falls_back_to_bridge(self):
+    def test_connect_routes_green_instance_to_bridge(self):
         ps = PhotoshopSync()
-        green = _inst(COM_KIND, "Green (COM)", progid="Photoshop.Application")
+        green = _inst(SCRIPT_BRIDGE_KIND, "Green", pid=42)
         ps._detect = lambda force=False: [green]
-        ps._connect_com = MagicMock(return_value=False)
         ps._connect_bridge = MagicMock(return_value=True)
         assert ps.connect() is True
-        ps._connect_com.assert_called_once()
         ps._connect_bridge.assert_called_once()
+        assert ps._pid == 42
 
-    def test_com_success_skips_bridge(self):
+    def test_connect_routes_com_kind_instance_to_bridge(self):
+        """A registered / cracked-with-COM instance must use the same
+        bridge path — no COM branch may be taken."""
         ps = PhotoshopSync()
-        reg = _inst(COM_KIND, "Reg (COM)", progid="Photoshop.Application.140")
+        reg = _inst(COM_KIND, "Reg", pid=7, progid="Photoshop.Application.140")
         ps._detect = lambda force=False: [reg]
         ps._connect_com = MagicMock(return_value=True)
         ps._connect_bridge = MagicMock(return_value=True)
         assert ps.connect() is True
-        ps._connect_com.assert_called_once()
-        ps._connect_bridge.assert_not_called()
-
-    def test_auto_mode_tries_other_com_instance_before_bridge(self):
-        ps = PhotoshopSync()
-        bad = _inst(COM_KIND, "Bad (COM)", pid=1, progid="Photoshop.Application")
-        good = _inst(COM_KIND, "Good (COM)", pid=2, progid="Photoshop.Application.140")
-        ps._detect = lambda force=False: [bad, good]
-        ps._connect_com = MagicMock(side_effect=[False, True])
-        ps._connect_bridge = MagicMock(return_value=True)
-        assert ps.connect() is True
-        assert ps._connect_com.call_count == 2
-        ps._connect_bridge.assert_not_called()
-        assert ps._pid == 2  # switched to the working instance
+        ps._connect_bridge.assert_called_once()
+        ps._connect_com.assert_not_called()
+        assert ps._pid == 7
 
     def test_no_instances_sets_error(self):
         ps = PhotoshopSync()

@@ -1,30 +1,38 @@
-"""CEP-extension bridge for green/portable Photoshop installs.
+"""User-level CEP bridge — the single sync path for every Photoshop.
 
-Green editions register no COM automation interface, so COM-based sync
-cannot attach to them. Instead Colorink deploys a **hidden CEP background
-extension** into ``<ps_dir>/Required/CEP/extensions/ColorinkBridge/``.
+One hidden CEP background extension is deployed into the **user-level**
+CEP extensions folder (``%APPDATA%\\Adobe\\CEP\\extensions\\ColorinkBridge``)
+which every Photoshop edition — registered (genuine), green/portable or
+cracked-with-COM — auto-loads on startup.  There is exactly one deployed
+copy for the whole machine, so the old per-install copies (one per
+Photoshop directory) and their fixed-extension-ID fights are gone; the
+user-level folder needs no admin rights.
+
+Multi-instance routing is done by **PID**: command lines carry the target
+Photoshop's process id, each panel applies only commands addressed to its
+own ``$.pid``, and every panel writes per-PID state/heartbeat/version
+files.  Colorink reads the files of the instance it is syncing with.
 
 The extension manifest mirrors Adobe's own ``com.adobe.Butler.backend``
 structure (``Version 7.0``, ``AutoVisible false`` + ``StartOn
-applicationActivate``, ``Type Custom``) — the only manifest pattern
-proven to auto-load at startup on portable builds. The panel's JS runs
-in a persistent CEF runtime with Node.js enabled, so it polls the bridge
-files itself every 0.1 s and applies colors via ``evalScript``.
+applicationActivate``, ``Type Custom``) — the only manifest pattern proven
+to auto-load on portable builds.  The panel's JS runs in a persistent CEF
+runtime with Node.js enabled.
 
 File protocol (ASCII, one line, ``|``-separated), all inside the
 extension folder:
 
-- ``cmd.txt``       ``<token>|<index>|<r>|<g>|<b>``   — write target
-- ``state.txt``     ``<fg_r>|<fg_g>|<fg_b>|<bg_r>|<bg_g>|<bg_b>`` — live colors
-- ``heartbeat.txt`` millisecond epoch written on every poll
-- ``panel_version.txt`` panel protocol version, rewritten on every poll by
-  the panel itself — a missing/older value means the *running* panel
-  predates a newer deploy (Photoshop not restarted yet), which callers
-  surface as a "restart Photoshop" hint.
+- ``cmd.txt``               ``<token>|<pid>|<index>|<r>|<g>|<b>``  — write
+                            target for the Photoshop with that pid
+                            (``<token>|<pid>|swap`` = exchange fg/bg)
+- ``state_<pid>.txt``       ``<fg_r>|<fg_g>|<fg_b>|<bg_r>|<bg_g>|<bg_b>``
+- ``heartbeat_<pid>.txt``   millisecond epoch, refreshed every 4 s
+- ``panel_version_<pid>.txt`` panel protocol version, refreshed every 4 s
+- ``applied_<pid>.txt``     last-applied token (fallback-path dedup)
+- ``nodefs.txt``            diagnostics: '1' = Node fs path active
 
-Deploying only takes effect after Photoshop restarts; ``is_alive()``
-reports whether the loaded panel is currently polling (heartbeat stays
-fresh while PS runs, since the panel polls every 0.1 s).
+Deploying only takes effect after Photoshop restarts; ``is_alive(pid)``
+reports whether the panel loaded in that Photoshop is polling.
 """
 
 from __future__ import annotations
@@ -41,17 +49,31 @@ STATE_FILENAME: Final = "state.txt"
 HEARTBEAT_FILENAME: Final = "heartbeat.txt"
 PANEL_VERSION_FILENAME: Final = "panel_version.txt"
 # Bump when the panel's behaviour changes in a way Colorink needs to
-# detect (e.g. poll interval). The panel rewrites panel_version.txt on
-# every poll; a running panel with an older protocol keeps writing the
-# old value (or nothing), so Colorink can tell "deployed file is new"
-# from "running panel is new" — only the latter clears the hint.
-PANEL_VERSION: Final = 5
+# detect. The panel rewrites panel_version_<pid>.txt every 4 s; a running
+# panel with an older protocol keeps writing the old value (or nothing),
+# so Colorink can tell "deployed file is new" from "running panel is
+# new" — only the latter clears the "restart Photoshop" hint.
+PANEL_VERSION: Final = 6
 
 EXTENSION_ID: Final = "com.colorink.bridge"
 EXTENSION_DIR_NAME: Final = "ColorinkBridge"
 
+# Legacy per-install deploy location (v1..v5) — cleaned up on connect.
 _CEP_RELATIVE_DIR: Final = os.path.join(
     "Required", "CEP", "extensions", EXTENSION_DIR_NAME)
+
+
+def user_cep_dir() -> str:
+    """User-level CEP extensions folder shared by every Adobe host."""
+    appdata = os.environ.get("APPDATA") or os.path.join(
+        os.path.expanduser("~"), "AppData", "Roaming")
+    return os.path.join(appdata, "Adobe", "CEP", "extensions",
+                        EXTENSION_DIR_NAME)
+
+
+def _pid_filename(base: str, pid: int) -> str:
+    return f"{base}_{int(pid)}.txt"
+
 
 # Manifest mirroring com.adobe.Butler.backend (the one structure proven
 # to auto-load at startup on green builds) — only IDs changed.
@@ -103,24 +125,22 @@ _MANIFEST_TEMPLATE: Final = """<?xml version="1.0" encoding="UTF-8" standalone="
 </ExtensionManifest>
 """
 
-# The panel uses a two-path design. All work runs through evalScript
-# into Photoshop's ExtendScript engine (File objects — no Node fs
-# dependency in the *script* itself), but the command-mailbox *check*
-# prefers Node fs (the manifest enables --enable-nodejs), so the panel
-# does not touch Photoshop's single-threaded script engine just to look
-# for work:
+# The panel uses a two-path design. All work runs through evalScript into
+# Photoshop's ExtendScript engine, but the command-mailbox *check* prefers
+# Node fs (the manifest enables --enable-nodejs), so the panel does not
+# touch Photoshop's single-threaded script engine just to look for work:
 #
-#   * command mailbox checked every 100 ms via Node fs.statSync (zero
-#     ExtendScript traffic while idle); a new command is applied on the
-#     next tick — the same perceived latency as the old 0.1 s design,
-#   * state read-back every 5 ticks (0.5 s) and immediately after a
-#     command (Photoshop foreground/background colours),
+#   * command mailbox checked every 100 ms via Node fs.statSync /
+#     readFileSync (zero ExtendScript traffic while idle); a command
+#     addressed to this instance (PID match) is applied on the next tick
+#     and the state is read back immediately,
+#   * state read-back every 5 ticks (0.5 s),
 #   * heartbeat + panel_version every 40 ticks (4 s) — is_alive() in
 #     Colorink tolerates an 8 s gap, so 4 s is ample,
-#   * fallback: CEP builds without a working Node fs probe the mailbox
-#     with a lightweight evalScript (reads cmd.txt only, no writes)
-#     instead of the full five-file-write-every-tick script that starved
-#     TourBox / Coolorus.
+#   * fallback: CEP builds without a working Node fs run one lightweight
+#     evalScript per tick that reads cmd.txt only (writes nothing when
+#     idle) instead of the old five-file-write-every-tick script that
+#     starved TourBox / Coolorus.
 _INDEX_TEMPLATE: Final = r"""<!DOCTYPE html>
 <html>
 <head>
@@ -146,7 +166,7 @@ try {
 var useNodeFs = false;
 try {
     var fs = require('fs');
-    useNodeFs = (typeof fs !== 'undefined' && typeof fs.statSync === 'function');
+    useNodeFs = (typeof fs !== 'undefined' && typeof fs.statSync === 'function' && typeof fs.readFileSync === 'function');
 } catch (e) { useNodeFs = false; }
 function evalScript(script, cb) {
     if (window.__adobe_cep__) {
@@ -155,16 +175,38 @@ function evalScript(script, cb) {
         });
     } else if (cb) { cb(-1, null); }
 }
-// On load, DELETE the leftover command mailbox entry without applying
-// it: any command present at panel load predates this Photoshop session
-// (written while PS was closed or before the restart) and re-applying it
-// would overwrite the user's colors. Polling is gated on this claim
-// finishing so no race can re-apply the stale command.
+// Cache this Photoshop's PID when the evalScript return value works;
+// when it does not (some CEP builds), every script re-derives $.pid
+// itself, so correctness never depends on this cache.
+var myPid = "";
+evalScript("$.pid", function (code, result) {
+    if (code === 0 && result !== null && result !== undefined) {
+        myPid = String(result).trim();
+    }
+});
+// On load, DELETE a command that predates this panel (a leftover from
+// before Photoshop restarted) so it is not re-applied. A command written
+// AFTER this panel started (mtime >= panelStart) must survive — with
+// multiple instances sharing cmd.txt this is what stops a freshly
+// started Photoshop from eating a live command.
+var panelStart = Date.now();
 var claimed = false;
 function claimStaleCmd() {
-    var s = "var f=new File('" + dir + "/cmd.txt');" +
-        "if(f.exists){f.remove();}true;";
-    evalScript(s, function (code, result) { claimed = true; });
+    try {
+        var d0 = String(dir).replace(/\\/g, "/");
+        if (useNodeFs) {
+            var st = fs.existsSync(d0 + '/cmd.txt') ? fs.statSync(d0 + '/cmd.txt') : null;
+            var m = st ? (st.mtimeMs || st.mtime.getTime()) : 0;
+            if (m > 0 && m < panelStart) {
+                try { fs.unlinkSync(d0 + '/cmd.txt'); } catch (e) {}
+            }
+            claimed = true;
+        } else {
+            var s = "var f=new File('" + d0 + "/cmd.txt');" +
+                "if(f.exists){var t=f.modified?f.modified.getTime():0;if(t>0&&t<" + panelStart + "){f.remove();}}true;";
+            evalScript(s, function (code, result) { claimed = true; });
+        }
+    } catch (e) { claimed = true; }
 }
 claimStaleCmd();
 // Diagnostics: record whether Node fs is usable in this CEP runtime so
@@ -184,68 +226,109 @@ var FAST_MS = 100;     // command mailbox check interval
 var STATE_EVERY = 5;   // state read-back every 5 ticks (0.5 s)
 var BEAT_EVERY = 40;   // heartbeat + panel_version every 40 ticks (4 s)
 var cmdMtime = 0;
+var lastToken = "";
+
+function stateScript(d) {
+    return "var d='" + d + "';var p=$.pid;" +
+        "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
+        "var s=new File(d+'/state_'+p+'.txt');s.open('w');" +
+        "s.write(Math.round(fg.rgb.red)+'|'+Math.round(fg.rgb.green)+'|'+Math.round(fg.rgb.blue)+'|'+Math.round(bg.rgb.red)+'|'+Math.round(bg.rgb.green)+'|'+Math.round(bg.rgb.blue));" +
+        "s.close();";
+}
+function beatScript(d) {
+    // Keep PANEL_VERSION in sync with PANEL_VERSION_FILENAME below
+    return "var d='" + d + "';var p=$.pid;" +
+        "var pv=new File(d+'/panel_version_'+p+'.txt');pv.open('w');" +
+        "pv.write('6');pv.close();" +
+        "var h=new File(d+'/heartbeat_'+p+'.txt');h.open('w');" +
+        "h.write(String(new Date().getTime()));h.close();";
+}
+function applyScript(d, parts) {
+    // parts: <token>|<pid>|<index>|<r>|<g>|<b>  or  <token>|<pid>|swap
+    var s = "var d='" + d + "';var p=$.pid;";
+    if (parts[2] === 'swap') {
+        s += "var t=app.foregroundColor;" +
+            "app.foregroundColor=app.backgroundColor;" +
+            "app.backgroundColor=t;";
+    } else {
+        s += "var c=new SolidColor();" +
+            "c.rgb.red=" + parseInt(parts[3], 10) + ";" +
+            "c.rgb.green=" + parseInt(parts[4], 10) + ";" +
+            "c.rgb.blue=" + parseInt(parts[5], 10) + ";" +
+            "if(parseInt(parts[2],10)==1){app.backgroundColor=c;}" +
+            "else{app.foregroundColor=c;}";
+    }
+    // Apply writes the state back immediately.
+    return s + stateScript(d);
+}
 function poll() {
     try {
         tick++;
         var d = String(dir).replace(/\\/g, "/");
         var doState = (tick % STATE_EVERY === 0);
         var doBeat  = (tick % BEAT_EVERY === 0);
-        var changed = false;
         if (useNodeFs) {
             try {
                 var st = fs.existsSync(d + '/cmd.txt') ? fs.statSync(d + '/cmd.txt') : null;
                 var m = st ? (st.mtimeMs || st.mtime.getTime()) : 0;
-                changed = (m !== cmdMtime);
+                var changed = (m !== cmdMtime);
                 cmdMtime = m;
-            } catch (e) { changed = false; }
+                if (changed) {
+                    var raw = fs.readFileSync(d + '/cmd.txt', 'utf8');
+                    var parts = String(raw).split('|');
+                    var forUs = (myPid === "" || parts[1] === myPid);
+                    if (forUs && parts.length >= 3 && parts[0] !== lastToken) {
+                        lastToken = parts[0];
+                        evalScript(applyScript(d, parts), function () {});
+                        return;  // apply already wrote state back
+                    }
+                }
+            } catch (e) {}
+        } else {
+            // Fallback: one lightweight script per tick — reads cmd.txt,
+            // applies only when addressed to this PID and un-applied,
+            // writes nothing while idle. State/heartbeat are throttled.
+            var script =
+                "var d='" + d + "';var p=$.pid;" +
+                "var ap=new File(d+'/applied_'+p+'.txt');var last='';" +
+                "if(ap.exists){ap.open('r');last=ap.read();ap.close();}" +
+                "var line='';var cf=new File(d+'/cmd.txt');" +
+                "if(cf.exists){cf.open('r');line=cf.read();cf.close();}" +
+                "var parts=String(line).split('|');" +
+                "var applied=false;" +
+                "if(parts.length>=3&&parts[1]==String(p)&&parts[0]!=last){" +
+                "if(parts[2]=='swap'){" +
+                "var t=app.foregroundColor;" +
+                "app.foregroundColor=app.backgroundColor;" +
+                "app.backgroundColor=t;" +
+                "}else if(parts.length>=6){" +
+                "var c=new SolidColor();" +
+                "c.rgb.red=parseInt(parts[3],10);" +
+                "c.rgb.green=parseInt(parts[4],10);" +
+                "c.rgb.blue=parseInt(parts[5],10);" +
+                "if(parseInt(parts[2],10)==1){app.backgroundColor=c;}" +
+                "else{app.foregroundColor=c;}" +
+                "}" +
+                "var a=new File(d+'/applied_'+p+'.txt');a.open('w');" +
+                "a.write(parts[0]);a.close();" +
+                "applied=true;" +
+                "}" +
+                (doState ? "if(applied||true){" : "if(applied){") +
+                "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
+                "var s=new File(d+'/state_'+p+'.txt');s.open('w');" +
+                "s.write(Math.round(fg.rgb.red)+'|'+Math.round(fg.rgb.green)+'|'+Math.round(fg.rgb.blue)+'|'+Math.round(bg.rgb.red)+'|'+Math.round(bg.rgb.green)+'|'+Math.round(bg.rgb.blue));" +
+                "s.close();" +
+                "}" +
+                (doBeat ?
+                "var pv=new File(d+'/panel_version_'+p+'.txt');pv.open('w');" +
+                "pv.write('6');pv.close();" +
+                "var h=new File(d+'/heartbeat_'+p+'.txt');h.open('w');" +
+                "h.write(String(new Date().getTime()));h.close();" : "");
+            evalScript(script, function () {});
+            return;
         }
-        if (useNodeFs && !changed && !doState && !doBeat) {
-            return;  // zero ExtendScript-engine traffic while idle
-        }
-        // Dedup state lives in applied.txt, read and written by the
-        // script itself: the evalScript return value is unreliable in
-        // some CEP builds, so the panel must NOT depend on it to
-        // remember which command was already applied.
-        var script =
-            "var d='" + d + "';" +
-            "var ap=new File(d+'/applied.txt');var last='';" +
-            "if(ap.exists){ap.open('r');last=ap.read();ap.close();}" +
-            "var line='';var cf=new File(d+'/cmd.txt');" +
-            "if(cf.exists){cf.open('r');line=cf.read();cf.close();}" +
-            "var parts=String(line).split('|');" +
-            "var applied=false;" +
-            "if(parts.length>=2&&parts[0]!=last){" +
-            "if(parts[1]=='swap'){" +
-            "var t=app.foregroundColor;" +
-            "app.foregroundColor=app.backgroundColor;" +
-            "app.backgroundColor=t;" +
-            "}else if(parts.length>=5){" +
-            "var c=new SolidColor();" +
-            "c.rgb.red=parseInt(parts[2],10);" +
-            "c.rgb.green=parseInt(parts[3],10);" +
-            "c.rgb.blue=parseInt(parts[4],10);" +
-            "if(parts[1]=='1'){app.backgroundColor=c;}" +
-            "else{app.foregroundColor=c;}" +
-            "}" +
-            "var a=new File(d+'/applied.txt');a.open('w');" +
-            "a.write(parts[0]);a.close();" +
-            "applied=true;" +
-            "}" +
-            (changed || doState ? "if(applied||true){" : "if(applied){") +
-            "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
-            "var s=new File(d+'/state.txt');s.open('w');" +
-            "s.write(Math.round(fg.rgb.red)+'|'+Math.round(fg.rgb.green)+'|'+Math.round(fg.rgb.blue)+'|'+Math.round(bg.rgb.red)+'|'+Math.round(bg.rgb.green)+'|'+Math.round(bg.rgb.blue));" +
-            "s.close();" +
-            "}";
-        if (doBeat) {
-            // Keep PANEL_VERSION in sync with PANEL_VERSION_FILENAME below
-            script +=
-            "var pv=new File(d+'/panel_version.txt');pv.open('w');" +
-            "pv.write('5');pv.close();" +
-            "var h=new File(d+'/heartbeat.txt');h.open('w');" +
-            "h.write(String(new Date().getTime()));h.close();";
-        }
-        evalScript(script, function (code, result) {});
+        if (doState) { evalScript(stateScript(d), function () {}); }
+        if (doBeat)  { evalScript(beatScript(d), function () {}); }
     } catch (e) {}
 }
 setInterval(function () {
@@ -259,12 +342,17 @@ setInterval(function () {
 
 
 class PhotoshopScriptBridge:
-    """Hidden-CEP-panel bridge controlling one green/portable Photoshop."""
+    """User-level CEP bridge shared by every Photoshop install/version.
 
-    def __init__(self, ps_dir: str) -> None:
-        self.ps_dir: str = ps_dir
-        self.dir: str = os.path.join(ps_dir, *_CEP_RELATIVE_DIR.split(os.sep))
-        self._panel_version_cache: tuple[float, int | None] | None = None
+    Exactly one deployed copy exists (user-level CEP folder), and all
+    instances route through it by PID. Colorink talks to the instance it
+    selected by addressing commands to that instance's process id and
+    reading that instance's per-PID state/heartbeat files.
+    """
+
+    def __init__(self) -> None:
+        self.dir: str = user_cep_dir()
+        self._panel_version_cache: dict[int, tuple[float, int | None]] = {}
 
     # -- deployment ---------------------------------------------------------
 
@@ -280,7 +368,8 @@ class PhotoshopScriptBridge:
         """Write the hidden CEP extension (manifest + panel).
 
         The manifest and panel HTML are always rewritten so updates
-        propagate to already-deployed installs.
+        propagate to already-deployed installs. Takes effect on the next
+        Photoshop restart.
         """
         try:
             os.makedirs(self.dir, exist_ok=True)
@@ -291,47 +380,38 @@ class PhotoshopScriptBridge:
             with open(os.path.join(self.dir, INDEX_FILENAME), "w",
                       encoding="utf-8", newline="\n") as f:
                 f.write(_INDEX_TEMPLATE)
-            self._suppress_script_warning()
             return True
         except OSError:
             return False
 
     @staticmethod
-    def cleanup_other_installs(keep_ps_dir: str) -> list[str]:
-        """Remove ColorinkBridge from every *other* running Photoshop
-        install so a stale copy cannot auto-load there.
+    def cleanup_install_dirs() -> list[str]:
+        """Remove legacy per-install (application-level) ColorinkBridge
+        copies from every *running* Photoshop install.
 
-        A deployed extension auto-loads whenever that Photoshop starts —
-        independent of which instance Colorink is currently syncing with.
-        With a fixed extension ID (``com.colorink.bridge``) and multiple
-        installs, both panels fight over the shared CEP runtime and the
-        single-threaded ExtendScript engine, which shows up as
-        load-order-dependent breakage (the "open genuine PS first, then
-        green PS" workaround).  Keeping only the target install's copy
-        avoids the fight entirely.
-
-        Returns the list of install dirs whose stale copy was removed.
+        v1..v5 deployed one extension per Photoshop directory; those
+        copies auto-load whenever that Photoshop starts and, with the
+        shared user-level panel now in place, would run a second, older
+        panel in the same process. Removing them keeps exactly one panel
+        per instance.
         """
         removed: list[str] = []
         try:
             from core.photoshop_instances import detect_instances
-            keep = os.path.normcase(os.path.abspath(keep_ps_dir))
             for inst in detect_instances():
-                other = os.path.dirname(os.path.abspath(inst.exe_path))
-                if os.path.normcase(other) == keep:
-                    continue
-                ext = os.path.join(other, *_CEP_RELATIVE_DIR.split(os.sep))
+                ps_dir = os.path.dirname(os.path.abspath(inst.exe_path))
+                ext = os.path.join(ps_dir, *_CEP_RELATIVE_DIR.split(os.sep))
                 if (os.path.isdir(ext)
                         and os.path.isfile(os.path.join(
                             ext, "CSXS", MANIFEST_FILENAME))):
                     shutil.rmtree(ext, ignore_errors=True)
-                    removed.append(other)
+                    removed.append(ps_dir)
         except Exception:
             pass
         return removed
 
     def remove(self) -> bool:
-        """Delete the deployed extension directory for this install.
+        """Delete the user-level extension directory.
 
         The running Photoshop keeps the already-loaded panel until it is
         restarted, so callers should surface a "restart Photoshop" hint
@@ -344,35 +424,6 @@ class PhotoshopScriptBridge:
                         and os.path.isfile(self._manifest_path()))
         except OSError:
             return False
-
-    def _write_if_missing(self, filename: str, content: str) -> None:
-        path = os.path.join(self.dir, filename)
-        if not os.path.isfile(path):
-            with open(path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(content)
-
-    def _suppress_script_warning(self) -> None:
-        """PSUserConfig.txt with WarnRunningScripts 0 so Photoshop never
-        asks before running scripts (harmless for CEP; covers fallbacks)."""
-        try:
-            appdata = os.environ.get("APPDATA", "")
-            for name in _settings_names(self.ps_dir):
-                settings_dir = os.path.join(
-                    appdata, "Adobe", name, name + " Settings")
-                if not os.path.isdir(settings_dir):
-                    continue
-                cfg = os.path.join(settings_dir, "PSUserConfig.txt")
-                if os.path.isfile(cfg):
-                    with open(cfg, encoding="utf-8", errors="ignore") as f:
-                        if "WarnRunningScripts" in f.read():
-                            continue
-                    with open(cfg, "a", encoding="ascii") as f:
-                        f.write("\nWarnRunningScripts 0\n")
-                else:
-                    with open(cfg, "w", encoding="ascii") as f:
-                        f.write("WarnRunningScripts 0\n")
-        except OSError:
-            pass
 
     # -- write side ----------------------------------------------------------
 
@@ -387,31 +438,27 @@ class PhotoshopScriptBridge:
         except OSError:
             return False
 
-    def send_color(self, token: str, color_index: int,
+    def send_color(self, token: str, pid: int, color_index: int,
                    r: int, g: int, b: int) -> bool:
-        """Write a color command; the panel applies it on its next poll.
-
-        Uses a temp file + atomic replace so the panel never reads a
-        half-written line. *token* must differ from the previous one for
-        the panel to re-apply the command.
+        """Write a color command for the Photoshop with *pid*; the panel
+        loaded there applies it on its next poll (<=100 ms). Uses a temp
+        file + atomic replace so a panel never reads a half-written line.
+        *token* must differ from the previous one for re-application.
         """
         return self._write_cmd(
-            f"{token}|{int(color_index)}|{int(r)}|{int(g)}|{int(b)}")
+            f"{token}|{int(pid)}|{int(color_index)}|{int(r)}|{int(g)}|{int(b)}")
 
-    def send_swap(self, token: str) -> bool:
-        """Swap Photoshop's foreground/background (like pressing X).
-
-        The panel performs the exchange atomically in one script run.
-        """
-        return self._write_cmd(f"{token}|swap")
+    def send_swap(self, token: str, pid: int) -> bool:
+        """Swap that Photoshop's foreground/background (like pressing X)."""
+        return self._write_cmd(f"{token}|{int(pid)}|swap")
 
     # -- read side ------------------------------------------------------------
 
-    def read_state(self) -> dict | None:
-        """Return ``{"fg": {...}, "bg": {...}}`` from the panel's last
-        state mirror, or ``None`` when nothing has been written yet."""
+    def read_state(self, pid: int) -> dict | None:
+        """Return ``{"fg": {...}, "bg": {...}}`` from the panel loaded in
+        the Photoshop with *pid*, or ``None`` when nothing is written."""
         try:
-            with open(os.path.join(self.dir, STATE_FILENAME),
+            with open(os.path.join(self.dir, _pid_filename(STATE_FILENAME, pid)),
                       encoding="ascii") as f:
                 parts = f.read().split("|")
             if len(parts) >= 6:
@@ -427,53 +474,36 @@ class PhotoshopScriptBridge:
 
     # -- liveness -------------------------------------------------------------
 
-    def panel_version(self, max_age: float = 5.0) -> int | None:
-        """Version of the *running* panel, from ``panel_version.txt``.
-
-        The panel rewrites this file on every poll, so a missing value or
-        an older version means the loaded panel predates the current
-        deploy (Photoshop has not been restarted since) — callers show a
-        "restart Photoshop" hint. Cached *max_age* seconds because this
-        is polled on every status snapshot.
-        """
+    def panel_version(self, pid: int, max_age: float = 5.0) -> int | None:
+        """Version of the *running* panel in that Photoshop, from
+        ``panel_version_<pid>.txt``. Cached *max_age* seconds because this
+        is polled on every status snapshot."""
         now = time.monotonic()
-        if self._panel_version_cache is not None:
-            ts, val = self._panel_version_cache
+        cached = self._panel_version_cache.get(pid)
+        if cached is not None:
+            ts, val = cached
             if now - ts < max_age:
                 return val
         val: int | None = None
         try:
-            with open(os.path.join(self.dir, PANEL_VERSION_FILENAME),
-                      encoding="ascii") as f:
+            with open(os.path.join(
+                    self.dir, _pid_filename(PANEL_VERSION_FILENAME, pid)),
+                    encoding="ascii") as f:
                 val = int(f.read().strip())
         except (OSError, ValueError):
             val = None
-        self._panel_version_cache = (now, val)
+        self._panel_version_cache[pid] = (now, val)
         return val
 
-    def heartbeat_age(self) -> float | None:
-        """Seconds since the panel's last heartbeat, or ``None``."""
+    def heartbeat_age(self, pid: int) -> float | None:
+        """Seconds since that panel's last heartbeat, or ``None``."""
         try:
-            mtime = os.path.getmtime(
-                os.path.join(self.dir, HEARTBEAT_FILENAME))
+            mtime = os.path.getmtime(os.path.join(
+                self.dir, _pid_filename(HEARTBEAT_FILENAME, pid)))
             return time.time() - mtime
         except OSError:
             return None
 
-    def is_alive(self, max_age: float = 8.0) -> bool:
-        age = self.heartbeat_age()
+    def is_alive(self, pid: int, max_age: float = 8.0) -> bool:
+        age = self.heartbeat_age(pid)
         return age is not None and age <= max_age
-
-
-def _settings_names(ps_dir: str) -> list[str]:
-    """Roaming settings folder names for a Photoshop install dir.
-
-    The roaming profile folder is named after the install folder's
-    display name (e.g. ``Adobe Photoshop CC 2019``), which usually
-    matches the install folder name.
-    """
-    name = os.path.basename(os.path.normpath(ps_dir))
-    names = [name]
-    if name.startswith("Adobe "):
-        names.append(name[len("Adobe "):])
-    return names

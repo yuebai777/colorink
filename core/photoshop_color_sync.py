@@ -155,34 +155,21 @@ class PhotoshopSync:
     # -- connect -----------------------------------------------------------------
 
     def connect(self) -> bool:
-        """Connect to a running Photoshop instance (auto or user-selected)."""
+        """Connect to a running Photoshop instance (auto or user-selected).
 
-        # Re-use existing COM connection if healthy
-        if self._app is not None and self._disp is not None:
-            # Bail early if Photoshop died — avoids hung COM RPC
-            if not self._is_process_alive():
-                self.last_error = "Photoshop 进程已退出，请重新启动 Photoshop 后再试"
-                self._reset()
-            else:
-                try:
-                    name = self._app.Name
-                    if name:
-                        return True
-                except Exception:
-                    self._reset()
-
-        # Re-use healthy script bridge (event-driven: heartbeat refreshes
-        # only while PS is active, so check deployment + process instead)
+        Every edition — genuine, green/portable, or cracked-with-COM —
+        shares ONE sync path: the user-level CEP bridge, routed per
+        instance by PID. COM automation is retired: it was a second
+        backend with different latency and permission behaviour, and its
+        poll-based reads kept a genuine Photoshop's engine busy with COM
+        round-trips (the same starvation the old bridge panel caused).
+        """
+        # Re-use healthy bridge (deployed + PS running)
         if (self._bridge is not None and self._bridge.is_deployed()
                 and self._is_process_alive()):
             return True
 
         self._reset()
-
-        if _w32 is None and self.backend != SCRIPT_BRIDGE_KIND:
-            self.last_error = "pywin32 组件不可用（打包异常或未安装 pywin32）"
-            _print_error("connect: win32com / pywin32 not available")
-            return False
 
         instances = self._detect()
         target = pick_target(instances, self.current_version)
@@ -191,26 +178,14 @@ class PhotoshopSync:
             return False
 
         self._pid = target.pid
-        if target.kind == COM_KIND and not self._com_failed:
-            if self._connect_com(target):
-                return True
-            # COM registrations are transient on green builds (registered
-            # at startup, torn down again): fall back to the script bridge,
-            # which works for any running instance. In auto mode also try
-            # other COM-registered instances before giving up on COM.
-            self._com_failed = True
-            if self.current_version in ("", "auto"):
-                for inst in instances:
-                    if inst is not target and inst.kind == COM_KIND:
-                        self._pid = inst.pid
-                        if self._connect_com(inst):
-                            self._com_failed = False
-                            return True
-            self._pid = target.pid
         return self._connect_bridge(target)
 
     def _connect_com(self, target: PhotoshopInstance) -> bool:
-        """Attach to a registered, running Photoshop via COM automation."""
+        """Attach to a registered, running Photoshop via COM automation.
+
+        Retired backend — kept only for reference / potential rollback;
+        ``connect()`` no longer calls it.
+        """
         if _w32 is None:
             self.last_error = "pywin32 组件不可用（打包异常或未安装 pywin32）"
             return False
@@ -247,38 +222,40 @@ class PhotoshopSync:
         return False
 
     def _connect_bridge(self, target: PhotoshopInstance) -> bool:
-        """Deploy the ExtendScript bridge for a green/portable Photoshop."""
-        ps_dir = os.path.dirname(target.exe_path)
-        # Remove stale bridge copies from any other running Photoshop
-        # install: the extension auto-loads there on its next start and,
-        # with a fixed extension ID, both panels then fight over the
-        # shared CEP runtime + ExtendScript engine (the "open genuine PS
-        # first, then green PS" workaround users found for TourBox).
+        """Deploy the shared user-level CEP bridge and target *target*.
+
+        One user-level extension serves every Photoshop (no admin rights
+        needed, no per-install copies); commands are addressed to
+        ``target.pid`` so multiple instances coexist. Legacy per-install
+        copies (v1..v5) are removed so no stale panel keeps running in
+        another instance.
+        """
+        # Remove legacy per-install bridge copies from every running PS.
         try:
-            removed = PhotoshopScriptBridge.cleanup_other_installs(ps_dir)
+            removed = PhotoshopScriptBridge.cleanup_install_dirs()
             if removed:
-                log(f"Removed stale ColorinkBridge from: {removed}")
+                log(f"Removed legacy per-install ColorinkBridge from: {removed}")
         except Exception:
             pass
-        self._bridge = PhotoshopScriptBridge(ps_dir)
+        self._bridge = PhotoshopScriptBridge()
         if not self._bridge.deploy():
             self.last_error = (
-                "脚本桥部署失败（目录不可写？请以管理员身份运行）"
+                "同步桥部署失败（目录不可写？请以管理员身份运行）"
             )
             return False
         self.backend = SCRIPT_BRIDGE_KIND
-        if self._bridge.is_alive():
+        if self._bridge.is_alive(self._pid):
             self.last_error = ""
             log(f"Script bridge alive for PID={self._pid}")
             return True
-        # Deployed but the script is not running yet — it loads when
+        # Deployed but the panel is not running yet — it loads when
         # Photoshop restarts. Writes are queued into cmd.txt meanwhile.
-        self.last_error = "脚本桥已部署：重启 Photoshop（绿色版）后生效"
+        self.last_error = "同步桥已部署：重启 Photoshop 后生效"
         log("Script bridge deployed, awaiting Photoshop restart")
         return True
 
     def remove_bridge(self) -> bool:
-        """Delete the deployed green-edition bridge extension (if any).
+        """Delete the deployed bridge extension.
 
         The running Photoshop keeps the already-loaded panel until it is
         restarted, so callers should tell the user to restart Photoshop
@@ -351,7 +328,7 @@ class PhotoshopSync:
     def get_color(self) -> dict[str, int] | None:
         """Read the current Photoshop foreground colour (slot 0)."""
         if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
-            state = self._bridge.read_state()
+            state = self._bridge.read_state(self._pid)
             if state is not None:
                 fg = state["fg"]
                 return {"r": fg["r"], "g": fg["g"], "b": fg["b"], "index": 0}
@@ -383,7 +360,7 @@ class PhotoshopSync:
     def get_bg_color(self) -> dict[str, int] | None:
         """Read the current Photoshop background colour (slot 1)."""
         if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
-            state = self._bridge.read_state()
+            state = self._bridge.read_state(self._pid)
             if state is not None:
                 bg = state["bg"]
                 return {"r": bg["r"], "g": bg["g"], "b": bg["b"], "index": 1}
@@ -417,12 +394,12 @@ class PhotoshopSync:
     def swap_slots(self) -> bool:
         """Swap Photoshop's foreground/background (like pressing X)."""
         if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
-            return self._bridge.send_swap(str(time.time_ns()))
+            return self._bridge.send_swap(str(time.time_ns()), self._pid)
         if self._app is None:
             if not self.connect():
                 return False
         if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
-            return self._bridge.send_swap(str(time.time_ns()))
+            return self._bridge.send_swap(str(time.time_ns()), self._pid)
         assert self._app is not None
         if not self._is_process_alive():
             self._reset()
@@ -446,7 +423,7 @@ class PhotoshopSync:
 
         if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
             return self._bridge.send_color(
-                str(time.time_ns()), color_index, r, g, b)
+                str(time.time_ns()), self._pid, color_index, r, g, b)
 
         if self._app is None:
             if not self.connect():
@@ -454,7 +431,7 @@ class PhotoshopSync:
         # connect() may have switched to the script bridge (auto mode)
         if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
             return self._bridge.send_color(
-                str(time.time_ns()), color_index, r, g, b)
+                str(time.time_ns()), self._pid, color_index, r, g, b)
         assert self._app is not None  # connect() sets _app on success
 
         if not self._is_process_alive():
@@ -503,22 +480,22 @@ class PhotoshopSync:
                 "processName": self.process_name,
                 "backend": self.backend,
                 "bridgeAlive": bool(self._bridge is not None
-                                    and self._bridge.is_alive()),
+                                    and self._bridge.is_alive(self._pid)),
                 # True when the deployed panel file is newer than the
                 # panel actually running inside Photoshop (user must
                 # restart PS for the new panel to load).
                 "panelStale": bool(self._bridge is not None
-                                   and self._bridge.panel_version()
+                                   and self._bridge.panel_version(self._pid)
                                    != PANEL_VERSION),
                 "lastError": self.last_error,
             }
 
         connected = (self._disp is not None
-                     or (self._bridge is not None and self._bridge.is_alive()))
+                     or (self._bridge is not None and self._bridge.is_alive(self._pid)))
         if not connected:
             self.connect()
             connected = (self._disp is not None
-                         or (self._bridge is not None and self._bridge.is_alive()))
+                         or (self._bridge is not None and self._bridge.is_alive(self._pid)))
 
         return {
             "connected": connected,
@@ -527,7 +504,7 @@ class PhotoshopSync:
             "processName": self.process_name,
             "backend": self.backend,
             "bridgeAlive": bool(self._bridge is not None
-                                and self._bridge.is_alive()),
+                                and self._bridge.is_alive(self._pid)),
             "lastError": self.last_error,
         }
 
@@ -571,10 +548,10 @@ class PhotoshopSync:
             "processName": self.process_name,
             "backend": self.backend,
             "bridgeAlive": bool(self._bridge is not None
-                                and self._bridge.is_alive()),
+                                and self._bridge.is_alive(self._pid)),
             # COM backend has no panel; only meaningful for script-bridge.
             "panelStale": bool(self._bridge is not None
-                               and self._bridge.panel_version()
+                               and self._bridge.panel_version(self._pid)
                                != PANEL_VERSION),
             "lastError": self.last_error,
         }
