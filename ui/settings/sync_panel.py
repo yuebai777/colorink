@@ -260,6 +260,32 @@ class SyncPanelMixin:
         # The bridge script reports heartbeats a few seconds after startup.
         QTimer.singleShot(8000, self._refresh_ps_bridge_status)
 
+    def _on_ps_bridge_remove(self):
+        """Remove the deployed bridge extension from the green Photoshop.
+
+        The panel is already loaded inside a running Photoshop, so a
+        restart is still required for the engine to be fully released —
+        this is the "退出插件后需要重启 PS 才恢复" step, made explicit.
+        """
+        ps_sync = self._ps_sync()
+        if ps_sync is None:
+            return
+        try:
+            ok = ps_sync.remove_bridge()
+        except Exception:
+            ok = False
+        if not ok:
+            QMessageBox.warning(
+                self, i18n.tr("移除扩展"),
+                i18n.tr("未能移除同步扩展（目录不可写？请以管理员身份运行）"))
+            return
+        QMessageBox.information(
+            self, i18n.tr("移除扩展"),
+            i18n.tr("已移除绿色版 Photoshop 的同步扩展。\n\n"
+            "如果 Photoshop 正在运行，需要重启 Photoshop 后才会"
+            "完全生效（不再占用其脚本引擎）。"))
+        self._refresh_ps_bridge_status()
+
     def _on_software_changed(self, text):
         """When the user picks Photoshop, offer the green-edition fix once."""
         if text == "Photoshop":
@@ -486,8 +512,16 @@ class SyncPanelMixin:
         self.btn_ps_bridge_recheck.clicked.connect(self._on_ps_bridge_recheck)
         self.btn_ps_bridge_restart = QPushButton(i18n.tr("重启 Photoshop"))
         self.btn_ps_bridge_restart.clicked.connect(self._on_ps_restart)
+        self.btn_ps_bridge_remove = QPushButton(i18n.tr("移除扩展"))
+        self.btn_ps_bridge_remove.setToolTip(
+            i18n.tr("删除已部署到绿色版 Photoshop 的同步扩展；"
+            "如 Photoshop 正在运行，需重启后才会完全生效。"
+            "当它与其它插件 / 控制器（如 TourBox、Coolorus）"
+            "冲突时使用"))
+        self.btn_ps_bridge_remove.clicked.connect(self._on_ps_bridge_remove)
         row_ps_bridge_btns.addWidget(self.btn_ps_bridge_recheck)
         row_ps_bridge_btns.addWidget(self.btn_ps_bridge_restart)
+        row_ps_bridge_btns.addWidget(self.btn_ps_bridge_remove)
         row_ps_bridge_btns.addStretch()
         row_ps_bridge.addLayout(row_ps_bridge_btns)
         cl_sync.addWidget(self.row_ps_bridge_widget)
