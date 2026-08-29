@@ -349,12 +349,23 @@ class MemorySyncThread(QThread):
                     status = self.udm_sync.status()
                     connected = status.get('connected', False)
                 elif self.software_mode == 'ps':
-                    # Read-back throttled to 0.5 s (see _last_ps_read in
-                    # __init__): COM round-trips on every 100 ms loop would
-                    # keep a genuine Photoshop's engine permanently busy.
-                    # Writes (pending_writes above) are NOT throttled.
-                    if time.time() - self._last_ps_read >= 0.5:
-                        self._last_ps_read = time.time()
+                    # Read-back cadence depends on the backend:
+                    #  - COM backend: get_color/get_bg_color are real COM
+                    #    round-trips into Photoshop's UI thread, so they are
+                    #    throttled to 0.5 s (see _last_ps_read in __init__)
+                    #    to avoid keeping a genuine PS engine busy.
+                    #  - script-bridge backend: state.txt is a plain local
+                    #    file, so reads are immediate — the only latency is
+                    #    the panel's own write cadence. Throttling here too
+                    #    would stack two 0.5 s delays (~1 s perceived).
+                    # Writes (pending_writes above) are never throttled.
+                    backend = getattr(self.ps_sync, "backend", "")
+                    read_now = True
+                    if backend == "com":
+                        read_now = (time.time() - self._last_ps_read >= 0.5)
+                        if read_now:
+                            self._last_ps_read = time.time()
+                    if read_now:
                         fg = self.ps_sync.get_color()
                         bg = self.ps_sync.get_bg_color()
                         if fg is not None:
