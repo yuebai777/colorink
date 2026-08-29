@@ -1,15 +1,13 @@
-"""Detect running Photoshop instances (registered COM vs green/portable).
+"""Detect running Photoshop instances (genuine, green/portable, or
+cracked-with-COM).
 
 Pure logic module — no COM calls, no PyQt — so it stays unit-testable.
 
-Each running ``Photoshop.exe`` is classified as one of two backends:
-
-- ``com`` — a registered install whose ``LocalServer32`` path matches the
-  running process. Colorink attaches to it via COM automation (the fast,
-  live path: read/write ``ForegroundColor`` / ``BackgroundColor``).
-- ``script-bridge`` — a running process with **no** COM registration
-  (green / portable edition). Colorink controls it through an ExtendScript
-  file bridge deployed into its ``Presets/Scripts`` folder.
+Each running ``Photoshop.exe`` is classified by sync label only: since
+v6 every edition shares ONE sync path (the user-level CEP bridge in
+:mod:`core.photoshop_script_bridge`), routed per instance by PID. The
+``kind`` field is kept for display labels; it no longer selects a
+backend.
 
 ``find_registered_progids`` probes the well-known versioned ProgIDs
 (``Photoshop.Application`` plus ``Photoshop.Application.130..260``) because

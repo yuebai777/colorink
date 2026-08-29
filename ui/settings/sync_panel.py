@@ -192,19 +192,19 @@ class SyncPanelMixin:
         if st.get("bridgeAlive"):
             if st.get("panelStale"):
                 self.lbl_ps_bridge_status.setText(
-                    i18n.tr("已连接（脚本桥），但 Photoshop 内运行的仍是旧版同步面板："
+                    i18n.tr("已连接（同步桥），但 Photoshop 内运行的仍是旧版同步面板："
                     "拖动颜色可能跳动。请重启 Photoshop 一次后点击右侧按钮。"))
                 self._set_label_state(self.lbl_ps_bridge_status, "warning")
                 self.btn_ps_bridge_restart.show()
             else:
                 self.lbl_ps_bridge_status.setText(
-                    i18n.tr("绿色版 Photoshop 已连接（脚本桥）：前景 / 背景色双槽同步已启用。"))
+                    i18n.tr("Photoshop 已连接（同步桥）：前景 / 背景色双槽同步已启用。"))
                 self._set_label_state(self.lbl_ps_bridge_status, "success")
                 self.btn_ps_bridge_restart.hide()
         else:
             self.lbl_ps_bridge_status.setText(
-                i18n.tr("检测到绿色版 Photoshop：已自动部署同步脚本，"
-                "重启 Photoshop（绿色版）后生效；"
+                i18n.tr("已自动部署同步桥（正版 / 绿色版 / 便携版均适用），"
+                "重启 Photoshop 后生效；"
                 "之后在 PS 中有操作时颜色即会同步。"))
             self._set_label_state(self.lbl_ps_bridge_status, "warning")
             self.btn_ps_bridge_restart.show()
@@ -281,13 +281,13 @@ class SyncPanelMixin:
             return
         QMessageBox.information(
             self, i18n.tr("移除扩展"),
-            i18n.tr("已移除绿色版 Photoshop 的同步扩展。\n\n"
+            i18n.tr("已移除 Photoshop 的同步扩展。\n\n"
             "如果 Photoshop 正在运行，需要重启 Photoshop 后才会"
             "完全生效（不再占用其脚本引擎）。"))
         self._refresh_ps_bridge_status()
 
     def _on_software_changed(self, text):
-        """When the user picks Photoshop, offer the green-edition fix once."""
+        """When the user picks Photoshop, offer the restart fix once."""
         if text == "Photoshop":
             QTimer.singleShot(400, self._maybe_prompt_ps_bridge)
 
@@ -301,7 +301,7 @@ class SyncPanelMixin:
         if ps_sync is None:
             return
         try:
-            # Non-connecting snapshot: never block the UI on COM.
+            # Non-connecting snapshot: never block the UI.
             st = ps_sync.status_lite()
         except Exception:
             return
@@ -311,11 +311,10 @@ class SyncPanelMixin:
         if st.get("bridgeAlive"):
             return
         ret = QMessageBox.question(
-            self, i18n.tr("绿色版 Photoshop"),
-            i18n.tr("检测到绿色版（便携版）Photoshop：它未注册 COM 自动化接口，"
-            "无法直接同步颜色。\n\n"
-            "Colorink 已自动部署同步脚本（脚本桥），重启 Photoshop 后即可"
-            "同步前景 / 背景色。\n是否现在重启 Photoshop？"),
+            self, i18n.tr("Photoshop 同步"),
+            i18n.tr("Colorink 已部署同步桥（正版 / 绿色版 / 便携版"
+            "Photoshop 均适用），重启 Photoshop 后即可"
+            "双向同步前景 / 背景色。\n是否现在重启 Photoshop？"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if ret == QMessageBox.StandardButton.Yes:
             self._on_ps_restart()

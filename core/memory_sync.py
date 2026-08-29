@@ -349,52 +349,39 @@ class MemorySyncThread(QThread):
                     status = self.udm_sync.status()
                     connected = status.get('connected', False)
                 elif self.software_mode == 'ps':
-                    # Read-back cadence depends on the backend:
-                    #  - COM backend: get_color/get_bg_color are real COM
-                    #    round-trips into Photoshop's UI thread, so they are
-                    #    throttled to 0.5 s (see _last_ps_read in __init__)
-                    #    to avoid keeping a genuine PS engine busy.
-                    #  - script-bridge backend: state.txt is a plain local
-                    #    file, so reads are immediate — the only latency is
-                    #    the panel's own write cadence. Throttling here too
-                    #    would stack two 0.5 s delays (~1 s perceived).
+                    # Single sync path for every Photoshop edition: the
+                    # user-level CEP bridge. read_state() is a plain local
+                    # file read, so no throttling is needed — the only
+                    # latency is the panel's own 0.5 s write cadence.
                     # Writes (pending_writes above) are never throttled.
-                    backend = getattr(self.ps_sync, "backend", "")
-                    read_now = True
-                    if backend == "com":
-                        read_now = (time.time() - self._last_ps_read >= 0.5)
-                        if read_now:
-                            self._last_ps_read = time.time()
-                    if read_now:
-                        fg = self.ps_sync.get_color()
-                        bg = self.ps_sync.get_bg_color()
-                        if fg is not None:
-                            colors.append(fg)
-                        if bg is not None:
-                            colors.append(bg)
-                        # External X-swap detection: the user pressed X in
-                        # Photoshop, so each slot now holds the OTHER slot's
-                        # previous value. Without clearing the write-echo
-                        # suppression here, the slot whose write timestamp is
-                        # still fresh keeps its stale swatch while the other
-                        # slot updates — both swatches then end up showing the
-                        # same color ("把前景色背景色同步成一样的").
-                        if fg is not None and bg is not None:
-                            prev_fg = self._last_synced_color.get(0)
-                            prev_bg = self._last_synced_color.get(1)
-                            if prev_fg is not None and prev_bg is not None:
-                                fg_rgb = (fg.get("r"), fg.get("g"), fg.get("b"))
-                                bg_rgb = (bg.get("r"), bg.get("g"), bg.get("b"))
-                                fg_is_old_bg = _rgb_close(fg_rgb, prev_bg)
-                                bg_is_old_fg = _rgb_close(bg_rgb, prev_fg)
-                                if fg_is_old_bg and bg_is_old_fg:
-                                    # Genuine external swap, not a write echo:
-                                    # let both slots refresh immediately.
-                                    self._last_write_ts.pop(0, None)
-                                    self._last_write_ts.pop(1, None)
-                    # status() is cheap on both backends (COM: no calls;
-                    # bridge: file/process checks) — keep the connection
-                    # flag fresh every loop.
+                    fg = self.ps_sync.get_color()
+                    bg = self.ps_sync.get_bg_color()
+                    if fg is not None:
+                        colors.append(fg)
+                    if bg is not None:
+                        colors.append(bg)
+                    # External X-swap detection: the user pressed X in
+                    # Photoshop, so each slot now holds the OTHER slot's
+                    # previous value. Without clearing the write-echo
+                    # suppression here, the slot whose write timestamp is
+                    # still fresh keeps its stale swatch while the other
+                    # slot updates — both swatches then end up showing the
+                    # same color ("把前景色背景色同步成一样的").
+                    if fg is not None and bg is not None:
+                        prev_fg = self._last_synced_color.get(0)
+                        prev_bg = self._last_synced_color.get(1)
+                        if prev_fg is not None and prev_bg is not None:
+                            fg_rgb = (fg.get("r"), fg.get("g"), fg.get("b"))
+                            bg_rgb = (bg.get("r"), bg.get("g"), bg.get("b"))
+                            fg_is_old_bg = _rgb_close(fg_rgb, prev_bg)
+                            bg_is_old_fg = _rgb_close(bg_rgb, prev_fg)
+                            if fg_is_old_bg and bg_is_old_fg:
+                                # Genuine external swap, not a write echo:
+                                # let both slots refresh immediately.
+                                self._last_write_ts.pop(0, None)
+                                self._last_write_ts.pop(1, None)
+                    # status() is cheap (file/process checks) — keep the
+                    # connection flag fresh every loop.
                     status = self.ps_sync.status()
                     connected = status.get('connected', False)
                 elif self.software_mode == 'companion':
