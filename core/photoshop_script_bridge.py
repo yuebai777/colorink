@@ -45,7 +45,7 @@ PANEL_VERSION_FILENAME: Final = "panel_version.txt"
 # every poll; a running panel with an older protocol keeps writing the
 # old value (or nothing), so Colorink can tell "deployed file is new"
 # from "running panel is new" — only the latter clears the hint.
-PANEL_VERSION: Final = 4
+PANEL_VERSION: Final = 5
 
 EXTENSION_ID: Final = "com.colorink.bridge"
 EXTENSION_DIR_NAME: Final = "ColorinkBridge"
@@ -113,7 +113,7 @@ _MANIFEST_TEMPLATE: Final = """<?xml version="1.0" encoding="UTF-8" standalone="
 #   * command mailbox checked every 100 ms via Node fs.statSync (zero
 #     ExtendScript traffic while idle); a new command is applied on the
 #     next tick — the same perceived latency as the old 0.1 s design,
-#   * state read-back every 10 ticks (1 s) and immediately after a
+#   * state read-back every 5 ticks (0.5 s) and immediately after a
 #     command (Photoshop foreground/background colours),
 #   * heartbeat + panel_version every 40 ticks (4 s) — is_alive() in
 #     Colorink tolerates an 8 s gap, so 4 s is ample,
@@ -181,7 +181,7 @@ claimStaleCmd();
 })();
 var tick = 0;
 var FAST_MS = 100;     // command mailbox check interval
-var STATE_EVERY = 10;  // state read-back every 10 ticks (1 s)
+var STATE_EVERY = 5;   // state read-back every 5 ticks (0.5 s)
 var BEAT_EVERY = 40;   // heartbeat + panel_version every 40 ticks (4 s)
 var cmdMtime = 0;
 function poll() {
@@ -241,7 +241,7 @@ function poll() {
             // Keep PANEL_VERSION in sync with PANEL_VERSION_FILENAME below
             script +=
             "var pv=new File(d+'/panel_version.txt');pv.open('w');" +
-            "pv.write('4');pv.close();" +
+            "pv.write('5');pv.close();" +
             "var h=new File(d+'/heartbeat.txt');h.open('w');" +
             "h.write(String(new Date().getTime()));h.close();";
         }
