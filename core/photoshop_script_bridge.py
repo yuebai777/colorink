@@ -53,7 +53,7 @@ PANEL_VERSION_FILENAME: Final = "panel_version.txt"
 # panel with an older protocol keeps writing the old value (or nothing),
 # so Colorink can tell "deployed file is new" from "running panel is
 # new" — only the latter clears the "restart Photoshop" hint.
-PANEL_VERSION: Final = 6
+PANEL_VERSION: Final = 7
 
 EXTENSION_ID: Final = "com.colorink.bridge"
 EXTENSION_DIR_NAME: Final = "ColorinkBridge"
@@ -175,15 +175,34 @@ function evalScript(script, cb) {
         });
     } else if (cb) { cb(-1, null); }
 }
-// Cache this Photoshop's PID when the evalScript return value works;
-// when it does not (some CEP builds), every script re-derives $.pid
-// itself, so correctness never depends on this cache.
+// Resolve this Photoshop's PID for multi-instance routing. Not every
+// ExtendScript engine exposes $.pid (green builds return undefined), so
+// try the CEP host environment first (appPid), then $.pid via
+// evalScript. When neither works the panel falls back to shared
+// (non-suffixed) bridge files — sync still works, but every running
+// instance shares one state (no per-instance routing).
 var myPid = "";
-evalScript("$.pid", function (code, result) {
-    if (code === 0 && result !== null && result !== undefined) {
-        myPid = String(result).trim();
+var panelDir0 = String(dir).replace(/\\/g, "/");
+try {
+    var env = window.__adobe_cep__.getHostEnvironment();
+    if (env && env.appPid !== undefined && env.appPid !== null) {
+        myPid = String(env.appPid).trim();
     }
+} catch (e) {}
+evalScript("try{var pv=$.pid;pv!==undefined&&pv!==null?String(pv):''}catch(e){''}", function (code, result) {
+    if (myPid === "" && code === 0 && result !== null && result !== undefined) {
+        var v = String(result).trim();
+        if (v !== "" && v !== "undefined") { myPid = v; }
+    }
+    // Diagnostics: record which pid the panel resolved to ('' = shared
+    // mode) so Colorink / support can see the routing mode.
+    try {
+        if (useNodeFs) {
+            fs.writeFileSync(panelDir0 + '/mypid.txt', myPid === "" ? "(shared)" : myPid);
+        }
+    } catch (e) {}
 });
+function pidSuffix() { return myPid !== "" ? "_" + myPid : ""; }
 // On load, DELETE a command that predates this panel (a leftover from
 // before Photoshop restarted) so it is not re-applied. A command written
 // AFTER this panel started (mtime >= panelStart) must survive — with
@@ -229,23 +248,25 @@ var cmdMtime = 0;
 var lastToken = "";
 
 function stateScript(d) {
-    return "var d='" + d + "';var p=$.pid;" +
+    var suff = pidSuffix();
+    return "var d='" + d + "';" +
         "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
-        "var s=new File(d+'/state_'+p+'.txt');s.open('w');" +
+        "var s=new File(d+'/state" + suff + ".txt');s.open('w');" +
         "s.write(Math.round(fg.rgb.red)+'|'+Math.round(fg.rgb.green)+'|'+Math.round(fg.rgb.blue)+'|'+Math.round(bg.rgb.red)+'|'+Math.round(bg.rgb.green)+'|'+Math.round(bg.rgb.blue));" +
         "s.close();";
 }
 function beatScript(d) {
     // Keep PANEL_VERSION in sync with PANEL_VERSION_FILENAME below
-    return "var d='" + d + "';var p=$.pid;" +
-        "var pv=new File(d+'/panel_version_'+p+'.txt');pv.open('w');" +
-        "pv.write('6');pv.close();" +
-        "var h=new File(d+'/heartbeat_'+p+'.txt');h.open('w');" +
+    var suff = pidSuffix();
+    return "var d='" + d + "';" +
+        "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
+        "pv.write('7');pv.close();" +
+        "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
         "h.write(String(new Date().getTime()));h.close();";
 }
 function applyScript(d, parts) {
     // parts: <token>|<pid>|<index>|<r>|<g>|<b>  or  <token>|<pid>|swap
-    var s = "var d='" + d + "';var p=$.pid;";
+    var s = "var d='" + d + "';";
     if (parts[2] === 'swap') {
         s += "var t=app.foregroundColor;" +
             "app.foregroundColor=app.backgroundColor;" +
@@ -286,17 +307,19 @@ function poll() {
             } catch (e) {}
         } else {
             // Fallback: one lightweight script per tick — reads cmd.txt,
-            // applies only when addressed to this PID and un-applied,
-            // writes nothing while idle. State/heartbeat are throttled.
+            // applies only when addressed to this instance (or in shared
+            // mode when myPid is empty) and un-applied, writes nothing
+            // while idle. State/heartbeat are throttled.
+            var suff = pidSuffix();
             var script =
-                "var d='" + d + "';var p=$.pid;" +
-                "var ap=new File(d+'/applied_'+p+'.txt');var last='';" +
+                "var d='" + d + "';var my='" + myPid + "';" +
+                "var ap=new File(d+'/applied" + suff + ".txt');var last='';" +
                 "if(ap.exists){ap.open('r');last=ap.read();ap.close();}" +
                 "var line='';var cf=new File(d+'/cmd.txt');" +
                 "if(cf.exists){cf.open('r');line=cf.read();cf.close();}" +
                 "var parts=String(line).split('|');" +
                 "var applied=false;" +
-                "if(parts.length>=3&&parts[1]==String(p)&&parts[0]!=last){" +
+                "if(parts.length>=3&&(my==''||parts[1]==my)&&parts[0]!=last){" +
                 "if(parts[2]=='swap'){" +
                 "var t=app.foregroundColor;" +
                 "app.foregroundColor=app.backgroundColor;" +
@@ -309,20 +332,20 @@ function poll() {
                 "if(parseInt(parts[2],10)==1){app.backgroundColor=c;}" +
                 "else{app.foregroundColor=c;}" +
                 "}" +
-                "var a=new File(d+'/applied_'+p+'.txt');a.open('w');" +
+                "var a=new File(d+'/applied" + suff + ".txt');a.open('w');" +
                 "a.write(parts[0]);a.close();" +
                 "applied=true;" +
                 "}" +
                 (doState ? "if(applied||true){" : "if(applied){") +
                 "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
-                "var s=new File(d+'/state_'+p+'.txt');s.open('w');" +
+                "var s=new File(d+'/state" + suff + ".txt');s.open('w');" +
                 "s.write(Math.round(fg.rgb.red)+'|'+Math.round(fg.rgb.green)+'|'+Math.round(fg.rgb.blue)+'|'+Math.round(bg.rgb.red)+'|'+Math.round(bg.rgb.green)+'|'+Math.round(bg.rgb.blue));" +
                 "s.close();" +
                 "}" +
                 (doBeat ?
-                "var pv=new File(d+'/panel_version_'+p+'.txt');pv.open('w');" +
-                "pv.write('6');pv.close();" +
-                "var h=new File(d+'/heartbeat_'+p+'.txt');h.open('w');" +
+                "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
+                "pv.write('7');pv.close();" +
+                "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
                 "h.write(String(new Date().getTime()));h.close();" : "");
             evalScript(script, function () {});
             return;
@@ -456,20 +479,26 @@ class PhotoshopScriptBridge:
 
     def read_state(self, pid: int) -> dict | None:
         """Return ``{"fg": {...}, "bg": {...}}`` from the panel loaded in
-        the Photoshop with *pid*, or ``None`` when nothing is written."""
-        try:
-            with open(os.path.join(self.dir, _pid_filename(STATE_FILENAME, pid)),
-                      encoding="ascii") as f:
-                parts = f.read().split("|")
-            if len(parts) >= 6:
-                return {
-                    "fg": {"r": int(float(parts[0])), "g": int(float(parts[1])),
-                           "b": int(float(parts[2]))},
-                    "bg": {"r": int(float(parts[3])), "g": int(float(parts[4])),
-                           "b": int(float(parts[5]))},
-                }
-        except (OSError, ValueError):
-            pass
+        the Photoshop with *pid*, or ``None`` when nothing is written.
+
+        Per-PID file preferred; the shared (non-suffixed) file is the
+        fallback for panels that could not resolve their PID (shared
+        mode — see the panel JS).
+        """
+        for path in (os.path.join(self.dir, _pid_filename(STATE_FILENAME, pid)),
+                     os.path.join(self.dir, STATE_FILENAME)):
+            try:
+                with open(path, encoding="ascii") as f:
+                    parts = f.read().split("|")
+                if len(parts) >= 6:
+                    return {
+                        "fg": {"r": int(float(parts[0])), "g": int(float(parts[1])),
+                               "b": int(float(parts[2]))},
+                        "bg": {"r": int(float(parts[3])), "g": int(float(parts[4])),
+                               "b": int(float(parts[5]))},
+                    }
+            except (OSError, ValueError):
+                continue
         return None
 
     # -- liveness -------------------------------------------------------------
@@ -485,24 +514,34 @@ class PhotoshopScriptBridge:
             if now - ts < max_age:
                 return val
         val: int | None = None
-        try:
-            with open(os.path.join(
-                    self.dir, _pid_filename(PANEL_VERSION_FILENAME, pid)),
-                    encoding="ascii") as f:
-                val = int(f.read().strip())
-        except (OSError, ValueError):
-            val = None
+        for path in (os.path.join(
+                        self.dir, _pid_filename(PANEL_VERSION_FILENAME, pid)),
+                     os.path.join(self.dir, PANEL_VERSION_FILENAME)):
+            try:
+                with open(path, encoding="ascii") as f:
+                    val = int(f.read().strip())
+                break
+            except (OSError, ValueError):
+                val = None
+                continue
         self._panel_version_cache[pid] = (now, val)
         return val
 
     def heartbeat_age(self, pid: int) -> float | None:
-        """Seconds since that panel's last heartbeat, or ``None``."""
-        try:
-            mtime = os.path.getmtime(os.path.join(
-                self.dir, _pid_filename(HEARTBEAT_FILENAME, pid)))
-            return time.time() - mtime
-        except OSError:
-            return None
+        """Seconds since that panel's last heartbeat, or ``None``.
+
+        Per-PID file preferred; shared file is the fallback (shared
+        mode — see the panel JS).
+        """
+        for path in (os.path.join(
+                        self.dir, _pid_filename(HEARTBEAT_FILENAME, pid)),
+                     os.path.join(self.dir, HEARTBEAT_FILENAME)):
+            try:
+                mtime = os.path.getmtime(path)
+                return time.time() - mtime
+            except OSError:
+                continue
+        return None
 
     def is_alive(self, pid: int, max_age: float = 8.0) -> bool:
         age = self.heartbeat_age(pid)
