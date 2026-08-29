@@ -103,7 +103,10 @@ class TestDeploy:
                   encoding="utf-8") as f:
             html = f.read()
         assert "'swap'" in html
-        assert "app.backgroundColor=t" in html
+        # swap must copy channel values (no object assignment / SolidColor).
+        assert "fg.rgb.red=br" in html
+        assert "bg.rgb.red=fr" in html
+        assert "new SolidColor();" not in html
 
     def test_deploy_is_idempotent(self, bridge):
         assert bridge.deploy() is True

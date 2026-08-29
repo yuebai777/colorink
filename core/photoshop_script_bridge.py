@@ -53,7 +53,7 @@ PANEL_VERSION_FILENAME: Final = "panel_version.txt"
 # panel with an older protocol keeps writing the old value (or nothing),
 # so Colorink can tell "deployed file is new" from "running panel is
 # new" — only the latter clears the "restart Photoshop" hint.
-PANEL_VERSION: Final = 7
+PANEL_VERSION: Final = 9
 
 EXTENSION_ID: Final = "com.colorink.bridge"
 EXTENSION_DIR_NAME: Final = "ColorinkBridge"
@@ -260,24 +260,28 @@ function beatScript(d) {
     var suff = pidSuffix();
     return "var d='" + d + "';" +
         "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
-        "pv.write('7');pv.close();" +
+        "pv.write('9');pv.close();" +
         "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
         "h.write(String(new Date().getTime()));h.close();";
 }
 function applyScript(d, parts) {
     // parts: <token>|<pid>|<index>|<r>|<g>|<b>  or  <token>|<pid>|swap
+    // Mutate the existing SolidColor objects in place: constructing
+    // `new SolidColor()` fails with "EvalScript error" on this green
+    // build, while reading/mutating app.foregroundColor works.
     var s = "var d='" + d + "';";
     if (parts[2] === 'swap') {
-        s += "var t=app.foregroundColor;" +
-            "app.foregroundColor=app.backgroundColor;" +
-            "app.backgroundColor=t;";
+        s += "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
+            "var fr=fg.rgb.red;var fg2=fg.rgb.green;var fb=fg.rgb.blue;" +
+            "var br=bg.rgb.red;var bg3=bg.rgb.green;var bb=bg.rgb.blue;" +
+            "fg.rgb.red=br;fg.rgb.green=bg3;fg.rgb.blue=bb;" +
+            "bg.rgb.red=fr;bg.rgb.green=fg2;bg.rgb.blue=fb;";
     } else {
-        s += "var c=new SolidColor();" +
+        var target = (parseInt(parts[2], 10) === 1) ? "app.backgroundColor" : "app.foregroundColor";
+        s += "var c=" + target + ";" +
             "c.rgb.red=" + parseInt(parts[3], 10) + ";" +
             "c.rgb.green=" + parseInt(parts[4], 10) + ";" +
-            "c.rgb.blue=" + parseInt(parts[5], 10) + ";" +
-            "if(parseInt(parts[2],10)==1){app.backgroundColor=c;}" +
-            "else{app.foregroundColor=c;}";
+            "c.rgb.blue=" + parseInt(parts[5], 10) + ";";
     }
     // Apply writes the state back immediately.
     return s + stateScript(d);
@@ -291,7 +295,10 @@ function poll() {
         if (useNodeFs) {
             try {
                 var st = fs.existsSync(d + '/cmd.txt') ? fs.statSync(d + '/cmd.txt') : null;
-                var m = st ? (st.mtimeMs || st.mtime.getTime()) : 0;
+                var m = 0;
+                try {
+                    m = st ? (st.mtimeMs !== undefined ? st.mtimeMs : st.mtime.getTime()) : 0;
+                } catch (e2) { m = 0; }
                 var changed = (m !== cmdMtime);
                 cmdMtime = m;
                 if (changed) {
@@ -300,11 +307,23 @@ function poll() {
                     var forUs = (myPid === "" || parts[1] === myPid);
                     if (forUs && parts.length >= 3 && parts[0] !== lastToken) {
                         lastToken = parts[0];
-                        evalScript(applyScript(d, parts), function () {});
+                        evalScript(applyScript(d, parts), function (code, result) {
+                            // Diagnostics: surface any apply failure.
+                            try {
+                                if (code !== 0) {
+                                    fs.writeFileSync(d + '/apply_error.txt', "code=" + code + " result=" + String(result) + " cmd=" + raw);
+                                }
+                            } catch (e3) {}
+                        });
                         return;  // apply already wrote state back
                     }
                 }
-            } catch (e) {}
+            } catch (e) {
+                // Diagnostics: never silently swallow a broken poll path.
+                try {
+                    fs.writeFileSync(d + '/error.txt', String(e && e.message ? e.message : e));
+                } catch (e4) {}
+            }
         } else {
             // Fallback: one lightweight script per tick — reads cmd.txt,
             // applies only when addressed to this instance (or in shared
@@ -321,16 +340,16 @@ function poll() {
                 "var applied=false;" +
                 "if(parts.length>=3&&(my==''||parts[1]==my)&&parts[0]!=last){" +
                 "if(parts[2]=='swap'){" +
-                "var t=app.foregroundColor;" +
-                "app.foregroundColor=app.backgroundColor;" +
-                "app.backgroundColor=t;" +
+                "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
+                "var fr=fg.rgb.red;var fg2=fg.rgb.green;var fb=fg.rgb.blue;" +
+                "var br=bg.rgb.red;var bg3=bg.rgb.green;var bb=bg.rgb.blue;" +
+                "fg.rgb.red=br;fg.rgb.green=bg3;fg.rgb.blue=bb;" +
+                "bg.rgb.red=fr;bg.rgb.green=fg2;bg.rgb.blue=fb;" +
                 "}else if(parts.length>=6){" +
-                "var c=new SolidColor();" +
+                "var c=(parseInt(parts[2],10)==1)?app.backgroundColor:app.foregroundColor;" +
                 "c.rgb.red=parseInt(parts[3],10);" +
                 "c.rgb.green=parseInt(parts[4],10);" +
                 "c.rgb.blue=parseInt(parts[5],10);" +
-                "if(parseInt(parts[2],10)==1){app.backgroundColor=c;}" +
-                "else{app.foregroundColor=c;}" +
                 "}" +
                 "var a=new File(d+'/applied" + suff + ".txt');a.open('w');" +
                 "a.write(parts[0]);a.close();" +
@@ -344,7 +363,7 @@ function poll() {
                 "}" +
                 (doBeat ?
                 "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
-                "pv.write('7');pv.close();" +
+                "pv.write('9');pv.close();" +
                 "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
                 "h.write(String(new Date().getTime()));h.close();" : "");
             evalScript(script, function () {});
