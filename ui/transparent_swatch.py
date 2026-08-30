@@ -3,10 +3,13 @@
 Kept separate from ``color_preview_box.py`` so that module stays under
 the project's pure-LOC ceiling.
 
-The transparent tile is a capsule (pill) button rendered below the
-fg/bg swatches. Clicking it marks the active slot as transparent; the
-actual sync-side write is handled by the main window (companion protocol
-supports ``IsColorTransparent``, memory modes do not yet).
+The transparent tile is a capsule (pill) button rendered beside the
+fg/bg swatches: below them in the legacy bottom-left position, above
+them in the top-left position (vertical mirror), or as a same-size
+swatch in the ringless row. Clicking it marks the active slot as
+transparent; the actual sync-side write is handled by the main window
+(companion protocol supports ``IsColorTransparent``, memory modes do not
+yet).
 """
 
 from __future__ import annotations
@@ -101,7 +104,7 @@ def draw_checker(painter: QPainter, rect: QRectF, cell: int = 4) -> None:
 
 
 class TransparentTile(QWidget):
-    """Capsule (pill) transparent button rendered below the fg/bg swatches.
+    """Capsule (pill) transparent button rendered beside the fg/bg swatches.
 
     Owns its geometry, hover state, and click dispatch, so ColorPreviewBox
     only creates it and keeps its size in sync. Border colors are read
@@ -151,17 +154,28 @@ class TransparentTile(QWidget):
                             radius, radius)
         self.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
-    def place_legacy(self, box_dim: float, scale: float = 1.0) -> None:
-        """Position the capsule centered below the circles.
+    def place_legacy(self, box_dim: float, scale: float = 1.0,
+                     above: bool = False) -> None:
+        """Position the capsule relative to the circle box.
 
-        The capsule is pulled up by ``2*scale`` px (half the swatch border
-        stroke) so the visual gap between the bottom-most circle and the
-        capsule is a constant 2 px at any scale — matching the spec.
+        *above* is ``False`` by default: the capsule sits centered BELOW the
+        circles, pulled up by ``2*scale`` px (half the swatch border stroke)
+        so the visual gap between the bottom-most circle and the capsule is
+        a constant 2 px at any scale — matching the spec.
+
+        When *above* is ``True`` (the preview box hugs the top-left corner)
+        the capsule hugs the widget top instead, mirroring the bottom-left
+        placement vertically: transparent on top, circles below.
         """
         t_h, t_gap = self.metrics(scale=scale)
         w = self.capsule_width(t_h, box_dim - 2.0 * max(4.0, 6.0 * scale))
         x = (box_dim - w) / 2.0
-        y = box_dim + t_gap - 2.0 * scale
+        if above:
+            # Mirror of the below-case: the capsule bottom meets the circle
+            # box top (same round-tripped gap math), tile flush at y=0.
+            y = 0.0
+        else:
+            y = box_dim + t_gap - 2.0 * scale
         self.setGeometry(int(round(x)), int(round(y)), int(w), int(t_h))
         # Only the pill itself is interactive — clicks in the capsule's
         # corner notches fall through to whatever is underneath.

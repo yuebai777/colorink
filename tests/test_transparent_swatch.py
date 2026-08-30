@@ -104,14 +104,60 @@ class TestTransparentTileGeometry:
         assert tile.y() == pytest.approx(fg_rect.top())
         assert tile.y() + tile.height() <= box.height()
 
-    def test_tile_below_circles_legacy(self, qapp):
+    def test_tile_above_circles_legacy_top_left(self, qapp):
+        """Top-left anchor mirrors bottom-left: the transparent capsule sits
+        ABOVE the fg/bg circles, not below them."""
         box = make_preview_box()
         box.resize(60, 60)
+        box.resize_and_position(304, 30, 400, 100, "fg")  # default top-left
+        tile = _tile(box)
+        assert not tile.isHidden()
+        assert tile.width() > 0
+        assert tile.y() == 0  # capsule hugs the widget top
+        assert tile.y() + tile.height() <= 60  # above the circle box
+        fg_cx, fg_cy, fg_r, bg_cx, bg_cy, bg_r = box.legacy_circle_geometry()
+        assert bg_cy - bg_r >= tile.height()  # circles start below the tile
+
+    def test_tile_below_circles_legacy_bottom_left(self, qapp):
+        """Bottom-left keeps the capsule below — the mirror of top-left."""
+        box = make_preview_box()
+        box.resize(60, 60)
+        box.position_mode = "bottom-left"
         box.resize_and_position(304, 30, 400, 100, "fg")
         tile = _tile(box)
         assert not tile.isHidden()
         assert tile.width() > 0
-        assert tile.y() >= 60
+        assert tile.y() >= 60  # below the circle box
+
+    def test_legacy_geometry_is_vertically_mirrored_between_positions(self, qapp):
+        """The top-left module is the vertical mirror of the bottom-left one:
+        same circle arrangement (fg large at the outer corner pair), but the
+        transparent tile flips from below to above."""
+        box = make_preview_box()
+        box.resize(60, 60)
+        box.position_mode = "bottom-left"
+        box.resize_and_position(304, 30, 400, 100, "fg")
+        bottom = box.legacy_circle_geometry()
+        tile_bottom_y = _tile(box).y()  # snapshot; same widget is re-placed below
+
+        box.position_mode = "top-left"
+        box.resize_and_position(304, 30, 400, 100, "fg")
+        top = box.legacy_circle_geometry()
+        tile_top_y = _tile(box).y()
+
+        # Circle radii and x positions unchanged; only the y block flips.
+        assert top[2] == bottom[2] and top[5] == bottom[5]
+        assert top[0] == bottom[0] and top[3] == bottom[3]
+        # Vertical mirror about the widget height (78 at 100% scale); the
+        # 2px slack of the border-stroke compensation may shift the mirror.
+        h = box.height()
+        assert top[1] == pytest.approx(h - bottom[1], abs=2)  # fg cy
+        assert top[4] == pytest.approx(h - bottom[4], abs=2)  # bg cy
+        # Tile flips side: top-left above the circles, bottom-left below.
+        assert tile_top_y < 20 < tile_bottom_y
+        # Top-left: fg below bg (bottom of the module); bottom-left: fg first.
+        assert top[1] > top[4]
+        assert bottom[1] < bottom[4]
 
     def test_clicking_tile_emits_clicked(self, qapp):
         box = make_preview_box()
