@@ -86,12 +86,35 @@ def test_set_harmony_mode_invalid_falls_back(qapp):
     assert sq.harmony_mode == "analogous"
 
 
+def test_disc_metrics_match_wheel_outer_edge(qapp):
+    sq = LabSquare()
+    sq.resize(420, 420)
+    sq.set_shape("disc")
+    cx, cy, radius = sq._disc_metrics()
+    size = min(420 - 16, 420 - 6)
+    assert radius == pytest.approx(size / 2.0 - 2.0, abs=1e-6)
+    assert cy == pytest.approx(size / 2.0 + 6.0, abs=1e-6)
+    assert cx == pytest.approx(210.0, abs=1e-6)
+
+
+def test_disc_metrics_respect_avoid_top(qapp):
+    sq = LabSquare()
+    sq.resize(420, 420)
+    sq.set_shape("disc")
+    sq.set_avoid_top(120)
+    cx, cy, radius = sq._disc_metrics()
+    # The disc must stay fully below the reserved top strip.
+    assert cy - radius >= 119.0
+    assert cy + radius <= 420.0 - 1.0
+
+
 def test_disc_mouse_center_is_neutral(qapp):
     sq = LabSquare()
     sq.resize(200, 200)
     sq.set_shape("disc")
     sq.set_color(128, 128, 128, block_signals=True)
-    sq.handle_mouse(QPointF(100.0, 100.0))
+    cx, cy, _ = sq._disc_metrics()
+    sq.handle_mouse(QPointF(cx, cy))
     assert sq.a == pytest.approx(0.0, abs=1e-6)
     assert sq.b == pytest.approx(0.0, abs=1e-6)
 
@@ -100,13 +123,13 @@ def test_disc_edge_point_is_in_gamut(qapp):
     sq = LabSquare()
     sq.resize(200, 200)
     sq.set_shape("disc")
-    # Click the right edge of the inscribed disc.
+    # Click the right edge of the inscribed disc (at/beyond rim → radius 1).
     sq.handle_mouse(QPointF(200.0, 100.0))
     assert sq._is_in_gamut(sq.a, sq.b)
-    # Radius 1 means exactly the gamut boundary for that hue.
+    # Radius 1 means the disc's capped chroma ceiling for that hue.
     C = math.hypot(sq.a, sq.b)
-    max_c = find_max_lab_c(sq.L, sq.a / C, sq.b / C)
-    assert C == pytest.approx(max_c, abs=1e-6)
+    full_max = find_max_lab_c(sq.L, sq.a / C, sq.b / C)
+    assert C == pytest.approx(min(full_max, sq._disc_chroma_ceiling()), abs=1e-6)
 
 
 def test_harmony_dot_click_promotes_to_base(qapp):

@@ -192,6 +192,22 @@ class TestPaneRinglessIntegration:
         assert extra_btn.y() == 300 - 6 - 28
         assert extra_btn.x() < module_btn.x()
 
+    def test_legacy_module_moves_to_corner_when_mode_hidden(
+            self, pane, mode_btn, module_btn):
+        pane.resize(400, 300)
+        mode_btn.hide()
+        pane._reposition_mode_button()
+        assert module_btn.x() == 400 - 6 - 4 - 28
+        assert module_btn.y() == 300 - 6 - 28
+
+    def test_legacy_extra_uses_mode_slot_when_module_hidden(
+            self, pane, mode_btn, module_btn, extra_btn):
+        pane.resize(400, 300)
+        module_btn.hide()
+        pane._reposition_mode_button()
+        assert extra_btn.x() == 400 - 6 - 28 - 4 - 28
+        assert extra_btn.y() == 300 - 6 - 28
+
     def test_disabled_layout_uses_bottom_right(self, pane, mode_btn):
         pane.set_ringless_layout(_disabled_layout())
         pane.resize(400, 300)
@@ -247,6 +263,27 @@ class TestPaneRinglessIntegration:
         assert module_btn.x() == module_x
         assert extra_btn.x() == module_x - 4 - 28
         assert extra_btn.y() == 5
+
+    def test_ringless_right_extra_keeps_gap_when_mode_hidden(
+            self, pane, mode_btn, module_btn, extra_btn):
+        pane.set_ringless_layout(_layout())
+        pane.resize(400, 339)
+        mode_btn.hide()
+        pane._reposition_mode_button()
+        # Without the mode button the extra follows the module button
+        # immediately instead of leaving an empty slot.
+        assert module_btn.x() == 7
+        assert extra_btn.x() == 7 + 28 + 4
+
+    def test_ringless_left_extra_keeps_gap_when_module_hidden(
+            self, pane, mode_btn, module_btn, extra_btn):
+        pane.set_ringless_layout(_layout(controls_side="left"))
+        pane.resize(400, 339)
+        module_btn.hide()
+        pane._reposition_mode_button()
+        mode_x = 400 - 7 - 28
+        assert mode_btn.x() == mode_x
+        assert extra_btn.x() == mode_x - 4 - 28
 
     def test_ringless_only_mode_button(self, pane, mode_btn):
         pane.set_ringless_layout(_layout())

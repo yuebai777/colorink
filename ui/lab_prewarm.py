@@ -5,6 +5,12 @@ from dataclasses import dataclass
 import numpy as np
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
 
+# Uniform outer-ring chroma cap for the circulant disc renderer.  Keeping it
+# below every hue's gamut maximum avoids the dark "cake-slice" look around
+# blue at low L (see render_lab_disc for details).
+LAB_DISC_CHROMA_CEILING = 75.0
+OKLAB_DISC_CHROMA_CEILING = 0.26
+
 
 @dataclass(frozen=True, slots=True)
 class LabPrewarmRequest:
@@ -139,11 +145,18 @@ def render_lab_disc(request: LabPrewarmRequest) -> LabPrewarmResult:
     if request.render_mode == "oklab":
         lightness = request.lightness / 100.0
         max_c = _max_chroma_array(lightness, a_dir, b_dir, "oklab")
+        chroma_ceiling = OKLAB_DISC_CHROMA_CEILING
     else:
         lightness = request.lightness
         max_c = _max_chroma_array(lightness, a_dir, b_dir, "lab")
+        chroma_ceiling = LAB_DISC_CHROMA_CEILING
 
-    chroma = np.clip(rr, 0.0, 1.0) * max_c
+    # Cap the outer-ring chroma so dark gray/blue areas do not produce a
+    # sharp "cake-slice" boundary: in CIELAB the blue direction loses chroma
+    # much faster than violet/magenta at low L, so normalising every hue to
+    # its own gamut boundary makes blue look cut off.  A uniform ceiling with
+    # per-hue gamut clamping keeps the wheel visually even.
+    chroma = np.clip(rr, 0.0, 1.0) * np.minimum(max_c, chroma_ceiling)
     a = chroma * a_dir
     b = chroma * b_dir
 
