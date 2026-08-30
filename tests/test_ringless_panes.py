@@ -197,7 +197,8 @@ class TestPaneRinglessIntegration:
         pane.resize(400, 300)
         mode_btn.hide()
         pane._reposition_mode_button()
-        assert module_btn.x() == 400 - 6 - 4 - 28
+        # Lone visible button anchors to the bottom-right edge (no reserved gap)
+        assert module_btn.x() == 400 - 6 - 28
         assert module_btn.y() == 300 - 6 - 28
 
     def test_legacy_extra_uses_mode_slot_when_module_hidden(
@@ -206,6 +207,16 @@ class TestPaneRinglessIntegration:
         module_btn.hide()
         pane._reposition_mode_button()
         assert extra_btn.x() == 400 - 6 - 28 - 4 - 28
+        assert extra_btn.y() == 300 - 6 - 28
+
+    def test_legacy_only_extra_anchors_to_corner(
+            self, pane, mode_btn, module_btn, extra_btn):
+        pane.resize(400, 300)
+        mode_btn.hide()
+        module_btn.hide()
+        pane._reposition_mode_button()
+        # The single visible toggle takes the bottom-right corner.
+        assert extra_btn.x() == 400 - 6 - 28
         assert extra_btn.y() == 300 - 6 - 28
 
     def test_disabled_layout_uses_bottom_right(self, pane, mode_btn):
@@ -285,6 +296,26 @@ class TestPaneRinglessIntegration:
         assert mode_btn.x() == mode_x
         assert extra_btn.x() == mode_x - 4 - 28
 
+    def test_ringless_right_only_extra_anchors_to_edge(
+            self, pane, mode_btn, module_btn, extra_btn):
+        pane.set_ringless_layout(_layout())
+        pane.resize(400, 339)
+        mode_btn.hide()
+        module_btn.hide()
+        pane._reposition_mode_button()
+        assert extra_btn.x() == 7
+        assert extra_btn.y() == 5
+
+    def test_ringless_left_only_extra_anchors_to_edge(
+            self, pane, mode_btn, module_btn, extra_btn):
+        pane.set_ringless_layout(_layout(controls_side="left"))
+        pane.resize(400, 339)
+        mode_btn.hide()
+        module_btn.hide()
+        pane._reposition_mode_button()
+        assert extra_btn.x() == 400 - 7 - 28
+        assert extra_btn.y() == 5
+
     def test_ringless_only_mode_button(self, pane, mode_btn):
         pane.set_ringless_layout(_layout())
         pane.resize(400, 339)
@@ -297,8 +328,13 @@ class TestPaneRinglessIntegration:
         assert mode_btn.x() == 400 - 7 - 28
         assert mode_btn.y() == 5
 
-    def test_lab_mode_button_keeps_wheel_slot(self, qapp):
-        """LAB's lone toggle keeps the wheel pane's reserved mode slot."""
+    def test_lone_lab_toggle_anchors_to_edge(self, qapp):
+        """A lone visible toggle anchors to the control-bar edge.
+
+        Even when the wheel pane keeps a module button visible, hidden
+        buttons must not reserve a slot inside the cluster — a single
+        toggle sinks to the outermost edge.
+        """
         wheel = PaneWithModeButton()
         lab = LabPane()
         wheel.resize(400, 339)
@@ -313,7 +349,11 @@ class TestPaneRinglessIntegration:
         layout = _layout()
         wheel.set_ringless_layout(layout)
         lab.set_ringless_layout(layout)
-        assert lab_mode.pos() == wheel_mode.pos()
+        # Wheel: module at edge, mode beside it.
+        assert wheel_mode.x() == 7 + 28 + 4
+        # Lab: only the mode toggle is visible → it takes the edge slot.
+        assert lab_mode.x() == 7
+        assert lab_mode.y() == 5
 
     # ── Hidden module button ──────────────────────────────────────────
 
