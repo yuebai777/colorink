@@ -17,6 +17,7 @@ class LabPrewarmRequest:
     min_b: float
     max_b: float
     pixel_ratio: float
+    shape: str = "square"
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +90,83 @@ def _oklab_to_rgb(lightness: np.ndarray, a: np.ndarray, b: np.ndarray) -> tuple[
     return gamma(r), gamma(g), gamma(blue)
 
 
+def _max_chroma_array(
+    lightness: float,
+    a_dir: np.ndarray,
+    b_dir: np.ndarray,
+    mode: str,
+) -> np.ndarray:
+    """Vectorized binary search for max in-gamut chroma along (a_dir, b_dir).
+
+    Mirrors ``ui.color_conversions.find_max_lab_c`` / ``find_max_oklch_c``
+    for a whole polar grid at once.  Used only by the circulant LAB disc
+    renderer; the square plane keeps its rectangular dynamic-range lookup.
+    """
+    lo = np.zeros_like(a_dir)
+    hi = np.full_like(a_dir, 150.0 if mode == "lab" else 0.6)
+    for _ in range(16):
+        mid = (lo + hi) * 0.5
+        if mode == "lab":
+            red, green, blue = _lab_to_rgb(
+                np.full_like(a_dir, lightness), mid * a_dir, mid * b_dir)
+        else:
+            red, green, blue = _oklab_to_rgb(
+                np.full_like(a_dir, lightness), mid * a_dir, mid * b_dir)
+        ok = ((red >= 0.0) & (red <= 255.0)
+              & (green >= 0.0) & (green <= 255.0)
+              & (blue >= 0.0) & (blue <= 255.0))
+        lo = np.where(ok, mid, lo)
+        hi = np.where(ok, hi, mid)
+    return lo
+
+
+def render_lab_disc(request: LabPrewarmRequest) -> LabPrewarmResult:
+    """Render the circulant LAB / OKLab a*b* disc at a fixed lightness.
+
+    Polar mapping: angle = hue, radius = relative chroma.  Every hue reaches
+    its own sRGB gamut boundary at radius 1, so the disc is fully coloured
+    while remaining inside the displayable gamut.
+    """
+    ratio = max(1.0, request.pixel_ratio)
+    image_size = max(1, int(round(request.size * ratio)))
+    coords = (np.arange(image_size, dtype=np.float64) + 0.5) / image_size * 2.0 - 1.0
+    xx, yy = np.meshgrid(coords, -coords)  # x right, y up
+    rr = np.sqrt(xx * xx + yy * yy)
+    theta = np.arctan2(yy, xx) % (2.0 * np.pi)
+    a_dir = np.cos(theta)
+    b_dir = np.sin(theta)
+
+    if request.render_mode == "oklab":
+        lightness = request.lightness / 100.0
+        max_c = _max_chroma_array(lightness, a_dir, b_dir, "oklab")
+    else:
+        lightness = request.lightness
+        max_c = _max_chroma_array(lightness, a_dir, b_dir, "lab")
+
+    chroma = np.clip(rr, 0.0, 1.0) * max_c
+    a = chroma * a_dir
+    b = chroma * b_dir
+
+    if request.render_mode == "oklab":
+        red, green, blue = _oklab_to_rgb(np.full_like(a, lightness), a, b)
+    else:
+        red, green, blue = _lab_to_rgb(np.full_like(a, lightness), a, b)
+
+    mask = ((rr <= 1.0)
+            & (red >= 0.0) & (red <= 255.0)
+            & (green >= 0.0) & (green <= 255.0)
+            & (blue >= 0.0) & (blue <= 255.0))
+    return LabPrewarmResult(
+        request=request,
+        image_width=image_size,
+        image_height=image_size,
+        image_bytes=_rgba_bytes(red, green, blue, mask),
+    )
+
+
 def render_lab_plane(request: LabPrewarmRequest) -> LabPrewarmResult:
+    if request.shape == "disc":
+        return render_lab_disc(request)
     ratio = max(1.0, request.pixel_ratio)
     image_size = max(1, int(round(request.size * ratio)))
     x = np.linspace(request.min_a, request.max_a, image_size, dtype=np.float32)

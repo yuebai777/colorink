@@ -359,7 +359,17 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.combo_viz_mode.blockSignals(True)
         self.combo_viz_mode.setCurrentIndex(_idx if _idx >= 0 else 0)
         self.combo_viz_mode.blockSignals(False)
-        
+
+        _idx_shape = self.combo_lab_shape.findData(self.cfg.get("labViewShape", "square"))
+        self.combo_lab_shape.blockSignals(True)
+        self.combo_lab_shape.setCurrentIndex(_idx_shape if _idx_shape >= 0 else 0)
+        self.combo_lab_shape.blockSignals(False)
+
+        _idx_harmony = self.combo_lab_harmony.findData(self.cfg.get("labHarmonyMode", "analogous"))
+        self.combo_lab_harmony.blockSignals(True)
+        self.combo_lab_harmony.setCurrentIndex(_idx_harmony if _idx_harmony >= 0 else 0)
+        self.combo_lab_harmony.blockSignals(False)
+
         self.cb_show_lab_lightness.blockSignals(True)
         self.cb_show_lab_lightness.setChecked(self.cfg.get("showLabLightnessSlider", True))
         self.cb_show_lab_lightness.blockSignals(False)
@@ -519,6 +529,8 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cfg["showModuleSwitchButton"] = self.cb_show_module_btn.isChecked()
         self.cfg["showLabToggleButton"] = self.cb_show_lab_toggle.isChecked()
         self.cfg["visualizerMode"] = self.combo_viz_mode.currentData() or "lab"
+        self.cfg["labViewShape"] = self.combo_lab_shape.currentData() or "square"
+        self.cfg["labHarmonyMode"] = self.combo_lab_harmony.currentData() or "analogous"
         self.cfg["showLabLightnessSlider"] = self.cb_show_lab_lightness.isChecked()
 
         # ── Ringless settings ──
@@ -643,6 +655,18 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         """Called by MainWindow when the module changes externally."""
         self.cfg = config.load_hotkey_config()
         self._refresh_module_sliders()
+
+    def notify_lab_settings_changed(self):
+        """Called by MainWindow when the LAB shape/harmony change on the pane."""
+        self.cfg = config.load_hotkey_config()
+        for combo, key, default in (
+            (self.combo_lab_shape, "labViewShape", "square"),
+            (self.combo_lab_harmony, "labHarmonyMode", "analogous"),
+        ):
+            idx = combo.findData(self.cfg.get(key, default))
+            combo.blockSignals(True)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            combo.blockSignals(False)
 
     def _persist_config(self):
         """Write config only when it actually changed."""

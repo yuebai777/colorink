@@ -129,6 +129,8 @@ def default_hotkey_config():
         "orderSlidersOKLab": 5,
         "orderSlidersOKLCh": 6,
         "visualizerMode": "lab",
+        "labViewShape": "square",
+        "labHarmonyMode": "analogous",
         "colorWheelMode": "hsv",
         "colorSpaceModule": "hsv",          # "hsv" | "hls" | "rgb" | "lch"
         "showModuleSwitchButton": True,     # floating button next to ⊙/△

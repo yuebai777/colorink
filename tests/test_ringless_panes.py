@@ -165,6 +165,13 @@ class TestPaneRinglessIntegration:
         pane.set_module_button(btn)
         return btn
 
+    @pytest.fixture
+    def extra_btn(self, pane, mode_btn, module_btn):
+        btn = QPushButton("E", pane)
+        btn.setToolTip("extra")
+        pane.set_extra_button(btn)
+        return btn
+
     # ── Legacy bottom-right (no layout / disabled) ─────────────────────
 
     def test_no_layout_uses_bottom_right(self, pane, mode_btn):
@@ -177,6 +184,13 @@ class TestPaneRinglessIntegration:
         assert module_btn.x() == 400 - 6 - 28 - 4 - 28
         assert module_btn.y() == 300 - 6 - 28
         assert module_btn.x() < mode_btn.x()
+
+    def test_no_layout_extra_left_of_module(
+            self, pane, mode_btn, module_btn, extra_btn):
+        pane.resize(400, 300)
+        assert extra_btn.x() == 400 - 6 - 28 - 4 - 28 - 4 - 28
+        assert extra_btn.y() == 300 - 6 - 28
+        assert extra_btn.x() < module_btn.x()
 
     def test_disabled_layout_uses_bottom_right(self, pane, mode_btn):
         pane.set_ringless_layout(_disabled_layout())
@@ -211,6 +225,28 @@ class TestPaneRinglessIntegration:
         assert module_btn.x() == module_x
         assert module_btn.y() == 5
         assert mode_btn.y() == 5
+
+    def test_ringless_right_extra_grows_toward_center(
+            self, pane, mode_btn, module_btn, extra_btn):
+        pane.set_ringless_layout(_layout())
+        pane.resize(400, 339)
+        assert module_btn.x() == 7
+        assert mode_btn.x() == 7 + 28 + 4
+        # Extra button sits to the right of the mode button (toward center),
+        # so it never runs off the left edge.
+        assert extra_btn.x() == 7 + 28 + 4 + 28 + 4
+        assert extra_btn.y() == 5
+
+    def test_ringless_left_extra_left_of_module(
+            self, pane, mode_btn, module_btn, extra_btn):
+        pane.set_ringless_layout(_layout(controls_side="left"))
+        pane.resize(400, 339)
+        mode_x = 400 - 7 - 28
+        module_x = mode_x - 4 - 28
+        assert mode_btn.x() == mode_x
+        assert module_btn.x() == module_x
+        assert extra_btn.x() == module_x - 4 - 28
+        assert extra_btn.y() == 5
 
     def test_ringless_only_mode_button(self, pane, mode_btn):
         pane.set_ringless_layout(_layout())

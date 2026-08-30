@@ -62,6 +62,7 @@ class PaneWithModeButton(QWidget):
         super().__init__(parent)
         self._mode_btn = None
         self._module_btn = None       # optional second button (left of mode)
+        self._extra_btn = None        # optional third button (left of module)
         self._btn_size = 28           # px, updated by MainWindow from uiScale
         self._btn_margin = 6
         self._btn_gap = 4
@@ -78,6 +79,11 @@ class PaneWithModeButton(QWidget):
         """Optional second button placed to the LEFT of the mode button."""
         self._module_btn = btn
         self._reserve_module_slot = btn is not None
+        self._reposition_mode_button()
+
+    def set_extra_button(self, btn):
+        """Optional third button placed to the LEFT of the module button."""
+        self._extra_btn = btn
         self._reposition_mode_button()
 
     def set_module_slot_reserved(self, reserved: bool) -> None:
@@ -142,6 +148,21 @@ class PaneWithModeButton(QWidget):
                 self._module_btn.setGeometry(mx, my, bw, bh)
                 self._module_btn.raise_()
 
+        # Extra button: to the left of the module button
+        if self._extra_btn is not None:
+            if self._module_btn is not None:
+                left_anchor = pw - m - bw - gap - bw
+            elif self._mode_btn is not None:
+                left_anchor = pw - m - bw
+            else:
+                left_anchor = pw - m
+            ex = left_anchor - gap - bw
+            ey = ph - m - bh
+            if ex >= 0 and ey >= 0:
+                self._extra_btn.setFixedSize(bw, bh)
+                self._extra_btn.setGeometry(ex, ey, bw, bh)
+                self._extra_btn.raise_()
+
     # ── Ringless top-bar anchoring ───────────────────────────────────────
 
     def _reposition_ringless(self):
@@ -153,6 +174,8 @@ class PaneWithModeButton(QWidget):
         mode_btn = self._mode_btn
         module_btn = self._module_btn
         module_visible = module_btn is not None and not module_btn.isHidden()
+        extra_btn = self._extra_btn
+        extra_visible = extra_btn is not None and not extra_btn.isHidden()
 
         if mode_btn is not None:
             # Keep the mode button in the same reserved slot even when the
@@ -172,6 +195,18 @@ class PaneWithModeButton(QWidget):
                 positions.module_x, positions.y, bw, bw,
             )
             module_btn.raise_()
+
+        if extra_visible and extra_btn is not None:
+            if layout.controls_side == "right":
+                # Buttons anchor left; the extra button grows toward the centre.
+                ex = positions.mode_x + bw + layout.button_gap
+            elif module_visible:
+                ex = positions.module_x - bw - layout.button_gap
+            else:
+                ex = positions.mode_x - bw - layout.button_gap
+            extra_btn.setFixedSize(bw, bw)
+            extra_btn.setGeometry(ex, positions.y, bw, bw)
+            extra_btn.raise_()
 
 
 class WheelPane(PaneWithModeButton):
