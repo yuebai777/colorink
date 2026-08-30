@@ -89,6 +89,8 @@ def default_hotkey_config():
         "toggleLabKey": "Space",          # 本地快捷键: 鼠标悬停色轮/LAB区域时切换视图
         "toggleLabGlobalKey": "Ctrl+Alt+L",   # 全局快捷键: 任意位置切换色轮/LAB视图
         "showLabToggleButton": True,      # 显示/隐藏色轮与LAB之间的浮动切换按钮
+        "showLabShapeButton": True,       # 显示/隐藏 LAB 视图形状切换按钮
+        "showLabHarmonyButton": True,     # 显示/隐藏 LAB 调和模式按钮
         "showTitleBar": True,             # 显示/隐藏标题栏（隐藏后顶部边框与四周一致）
         "grayscaleFilterScreen": "all",
         "grayscaleFilterMode": "oklch",
@@ -263,7 +265,7 @@ _BOOL_KEYS = frozenset({
     "onlyShowInCsp", "openAtLogin", "checkUpdatesOnStartup",
     "followMouseEnabled", "noFocusMode", "showLabLightnessSlider",
     "flipColorWheelHorizontally", "hideHueRing", "showModuleSwitchButton",
-    "showLabToggleButton",
+    "showLabToggleButton", "showLabShapeButton", "showLabHarmonyButton",
 })
 _INT_KEYS = frozenset({
     "uiScale", "pickerZoom", "historyColumns", "historyRows",

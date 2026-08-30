@@ -120,6 +120,8 @@ class PickerActionsMixin:
         idx = self.stack.currentIndex()
         show_module = self.cfg.get("showModuleSwitchButton", True)
         show_lab_toggle = self.cfg.get("showLabToggleButton", True)
+        show_lab_shape_btn = self.cfg.get("showLabShapeButton", True)
+        show_lab_harmony_btn = self.cfg.get("showLabHarmonyButton", True)
         if hasattr(self, "pane_wheel"):
             self.pane_wheel.set_module_slot_reserved(show_module)
         if hasattr(self, "pane_lab"):
@@ -150,11 +152,15 @@ class PickerActionsMixin:
                 self.btn_mode_wheel.hide()
             if hasattr(self, 'btn_module'):
                 self.btn_module.hide()
-            # LAB pane keeps its shape toggle + harmony menu visible.
-            for _btn in ("btn_lab_shape", "btn_lab_harmony"):
-                if hasattr(self, _btn):
-                    getattr(self, _btn).setVisible(True)
-                    getattr(self, _btn).raise_()
+            # LAB pane's shape toggle + harmony menu follow their own settings.
+            if hasattr(self, 'btn_lab_shape'):
+                self.btn_lab_shape.setVisible(show_lab_shape_btn)
+                if show_lab_shape_btn:
+                    self.btn_lab_shape.raise_()
+            if hasattr(self, 'btn_lab_harmony'):
+                self.btn_lab_harmony.setVisible(show_lab_harmony_btn)
+                if show_lab_harmony_btn:
+                    self.btn_lab_harmony.raise_()
 
         # Re-pack the visible button cluster after every visibility change so
         # a lone toggle always lands on the outermost edge.

@@ -355,6 +355,14 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cb_show_lab_toggle.setChecked(self.cfg.get("showLabToggleButton", True))
         self.cb_show_lab_toggle.blockSignals(False)
 
+        self.cb_show_lab_shape_btn.blockSignals(True)
+        self.cb_show_lab_shape_btn.setChecked(self.cfg.get("showLabShapeButton", True))
+        self.cb_show_lab_shape_btn.blockSignals(False)
+
+        self.cb_show_lab_harmony_btn.blockSignals(True)
+        self.cb_show_lab_harmony_btn.setChecked(self.cfg.get("showLabHarmonyButton", True))
+        self.cb_show_lab_harmony_btn.blockSignals(False)
+
         _idx = self.combo_viz_mode.findData(self.cfg.get("visualizerMode", "lab"))
         self.combo_viz_mode.blockSignals(True)
         self.combo_viz_mode.setCurrentIndex(_idx if _idx >= 0 else 0)
@@ -528,6 +536,8 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cfg["colorSpaceModule"] = module_val_map.get(self.combo_module.currentText(), "hsv")
         self.cfg["showModuleSwitchButton"] = self.cb_show_module_btn.isChecked()
         self.cfg["showLabToggleButton"] = self.cb_show_lab_toggle.isChecked()
+        self.cfg["showLabShapeButton"] = self.cb_show_lab_shape_btn.isChecked()
+        self.cfg["showLabHarmonyButton"] = self.cb_show_lab_harmony_btn.isChecked()
         self.cfg["visualizerMode"] = self.combo_viz_mode.currentData() or "lab"
         self.cfg["labViewShape"] = self.combo_lab_shape.currentData() or "square"
         self.cfg["labHarmonyMode"] = self.combo_lab_harmony.currentData() or "analogous"

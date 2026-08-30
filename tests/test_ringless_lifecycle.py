@@ -15,7 +15,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QApplication, QPushButton, QStackedWidget, QWidget
 
 from ui.color_preview_box import ColorPreviewBox
-from ui.picker_panes import PaneWithModeButton, WheelPane
+from ui.picker_panes import LabPane, PaneWithModeButton, WheelPane
 from ui.ringless_mode import RinglessLayout
 
 for _m in ("brush_color_spaces","win32gui","win32api","win32con","win32process",
@@ -56,19 +56,24 @@ class _Harness:
         self.stack = QStackedWidget()
         self.stack.addWidget(QWidget()); self.stack.addWidget(QWidget())
         self.pane_wheel = WheelPane(); self.pane_wheel.resize(400, 339)
+        self.pane_lab = LabPane(); self.pane_lab.resize(400, 339)
         self.preview_box = ColorPreviewBox()
         self.preview_box.set_colors(QColor(255, 0, 0), QColor(0, 0, 255))
         self.preview_box.position_mode = "top-left"
         self.btn_mode_wheel = QPushButton("M", self.pane_wheel)
-        self.btn_mode_lab = QPushButton("L", self.pane_wheel)
+        self.btn_mode_lab = QPushButton("L", self.pane_lab)
         self.btn_module = QPushButton("H", self.pane_wheel)
         self.pane_wheel.set_mode_button(self.btn_mode_wheel)
         self.pane_wheel.set_module_button(self.btn_module)
+        self.btn_lab_shape = QPushButton("□", self.pane_lab)
+        self.btn_lab_harmony = QPushButton("和", self.pane_lab)
+        self.pane_lab.set_mode_button(self.btn_mode_lab)
+        self.pane_lab.set_module_button(self.btn_lab_shape)
+        self.pane_lab.set_extra_button(self.btn_lab_harmony)
         self.color_wheel = MagicMock(set_ringless_layout=MagicMock(),
                                       set_color=MagicMock())
         self.lab_square = MagicMock(L=50, set_color=MagicMock(), avoid_top=0)
         self.lab_slider = MagicMock(set_lightness=MagicMock())
-        self.pane_lab = MagicMock(set_mode_button_metrics=MagicMock())
         self.lab_layout = MagicMock()
         self.sliders_container = MagicMock(
             sizeHint=MagicMock(return_value=MagicMock(
@@ -198,6 +203,32 @@ class TestModuleHiddenLifecycle:
             h.update_mode_buttons_visibility()
             h._sync_ringless_mode(wheel_size=384, title_bar_height=28)
         assert h.btn_module.isHidden()
+
+    def test_lab_toggles_follow_settings(self, harness):
+        h = harness
+        h.stack.setCurrentIndex(1)
+        h.cfg["showLabShapeButton"] = False
+        h.cfg["showLabHarmonyButton"] = False
+        h.update_mode_buttons_visibility()
+        assert h.btn_lab_shape.isHidden()
+        assert h.btn_lab_harmony.isHidden()
+
+        h.cfg["showLabShapeButton"] = True
+        h.cfg["showLabHarmonyButton"] = True
+        h.update_mode_buttons_visibility()
+        assert not h.btn_lab_shape.isHidden()
+        assert not h.btn_lab_harmony.isHidden()
+
+    def test_lone_lab_harmony_button_anchors_to_edge(self, harness):
+        h = harness
+        h.stack.setCurrentIndex(1)
+        h.cfg["showLabToggleButton"] = False
+        h.cfg["showLabShapeButton"] = False
+        h.cfg["showLabHarmonyButton"] = True
+        h.update_mode_buttons_visibility()
+        h._sync_ringless_mode(wheel_size=384, title_bar_height=28)
+        assert not h.btn_lab_harmony.isHidden()
+        assert h.btn_lab_harmony.x() == 7  # controls_side right → left edge
 
 # ── Preview geometry round-trip (real ColorPreviewBox, manual) ───────────
 
@@ -332,11 +363,11 @@ class TestModuleButtonGap:
         pane.set_ringless_layout(_CANONICAL)
         assert not mode_btn.isHidden() and module_btn.x() < mode_btn.x()
 
-    def test_hidden_mode_outer(self, pane, mode_btn, module_btn):
+    def test_hidden_module_moves_mode_to_edge(self, pane, mode_btn, module_btn):
         pane.set_ringless_layout(_CANONICAL)
-        bx = mode_btn.x(); module_btn.hide()
+        module_btn.hide()
         pane.set_ringless_layout(_CANONICAL)
-        assert module_btn.isHidden() and mode_btn.x() == bx
+        assert module_btn.isHidden() and mode_btn.x() == 7
 
     def test_hidden_left_outer(self, pane, mode_btn, module_btn):
         pane.resize(400, 339); pane.set_ringless_layout(_LEFT)

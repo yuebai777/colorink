@@ -829,6 +829,16 @@ class AppearancePanelMixin:
         self.cb_show_lab_toggle.stateChanged.connect(self.save_settings)
         cl_pz.addWidget(self.cb_show_lab_toggle)
 
+        self.cb_show_lab_shape_btn = QCheckBox(i18n.tr("显示 LAB 视图形状按钮"))
+        self.cb_show_lab_shape_btn.setToolTip(i18n.tr("在 LAB 区域显示方形/圆形切换按钮"))
+        self.cb_show_lab_shape_btn.stateChanged.connect(self.save_settings)
+        cl_pz.addWidget(self.cb_show_lab_shape_btn)
+
+        self.cb_show_lab_harmony_btn = QCheckBox(i18n.tr("显示 LAB 调和按钮"))
+        self.cb_show_lab_harmony_btn.setToolTip(i18n.tr("在 LAB 区域显示互补/近似/三等分等调和模式按钮"))
+        self.cb_show_lab_harmony_btn.stateChanged.connect(self.save_settings)
+        cl_pz.addWidget(self.cb_show_lab_harmony_btn)
+
         page_picker.addWidget(card_pz)
 
         card_sl_order, cl_sl_order = self._begin_card(page_picker, i18n.tr("滑块显示与顺序"))
