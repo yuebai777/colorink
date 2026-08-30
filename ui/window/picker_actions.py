@@ -156,6 +156,13 @@ class PickerActionsMixin:
                     getattr(self, _btn).setVisible(True)
                     getattr(self, _btn).raise_()
 
+        # Re-pack the visible button cluster after every visibility change so
+        # a lone toggle always lands on the outermost edge.
+        if hasattr(self, "pane_wheel"):
+            self.pane_wheel._reposition_mode_button()
+        if hasattr(self, "pane_lab"):
+            self.pane_lab._reposition_mode_button()
+
     def toggle_picker_mode(self):
         """Switch picker panes without re-running the full theme/layout pass."""
         new_index = (self.stack.currentIndex() + 1) % 2

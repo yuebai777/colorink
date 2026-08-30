@@ -114,7 +114,34 @@ class PaneWithModeButton(QWidget):
         else:
             self._reposition_legacy()
 
-    # ── Legacy bottom-right (byte-for-byte identical to original) ────────
+    # ── Generic visible-button packing ────────────────────────────────────
+
+    def _pack_visible_buttons(
+        self, order, edge, y, bw, bh, gap, anchor_left,
+    ) -> None:
+        """Pack only *visible* buttons consecutively from an edge.
+
+        *order* is the spatial left→right order of the full button cluster;
+        hidden buttons do not reserve space, so a lone visible button sits
+        right at the edge (corner / control-bar edge).
+        """
+        visible = [b for b in order if b is not None and not b.isHidden()]
+        if anchor_left:
+            x = edge
+            for btn in visible:
+                btn.setFixedSize(bw, bh)
+                btn.setGeometry(x, y, bw, bh)
+                btn.raise_()
+                x += bw + gap
+        else:
+            x = edge
+            for btn in reversed(visible):
+                btn.setFixedSize(bw, bh)
+                btn.setGeometry(x - bw, y, bw, bh)
+                btn.raise_()
+                x -= bw + gap
+
+    # ── Legacy bottom-right ───────────────────────────────────────────────
 
     def _reposition_legacy(self):
         bw = self._btn_size
@@ -123,98 +150,37 @@ class PaneWithModeButton(QWidget):
         gap = self._btn_gap
         pw = self.width()
         ph = self.height()
+        y = ph - m - bh
+        if y < 0:
+            return
+        # Full cluster, left→right: [extra, module, mode].
+        order = [self._extra_btn, self._module_btn, self._mode_btn]
+        self._pack_visible_buttons(
+            order, pw - m, y, bw, bh, gap, anchor_left=False)
 
-        # Primary button: bottom-right corner
-        if self._mode_btn is not None:
-            px = pw - m - bw
-            py = ph - m - bh
-            if px >= 0 and py >= 0:
-                self._mode_btn.setFixedSize(bw, bh)
-                self._mode_btn.setGeometry(px, py, bw, bh)
-                self._mode_btn.raise_()
-
-        # Module button: to the left of the mode button
-        mode_active = self._mode_btn is not None and not self._mode_btn.isHidden()
-        module_active = self._module_btn is not None and not self._module_btn.isHidden()
-        if self._module_btn is not None:
-            # Position relative to mode button's left edge; fall back to
-            # bottom-right if mode button is hidden/not set.
-            if mode_active:
-                left_anchor = pw - m - bw
-            else:
-                left_anchor = pw - m
-            mx = left_anchor - gap - bw
-            my = ph - m - bh
-            if mx >= 0 and my >= 0:
-                self._module_btn.setFixedSize(bw, bh)
-                self._module_btn.setGeometry(mx, my, bw, bh)
-                self._module_btn.raise_()
-
-        # Extra button: to the left of the module button
-        if self._extra_btn is not None:
-            if module_active:
-                left_anchor = pw - m - bw - gap - bw
-            elif mode_active:
-                left_anchor = pw - m - bw
-            else:
-                left_anchor = pw - m
-            ex = left_anchor - gap - bw
-            ey = ph - m - bh
-            if ex >= 0 and ey >= 0:
-                self._extra_btn.setFixedSize(bw, bh)
-                self._extra_btn.setGeometry(ex, ey, bw, bh)
-                self._extra_btn.raise_()
-
-    # ── Ringless top-bar anchoring ───────────────────────────────────────
+    # ── Ringless top-bar anchoring ────────────────────────────────────────
 
     def _reposition_ringless(self):
         bw = self._btn_size
         layout = self._ringless_layout
         assert layout is not None
-        positions = ringless_button_positions(self.width(), bw, layout, self.height())
-
-        mode_btn = self._mode_btn
-        module_btn = self._module_btn
-        mode_visible = mode_btn is not None and not mode_btn.isHidden()
-        module_visible = module_btn is not None and not module_btn.isHidden()
-        extra_btn = self._extra_btn
-        extra_visible = extra_btn is not None and not extra_btn.isHidden()
-
-        if mode_btn is not None:
-            # Keep the mode button in the same reserved slot even when the
-            # optional module button is hidden. This prevents the LAB toggle
-            # from jumping when switching between the two picker panes.
-            if layout.controls_side == "right" and not self._reserve_module_slot:
-                mx = positions.module_x
-            else:
-                mx = positions.mode_x
-            mode_btn.setFixedSize(bw, bw)
-            mode_btn.setGeometry(mx, positions.y, bw, bw)
-            mode_btn.raise_()
-
-        if module_visible and module_btn is not None:
-            module_btn.setFixedSize(bw, bw)
-            module_btn.setGeometry(
-                positions.module_x, positions.y, bw, bw,
-            )
-            module_btn.raise_()
-
-        if extra_visible and extra_btn is not None:
-            if layout.controls_side == "right":
-                # Buttons anchor left; the extra button grows toward the centre.
-                if mode_visible:
-                    ex = positions.mode_x + bw + layout.button_gap
-                elif module_visible:
-                    ex = positions.module_x + bw + layout.button_gap
-                else:
-                    ex = positions.module_x
-            elif module_visible:
-                ex = positions.module_x - bw - layout.button_gap
-            else:
-                ex = positions.mode_x - bw - layout.button_gap
-            extra_btn.setFixedSize(bw, bw)
-            extra_btn.setGeometry(ex, positions.y, bw, bw)
-            extra_btn.raise_()
+        positions = ringless_button_positions(
+            self.width(), bw, layout, self.height(),
+        )
+        if layout.controls_side == "right":
+            # Swatches on the right → button cluster anchored at the left edge.
+            # Full cluster, left→right: [module, mode, extra].
+            order = [self._module_btn, self._mode_btn, self._extra_btn]
+            edge = layout.margin
+        else:
+            # Swatches on the left → button cluster anchored at the right edge.
+            # Full cluster, left→right: [extra, module, mode].
+            order = [self._extra_btn, self._module_btn, self._mode_btn]
+            edge = self.width() - layout.margin
+        self._pack_visible_buttons(
+            order, edge, positions.y, bw, bw, layout.button_gap,
+            anchor_left=(layout.controls_side == "right"),
+        )
 
 
 class WheelPane(PaneWithModeButton):

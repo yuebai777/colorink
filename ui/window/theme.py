@@ -258,11 +258,18 @@ class ThemeMixin:
             if isinstance(slider, GradientSlider):
                 slider.update_scale(scale, slider_theme)
             
-        # Style mode buttons dynamically
+        # Style mode buttons dynamically (all floating picker toggle buttons,
+        # including the LAB shape/harmony toggles, share one chrome).
         btn_w = int(28 * scale)
         btn_h = int(28 * scale)
-        for btn in [self.btn_mode_wheel, self.btn_mode_lab,
-                     getattr(self, 'btn_module', None)]:
+        mode_buttons = [
+            self.btn_mode_wheel,
+            self.btn_mode_lab,
+            getattr(self, 'btn_module', None),
+            getattr(self, 'btn_lab_shape', None),
+            getattr(self, 'btn_lab_harmony', None),
+        ]
+        for btn in mode_buttons:
             if btn is not None:
                 btn.setFixedSize(btn_w, btn_h)
                 btn.setStyleSheet(f"""
@@ -279,6 +286,24 @@ class ThemeMixin:
                         border-color: #5a94e2;
                     }}
                 """)
+
+        # Keep the LAB harmony menu on the same chrome as the mode buttons.
+        harmony_menu = getattr(self, "_lab_harmony_menu", None)
+        if harmony_menu is not None:
+            harmony_menu.setStyleSheet(f"""
+                QMenu {{
+                    background-color: {barBg};
+                    border: 1px solid {borderColor};
+                    color: {text};
+                }}
+                QMenu::item {{
+                    padding: 4px 12px;
+                }}
+                QMenu::item:selected {{
+                    background-color: #5a94e2;
+                    color: #ffffff;
+                }}
+            """)
 
         # Theme + geometry for the color history panel. It uses the same
         # bg / border / text as the main chrome so it visually belongs to
