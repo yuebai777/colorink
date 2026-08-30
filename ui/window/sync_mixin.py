@@ -186,9 +186,8 @@ class SyncMixin:
         ret = QMessageBox.question(
             self, "需要管理员权限",
             "检测到 Photoshop 可能以管理员身份运行，而 Colorink 权限不足，"
-            "无法通过 COM 连接。\n\n"
-            "是否以管理员身份重启 Colorink？\n"
-            "（如果 Photoshop 是绿色版 / 未正常安装，提权也无法解决）",
+            "无法读取 / 写入同步桥文件。\n\n"
+            "是否以管理员身份重启 Colorink？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )

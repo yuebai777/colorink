@@ -3,11 +3,11 @@ cracked-with-COM).
 
 Pure logic module — no COM calls, no PyQt — so it stays unit-testable.
 
-Each running ``Photoshop.exe`` is classified by sync label only: since
-v6 every edition shares ONE sync path (the user-level CEP bridge in
-:mod:`core.photoshop_script_bridge`), routed per instance by PID. The
-``kind`` field is kept for display labels; it no longer selects a
-backend.
+Every edition shares ONE sync path (the user-level CEP bridge in
+:mod:`core.photoshop_script_bridge`), routed per instance by PID, so
+display labels are uniform: ``<folder> (同步桥)``. The ``kind`` /
+``progid`` fields are internal bookkeeping only — they no longer
+influence labels or backend selection.
 
 ``find_registered_progids`` probes the well-known versioned ProgIDs
 (``Photoshop.Application`` plus ``Photoshop.Application.130..260``) because
@@ -31,8 +31,8 @@ _VERSION_PROGID_NUMBERS = range(130, 271, 10)
 class PhotoshopInstance:
     """A running Photoshop process and the best way to sync with it."""
 
-    kind: str                  # COM_KIND | SCRIPT_BRIDGE_KIND
-    label: str                 # stable display label (settings combo + status)
+    kind: str                  # COM_KIND | SCRIPT_BRIDGE_KIND (internal only)
+    label: str                 # uniform display label "<folder> (同步桥)"
     exe_path: str
     pid: int
     progid: str | None = None  # set only for COM_KIND
@@ -81,13 +81,11 @@ def find_registered_progids() -> list[tuple[str, str]]:
     return found
 
 
-def _instance_label(exe_path: str, kind: str) -> str:
+def _instance_label(exe_path: str) -> str:
     folder = os.path.basename(os.path.dirname(os.path.abspath(exe_path)))
     if not folder:
         folder = "Photoshop"
-    if kind == COM_KIND:
-        return f"{folder} (COM)"
-    return f"{folder} (绿色版·脚本桥)"
+    return f"{folder} (同步桥)"
 
 
 def detect_instances() -> list[PhotoshopInstance]:
@@ -103,13 +101,13 @@ def detect_instances() -> list[PhotoshopInstance]:
         )
         if match is not None:
             instances.append(PhotoshopInstance(
-                kind=COM_KIND, label=_instance_label(exe, COM_KIND),
+                kind=COM_KIND, label=_instance_label(exe),
                 exe_path=exe, pid=pid, progid=match[0],
             ))
         else:
             instances.append(PhotoshopInstance(
                 kind=SCRIPT_BRIDGE_KIND,
-                label=_instance_label(exe, SCRIPT_BRIDGE_KIND),
+                label=_instance_label(exe),
                 exe_path=exe, pid=pid,
             ))
     return instances

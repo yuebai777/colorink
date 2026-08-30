@@ -77,8 +77,8 @@ class SyncPanelMixin:
             self.row_csp_mode_tip_widget.hide()
 
     def _refresh_ps_instances(self):
-        """Populate the Photoshop version combo with detected running instances:
-        registered installs (COM) + green/portable editions (script bridge)."""
+        """Populate the Photoshop version combo with detected running instances;
+        every edition shares ONE CEP-bridge sync path, so labels are uniform."""
         try:
             from core.photoshop_instances import detect_instances
             instances = detect_instances()
@@ -513,7 +513,7 @@ class SyncPanelMixin:
         self.btn_ps_bridge_restart.clicked.connect(self._on_ps_restart)
         self.btn_ps_bridge_remove = QPushButton(i18n.tr("移除扩展"))
         self.btn_ps_bridge_remove.setToolTip(
-            i18n.tr("删除已部署到绿色版 Photoshop 的同步扩展；"
+            i18n.tr("删除已部署的 Photoshop 同步扩展；"
             "如 Photoshop 正在运行，需重启后才会完全生效。"
             "当它与其它插件 / 控制器（如 TourBox、Coolorus）"
             "冲突时使用"))

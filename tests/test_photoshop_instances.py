@@ -168,7 +168,7 @@ class TestDetect:
         assert inst.kind == pi.COM_KIND
         assert inst.progid == "Photoshop.Application.210"
         assert inst.pid == 42
-        assert "(COM)" in inst.label
+        assert "(同步桥)" in inst.label
 
     def test_green_running_is_script_bridge(self, monkeypatch, no_registry):
         _install(monkeypatch, procs=[_proc(7, "Photoshop.exe", GREEN_EXE)])
@@ -177,7 +177,7 @@ class TestDetect:
         inst = instances[0]
         assert inst.kind == pi.SCRIPT_BRIDGE_KIND
         assert inst.progid is None
-        assert "绿色版" in inst.label
+        assert "(同步桥)" in inst.label
 
     def test_mixed_installs_classified_independently(self, monkeypatch):
         _install(monkeypatch,
@@ -200,32 +200,32 @@ class TestDetect:
 class TestPickTarget:
     def _instances(self):
         return [
-            pi.PhotoshopInstance(kind=pi.COM_KIND, label="A (COM)",
+            pi.PhotoshopInstance(kind=pi.COM_KIND, label="A (同步桥)",
                                  exe_path=r"D:\A\Photoshop.exe", pid=1,
                                  progid="Photoshop.Application.210"),
-            pi.PhotoshopInstance(kind=pi.SCRIPT_BRIDGE_KIND, label="B (绿色版·脚本桥)",
+            pi.PhotoshopInstance(kind=pi.SCRIPT_BRIDGE_KIND, label="B (同步桥)",
                                  exe_path=r"D:\B\Photoshop.exe", pid=2),
         ]
 
     def test_auto_picks_first(self):
         inst = pi.pick_target(self._instances(), "auto")
         assert inst is not None
-        assert inst.label == "A (COM)"
+        assert inst.label == "A (同步桥)"
 
     def test_none_picks_first(self):
         inst = pi.pick_target(self._instances(), None)
         assert inst is not None
-        assert inst.label == "A (COM)"
+        assert inst.label == "A (同步桥)"
 
     def test_label_match(self):
-        inst = pi.pick_target(self._instances(), "B (绿色版·脚本桥)")
+        inst = pi.pick_target(self._instances(), "B (同步桥)")
         assert inst is not None
-        assert inst.label == "B (绿色版·脚本桥)"
+        assert inst.label == "B (同步桥)"
 
     def test_unknown_label_falls_back_to_first(self):
         inst = pi.pick_target(self._instances(), "不存在")
         assert inst is not None
-        assert inst.label == "A (COM)"
+        assert inst.label == "A (同步桥)"
 
     def test_empty_returns_none(self):
         assert pi.pick_target([], "auto") is None
