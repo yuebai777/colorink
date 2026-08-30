@@ -134,10 +134,12 @@ class PaneWithModeButton(QWidget):
                 self._mode_btn.raise_()
 
         # Module button: to the left of the mode button
+        mode_active = self._mode_btn is not None and not self._mode_btn.isHidden()
+        module_active = self._module_btn is not None and not self._module_btn.isHidden()
         if self._module_btn is not None:
             # Position relative to mode button's left edge; fall back to
-            # bottom-right if mode button isn't set.
-            if self._mode_btn is not None:
+            # bottom-right if mode button is hidden/not set.
+            if mode_active:
                 left_anchor = pw - m - bw
             else:
                 left_anchor = pw - m
@@ -150,9 +152,9 @@ class PaneWithModeButton(QWidget):
 
         # Extra button: to the left of the module button
         if self._extra_btn is not None:
-            if self._module_btn is not None:
+            if module_active:
                 left_anchor = pw - m - bw - gap - bw
-            elif self._mode_btn is not None:
+            elif mode_active:
                 left_anchor = pw - m - bw
             else:
                 left_anchor = pw - m
@@ -173,6 +175,7 @@ class PaneWithModeButton(QWidget):
 
         mode_btn = self._mode_btn
         module_btn = self._module_btn
+        mode_visible = mode_btn is not None and not mode_btn.isHidden()
         module_visible = module_btn is not None and not module_btn.isHidden()
         extra_btn = self._extra_btn
         extra_visible = extra_btn is not None and not extra_btn.isHidden()
@@ -199,7 +202,12 @@ class PaneWithModeButton(QWidget):
         if extra_visible and extra_btn is not None:
             if layout.controls_side == "right":
                 # Buttons anchor left; the extra button grows toward the centre.
-                ex = positions.mode_x + bw + layout.button_gap
+                if mode_visible:
+                    ex = positions.mode_x + bw + layout.button_gap
+                elif module_visible:
+                    ex = positions.module_x + bw + layout.button_gap
+                else:
+                    ex = positions.module_x
             elif module_visible:
                 ex = positions.module_x - bw - layout.button_gap
             else:

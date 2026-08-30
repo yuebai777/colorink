@@ -28,6 +28,8 @@ from ui.color_conversions import (
 )
 from ui.lab_harmony import is_valid_harmony_mode, harmony_hue_offsets
 from ui.lab_prewarm import (
+    LAB_DISC_CHROMA_CEILING,
+    OKLAB_DISC_CHROMA_CEILING,
     LabPrewarmRequest,
     LabPrewarmResult,
     LabPrewarmTask,
@@ -92,14 +94,20 @@ class LabSquare(QWidget):
         if isinstance(self._cached_key, tuple) and len(self._cached_key) >= 2:
             cached_size = self._cached_key[1]
         super().resizeEvent(event)
-        new_size = min(self.width(), max(0, self.height() - self.avoid_top))
+        if self.shape == "disc":
+            new_size = int(round(self._disc_diameter()))
+        else:
+            new_size = min(self.width(), max(0, self.height() - self.avoid_top))
         # QStackedWidget may deliver a same-size resize when a page becomes
         # visible. Do not throw away a valid full image in that case.
         if cached_size is None or cached_size != new_size:
             self._invalidate_full_cache()
 
     def _cache_key(self, active: bool = False) -> tuple[object, ...]:
-        size = min(self.width(), max(0, self.height() - self.avoid_top))
+        if self.shape == "disc":
+            size = int(round(self._disc_diameter()))
+        else:
+            size = min(self.width(), max(0, self.height() - self.avoid_top))
         return (int(self.L * 2), size, active, self.render_mode, self.shape)
 
     def _invalidate_full_cache(self) -> None:
@@ -124,7 +132,10 @@ class LabSquare(QWidget):
     def prewarm_full(self) -> None:
         if self._prewarm_inflight:
             return
-        size = min(self.width(), max(0, self.height() - self.avoid_top))
+        if self.shape == "disc":
+            size = int(round(self._disc_diameter()))
+        else:
+            size = min(self.width(), max(0, self.height() - self.avoid_top))
         if size <= 10:
             return
         min_a, max_a, min_b, max_b = self._get_display_range()
@@ -430,10 +441,13 @@ class LabSquare(QWidget):
 
     def _render_ab_plane(self, low_quality=False):
         """Render ab-plane into cache. Called by paintEvent and prerender."""
-        w = self.width()
-        h = self.height()
-        avail_h = max(0, h - self.avoid_top)
-        size = min(w, avail_h)
+        if self.shape == "disc":
+            size = int(round(self._disc_diameter()))
+        else:
+            w = self.width()
+            h = self.height()
+            avail_h = max(0, h - self.avoid_top)
+            size = min(w, avail_h)
         if size <= 10:
             return
 
@@ -520,13 +534,33 @@ class LabSquare(QWidget):
     # ── circulant-disc helpers ────────────────────────────────────────────
 
     def _disc_metrics(self) -> tuple[float, float, float]:
+        """Center/radius for the circulant disc, matching the hue-ring size.
+
+        The disc keeps the same edge margins as ``ColorWheel.get_wheel_geometry``
+        (left/right 8 px, bottom 6 px) and stays below ``avoid_top`` so the
+        floating foreground/background preview box never covers it.
+        """
         w = self.width()
         h = self.height()
         avail_h = max(0, h - self.avoid_top)
-        size = min(w, avail_h)
-        offset_x = (w - size) / 2
-        offset_y = self.avoid_top + (avail_h - size) / 2
-        return offset_x + size / 2.0, offset_y + size / 2.0, size / 2.0
+        size = min(w - 16, max(16, avail_h - 6))
+        cx = w / 2.0
+        cy = max(size / 2.0 + 6.0, self.avoid_top + size / 2.0)
+        radius = max(1.0, size / 2.0 - 2.0)
+        return cx, cy, radius
+
+    def _disc_diameter(self) -> float:
+        return max(1.0, self._disc_metrics()[2] * 2.0)
+
+    def _disc_draw_offset(self) -> tuple[float, float]:
+        cx, cy, radius = self._disc_metrics()
+        diameter = max(1.0, radius * 2.0)
+        return cx - diameter / 2.0, cy - diameter / 2.0
+
+    def _disc_chroma_ceiling(self) -> float:
+        """Chroma cap used by the disc renderer (kept in sync with lab_prewarm)."""
+        return (OKLAB_DISC_CHROMA_CEILING if self.render_mode == "oklab"
+                else LAB_DISC_CHROMA_CEILING)
 
     def _max_chroma_for_direction(self, a: float, b: float) -> float:
         C = math.hypot(a, b)
@@ -534,8 +568,10 @@ class LabSquare(QWidget):
             return 0.0
         if self.render_mode == "oklab":
             h = math.degrees(math.atan2(b, a)) % 360.0
-            return find_max_oklch_c(self.L / 100.0, h)
-        return find_max_lab_c(self.L, a / C, b / C)
+            full = find_max_oklch_c(self.L / 100.0, h)
+        else:
+            full = find_max_lab_c(self.L, a / C, b / C)
+        return min(full, self._disc_chroma_ceiling())
 
     def _disc_ab_to_screen(self, a: float, b: float) -> QPointF:
         cx, cy, r = self._disc_metrics()
@@ -556,10 +592,7 @@ class LabSquare(QWidget):
         hue = math.atan2(dy, dx)
         a_dir = math.cos(hue)
         b_dir = math.sin(hue)
-        if self.render_mode == "oklab":
-            max_c = find_max_oklch_c(self.L / 100.0, math.degrees(hue) % 360.0)
-        else:
-            max_c = find_max_lab_c(self.L, a_dir, b_dir)
+        max_c = self._max_chroma_for_direction(a_dir, b_dir)
         C = rho * max_c
         return C * a_dir, C * b_dir
 
@@ -580,11 +613,7 @@ class LabSquare(QWidget):
             hue = base_hue + math.radians(offset_deg)
             a_dir = math.cos(hue)
             b_dir = math.sin(hue)
-            if self.render_mode == "oklab":
-                hue_max = find_max_oklch_c(
-                    self.L / 100.0, math.degrees(hue) % 360.0)
-            else:
-                hue_max = find_max_lab_c(self.L, a_dir, b_dir)
+            hue_max = self._max_chroma_for_direction(a_dir, b_dir)
             C = rho * hue_max
             points.append((C * a_dir, C * b_dir))
         return points
@@ -644,15 +673,19 @@ class LabSquare(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        w = self.width()
-        h = self.height()
-        avail_h = max(0, h - self.avoid_top)
-        size = min(w, avail_h)
+        if self.shape == "disc":
+            diameter = max(1.0, self._disc_diameter())
+            size = int(round(diameter))
+            offset_x, offset_y = self._disc_draw_offset()
+        else:
+            w = self.width()
+            h = self.height()
+            avail_h = max(0, h - self.avoid_top)
+            size = min(w, avail_h)
+            offset_x = (w - size) / 2
+            offset_y = self.avoid_top + (avail_h - size) / 2
         if size <= 10:
             return
-
-        offset_x = (w - size) / 2
-        offset_y = self.avoid_top + (avail_h - size) / 2
         
         # Prefer a resident full-resolution cache. If it is not ready, keep
         # showing the low-res preview and let the worker finish without ever
