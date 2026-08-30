@@ -47,6 +47,8 @@ def test_first_run_defaults_are_compact_and_discoverable():
     assert config["toggleLabKey"] == "Space"
     assert config["toggleLabGlobalKey"] == "Ctrl+Alt+L"
     assert config["showLabToggleButton"] is True
+    assert config["showLabShapeButton"] is True
+    assert config["showLabHarmonyButton"] is True
     assert config["showTitleBar"] is True
     assert config["colorSpaceModule"] == "hsv"
     assert config["showModuleSwitchButton"] is True
@@ -132,6 +134,8 @@ def test_existing_config_values_survive_missing_key_merge(tmp_path):
     assert config["colorSpaceModule"] == "lch"
     assert config["showModuleSwitchButton"] is True
     assert config["showLabToggleButton"] is True
+    assert config["showLabShapeButton"] is True
+    assert config["showLabHarmonyButton"] is True
     assert config["toggleTitleBarKey"] == "Ctrl+Alt+K"
     assert config["showTitleBar"] is True
     assert config["toggleLabGlobalKey"] == "Ctrl+Alt+L"
