@@ -754,6 +754,10 @@ class LabSquare(QWidget):
                 self.colorChanged.emit(r, g, b)
                 return
             self.dragging = True
+            # Mirror the color wheel's inner-region drag: while picking on
+            # the LAB plane the crosshair hides (the indicator dot shows the
+            # position) and comes back on release.
+            self.setCursor(Qt.CursorShape.BlankCursor)
             self.handle_mouse(event.position())
 
     def mouseMoveEvent(self, event):
@@ -765,6 +769,7 @@ class LabSquare(QWidget):
 
     def end_drag(self):
         self.dragging = False
+        self.setCursor(Qt.CursorShape.CrossCursor)
         self.update()
         self.interactionFinished.emit()
 

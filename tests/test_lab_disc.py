@@ -48,6 +48,25 @@ def test_lab_square_uses_wheel_crosshair_cursor(qapp):
     assert sq2.cursor().shape() == Qt.CursorShape.CrossCursor
 
 
+def test_disc_drag_blanks_cursor_like_wheel(qapp):
+    """While picking on the LAB plane the crosshair hides (same as the
+    wheel's inner-region drag) and comes back on release."""
+    sq = LabSquare()
+    sq.resize(200, 200)
+    sq.set_shape("disc")
+    press = QMouseEvent(
+        QEvent.Type.MouseButtonPress, QPointF(150, 100), QPointF(150, 100),
+        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    sq.mousePressEvent(press)
+    assert sq.dragging is True
+    assert sq.cursor().shape() == Qt.CursorShape.BlankCursor
+    sq.mouseReleaseEvent(None)
+    assert sq.dragging is False
+    assert sq.cursor().shape() == Qt.CursorShape.CrossCursor
+
+
 def test_set_shape_disc_invalidates_and_updates(qapp):
     sq = LabSquare()
     sq.resize(200, 200)
