@@ -28,8 +28,9 @@ to the surrounding chrome regardless of which theme is active.
 Recording contract
 ------------------
 * `record(r, g, b)` is called by MainWindow whenever a drag finishes
-  (slider released, wheel released, lab square released). Consecutive
-  duplicates are collapsed so the strip never flashes the same color twice.
+  (slider released, wheel released, lab square released). A color already
+  present in the history is promoted to the first cell instead of being
+  duplicated; only genuinely new colors are appended (capped by capacity).
 * `color_picked` is emitted back to MainWindow when the user clicks a
   swatch; MainWindow loads that color into the active slot.
 
@@ -353,19 +354,26 @@ class ColorHistoryWidget(QWidget):
         self._refill_cells()
 
     def record(self, r, g, b):
-        """Append (r, g, b) to the history, collapsing consecutive duplicates
-        and clipping to the grid capacity. The new color becomes the selected
-        one (visible as the *first* cell). Returns the updated color list so
-        the caller can persist it."""
+        """Record (r, g, b) into the history, moving a color that is already
+        present to the front (first cell) instead of duplicating it.
+
+        * If the color is already in the history anywhere, it is moved to the
+          front ("first cell"); the list does NOT grow — no duplicate is added.
+        * Only genuinely new colors are appended (and capped to the grid
+          capacity, dropping the oldest FIFO).
+        The recorded color becomes the selected one, visible as the *first*
+        cell. Returns the updated color list so the caller can persist it."""
         r_i, g_i, b_i = _to_int(r), _to_int(g), _to_int(b)
         new_color = QColor(r_i, g_i, b_i)
-        if self._colors and self._colors[-1] == new_color:
-            return list(self._colors)
+        for c in self._colors:
+            if c == new_color:
+                # Already exists → promote to front (end of _colors = newest),
+                # unchanged length.
+                return list(self._apply_selection_by_color(c))
         self._colors.append(new_color)
         capacity = self._cols * self._rows
         if len(self._colors) > capacity:
             self._colors = self._colors[-capacity:]
-        self._refill_cells()
         # Newest color is now the first visible cell → mark it selected
         self._apply_selection_by_color(new_color)
         return list(self._colors)
