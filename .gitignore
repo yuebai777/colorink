@@ -56,6 +56,9 @@ _rs_before.bat
 _rs_after.bat
 _slotback.py
 _state_*.json
+_v7_panel.js
+qrcode_*.jpg
+docs/superpowers/plans/tourbox-conflict-repro-message.md
 
 # PyInstaller
 *.manifest
