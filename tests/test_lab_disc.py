@@ -97,33 +97,28 @@ def test_disc_metrics_match_wheel_outer_edge(qapp):
     assert cx == pytest.approx(210.0, abs=1e-6)
 
 
-def test_disc_metrics_keep_wheel_size_with_avoid_top(qapp):
+def test_disc_metrics_ignore_avoid_top(qapp):
     sq = LabSquare()
     sq.resize(420, 420)
     sq.set_shape("disc")
     sq.set_avoid_top(120)
     cx, cy, radius = sq._disc_metrics()
     size = min(420 - 16, 420 - 6)
-    # The outer radius matches the hue ring even when the top strip is busy.
+    # Size AND position are identical to the hue ring, ignoring avoid_top.
     assert radius == pytest.approx(size / 2.0 - 2.0, abs=1e-6)
-    assert cy + radius <= 420.0 - 6.0
-    # When there is not enough vertical room, the disc keeps the hue-ring
-    # radius and sits as low as the bottom margin allows (full size wins).
-    assert cy == pytest.approx(420.0 - 6.0 - radius, abs=1e-6)
-    assert cy >= size / 2.0 + 6.0 - 1e-6
+    assert cy == pytest.approx(size / 2.0 + 6.0, abs=1e-6)
+    assert cx == pytest.approx(210.0, abs=1e-6)
 
 
-def test_disc_metrics_shift_down_when_room_allows(qapp):
+def test_disc_metrics_same_position_when_tall(qapp):
     sq = LabSquare()
     sq.resize(420, 620)
     sq.set_shape("disc")
     sq.set_avoid_top(120)
-    size = min(420 - 16, 620 - 6)
     cx, cy, radius = sq._disc_metrics()
+    size = min(420 - 16, 620 - 6)
     assert radius == pytest.approx(size / 2.0 - 2.0, abs=1e-6)
-    # Sufficient room → the disc stays wheel-sized and moves below the strip.
-    assert cy == pytest.approx(120.0 + size / 2.0, abs=1e-6)
-    assert cy - radius >= 119.0
+    assert cy == pytest.approx(size / 2.0 + 6.0, abs=1e-6)
 
 
 def test_disc_mouse_center_is_neutral(qapp):
