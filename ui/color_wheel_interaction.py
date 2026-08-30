@@ -361,17 +361,25 @@ class ColorWheelInteractionMixin:
         scale = self._drag_scale
         a_dir = self._drag_a_dir
         b_dir = self._drag_b_dir
-        
-        L = max(0.0, min(1.0, (cy + hy - py) / (2.0 * hy)))
-        L_val = L * 100.0
-        
-        C_max = find_max_lab_c(L_val, a_dir, b_dir)
+
+        # Raw (unclamped) L/C from the mouse. Whether the raw point sits
+        # inside the gamut decides if we need to snap — clamping L first
+        # would pin the cursor to the box corners when the mouse leaves
+        # the slice above or below.
+        L_raw = (cy + hy - py) / (2.0 * hy)
         C_raw = (px - min_x) / scale
-        if C_raw > C_max and C_max > 0:
-            # Mouse outside gamut — snap to nearest point on boundary
-            L, L_val = self._snap_to_boundary_rgb(L, L_val, C_raw, a_dir, b_dir, scale, px, py, cx, cy, hy, min_x)
-            C_max = find_max_lab_c(L_val, a_dir, b_dir)
-        C = max(0.0, min(C_max, (px - min_x) / scale))
+        C_max_raw = find_max_lab_c(max(0.0, min(100.0, L_raw * 100.0)), a_dir, b_dir)
+        if 0.0 <= L_raw <= 1.0 and 0.0 <= C_raw <= C_max_raw:
+            # Inside the gamut — exact position under the mouse.
+            L, L_val = L_raw, L_raw * 100.0
+            C = max(0.0, C_raw)
+        else:
+            # Mouse outside gamut — snap to the nearest boundary point.
+            L, C = self._snap_to_boundary_rgb(
+                px, py, cx, cy, hy, min_x, scale, a_dir, b_dir)
+            L = max(0.0, min(1.0, L))
+            L_val = L * 100.0
+            C = max(0.0, min(C, find_max_lab_c(L_val, a_dir, b_dir)))
         
         a_val = C * a_dir
         b_val = C * b_dir
@@ -447,13 +455,18 @@ class ColorWheelInteractionMixin:
                 cr, cg, cb = self.get_color()
                 _, _, oklch_h = rgb_to_oklch(cr, cg, cb)
 
-        L = max(0.0, min(1.0, (cy + hy - py) / (2.0 * hy)))
-        C_max = find_max_oklch_c(L, oklch_h)
+        L_raw = (cy + hy - py) / (2.0 * hy)
         C_raw = (px - min_x) / scale
-        if C_raw > C_max and C_max > 0:
-            L = self._snap_to_boundary_oklch(L, C_raw, scale, px, py, cx, cy, hy, min_x, oklch_h)
-            C_max = find_max_oklch_c(L, oklch_h)
-        C = max(0.0, min(C_max, (px - min_x) / scale))
+        C_max_raw = find_max_oklch_c(max(0.0, min(1.0, L_raw)), oklch_h)
+        if 0.0 <= L_raw <= 1.0 and 0.0 <= C_raw <= C_max_raw:
+            # Inside the gamut — exact position under the mouse.
+            L, C = L_raw, max(0.0, C_raw)
+        else:
+            # Mouse outside gamut — snap to the nearest boundary point.
+            L, C = self._snap_to_boundary_oklch(
+                px, py, cx, cy, hy, min_x, scale, oklch_h)
+            L = max(0.0, min(1.0, L))
+            C = max(0.0, min(C, find_max_oklch_c(L, oklch_h)))
 
         rgb_r, rgb_g, rgb_b = oklch_to_rgb(L, C, oklch_h)
         rgb_r_clamped = max(0.0, min(255.0, rgb_r))
@@ -489,15 +502,24 @@ class ColorWheelInteractionMixin:
         self.update()
         self.colorChanged.emit(int(rgb_r_clamped), int(rgb_g_clamped), int(rgb_b_clamped))
 
-    def _snap_to_boundary_rgb(self, L, L_val, C_raw, a_dir, b_dir, scale, px, py, cx, cy, hy, min_x):
-        """Find closest in-gamut (C,L) pair when mouse is outside RGB gamut."""
-        # Coarse pass
-        best_L, best_dist = L, float('inf')
+    def _snap_to_boundary_rgb(self, px, py, cx, cy, hy, min_x, scale, a_dir, b_dir):
+        """Find the closest in-gamut (L_frac, C) when the mouse is outside
+        the RGB slice's gamut region.
+
+        The region is bounded on the right by the max-chroma curve and on
+        the left by the C=0 neutral axis.  The nearest point is the best of
+        a coarse+fine scan over the curve and the closed-form nearest point
+        on the left edge, all measured in widget pixels so the answer is
+        truly "closest to the mouse" regardless of direction.
+        """
+        def curve_point(t):
+            Cb = find_max_lab_c(t * 100.0, a_dir, b_dir)
+            return Cb, min_x + Cb * scale, cy + hy * (1.0 - 2.0 * t)
+
+        # Coarse pass over the right boundary curve
+        best_L, best_dist = 0.0, float('inf')
         for t in [i / 25.0 for i in range(26)]:
-            t_val = t * 100.0
-            Cb = find_max_lab_c(t_val, a_dir, b_dir)
-            bx = min_x + Cb * scale
-            by = cy + hy * (1.0 - 2.0 * t)
+            Cb, bx, by = curve_point(t)
             d = (bx - px) ** 2 + (by - py) ** 2
             if d < best_dist:
                 best_dist = d
@@ -507,23 +529,36 @@ class ColorWheelInteractionMixin:
         hi = min(1.0, best_L + 0.04)
         for i in range(21):
             t = lo + (hi - lo) * i / 20.0
-            t_val = t * 100.0
-            Cb = find_max_lab_c(t_val, a_dir, b_dir)
-            bx = min_x + Cb * scale
-            by = cy + hy * (1.0 - 2.0 * t)
+            Cb, bx, by = curve_point(t)
             d = (bx - px) ** 2 + (by - py) ** 2
             if d < best_dist:
                 best_dist = d
                 best_L = t
-        return best_L, best_L * 100.0
 
-    def _snap_to_boundary_oklch(self, L, C_raw, scale, px, py, cx, cy, hy, min_x, oklch_h):
-        """Find closest in-gamut L when mouse is outside OKLCh gamut."""
-        best_L, best_dist = L, float('inf')
-        for t in [i / 25.0 for i in range(26)]:
+        # Left edge candidate: C = 0, L clamped to the slice's L range.
+        L_edge = max(0.0, min(1.0, (cy + hy - py) / (2.0 * hy)))
+        ex = min_x
+        ey = cy + hy * (1.0 - 2.0 * L_edge)
+        d_edge = (ex - px) ** 2 + (ey - py) ** 2
+        if d_edge < best_dist:
+            return L_edge, 0.0
+        return best_L, find_max_lab_c(best_L * 100.0, a_dir, b_dir)
+
+    def _snap_to_boundary_oklch(self, px, py, cx, cy, hy, min_x, scale, oklch_h):
+        """Find the closest in-gamut (L, C) when the mouse is outside the
+        OKLCh slice's gamut region.
+
+        Mirrors ``_snap_to_boundary_rgb``: coarse+fine scan of the max-C
+        curve plus the closed-form nearest point on the C=0 neutral axis,
+        measured in widget pixels.
+        """
+        def curve_point(t):
             Cb = find_max_oklch_c(t, oklch_h)
-            bx = min_x + Cb * scale
-            by = cy + hy * (1.0 - 2.0 * t)
+            return Cb, min_x + Cb * scale, cy + hy * (1.0 - 2.0 * t)
+
+        best_L, best_dist = 0.0, float('inf')
+        for t in [i / 25.0 for i in range(26)]:
+            Cb, bx, by = curve_point(t)
             d = (bx - px) ** 2 + (by - py) ** 2
             if d < best_dist:
                 best_dist = d
@@ -532,11 +567,17 @@ class ColorWheelInteractionMixin:
         hi = min(1.0, best_L + 0.04)
         for i in range(21):
             t = lo + (hi - lo) * i / 20.0
-            Cb = find_max_oklch_c(t, oklch_h)
-            bx = min_x + Cb * scale
-            by = cy + hy * (1.0 - 2.0 * t)
+            Cb, bx, by = curve_point(t)
             d = (bx - px) ** 2 + (by - py) ** 2
             if d < best_dist:
                 best_dist = d
                 best_L = t
-        return best_L
+
+        # Left edge candidate: C = 0, L clamped to the slice's L range.
+        L_edge = max(0.0, min(1.0, (cy + hy - py) / (2.0 * hy)))
+        ex = min_x
+        ey = cy + hy * (1.0 - 2.0 * L_edge)
+        d_edge = (ex - px) ** 2 + (ey - py) ** 2
+        if d_edge < best_dist:
+            return L_edge, 0.0
+        return best_L, find_max_oklch_c(best_L, oklch_h)

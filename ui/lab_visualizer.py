@@ -1,5 +1,7 @@
 from typing import Any, cast
 
+import math
+
 import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import (
@@ -315,6 +317,11 @@ class LabSquare(QWidget):
         the cursor would appear to leave the colored area. Binary-search along
         the segment from the click point toward a known in-gamut anchor to find
         the boundary, then sit the cursor just inside it.
+
+        This cheap ray-to-anchor variant is used for programmatic state
+        updates (L changes, external colours); interactive drags go through
+        :meth:`_nearest_in_gamut` so the cursor lands on the boundary point
+        closest to the mouse.
         """
         if self._is_in_gamut(a, b):
             return a, b
@@ -338,6 +345,60 @@ class LabSquare(QWidget):
             return a + (ax - a) * hi, b + (ay - b) * hi
         # No in-gamut anchor found (extreme L): leave as-is; RGB will clamp.
         return a, b
+
+    def _nearest_in_gamut(self, a, b, mouse_x, mouse_y, offset_x, offset_y, size):
+        """Nearest in-gamut (a, b) to the raw mouse position.
+
+        Used while dragging: the raw position may sit outside the display
+        square (or in its transparent corners), and the cursor must land on
+        the closest boundary point instead of being clamped to the square
+        edge or pulled along the ray to the centre.  The gamut boundary is
+        sampled by a ray sweep from the origin; distances are measured in
+        widget pixels so asymmetric ab spans don't skew the result.
+        """
+        if self._is_in_gamut(a, b):
+            return a, b
+        min_a, max_a, min_b, max_b = self._get_display_range()
+
+        def to_screen(aa, bb):
+            sx = offset_x + (aa - min_a) / (max_a - min_a) * size
+            sy = offset_y + (max_b - bb) / (max_b - min_b) * size
+            return sx, sy
+
+        def boundary_point(theta):
+            dx, dy = math.cos(theta), math.sin(theta)
+            lo, hi = 0.0, self.max_val * 1.5
+            for _ in range(20):
+                mid = (lo + hi) * 0.5
+                if self._is_in_gamut(mid * dx, mid * dy):
+                    lo = mid
+                else:
+                    hi = mid
+            return lo * dx, lo * dy
+
+        best_theta = 0.0
+        best = (0.0, 0.0)
+        best_dist = float('inf')
+        for i in range(48):
+            theta = 2.0 * math.pi * i / 48.0
+            ba, bb = boundary_point(theta)
+            sx, sy = to_screen(ba, bb)
+            d = (sx - mouse_x) ** 2 + (sy - mouse_y) ** 2
+            if d < best_dist:
+                best_dist = d
+                best_theta = theta
+                best = (ba, bb)
+        # Fine pass around the winning ray direction.
+        step = 2.0 * math.pi / 48.0
+        for i in range(25):
+            theta = best_theta + (i - 12) * step / 12.0
+            ba, bb = boundary_point(theta)
+            sx, sy = to_screen(ba, bb)
+            d = (sx - mouse_x) ** 2 + (sy - mouse_y) ** 2
+            if d < best_dist:
+                best_dist = d
+                best = (ba, bb)
+        return best
 
     def _render_ab_plane(self, low_quality=False):
         """Render ab-plane into cache. Called by paintEvent and prerender."""
@@ -498,20 +559,19 @@ class LabSquare(QWidget):
         size = min(w, avail_h)
         offset_x = (w - size) / 2
         offset_y = self.avoid_top + (avail_h - size) / 2
-        
-        # Clamp coordinates to square bounds
-        local_x = max(0.0, min(float(size), pos.x() - offset_x))
-        local_y = max(0.0, min(float(size), pos.y() - offset_y))
-        
-        # Convert to a and b within the dynamic display range
+
+        # Convert the RAW mouse position to a and b.  Do not clamp to the
+        # square first: a drag outside the diagram should snap to the
+        # nearest in-gamut boundary point, not stick to the square edge.
         min_a, max_a, min_b, max_b = self._get_display_range()
-        self.a = min_a + (local_x / size) * (max_a - min_a)
-        self.b = max_b - (local_y / size) * (max_b - min_b)
+        self.a = min_a + (pos.x() - offset_x) / size * (max_a - min_a)
+        self.b = max_b - (pos.y() - offset_y) / size * (max_b - min_b)
         # Keep the cursor inside the in-gamut region: the bbox is rectangular
         # but the gamut is roughly elliptical, so the corners are out-of-gamut
-        # (rendered transparent/black). Pull a/b back to the gamut boundary.
-        self.a, self.b = self._clamp_to_gamut(self.a, self.b)
-        
+        # (rendered transparent/black). Snap a/b to the closest boundary point.
+        self.a, self.b = self._nearest_in_gamut(
+            self.a, self.b, pos.x(), pos.y(), offset_x, offset_y, size)
+
         self.update()
         r, g, b = self.get_current_rgb()
         self.colorChanged.emit(r, g, b)
