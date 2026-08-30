@@ -1,3 +1,34 @@
+## v1.6.17
+
+Photoshop 桥接重写为单一用户级 CEP 扩展（修复绿色版 / 多实例同步恶化并大幅降低引擎占用）、取色器同步线程暂停、色盘 / 色轮边界吸附修复与颜色历史去重升级。
+
+### 新增
+
+- **单一用户级 CEP 桥**：一个隐藏的 CEP 扩展（`%APPDATA%\Adobe\CEP\extensions`）即可服务所有 Photoshop 版本（正版 / 绿色版 / COM 破解版），不再逐安装部署、无需管理员权限，同步面板新增「移除扩展」按钮一键清理
+- **多实例按 PID 路由**：`cmd.txt` 携带目标进程 ID，每个面板只应用发给自己的命令；换新 Photoshop 后陈旧命令按 mtime 认领，不会误吃新命令
+- **取色器性能**：取色遮罩激活时暂停同步线程，拖拽采样期间不再抢 GIL，取色后恢复并写入颜色
+
+### 修复
+
+- **Photoshop 颜色不同步（绿色版）**：绿色版 ExtendScript 拒绝 `new SolidColor()`（`EvalScript error`），改为原地 mutate `app.foregroundColor` / `app.backgroundColor`，色槽同步恢复
+- **Photoshop 双向同步失效（`$.pid` 不可用）**：绿色版返回 undefined 导致 state/heartbeat 永远匹配不上，现在先经 CEP 宿主环境（appPid）取 PID，再回退 `$.pid`，仍不可用时降级为共享文件并应用所有命令，`mypid.txt` 记录当前模式
+- **CEP 桥饿死脚本引擎**：面板轮询由 100ms 全写改为 1s tick + 事件驱动回读 + 4s 心跳，TourBox / Coolorus 等 CEP 插件不再卡顿；连接时清理其他实例遗留的旧版桥，避免固定扩展 ID 争抢 CEP 运行时
+- **色盘 / 色轮边界吸附**：拖拽到 RGB / OKLCh / LAB / OKLab 色域外时落在**离鼠标最近的边界点**，而不是被钳到矩形角落或沿射线拉回中心；原先越界拖拽会粘在方框角上
+- **颜色历史去重**：已存在于历史的颜色被提升到第一格而不再重复追加，只有真正的新颜色才入列（超出容量仍按 FIFO 丢弃最旧）
+
+### 变更
+
+- **Photoshop 回读节流**：COM 后端回读节流至 0.5s（避免每 100ms 触发 6~8 次真实 COM 往返把 PS 引擎占满）；脚本桥后端取消双重节流，只依面板自身写 cadence，PS→Colorink 延迟从 ~1s 降到 ~0.5s
+- **快速命令路径**：面板命令邮箱每 100ms 经 Node fs `statSync` 检查（零 ExtendScript 空闲流量）；状态回读 1s + 命令后立即回读，心跳 4s；无 Node 的 CEP 构建回退轻量 evalScript 探测
+- **测试基线**：新增 `tests/test_slice_boundary_snap.py`（RGB / OKLCh / LAB / OKLab 边界吸附 + 精确映射），测试总数 779 → 801
+
+### 开发说明
+
+- 本次无规格 / 资源变更：`Colorink.spec` 与 `Colorink Onefile.spec` 资源集保持一致，构建自检通过
+- 已同步更新 `core/updater.py`、`file_version_info.txt`、`release_notes.md` 三处版本号，统一到 **1.6.17 / 1.6.17.0**
+
+---
+
 ## v1.6.16
 
 默认热键改为 Ctrl+Alt 组合避免与绘画软件冲突、数位板笔悬停光标修复、移除 CSP 5.1 内存同步模式并在模式选择界面标注各模式问题、推荐使用手机模式。
