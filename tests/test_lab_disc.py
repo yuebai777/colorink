@@ -38,6 +38,16 @@ def test_default_shape_is_square(qapp):
     assert sq.shape == "square"
 
 
+def test_lab_square_uses_wheel_crosshair_cursor(qapp):
+    """The LAB visualizer must use the color wheel's crosshair cursor:
+    switching wheel ⇄ LAB must not change the mouse/pen cursor."""
+    sq = LabSquare()
+    assert sq.cursor().shape() == Qt.CursorShape.CrossCursor
+    sq2 = LabSquare()
+    sq2.set_shape("disc")
+    assert sq2.cursor().shape() == Qt.CursorShape.CrossCursor
+
+
 def test_set_shape_disc_invalidates_and_updates(qapp):
     sq = LabSquare()
     sq.resize(200, 200)

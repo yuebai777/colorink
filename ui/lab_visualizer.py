@@ -44,6 +44,10 @@ class LabSquare(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(100, 100)
+        # Same picker crosshair as the color wheel: switching wheel ⇄ LAB
+        # must not change the mouse cursor (or the pen cursor — the main
+        # window's tablet sync reads the widget's cursor shape directly).
+        self.setCursor(Qt.CursorShape.CrossCursor)
         
         self.L = 50.0
         self.a = 0.0
