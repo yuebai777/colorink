@@ -41,6 +41,10 @@ class ColorPreviewBox(QWidget):
         self.bg_size = 26
         self._ringless_layout: RinglessLayout | None = None
         self._cached_ringless_rects: tuple[QRectF, QRectF] | None = None
+        # Legacy (non-ringless) mode: the transparent tile sits ABOVE the
+        # fg/bg circles when the box is anchored top-left, mirroring the
+        # bottom-left placement (tile below the circles) exactly.
+        self._legacy_tile_above = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._trans_tile = TransparentTile(self)
         self._trans_tile.clicked.connect(lambda: cast(Any, self._parent).set_active_transparent())
@@ -136,7 +140,11 @@ class ColorPreviewBox(QWidget):
         # setFixedSize below takes effect.
         t_size, t_gap = self._trans_tile.metrics(scale=wheel_scale)
         self.setFixedSize(box_dim, box_dim + t_gap + t_size)
-        self._trans_tile.place_legacy(box_dim, wheel_scale)
+        # Mirror symmetry: when the box sits in the top-left corner the
+        # transparent tile goes ABOVE the circles (bottom-left has it below).
+        self._legacy_tile_above = self.position_mode == "top-left"
+        self._trans_tile.place_legacy(box_dim, wheel_scale,
+                                      above=self._legacy_tile_above)
         
         # Position at the top-left corner of the window with clean margins
         margin_x = int(6 * wheel_scale)
@@ -216,12 +224,19 @@ class ColorPreviewBox(QWidget):
         bg_r = (30.0 * scale) / 2.0
         box_size = float(self.width())
         border = 2.0 * scale
+        # With the tile above (top-left anchor) the circle box starts below
+        # the capsule; keep every circle centre in the same box-relative spot
+        # so paint / hit-test / mask still share one geometry.
+        circle_offset = 0.0
+        if self._legacy_tile_above:
+            tile_h, tile_gap = self._trans_tile.metrics(scale=scale)
+            circle_offset = tile_h + tile_gap - 2.0 * scale
         if self.position_mode == "top-left":
             # Foreground (large) at bottom-left, background (small) top-right
             fg_cx = fg_r + border
-            fg_cy = box_size - fg_r - border
+            fg_cy = box_size - fg_r - border + circle_offset
             bg_cx = box_size - bg_r - border
-            bg_cy = bg_r + border
+            bg_cy = bg_r + border + circle_offset
         else:
             # Foreground (large) at top-left, background (small) bottom-right
             fg_cx = fg_r + border
