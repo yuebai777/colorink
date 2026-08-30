@@ -8,7 +8,7 @@ window-flag updates.
 import os
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QPushButton
+from PyQt6.QtWidgets import QMenu, QPushButton
 
 from core import config
 from core.foreground import (
@@ -16,6 +16,7 @@ from core.foreground import (
     _resolve_process_exe,
     _title_matches_drawing_app,
 )
+from ui.lab_harmony import HARMONY_MODE_NAMES
 from ui.window.module_defs import _MODULE_DEFS, _MODULE_NAMES, _MODULE_ORDER
 
 
@@ -35,6 +36,80 @@ class PickerActionsMixin:
         self.pane_wheel.set_module_button(btn)
         self.btn_module = btn
 
+    def _init_lab_toggle_buttons(self):
+        """Create the LAB pane shape toggle + harmony-mode menu buttons.
+
+        Both are optional floating buttons on ``pane_lab`` (left of the
+        existing wheel/LAB toggle) and are only visible on the LAB pane.
+        """
+        self.btn_lab_shape = QPushButton("□", self.pane_lab)
+        self.btn_lab_shape.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_lab_shape.setToolTip("切换 LAB 视图形状 (方形 / 圆形)")
+        self.btn_lab_shape.clicked.connect(self.toggle_lab_view_shape)
+        self.btn_lab_shape.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_lab_shape.setObjectName("ModuleButton")
+        self.pane_lab.set_module_button(self.btn_lab_shape)
+
+        self.btn_lab_harmony = QPushButton("和", self.pane_lab)
+        self.btn_lab_harmony.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_lab_harmony.setToolTip("LAB 调和模式")
+        self.btn_lab_harmony.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_lab_harmony.setObjectName("ModuleButton")
+        self._lab_harmony_menu = QMenu(self.btn_lab_harmony)
+        for mode, label in HARMONY_MODE_NAMES.items():
+            action = self._lab_harmony_menu.addAction(label)
+            action.triggered.connect(
+                lambda _checked=False, m=mode: self.set_lab_harmony_mode(m))
+        self.btn_lab_harmony.setMenu(self._lab_harmony_menu)
+        self.pane_lab.set_extra_button(self.btn_lab_harmony)
+
+        self._update_lab_shape_button()
+        self._update_lab_harmony_button()
+
+    def _sync_settings_sidebar_lab_controls(self):
+        """Keep the settings dialog's LAB combos in sync after an on-pane toggle."""
+        sidebar = getattr(self, "settings_sidebar", None)
+        if sidebar is not None and sidebar.isVisible():
+            sidebar.notify_lab_settings_changed()
+
+    def toggle_lab_view_shape(self):
+        """Switch the existing LAB a*b* plane between square and circulant disc."""
+        current = self.cfg.get("labViewShape", "square")
+        new_shape = "disc" if current != "disc" else "square"
+        self.cfg["labViewShape"] = new_shape
+        config.save_hotkey_config(self.cfg)
+        self.lab_square.set_shape(new_shape)
+        self._update_lab_shape_button()
+        self._sync_settings_sidebar_lab_controls()
+        self.update()
+
+    def set_lab_harmony_mode(self, mode: str):
+        """Apply a colour-harmony preset (complementary/split/analogous/...)."""
+        if mode not in HARMONY_MODE_NAMES:
+            mode = "analogous"
+        self.cfg["labHarmonyMode"] = mode
+        config.save_hotkey_config(self.cfg)
+        self.lab_square.set_harmony_mode(mode)
+        self._update_lab_harmony_button()
+        self._sync_settings_sidebar_lab_controls()
+        self.update()
+
+    def _update_lab_shape_button(self):
+        if not hasattr(self, "btn_lab_shape") or not hasattr(self, "lab_square"):
+            return
+        is_disc = getattr(self.lab_square, "shape", "square") == "disc"
+        self.btn_lab_shape.setText("◯" if is_disc else "□")
+        self.btn_lab_shape.setToolTip(
+            "切换 LAB 视图形状 (方形 / 圆形)" if not is_disc else "切换 LAB 视图形状 (圆形 / 方形)")
+
+    def _update_lab_harmony_button(self):
+        if not hasattr(self, "btn_lab_harmony") or not hasattr(self, "cfg"):
+            return
+        mode = self.cfg.get("labHarmonyMode", "analogous")
+        label = HARMONY_MODE_NAMES.get(mode, "近似")
+        if hasattr(self, "btn_lab_harmony"):
+            self.btn_lab_harmony.setToolTip(f"LAB 调和模式: {label} (点击切换)")
+
     def _update_module_button_label(self):
         if hasattr(self, "btn_module"):
             name = {"hsv": "◉", "hls": "△", "lch": "◈"}.get(self._current_module, "◉")
@@ -48,7 +123,9 @@ class PickerActionsMixin:
         if hasattr(self, "pane_wheel"):
             self.pane_wheel.set_module_slot_reserved(show_module)
         if hasattr(self, "pane_lab"):
-            self.pane_lab.set_module_slot_reserved(show_module)
+            # The LAB pane keeps its shape toggle + harmony menu visible even
+            # when the wheel module button is hidden, so always reserve the slot.
+            self.pane_lab.set_module_slot_reserved(True)
         if idx == 0:
             if hasattr(self, 'btn_mode_wheel'):
                 self.btn_mode_wheel.setVisible(show_lab_toggle)
@@ -61,6 +138,9 @@ class PickerActionsMixin:
                 self.btn_module.setVisible(show_module)
                 if show_module:
                     self.btn_module.raise_()
+            for _btn in ("btn_lab_shape", "btn_lab_harmony"):
+                if hasattr(self, _btn):
+                    getattr(self, _btn).hide()
         else:
             if hasattr(self, 'btn_mode_lab'):
                 self.btn_mode_lab.setVisible(show_lab_toggle)
@@ -70,6 +150,11 @@ class PickerActionsMixin:
                 self.btn_mode_wheel.hide()
             if hasattr(self, 'btn_module'):
                 self.btn_module.hide()
+            # LAB pane keeps its shape toggle + harmony menu visible.
+            for _btn in ("btn_lab_shape", "btn_lab_harmony"):
+                if hasattr(self, _btn):
+                    getattr(self, _btn).setVisible(True)
+                    getattr(self, _btn).raise_()
 
     def toggle_picker_mode(self):
         """Switch picker panes without re-running the full theme/layout pass."""
@@ -444,6 +529,10 @@ class PickerActionsMixin:
         viz_mode = self.cfg.get("visualizerMode", "lab")
         if hasattr(self, 'lab_square'):
             self.lab_square.set_render_mode(viz_mode)
+            self.lab_square.set_shape(self.cfg.get("labViewShape", "square"))
+            self.lab_square.set_harmony_mode(self.cfg.get("labHarmonyMode", "analogous"))
+            self._update_lab_shape_button()
+            self._update_lab_harmony_button()
 
         # Update module button visibility
         if hasattr(self, 'btn_module'):

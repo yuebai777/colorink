@@ -17,6 +17,8 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import QWidget
 
 from ui.color_conversions import (
+    find_max_lab_c,
+    find_max_oklch_c,
     lab_to_rgb,
     lab_to_rgb_array,
     oklab_to_rgb,
@@ -24,7 +26,13 @@ from ui.color_conversions import (
     rgb_to_lab,
     rgb_to_oklab,
 )
-from ui.lab_prewarm import LabPrewarmRequest, LabPrewarmResult, LabPrewarmTask
+from ui.lab_harmony import is_valid_harmony_mode, harmony_hue_offsets
+from ui.lab_prewarm import (
+    LabPrewarmRequest,
+    LabPrewarmResult,
+    LabPrewarmTask,
+    render_lab_plane,
+)
 
 
 class LabSquare(QWidget):
@@ -41,7 +49,9 @@ class LabSquare(QWidget):
         self.b = 0.0
         self.max_val = 110.0
         self.render_mode = "lab"  # "lab" or "oklab"
-        
+        self.shape = "square"     # "square" or "disc"
+        self.harmony_mode = "analogous"
+
         self.dragging = False
         
         # Create tiled checkerboard texture once with transparency for theme harmony
@@ -90,7 +100,7 @@ class LabSquare(QWidget):
 
     def _cache_key(self, active: bool = False) -> tuple[object, ...]:
         size = min(self.width(), max(0, self.height() - self.avoid_top))
-        return (int(self.L * 2), size, active, self.render_mode)
+        return (int(self.L * 2), size, active, self.render_mode, self.shape)
 
     def _invalidate_full_cache(self) -> None:
         self._prewarm_generation += 1
@@ -125,6 +135,7 @@ class LabSquare(QWidget):
             generation=generation, render_mode=self.render_mode,
             lightness=self.L, size=size, min_a=min_a, max_a=max_a,
             min_b=min_b, max_b=max_b, pixel_ratio=max(1.0, float(self.devicePixelRatio())),
+            shape=self.shape,
         )
         task = LabPrewarmTask(request)
         task.signals.finished.connect(self._on_prewarm_finished)
@@ -138,6 +149,8 @@ class LabSquare(QWidget):
         request = result.request
         if request.generation != self._prewarm_generation:
             self.schedule_full_prewarm(0)
+            return
+        if request.shape != self.shape:
             return
         if request.render_mode != self.render_mode or int(request.lightness * 2) != int(self.L * 2):
             return
@@ -161,6 +174,21 @@ class LabSquare(QWidget):
             self.max_val = 110.0 if mode == "lab" else 0.3
             self._invalidate_full_cache()
             self._precompute_bboxes()
+            self.update()
+
+    def set_shape(self, shape: str) -> None:
+        """Set the a*b* plane shape: 'square' (legacy) or 'disc'."""
+        if shape not in ("square", "disc"):
+            return
+        if shape != self.shape:
+            self.shape = shape
+            self._invalidate_full_cache()
+            self.update()
+
+    def set_harmony_mode(self, mode: str) -> None:
+        """Set the colour-harmony preset drawn on the circulant disc."""
+        if mode != self.harmony_mode:
+            self.harmony_mode = mode if is_valid_harmony_mode(mode) else "analogous"
             self.update()
 
     def set_color(self, r, g, b, block_signals=False, update_widget=True):
@@ -423,7 +451,7 @@ class LabSquare(QWidget):
             if cast(Any, win).lab_slider.dragging:
                 is_active = True
 
-        cache_key = (int(self.L * 2), size, is_active, self.render_mode)
+        cache_key = (int(self.L * 2), size, is_active, self.render_mode, self.shape)
         if not low_quality and self._cached_key == cache_key and self._cached_img is not None:
             return
 
@@ -432,38 +460,52 @@ class LabSquare(QWidget):
             gen_size = min(size, 120)
         else:
             gen_size = int(size * ratio)
-        img = QImage(gen_size, gen_size, QImage.Format.Format_ARGB32)
 
-        # Dynamic ab display range: zoom into the in-gamut region for current L.
-        min_a, max_a, min_b, max_b = self._get_display_range()
-        span_a = max_a - min_a
-        span_b = max_b - min_b
-
-        # Vectorized conversion over the whole grid — same matrices as the
-        # scalar functions (single source of truth: ui.color_conversions).
-        cols = np.arange(gen_size, dtype=np.float64) / gen_size
-        rows = np.arange(gen_size, dtype=np.float64) / gen_size
-        a_grid = min_a + cols * span_a   # (gen_size,) one value per column
-        b_grid = max_b - rows * span_b   # (gen_size,) one value per row
-        if self.render_mode == "oklab":
-            r_vals, g_vals, b_vals = oklab_to_rgb_array(
-                self.L / 100.0, a_grid[None, :], b_grid[:, None])
+        if self.shape == "disc":
+            request = LabPrewarmRequest(
+                generation=0, render_mode=self.render_mode,
+                lightness=self.L, size=gen_size,
+                min_a=0.0, max_a=0.0, min_b=0.0, max_b=0.0,
+                pixel_ratio=1.0, shape="disc",
+            )
+            result = render_lab_plane(request)
+            img = QImage(
+                result.image_bytes, result.image_width, result.image_height,
+                result.image_width * 4, QImage.Format.Format_RGBA8888,
+            ).copy()
         else:
-            r_vals, g_vals, b_vals = lab_to_rgb_array(
-                self.L, a_grid[None, :], b_grid[:, None])
-        in_gamut = ((r_vals >= 0.0) & (r_vals <= 255.0)
-                    & (g_vals >= 0.0) & (g_vals <= 255.0)
-                    & (b_vals >= 0.0) & (b_vals <= 255.0))
-        argb = np.where(
-            in_gamut,
-            (255 << 24)
-            | (r_vals.astype(np.int64) << 16)
-            | (g_vals.astype(np.int64) << 8)
-            | b_vals.astype(np.int64),
-            0,
-        ).astype(np.uint32)
-        img = QImage(argb.tobytes(), gen_size, gen_size, gen_size * 4,
-                     QImage.Format.Format_ARGB32)
+            img = QImage(gen_size, gen_size, QImage.Format.Format_ARGB32)
+
+            # Dynamic ab display range: zoom into the in-gamut region for current L.
+            min_a, max_a, min_b, max_b = self._get_display_range()
+            span_a = max_a - min_a
+            span_b = max_b - min_b
+
+            # Vectorized conversion over the whole grid — same matrices as the
+            # scalar functions (single source of truth: ui.color_conversions).
+            cols = np.arange(gen_size, dtype=np.float64) / gen_size
+            rows = np.arange(gen_size, dtype=np.float64) / gen_size
+            a_grid = min_a + cols * span_a   # (gen_size,) one value per column
+            b_grid = max_b - rows * span_b   # (gen_size,) one value per row
+            if self.render_mode == "oklab":
+                r_vals, g_vals, b_vals = oklab_to_rgb_array(
+                    self.L / 100.0, a_grid[None, :], b_grid[:, None])
+            else:
+                r_vals, g_vals, b_vals = lab_to_rgb_array(
+                    self.L, a_grid[None, :], b_grid[:, None])
+            in_gamut = ((r_vals >= 0.0) & (r_vals <= 255.0)
+                        & (g_vals >= 0.0) & (g_vals <= 255.0)
+                        & (b_vals >= 0.0) & (b_vals <= 255.0))
+            argb = np.where(
+                in_gamut,
+                (255 << 24)
+                | (r_vals.astype(np.int64) << 16)
+                | (g_vals.astype(np.int64) << 8)
+                | b_vals.astype(np.int64),
+                0,
+            ).astype(np.uint32)
+            img = QImage(argb.tobytes(), gen_size, gen_size, gen_size * 4,
+                         QImage.Format.Format_ARGB32)
 
         # Save to cache
         if is_active:
@@ -474,6 +516,129 @@ class LabSquare(QWidget):
             final_img.setDevicePixelRatio(ratio)
         self._cached_img = final_img
         self._cached_key = cache_key
+
+    # ── circulant-disc helpers ────────────────────────────────────────────
+
+    def _disc_metrics(self) -> tuple[float, float, float]:
+        w = self.width()
+        h = self.height()
+        avail_h = max(0, h - self.avoid_top)
+        size = min(w, avail_h)
+        offset_x = (w - size) / 2
+        offset_y = self.avoid_top + (avail_h - size) / 2
+        return offset_x + size / 2.0, offset_y + size / 2.0, size / 2.0
+
+    def _max_chroma_for_direction(self, a: float, b: float) -> float:
+        C = math.hypot(a, b)
+        if C <= 1e-9:
+            return 0.0
+        if self.render_mode == "oklab":
+            h = math.degrees(math.atan2(b, a)) % 360.0
+            return find_max_oklch_c(self.L / 100.0, h)
+        return find_max_lab_c(self.L, a / C, b / C)
+
+    def _disc_ab_to_screen(self, a: float, b: float) -> QPointF:
+        cx, cy, r = self._disc_metrics()
+        C = math.hypot(a, b)
+        max_c = self._max_chroma_for_direction(a, b)
+        rho = 0.0 if max_c <= 1e-9 else min(1.0, C / max_c)
+        hue = math.atan2(b, a)
+        return QPointF(
+            cx + rho * r * math.cos(hue),
+            cy - rho * r * math.sin(hue),
+        )
+
+    def _disc_screen_to_ab(self, pos: QPointF) -> tuple[float, float]:
+        cx, cy, r = self._disc_metrics()
+        dx = pos.x() - cx
+        dy = cy - pos.y()
+        rho = min(1.0, math.hypot(dx, dy) / r) if r > 1e-6 else 0.0
+        hue = math.atan2(dy, dx)
+        a_dir = math.cos(hue)
+        b_dir = math.sin(hue)
+        if self.render_mode == "oklab":
+            max_c = find_max_oklch_c(self.L / 100.0, math.degrees(hue) % 360.0)
+        else:
+            max_c = find_max_lab_c(self.L, a_dir, b_dir)
+        C = rho * max_c
+        return C * a_dir, C * b_dir
+
+    def _harmony_points_ab(self) -> list[tuple[float, float]]:
+        """Harmony points for the active preset, in a/b coordinates.
+
+        Every point keeps the base colour's *relative* chroma (fraction of its
+        own hue's gamut boundary), so the small dots sit on a smooth circle
+        like Procreate's harmony wheel and always stay inside sRGB.
+        """
+        base_a, base_b = self.a, self.b
+        base_C = math.hypot(base_a, base_b)
+        max_c = self._max_chroma_for_direction(base_a, base_b)
+        rho = 0.0 if max_c <= 1e-9 else min(1.0, base_C / max_c)
+        base_hue = math.atan2(base_b, base_a)
+        points = []
+        for offset_deg in harmony_hue_offsets(self.harmony_mode):
+            hue = base_hue + math.radians(offset_deg)
+            a_dir = math.cos(hue)
+            b_dir = math.sin(hue)
+            if self.render_mode == "oklab":
+                hue_max = find_max_oklch_c(
+                    self.L / 100.0, math.degrees(hue) % 360.0)
+            else:
+                hue_max = find_max_lab_c(self.L, a_dir, b_dir)
+            C = rho * hue_max
+            points.append((C * a_dir, C * b_dir))
+        return points
+
+    def _ab_to_rgb(self, a: float, b: float) -> tuple[int, int, int]:
+        if self.render_mode == "oklab":
+            rgb = oklab_to_rgb(self.L / 100.0, a, b)
+        else:
+            rgb = lab_to_rgb(self.L, a, b)
+        return (
+            max(0, min(255, int(rgb[0]))),
+            max(0, min(255, int(rgb[1]))),
+            max(0, min(255, int(rgb[2]))),
+        )
+
+    def _hit_harmony_point(self, pos: QPointF) -> tuple[float, float] | None:
+        if self.shape != "disc":
+            return None
+        points = self._harmony_points_ab()
+        for i, (a, b) in enumerate(points):
+            if i == 0:
+                continue  # base indicator is the large dot, not a harmony dot
+            p = self._disc_ab_to_screen(a, b)
+            if math.hypot(pos.x() - p.x(), pos.y() - p.y()) <= 9.0:
+                return a, b
+        return None
+
+    def _draw_disc_overlay(self, painter) -> None:
+        if self.shape != "disc":
+            return
+        points = self._harmony_points_ab()
+        # Harmony dots first, base large dot on top.
+        for i, (a, b) in enumerate(points):
+            if i == 0:
+                continue
+            pos = self._disc_ab_to_screen(a, b)
+            r, g, bv = self._ab_to_rgb(a, b)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(r, g, bv))
+            painter.drawEllipse(pos, 5.0, 5.0)
+            border = QColor(255, 255, 255) if self.L < 50.0 else QColor(0, 0, 0)
+            painter.setPen(QPen(border, 1.8))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(pos, 5.0, 5.0)
+
+        pos = self._disc_ab_to_screen(self.a, self.b)
+        r, g, bv = self.get_current_rgb()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(r, g, bv))
+        painter.drawEllipse(pos, 10.0, 10.0)
+        border = QColor(255, 255, 255) if self.L < 50.0 else QColor(0, 0, 0)
+        painter.setPen(QPen(border, 2.5))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(pos, 10.0, 10.0)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -511,24 +676,28 @@ class LabSquare(QWidget):
                 used_prerender = True
                 self.schedule_full_prewarm(0)
 
-        # Draw cursor (clamped to the square so it never escapes when the
-        # current a/b falls outside the dynamic range after an L change)
-        min_a, max_a, min_b, max_b = self._get_display_range()
-        cx_frac = (self.a - min_a) / (max_a - min_a) if max_a > min_a else 0.5
-        cy_frac = (max_b - self.b) / (max_b - min_b) if max_b > min_b else 0.5
-        ix = offset_x + max(0.0, min(1.0, cx_frac)) * size
-        iy = offset_y + max(0.0, min(1.0, cy_frac)) * size
-        
-        r, g, b = self.get_current_rgb()
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(r, g, b))
-        painter.drawEllipse(QPointF(ix, iy), 8.0, 8.0)
-        
-        # White/Black ring outline depending on lightness
-        color_border = QColor(255, 255, 255) if self.L < 50.0 else QColor(0, 0, 0)
-        painter.setPen(QPen(color_border, 2.5))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawEllipse(QPointF(ix, iy), 8.0, 8.0)
+        if self.shape == "disc":
+            # Circular LAB disc: harmony small dots + large base dot.
+            self._draw_disc_overlay(painter)
+        else:
+            # Draw cursor (clamped to the square so it never escapes when the
+            # current a/b falls outside the dynamic range after an L change)
+            min_a, max_a, min_b, max_b = self._get_display_range()
+            cx_frac = (self.a - min_a) / (max_a - min_a) if max_a > min_a else 0.5
+            cy_frac = (max_b - self.b) / (max_b - min_b) if max_b > min_b else 0.5
+            ix = offset_x + max(0.0, min(1.0, cx_frac)) * size
+            iy = offset_y + max(0.0, min(1.0, cy_frac)) * size
+
+            r, g, b = self.get_current_rgb()
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(r, g, b))
+            painter.drawEllipse(QPointF(ix, iy), 8.0, 8.0)
+
+            # White/Black ring outline depending on lightness
+            color_border = QColor(255, 255, 255) if self.L < 50.0 else QColor(0, 0, 0)
+            painter.setPen(QPen(color_border, 2.5))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(ix, iy), 8.0, 8.0)
 
         if used_prerender:
             # Delay the full-quality pass slightly so repeated LAB/wheel
@@ -537,6 +706,15 @@ class LabSquare(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            # A small harmony dot is clickable: it becomes the new base
+            # colour (large dot) without starting a drag.
+            hit = self._hit_harmony_point(event.position())
+            if hit is not None:
+                self.a, self.b = hit
+                self.update()
+                r, g, b = self.get_current_rgb()
+                self.colorChanged.emit(r, g, b)
+                return
             self.dragging = True
             self.handle_mouse(event.position())
 
@@ -553,6 +731,14 @@ class LabSquare(QWidget):
         self.interactionFinished.emit()
 
     def handle_mouse(self, pos):
+        if self.shape == "disc":
+            # Polar mapping: angle = hue, radius = relative chroma.
+            self.a, self.b = self._disc_screen_to_ab(pos)
+            self.update()
+            r, g, b = self.get_current_rgb()
+            self.colorChanged.emit(r, g, b)
+            return
+
         w = self.width()
         h = self.height()
         avail_h = max(0, h - self.avoid_top)

@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core import i18n
+from ui.lab_harmony import HARMONY_MODE_NAMES
 from ui.ringless_settings import RinglessSettingsWidget
 from ui.settings.settings_helpers import (
     _ARROW_DOWN_DARK,
@@ -920,6 +921,20 @@ class AppearancePanelMixin:
         self.combo_viz_mode.addItem(i18n.tr("OKLab 色彩空间"), "oklab")
         self.combo_viz_mode.currentTextChanged.connect(self.save_settings)
         grid_wheel.addWidget(self.combo_viz_mode, 0, 1)
+
+        grid_wheel.addWidget(QLabel(i18n.tr("LAB 视图形状")), 1, 0)
+        self.combo_lab_shape = NonScrollComboBox()
+        self.combo_lab_shape.addItem(i18n.tr("方形"), "square")
+        self.combo_lab_shape.addItem(i18n.tr("圆形"), "disc")
+        self.combo_lab_shape.currentTextChanged.connect(self.save_settings)
+        grid_wheel.addWidget(self.combo_lab_shape, 1, 1)
+
+        grid_wheel.addWidget(QLabel(i18n.tr("LAB 调和模式")), 2, 0)
+        self.combo_lab_harmony = NonScrollComboBox()
+        for mode, label in HARMONY_MODE_NAMES.items():
+            self.combo_lab_harmony.addItem(i18n.tr(label), mode)
+        self.combo_lab_harmony.currentTextChanged.connect(self.save_settings)
+        grid_wheel.addWidget(self.combo_lab_harmony, 2, 1)
 
         cl_wheel.addLayout(grid_wheel)
 

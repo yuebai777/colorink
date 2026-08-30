@@ -284,6 +284,8 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         # Set initial visualizer mode from config
         viz_mode = self.cfg.get("visualizerMode", "lab")
         self.lab_square.set_render_mode(viz_mode)
+        self.lab_square.set_shape(self.cfg.get("labViewShape", "square"))
+        self.lab_square.set_harmony_mode(self.cfg.get("labHarmonyMode", "analogous"))
         
         # Wrap vertical lightness slider in a column widget to support height adjustment and hiding
         self.lab_slider_column = QWidget()
@@ -336,6 +338,7 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
 
         # Create floating module switch button (next to ⊙/△)
         self._init_module_button()
+        self._init_lab_toggle_buttons()
 
         # Apply color-space module (wheel mode + slider set from config or default)
         self._current_module = self.cfg.get("colorSpaceModule", "hsv")
