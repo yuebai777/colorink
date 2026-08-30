@@ -77,15 +77,14 @@ class SyncPanelMixin:
             self.row_csp_mode_tip_widget.hide()
 
     def _refresh_ps_instances(self):
-        """Populate the Photoshop version combo with detected running instances;
-        every edition shares ONE CEP-bridge sync path, so labels are uniform."""
-        try:
-            from core.photoshop_instances import detect_instances
-            instances = detect_instances()
-        except Exception:
-            instances = []
-        labels = ["auto"] + [inst.label for inst in instances]
+        """Keep the Photoshop target combo at "auto" only.
+
+        Every edition — genuine, green/portable or cracked-with-COM —
+        shares ONE CEP-bridge sync path routed by PID, so listing concrete
+        instances (CC 2019 / 2020 / ...) in the UI adds no choice that
+        matters; "auto" picks the first running instance."""
         current = self.combo_ps.currentText()
+        labels = ["auto"]
         self.combo_ps.blockSignals(True)
         self.combo_ps.clear()
         self.combo_ps.addItems(labels)
