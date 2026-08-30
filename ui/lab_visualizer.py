@@ -17,8 +17,6 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import QWidget
 
 from ui.color_conversions import (
-    find_max_lab_c,
-    find_max_oklch_c,
     lab_to_rgb,
     lab_to_rgb_array,
     oklab_to_rgb,
@@ -34,6 +32,7 @@ from ui.lab_prewarm import (
     LabPrewarmResult,
     LabPrewarmTask,
     render_lab_plane,
+    smoothed_boundary_chroma,
 )
 
 
@@ -566,11 +565,13 @@ class LabSquare(QWidget):
         C = math.hypot(a, b)
         if C <= 1e-9:
             return 0.0
+        # Smoothed boundary (same moving-minimum as the disc renderer), so
+        # indicator/harmony dots and screen→ab mapping agree with the edge.
+        hue = math.degrees(math.atan2(b, a)) % 360.0
         if self.render_mode == "oklab":
-            h = math.degrees(math.atan2(b, a)) % 360.0
-            full = find_max_oklch_c(self.L / 100.0, h)
+            full = smoothed_boundary_chroma("oklab", self.L / 100.0, hue)
         else:
-            full = find_max_lab_c(self.L, a / C, b / C)
+            full = smoothed_boundary_chroma("lab", self.L, hue)
         return min(full, self._disc_chroma_ceiling())
 
     def _disc_ab_to_screen(self, a: float, b: float) -> QPointF:

@@ -1,15 +1,30 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
+
+from ui.color_conversions import find_max_lab_c, find_max_oklch_c
 
 # Uniform outer-ring chroma cap for the circulant disc renderer.  Keeping it
 # below every hue's gamut maximum avoids the dark "cake-slice" look around
 # blue at low L (see render_lab_disc for details).
 LAB_DISC_CHROMA_CEILING = 75.0
 OKLAB_DISC_CHROMA_CEILING = 0.26
+
+# Colour-window (degrees) for smoothing the disc's radial chroma boundary.
+# The sRGB gamut's constant-lightness cross-section is slightly non-convex,
+# so the raw first-boundary (binary search) jumps where a concave "bay"
+# begins — a knife-cut seam near the blue direction at low/mid L.  The disc
+# radial scale is the circular moving AVERAGE of the boundary over this
+# window, then clamped to the raw boundary per direction; the average keeps
+# the scale continuous (no radial seam anywhere) and the clamp keeps every
+# pixel inside the displayable gamut (the thin bay sliver is pulled to its
+# inner wall instead of producing a transparent notch).
+DISC_BOUNDARY_SMOOTH_DEG = 10.0
+_DISC_DIRECTION_BINS = 2048
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +141,52 @@ def _max_chroma_array(
     return lo
 
 
+def _raw_boundary_chroma(mode: str, lightness: float, hue_deg: float) -> float:
+    """Max in-gamut chroma along the *hue_deg* direction (no smoothing)."""
+    hue_deg = hue_deg % 360.0
+    if mode == "oklab":
+        return find_max_oklch_c(lightness, hue_deg)
+    return find_max_lab_c(
+        lightness, math.cos(math.radians(hue_deg)), math.sin(math.radians(hue_deg)))
+
+
+def smoothed_boundary_chroma(mode: str, lightness: float, hue_deg: float) -> float:
+    """Max in-gamut chroma, relaxed to the disc's smoothed boundary.
+
+    Samples the raw boundary at ``+-DISC_BOUNDARY_SMOOTH_DEG`` (plus the
+    midpoints), takes the circular moving average and clamps it to the raw
+    boundary for the requested direction — the renderer's exact recipe, so
+    the indicator / harmony dots land on the chroma the disc actually paints.
+    """
+    w = DISC_BOUNDARY_SMOOTH_DEG
+    half = w / 2.0
+    raw = _raw_boundary_chroma(mode, lightness, hue_deg)
+    values = [
+        _raw_boundary_chroma(mode, lightness, hue_deg + offset)
+        for offset in (-w, -half, half, w)
+    ]
+    avg = (raw + sum(values)) / 5.0
+    return min(avg, raw)
+
+
+def _disc_chroma_profile(lightness: float, mode: str) -> tuple[np.ndarray, np.ndarray]:
+    """Raw + circular moving-average chroma boundaries on an angular grid.
+
+    Returns ``(raw, smoothed)``, one value per ``_DISC_DIRECTION_BINS`` angle
+    bin.  The renderer maps every pixel to its bin and uses
+    ``min(smoothed, raw)``: the average keeps the painted radius continuous
+    across the non-convex gamut "bay" that otherwise cuts a radial seam, and
+    the clamp keeps each direction inside its displayable boundary.
+    """
+    n = _DISC_DIRECTION_BINS
+    theta = (np.arange(n, dtype=np.float64) + 0.5) * (2.0 * np.pi / n)
+    raw = _max_chroma_array(np.full(n, lightness), np.cos(theta), np.sin(theta), mode)
+    w = max(1, int(round(DISC_BOUNDARY_SMOOTH_DEG / 360.0 * n)))
+    ext = np.concatenate([raw[-w:], raw, raw[:w]])
+    window = np.lib.stride_tricks.sliding_window_view(ext, 2 * w + 1)
+    return raw, window.mean(axis=1)
+
+
 def render_lab_disc(request: LabPrewarmRequest) -> LabPrewarmResult:
     """Render the circulant LAB / OKLab a*b* disc at a fixed lightness.
 
@@ -144,12 +205,19 @@ def render_lab_disc(request: LabPrewarmRequest) -> LabPrewarmResult:
 
     if request.render_mode == "oklab":
         lightness = request.lightness / 100.0
-        max_c = _max_chroma_array(lightness, a_dir, b_dir, "oklab")
         chroma_ceiling = OKLAB_DISC_CHROMA_CEILING
     else:
         lightness = request.lightness
-        max_c = _max_chroma_array(lightness, a_dir, b_dir, "lab")
         chroma_ceiling = LAB_DISC_CHROMA_CEILING
+
+    # Smoothed boundary profile: the moving average kills the knife-cut seam
+    # at the concave gamut bay (blue direction); clamping to the raw boundary
+    # per bin keeps every pixel displayable.
+    n = _DISC_DIRECTION_BINS
+    raw_profile, smoothed_profile = _disc_chroma_profile(
+        lightness, request.render_mode)
+    bins = np.floor(theta * n / (2.0 * np.pi)).astype(np.intp) % n
+    max_c = np.minimum(smoothed_profile, raw_profile)[bins]
 
     # Cap the outer-ring chroma so dark gray/blue areas do not produce a
     # sharp "cake-slice" boundary: in CIELAB the blue direction loses chroma

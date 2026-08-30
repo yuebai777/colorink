@@ -14,15 +14,20 @@ from PyQt6.QtGui import QMouseEvent
 
 from ui.color_conversions import find_max_lab_c
 from ui.lab_harmony import harmony_hue_offsets, is_valid_harmony_mode
-from ui.lab_prewarm import LabPrewarmRequest, render_lab_plane
+from ui.lab_prewarm import (
+    LabPrewarmRequest,
+    _disc_chroma_profile,
+    render_lab_plane,
+    smoothed_boundary_chroma,
+)
 from ui.lab_visualizer import LabSquare
 
 from .test_ringless_support import qapp  # noqa: F401
 
 
-def _disc_request(size=64, mode="lab", shape="disc"):
+def _disc_request(size=64, mode="lab", shape="disc", lightness=50.0):
     return LabPrewarmRequest(
-        generation=0, render_mode=mode, lightness=50.0, size=size,
+        generation=0, render_mode=mode, lightness=lightness, size=size,
         min_a=-110.0, max_a=110.0, min_b=-110.0, max_b=110.0,
         pixel_ratio=1.0, shape=shape,
     )
@@ -139,10 +144,41 @@ def test_disc_edge_point_is_in_gamut(qapp):
     # Click the right edge of the inscribed disc (at/beyond rim → radius 1).
     sq.handle_mouse(QPointF(200.0, 100.0))
     assert sq._is_in_gamut(sq.a, sq.b)
-    # Radius 1 means the disc's capped chroma ceiling for that hue.
+    # Radius 1 means the disc's capped chroma ceiling for that hue — using
+    # the same smoothed boundary the renderer paints (not the raw boundary).
     C = math.hypot(sq.a, sq.b)
     full_max = find_max_lab_c(sq.L, sq.a / C, sq.b / C)
-    assert C == pytest.approx(min(full_max, sq._disc_chroma_ceiling()), abs=1e-6)
+    smoothed = smoothed_boundary_chroma("lab", sq.L, 0.0)
+    assert C == pytest.approx(
+        min(smoothed, sq._disc_chroma_ceiling()), abs=1e-6)
+    assert C <= min(full_max, sq._disc_chroma_ceiling()) + 1e-6
+
+
+def test_disc_profile_has_no_radial_seam(qapp):
+    """Regression: the OKLab blue "bay" made the per-hue chroma boundary jump
+    ~0.03 C within a fraction of a degree — a knife-cut radial seam.  The
+    smoothed profile must stay continuous (moving average), and the renderer
+    clamps it to the raw boundary so every pixel stays displayable."""
+    raw, smoothed = _disc_chroma_profile(0.35, "oklab")
+    diff = np.abs(np.diff(np.concatenate([smoothed[-1:], smoothed])))
+    assert float(np.max(diff)) < 0.005  # raw profile jumps 0.03+ at the bay
+    # The smoothing must still track the gamut (clamped downstream): never
+    # deviate upward from the raw boundary beyond the bay's own slack.
+    assert float(np.max(np.abs(smoothed - raw))) < 0.06
+
+
+def test_disc_blue_render_has_no_seam(qapp):
+    """End-to-end: sample the OKLab disc ring near the blue direction and
+    make sure no angular step exceeds the natural hue-ramp noise (~5-8 RGB)."""
+    result = render_lab_plane(_disc_request(256, mode="oklab", lightness=35.0))
+    arr = np.frombuffer(result.image_bytes, dtype=np.uint8).reshape(256, 256, 4)
+    c = (256 - 1) / 2.0
+    angles = np.arange(720) * 2.0 * np.pi / 720
+    x = np.clip(np.round(c + 0.98 * c * np.cos(angles)).astype(int), 0, 255)
+    y = np.clip(np.round(c - 0.98 * c * np.sin(angles)).astype(int), 0, 255)
+    px = arr[y, x, :3].astype(float)
+    deltas = np.linalg.norm(np.diff(px, axis=0, append=px[:1]), axis=1)
+    assert float(np.max(deltas)) < 12.0
 
 
 def test_harmony_dot_click_promotes_to_base(qapp):
