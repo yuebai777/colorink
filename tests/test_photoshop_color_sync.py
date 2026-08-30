@@ -20,8 +20,8 @@ class TestSetVersion:
     def test_set_version_stores_label_and_resets(self):
         ps = PhotoshopSync()
         ps._reset = MagicMock()
-        assert ps.set_version("Adobe Photoshop 2020 (COM)") is True
-        assert ps.current_version == "Adobe Photoshop 2020 (COM)"
+        assert ps.set_version("Adobe Photoshop 2020 (同步桥)") is True
+        assert ps.current_version == "Adobe Photoshop 2020 (同步桥)"
         ps._reset.assert_called_once()
 
     def test_set_version_same_value_is_noop(self):
