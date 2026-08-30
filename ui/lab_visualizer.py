@@ -536,17 +536,24 @@ class LabSquare(QWidget):
     def _disc_metrics(self) -> tuple[float, float, float]:
         """Center/radius for the circulant disc, matching the hue-ring size.
 
-        The disc keeps the same edge margins as ``ColorWheel.get_wheel_geometry``
-        (left/right 8 px, bottom 6 px) and stays below ``avoid_top`` so the
-        floating foreground/background preview box never covers it.
+        The disc always keeps the same outer radius as
+        ``ColorWheel.get_wheel_geometry`` (left/right 8 px, bottom 6 px).
+        ``avoid_top`` only shifts it down when there is room — if the
+        foreground/background preview strip would force a smaller disc, the
+        full hue-ring size wins and the disc may overlap that area slightly,
+        exactly like the colour ring does in full mode.
         """
         w = self.width()
         h = self.height()
-        avail_h = max(0, h - self.avoid_top)
-        size = min(w - 16, max(16, avail_h - 6))
+        size = min(w - 16, max(16, h - 6))
         cx = w / 2.0
-        cy = max(size / 2.0 + 6.0, self.avoid_top + size / 2.0)
         radius = max(1.0, size / 2.0 - 2.0)
+        cy = max(size / 2.0 + 6.0, self.avoid_top + size / 2.0)
+        # Keep the bottom margin; when the top strip leaves too little room,
+        # stay at the hue-ring position instead of shrinking the disc.
+        min_cy = size / 2.0 + 6.0
+        usable_cy = h - 6.0 - radius
+        cy = min(cy, max(min_cy, usable_cy))
         return cx, cy, radius
 
     def _disc_diameter(self) -> float:
