@@ -114,6 +114,50 @@ def test_harmony_offset_counts():
     assert harmony_hue_offsets("bogus") == harmony_hue_offsets("analogous")
 
 
+def test_all_harmony_modes_keep_base_first():
+    """The base colour (offset 0) must be the FIRST entry: the disc skips
+    index 0 when drawing / hit-testing the small harmony dots.  Analogous
+    used to be (-30, 0, 30), which silently hid its -30° dot."""
+    for mode in ("complementary", "split", "analogous", "triadic",
+                 "rectangle"):
+        offsets = harmony_hue_offsets(mode)
+        assert offsets[0] == 0.0, f"{mode}: base must be first ({offsets})"
+
+
+def test_analogous_secondary_dots_are_all_clickable(qapp):
+    """Every analogous harmony dot (both sides of the base) is drawn and
+    clickable, and clicking one promotes it to the base colour."""
+    sq = LabSquare()
+    sq.resize(200, 200)
+    sq.set_shape("disc")
+    sq.set_harmony_mode("analogous")
+    sq.set_color(180, 130, 30, block_signals=True)
+
+    points = sq._harmony_points_ab()
+    assert len(points) == 3
+    base_a, base_b = sq.a, sq.b
+    assert points[0] == pytest.approx((base_a, base_b), abs=1e-6)
+    for i in (1, 2):
+        # Restore the base first: promoting a dot re-forms the whole
+        # harmony pattern around the new base, invalidating old positions.
+        sq.a, sq.b = base_a, base_b
+        points = sq._harmony_points_ab()
+        target_a, target_b = points[i]
+        pos = sq._disc_ab_to_screen(target_a, target_b)
+        hit = sq._hit_harmony_point(pos)
+        assert hit is not None, f"harmony dot {i} is not clickable"
+        assert hit == pytest.approx((target_a, target_b), abs=1e-6)
+
+        ev = QMouseEvent(
+            QEvent.Type.MouseButtonPress, pos, pos,
+            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        sq.mousePressEvent(ev)
+        assert sq.a == pytest.approx(target_a, abs=1e-6)
+        assert sq.b == pytest.approx(target_b, abs=1e-6)
+
+
 def test_set_harmony_mode_invalid_falls_back(qapp):
     sq = LabSquare()
     sq.set_harmony_mode("bogus")

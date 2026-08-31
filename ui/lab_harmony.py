@@ -8,9 +8,12 @@ colour itself (offset 0.0), which is drawn as the large indicator dot.
 from __future__ import annotations
 
 HARMONY_MODE_OFFSETS: dict[str, tuple[float, ...]] = {
+    # The base colour (0.0) must always be the FIRST entry: the disc draws
+    # the base as the large indicator dot and skips index 0 when painting /
+    # hit-testing the small harmony dots.
     "complementary": (0.0, 180.0),
     "split": (0.0, 150.0, 210.0),
-    "analogous": (-30.0, 0.0, 30.0),
+    "analogous": (0.0, -30.0, 30.0),
     "triadic": (0.0, 120.0, 240.0),
     "rectangle": (0.0, 60.0, 180.0, 240.0),
 }
