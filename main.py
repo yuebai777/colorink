@@ -169,6 +169,18 @@ def main():
     if lock is None:
         sys.exit(0)
 
+    # Re-assert the HKCU Run entry so it always matches the persisted
+    # "openAtLogin" setting. The portable EXE may have been re-downloaded/moved
+    # since the entry was written, which leaves Windows pointing at a stale
+    # path and "开机自启动" silently stops working; conversely a stale entry
+    # must not survive when the user has the setting off. apply_autostart() is
+    # idempotent and no-ops outside a frozen Windows build.
+    from core import autostart as _autostart
+    from core import config as _config
+    _autostart.apply_autostart(
+        bool(_config.load_hotkey_config().get("openAtLogin", False))
+    )
+
     # Load and apply window icon
     icon_path = os.path.join("icons", "icon.ico")
     if os.path.exists(icon_path):

@@ -86,6 +86,8 @@ class RinglessSettingsWidget(QWidget):
 
         # -- checkbox -----------------------------------------------------
         self.enabled_checkbox = QCheckBox(i18n.tr("隐藏色环并放大取色切片"))
+        self.enabled_checkbox.setToolTip(i18n.tr(
+            "隐藏色环并放大取色切片，界面更紧凑；可继续选择控制栏位置和前景/背景色位置"))
         self.enabled_checkbox.stateChanged.connect(self._on_checkbox_changed)
         layout.addWidget(self.enabled_checkbox)
 
@@ -96,6 +98,8 @@ class RinglessSettingsWidget(QWidget):
         position_layout.setSpacing(6)
         position_layout.addWidget(QLabel(i18n.tr("控制栏位置")))
         self.control_bar_position_combo = QComboBox()
+        self.control_bar_position_combo.setToolTip(i18n.tr(
+            "隐藏色环后控制栏显示在上方还是下方"))
         self.control_bar_position_combo.addItem(i18n.tr("上方"), "top")
         self.control_bar_position_combo.addItem(i18n.tr("下方"), "bottom")
         self.control_bar_position_combo.currentIndexChanged.connect(
@@ -114,6 +118,8 @@ class RinglessSettingsWidget(QWidget):
         self.side_label = QLabel(i18n.tr(_SIDE_LABEL))
         row.addWidget(self.side_label)
         self.side_combo = QComboBox()
+        self.side_combo.setToolTip(i18n.tr(
+            "控制栏中前景/背景色块放在左侧还是右侧"))
         for display, key in _SIDE_ITEMS:
             self.side_combo.addItem(i18n.tr(display), key)
         self.side_combo.currentIndexChanged.connect(self._on_side_changed)

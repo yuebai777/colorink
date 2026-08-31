@@ -21,6 +21,7 @@ from ui.ringless_mode import RinglessConfig
 from ui.settings.appearance_panel import AppearancePanelMixin
 from ui.settings.settings_helpers import SettingsHelpersMixin
 from ui.settings.sync_panel import SyncPanelMixin
+from ui.settings.tooltips import apply_settings_tooltips
 from ui.settings.update_panel import UpdatePanelMixin
 
 if TYPE_CHECKING:
@@ -188,6 +189,10 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         # stretch absorbs the fixed window's leftover height on short pages.
         for page_layout in self._page_layouts.values():
             page_layout.addStretch(1)
+
+        # Re-apply the static hover-tooltip catalog after every (re)build so
+        # language changes / retranslate() keep the Chinese/English tips in sync.
+        apply_settings_tooltips(self)
 
     # ── Rail / page navigation ───────────────────────────────────────────
 
@@ -509,6 +514,14 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
                 # 注册表写入失败（windowed 下 print 不可见）：回滚配置与勾选
                 self.cfg["openAtLogin"] = old_autostart
                 self.cb_autostart.setChecked(old_autostart)
+            else:
+                # 注册表写入成功后才把新状态落进配置；否则下次 refresh_ui()
+                # 会重新加载旧值，勾选看起来"保存不生效"，也无法通过再勾一次
+                # 触发注册表同步。
+                self.cfg["openAtLogin"] = new_autostart
+        else:
+            # 配置与勾选本来一致：保持 cfg 同步（幂等，避免脏值残留）。
+            self.cfg["openAtLogin"] = new_autostart
             
         self.cfg["onlyShowInCsp"] = self.cb_only_drawing.isChecked()
         self.cfg["showTaskbarIcon"] = self.cb_taskbar_icon.isChecked()

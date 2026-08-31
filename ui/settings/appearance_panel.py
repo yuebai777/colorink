@@ -26,6 +26,7 @@ from ui.settings.settings_helpers import (
     NonScrollComboBox,
     NonScrollSlider,
 )
+from ui.settings.tooltips import SLIDER_SHOW_TIPS
 from ui.slider_themes import list_slider_theme_names
 
 
@@ -727,7 +728,7 @@ class AppearancePanelMixin:
         grid_behavior.addWidget(self.cb_lock_position, 2, 0)
 
         self.cb_autostart = QCheckBox(i18n.tr("开机自启动"))
-        self.cb_autostart.setToolTip(i18n.tr("开机后自动以管理员权限启动（免 UAC 弹窗）"))
+        self.cb_autostart.setToolTip(i18n.tr("开机后自动启动 Colorink（仅当前用户，不需要管理员权限）"))
         self.cb_autostart.stateChanged.connect(self.save_settings)
         grid_behavior.addWidget(self.cb_autostart, 0, 1)
 
@@ -855,6 +856,9 @@ class AppearancePanelMixin:
             row_layout = QHBoxLayout()
             row_layout.setSpacing(6)
             cb = QCheckBox(i18n.tr(name))
+            tip = SLIDER_SHOW_TIPS.get(key)
+            if tip:
+                cb.setToolTip(i18n.tr(tip))
             cb.stateChanged.connect(self.save_settings)
             btn_up = self._make_step_button("▲", i18n.tr("上移"), width=24)
             btn_up.clicked.connect(lambda _checked, k=key: self._move_slider_order(k, -1))
