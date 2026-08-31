@@ -235,6 +235,7 @@ class _TitleBar(QWidget):
         self._btn_close.setObjectName("SettingsCloseButton")
         self._btn_close.setFixedSize(20, 20)
         self._btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_close.setToolTip(i18n.tr("关闭设置窗口"))
         self._btn_close.clicked.connect(self._sw.hide)
 
         layout.addWidget(self._label)
