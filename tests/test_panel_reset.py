@@ -49,7 +49,8 @@ def test_panel_settings_live_on_their_own_page(sidebar):
     page = sidebar.stack.widget(3)
     for name in ("cb_panel_drag", "cb_sliders_split", "cb_sliders_tabs",
                  "btn_reset_panel_layout", "btn_dock_all_panels",
-                 "lbl_floating_panels", "lbl_same_space", "lbl_diff_space"):
+                 "lbl_floating_panels", "lbl_same_space", "lbl_diff_space",
+                 "lbl_top_gap"):
         assert hasattr(sidebar, name), name
         assert page.isAncestorOf(getattr(sidebar, name)), name
     assert sidebar.nav.item(3).text() in ("面板", "Panels")

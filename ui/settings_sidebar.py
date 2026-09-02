@@ -445,6 +445,9 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         
         diff_val = self.cfg.get("sliderDiffSpace", 8)
         self.lbl_diff_space.setText(str(diff_val))
+
+        top_val = self.cfg.get("panelTopGap", 6)
+        self.lbl_top_gap.setText(str(top_val))
         
         # 4. Software Version
         _idx = self.combo_software.findData(self.cfg.get("syncSoftware", "csp"))
@@ -645,6 +648,12 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
             self.cfg["sliderDiffSpace"] = int(self.lbl_diff_space.text())
         except Exception:
             self.cfg["sliderDiffSpace"] = 8
+
+        try:
+            self.cfg["panelTopGap"] = max(
+                0, min(30, int(self.lbl_top_gap.text())))
+        except Exception:
+            self.cfg["panelTopGap"] = 6
         
         self._persist_and_emit()
         self.update_version_visibility()
@@ -790,6 +799,18 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         val = self.cfg.get("sliderDiffSpace", 8)
         val = min(30, val + 1)
         self.lbl_diff_space.setText(str(val))
+        self.save_settings()
+
+    def panel_top_gap_decrease(self):
+        val = self.cfg.get("panelTopGap", 6)
+        val = max(0, val - 1)
+        self.lbl_top_gap.setText(str(val))
+        self.save_settings()
+
+    def panel_top_gap_increase(self):
+        val = self.cfg.get("panelTopGap", 6)
+        val = min(30, val + 1)
+        self.lbl_top_gap.setText(str(val))
         self.save_settings()
 
     def on_no_focus_clicked(self, checked):

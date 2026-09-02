@@ -310,9 +310,24 @@ class PanelHolder:
             widget.installEventFilter(self)
             self._panel_layout().addWidget(widget)
         self._panel = widget
+        self._ensure_bottom_stretch()
         # Read the flag only after re-parenting: setParent(None) marks a
         # widget hidden in passing, and adopting it clears that again.
         self.setVisible(not widget.isHidden())
+
+    def _ensure_bottom_stretch(self) -> None:
+        """Park leftover holder height below the panel, not in the middle.
+
+        A tab page is sized as tall as the *tallest* page; a page holding one
+        short panel would otherwise centre it in all that spare room. One
+        bottom stretch keeps it glued to the tab strip / title bar.
+        """
+        box = self._panel_layout()
+        if box is None:
+            return
+        if box.count() and box.itemAt(box.count() - 1).spacerItem() is not None:
+            return
+        box.addStretch(1)
 
     def _panel_layout(self):
         """Where the panel goes. Holders with chrome of their own override it."""
