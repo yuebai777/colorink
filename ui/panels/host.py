@@ -179,7 +179,7 @@ class PanelHost(QWidget):
             if widget is None:
                 continue
             built.append(widget)
-            titles.append(names[0] if len(names) <= 2 else names[0] + "…")
+            titles.append("/".join(names))
         if not built:
             return None
         if len(built) == 1:
@@ -191,6 +191,9 @@ class PanelHost(QWidget):
         tabs.setCurrentIndex(min(node.current, len(built) - 1))
         self._tabs.append((tabs, node))
         bar = tabs.tabBar()
+        # A page is a whole column of panels: the tab names them all, long
+        # ones elide instead of pushing the strip off the edge.
+        bar.setElideMode(Qt.TextElideMode.ElideRight)
         # Dragging a tab header reorders whole pages; the tree is updated on
         # release (the internal tabMoved signal fires mid-drag, and a rebuild
         # in the middle of the gesture would kill it).

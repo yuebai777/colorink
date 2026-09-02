@@ -578,6 +578,16 @@ def test_tab_strip_wears_the_chrome(host):
     assert "font-size: 11px" in css
 
 
+def test_tab_titles_join_the_panels_in_a_page(host):
+    """页签标题列出整页的面板：历史颜色/HSV 这样，而不是只写第一个。"""
+    host.set_drag_enabled(True)
+    host.set_tree(dock.Tabs((), 0, ((RGB, HSV), (HSL, LAB))))
+    _lay_out(host)
+    tabs = host.findChildren(QTabWidget)[0]
+    assert tabs.tabText(0) == "RGB/HSV"
+    assert tabs.tabText(1) == "HSL/LAB"
+
+
 # ── Qt 自己的拖放事件 ────────────────────────────────────────────────────
 
 # 合成的拖放事件只是**借用** QMimeData（Qt 不持有它）。让 Python 在事件还
