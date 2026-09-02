@@ -914,6 +914,16 @@ class LayoutMixin:
 
     def eventFilter(self, watched, event):
         try:
+            # The swatch cluster is fitted while sliders_container may still
+            # have zero real geometry (a grip-toggle rebuild happens in the
+            # middle of the pass). Once the container actually gets its size,
+            # re-clamp the cluster so it can never sit on the tab strip.
+            if (watched is getattr(self, "sliders_container", None)
+                    and event.type() in (QEvent.Type.Resize, QEvent.Type.Move,
+                                         QEvent.Type.Show,
+                                         QEvent.Type.LayoutRequest)
+                    and getattr(self, "preview_box", None) is not None):
+                self._clamp_preview_box(self.preview_box)
             # Local LAB-toggle shortcuts (keyboard or mouse button) fire while
             # the cursor is over the color wheel / LAB pane. Skipped while a
             # settings hotkey capture is active so the recorded press wins.
