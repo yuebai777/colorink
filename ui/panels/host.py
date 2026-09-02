@@ -174,6 +174,7 @@ class PanelHost(QWidget):
             spec = registry.panel(first_id)
             if len(page) == 1:
                 widget = self._mount(first_id)
+                self._top_align_panel(widget)
                 names = [spec.title if spec else first_id]
             else:
                 col = Split(VERTICAL,
@@ -259,6 +260,25 @@ class PanelHost(QWidget):
             stack = tabs.findChild(QStackedWidget)
             if stack is not None and stack.layout() is not None:
                 stack.layout().activate()
+
+    def _top_align_panel(self, widget) -> None:
+        """Keep a single-panel tab page's content glued to the tab strip.
+
+        The page is stretched to the tallest page's height; without an
+        explicit bottom spacer the raw panel's own layout (History's
+        container in particular) would centre its content in all that spare
+        room. Frames already park a bottom stretch, so this is a no-op for
+        them.
+        """
+        if widget is None:
+            return
+        box = widget.layout()
+        if box is None:
+            return
+        box.setAlignment(Qt.AlignmentFlag.AlignTop)
+        if box.count() and box.itemAt(box.count() - 1).spacerItem() is not None:
+            return
+        box.addStretch(1)
 
     def _build_split(self, node: Split) -> QWidget | None:
         children = [self._build(child) for child in node.children]

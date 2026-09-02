@@ -237,7 +237,7 @@ def test_a_rearranged_tree_survives_the_config_round_trip():
 
 from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, QRect, Qt  # noqa: E402
 from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QMouseEvent, QPaintEvent  # noqa: E402
-from PyQt6.QtWidgets import QApplication, QLabel, QTabWidget, QWidget  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QLabel, QTabWidget, QVBoxLayout, QWidget  # noqa: E402
 
 from ui.panels.drag import PANEL_MIME, PanelFrame, PanelTitleBar  # noqa: E402
 from ui.panels.host import PanelHost  # noqa: E402
@@ -538,6 +538,36 @@ def test_paint_event_resyncs_tab_pages(host):
     QApplication.sendEvent(tabs, QPaintEvent(QRect(0, 0, 1, 1)))
     for index in range(tabs.count()):
         assert tabs.widget(index).isHidden() == (index != 0), index
+
+
+def test_single_raw_panel_tab_content_is_top_aligned(qapp):
+    """回归：无抓手（原始面板直接当页）时，矮页被拉到最高页的高度，
+    内容必须贴着页签条——History 的容器之前没有底部 spacer，会居中。"""
+    made = {}
+
+    def provider(panel_id):
+        if panel_id not in made:
+            holder = QWidget()
+            box = QVBoxLayout(holder)
+            box.setContentsMargins(0, 0, 0, 0)
+            box.setSpacing(0)
+            label = QLabel(f"content-{panel_id}")
+            label.setFixedHeight(30 if panel_id == HSV else 100)
+            box.addWidget(label)
+            made[panel_id] = holder
+        return made[panel_id]
+
+    host = PanelHost(provider)
+    host.resize(200, 400)
+    host.set_tree(dock.Tabs((), 1, ((RGB,), (HSV,))))
+    _lay_out(host)
+    tabs = host.findChildren(QTabWidget)[0]
+    page = tabs.widget(1)  # the short HSV page, stretched to 100px
+    lay = page.layout()
+    assert lay is not None
+    assert lay.itemAt(lay.count() - 1).spacerItem() is not None
+    child = lay.itemAt(0).widget()
+    assert child.geometry().y() <= 2, child.geometry()
 
 
 def test_tab_bar_is_movable_and_reorder_commits_on_release(host):
