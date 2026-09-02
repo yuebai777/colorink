@@ -142,8 +142,12 @@ def main():
     visible_after = visible_groups(win)
     expected_after = (len(visible_after) + 1) // 2
     check("重新开启后回到完整页签",
-          len(titles) == expected_after and "RGB" in titles,
+          len(titles) == expected_after
+          and any("RGB" in title for title in titles),
           f"titles={titles} expected={expected_after}")
+    check("页签标题列出整页面板",
+          any("RGB/HSV" in title for title in titles),
+          f"titles={titles}")
 
     # 3) Center drop on a tabbed panel adds a NEW page (stacking), not stuffing.
     host = win.panel_host
