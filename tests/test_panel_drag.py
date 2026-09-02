@@ -604,6 +604,22 @@ def test_drop_on_a_tab_header_merges_into_that_page(host):
     assert host.tree() == dock.Tabs((), 0, ((RGB, HSV), (HSL,)))
 
 
+def test_drop_target_skips_a_floated_panel_page(host):
+    """回归：页签条索引经过“跳过未挂载内容”压缩后，不能直接当
+    node.pages 的原始索引用。旧代码把 tab 0 的落点算到 (RGB, HSV) 页的
+    HSV 上——它正浮出、未挂载，_panel_box 返回 None，show_drop_hint 炸。"""
+    host.set_drag_enabled(True)
+    host.set_tree(dock.Tabs((), 0, ((RGB, HSV), (HSL,))))
+    _lay_out(host)
+    host.set_floating_panels({HSV})
+    _lay_out(host)
+    tabs = host.findChildren(QTabWidget)[0]
+    bar = tabs.tabBar()
+    first = bar.mapTo(host, bar.tabRect(0).center())
+    assert host.drop_target_at(first) == (RGB, rearrange.MERGE_PAGE)
+    assert host.show_drop_hint(first) == (RGB, rearrange.MERGE_PAGE)
+
+
 def test_tab_strip_wears_the_chrome(host):
     """页签条跟着主题色走，而不是 Qt 默认的 Windows 蓝。"""
     from ui.panels.floating import PanelChrome
