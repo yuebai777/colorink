@@ -400,11 +400,32 @@ class LayoutMixin:
             # geometry that varies smoothly with the window, so the size
             # does too.
             if self._try_preview_fit(preview, 1.0, metrics, circles, bounds) <= 0.25:
+                self._clamp_preview_box(preview)
                 return
             factor = self._preview_trim_factor(preview, circles, bounds)
             if factor >= 0.999:
+                self._clamp_preview_box(preview)
                 return
             self._try_preview_fit(preview, factor, metrics, circles, bounds)
+            self._clamp_preview_box(preview)
+
+    def _clamp_preview_box(self, preview) -> None:
+        """Keep the swatch cluster out of the sliders area / tab strip.
+
+        sliders_h passed into the fit comes from a sizeHint that can lag a
+        grip-toggle re-mount (measured 182 vs the real 192), and this method
+        is also called again from update_geometries after the themed pass —
+        clamp on the container's real geometry whenever it exists.
+        """
+        container = getattr(self, "sliders_container", None)
+        if container is None or container.height() <= 0:
+            return
+        sliders_top = container.mapTo(self, QPoint(0, 0)).y()
+        scale = self.cfg.get("uiScale", 100) / 100.0
+        clearance = max(4, int(6 * scale))
+        if preview.y() + preview.height() > sliders_top - clearance:
+            preview.move(preview.x(),
+                         max(0, sliders_top - preview.height() - clearance))
 
     def _preview_trim_factor(self, preview, circles, bounds):
         """How much smaller the cluster must be to clear the picker circles.
