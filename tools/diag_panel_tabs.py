@@ -27,7 +27,7 @@ except Exception:
     pass
 
 from PyQt6.QtCore import QPoint, QRect  # noqa: E402
-from PyQt6.QtGui import QPaintEvent  # noqa: E402
+from PyQt6.QtGui import QFontMetrics, QPaintEvent  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QTabWidget, QWidget  # noqa: E402
 
 from core import config  # noqa: E402
@@ -149,6 +149,15 @@ def main():
     check("页签标题列出整页面板",
           any("RGB/HSV" in title for title in titles),
           f"titles={titles}")
+    tabs0 = tabs_widget(win)
+    if tabs0 is not None:
+        bar0 = tabs0.tabBar()
+        metrics0 = QFontMetrics(bar0.font())
+        fits0 = all(metrics0.horizontalAdvance(bar0.tabText(i))
+                    <= bar0.tabRect(i).width()
+                    for i in range(bar0.count()))
+        check("页签标题完整显示不截断", bool(fits0),
+              f"fits={fits0} widths={[metrics0.horizontalAdvance(bar0.tabText(i)) for i in range(bar0.count())]} rects={[bar0.tabRect(i).width() for i in range(bar0.count())]}")
 
     # 3) Center drop on a tabbed panel adds a NEW page (stacking), not stuffing.
     host = win.panel_host
