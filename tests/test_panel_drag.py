@@ -588,7 +588,7 @@ def test_tab_strip_wears_the_chrome(host):
     css = tabs.styleSheet()
     assert "#202020" in css
     assert "QTabBar::tab:selected" in css
-    assert "font-size: 11px" in css
+    assert "font-size: 9px" in css
 
 
 def test_tab_titles_join_the_panels_in_a_page(host):

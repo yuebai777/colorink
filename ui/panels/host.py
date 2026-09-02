@@ -192,8 +192,9 @@ class PanelHost(QWidget):
             return built[0]
         tabs = QTabWidget(self)
         tabs.setDocumentMode(True)
-        for widget, title in zip(built, titles):
+        for index, (widget, title) in enumerate(zip(built, titles)):
             tabs.addTab(widget, title)
+            tabs.setTabToolTip(index, title)
         tabs.setCurrentIndex(min(node.current, len(built) - 1))
         # QStackedLayout defers page visibility until the stack itself is
         # shown/laid out. A freshly rebuilt tab stack that is inserted into an
@@ -212,9 +213,13 @@ class PanelHost(QWidget):
                 stack_layout.activate()
         self._tabs.append((tabs, node))
         bar = tabs.tabBar()
-        # A page is a whole column of panels: the tab names them all, long
-        # ones elide instead of pushing the strip off the edge.
+        # A page is a whole column of panels: the tab names them all. Let tabs
+        # take their natural width so combined names like 历史颜色/HSV render in
+        # full; if they overflow the strip, Qt shows scroll buttons instead of
+        # compressing/eliding the text. ElideRight stays as a fallback for a
+        # single over-long name (hover shows the full tooltip).
         bar.setElideMode(Qt.TextElideMode.ElideRight)
+        bar.setExpanding(False)
         # Dragging a tab header reorders whole pages; the tree is updated on
         # release (the internal tabMoved signal fires mid-drag, and a rebuild
         # in the middle of the gesture would kill it).
@@ -379,9 +384,10 @@ class PanelHost(QWidget):
         if chrome is None:
             return
         scale = max(0.5, float(getattr(chrome, "scale", 1.0) or 1.0))
-        pad_x = max(4, int(round(8 * scale)))
-        pad_y = max(2, int(round(3 * scale)))
-        font = max(6, int(getattr(chrome, "font_size", 0) or 11))
+        pad_x = max(2, int(round(5 * scale)))
+        pad_y = max(1, int(round(2 * scale)))
+        font = max(7, int(round(
+            (getattr(chrome, "font_size", 0) or 11) * 0.85)))
         bar_bg = getattr(chrome, "bar_bg", "") or "transparent"
         bg = getattr(chrome, "background", "") or "transparent"
         text = getattr(chrome, "text", "") or "#222222"
@@ -391,7 +397,9 @@ class PanelHost(QWidget):
         css = (
             "QTabWidget { background: transparent; }"
             "QTabWidget::pane { border: none; background: transparent; }"
-            "QTabBar { background: transparent; }"
+            "QTabBar { background: transparent;"
+            f" font-size: {font}px;"
+            " }"
             "QTabBar::tab {"
             f" background: {bar_bg}; color: {bar_text};"
             f" padding: {pad_y}px {pad_x}px;"
