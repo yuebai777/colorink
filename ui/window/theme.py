@@ -6,7 +6,7 @@ visual theme and per-widget geometry/stylesheet updates.
 
 from typing import cast
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QColor
 
 from core import config
@@ -694,6 +694,22 @@ class ThemeMixin:
             self.preview_box.resize_and_position(
                 int(window_layout.wheel_size_for(self.width(), h, scale)),
                 title_offset, h, sliders_h, self.active_slot)
+
+        # The placement above sizes the cluster from sliders_container's
+        # sizeHint(), which can lag a grip-toggle re-mount by a few px (and
+        # more at odd DPRs) — a cluster released with a stale hint lands on
+        # the tab strip. Once the container has real geometry, never let the
+        # cluster's bottom enter the sliders area.
+        if self.sliders_container.height() > 0:
+            sliders_top = self.sliders_container.mapTo(
+                self, QPoint(0, 0)).y()
+            bottom = self.preview_box.y() + self.preview_box.height()
+            clearance = max(4, int(6 * scale))
+            if bottom > sliders_top - clearance:
+                self.preview_box.move(
+                    self.preview_box.x(),
+                    max(0, sliders_top - self.preview_box.height()
+                        - clearance))
         self.preview_box.raise_()
 
         # If settings sidebar is open, ensure it remains on top!
