@@ -396,7 +396,13 @@ class PanelHost(QWidget):
         found = None
         for panel_id in self._mounted:
             box = self._panel_box(panel_id)
-            if box is None or box.isHidden() or box.parent() is None:
+            # isHidden() is NOT enough: a frame inside a non-current tab page
+            # reports "not hidden" (only its ancestor page is hidden), so it
+            # would steal drops aimed at the visible page and the panel would
+            # get stuffed into a page the user cannot even see. isVisibleTo()
+            # walks the explicit hidden flags up to this host and is correct
+            # even for a host that is not shown yet.
+            if box is None or not box.isVisibleTo(self) or box.parent() is None:
                 continue
             local = box.mapFrom(self, pos)
             zone = rearrange.zone_at(
