@@ -189,7 +189,7 @@ def test_a_rearranged_tree_survives_the_config_round_trip():
 
 from PyQt6.QtCore import QMimeData, QPoint, QPointF, Qt  # noqa: E402
 from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent  # noqa: E402
-from PyQt6.QtWidgets import QApplication, QLabel, QWidget  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QLabel, QTabWidget, QWidget  # noqa: E402
 
 from ui.panels.drag import PANEL_MIME, PanelFrame, PanelTitleBar  # noqa: E402
 from ui.panels.host import PanelHost  # noqa: E402
@@ -444,6 +444,39 @@ def test_center_drop_follows_the_tabs_setting(host):
     box = host.widget_for(RGB)
     center = box.mapTo(host, QPoint(box.width() // 2, box.height() // 2))
     assert host.drop_target_at(center) == (RGB, rearrange.CENTER)
+
+
+def test_drops_do_not_target_hidden_tab_pages(host):
+    """回归：非当前页签里的面板不能抢落点。
+
+    isHidden() 对"祖先（页签页面容器）被隐藏但自己没被显式隐藏"的子控件
+    会说谎——旧代码因此把拖到可见页的落点判到隐藏页上，面板被塞进一个
+    用户根本看不见的页面（"很奇怪的叠放"）。
+    """
+    host.set_drag_enabled(True)
+    ok_lab = registry.slider_panel_id("OKLab")
+    host.set_tree(dock.Tabs((), 0, ((RGB,), (HSL, ok_lab))))
+    _lay_out(host)
+    box = host.frame_for(RGB)
+    center = box.mapTo(host, QPoint(box.width() // 2, box.height() // 2))
+    target = host.drop_target_at(center)
+    assert target is not None and target[0] == RGB, target
+
+
+def test_only_the_current_tab_page_stays_visible(host):
+    """回归：QStackedWidget 用 Hide 事件隐藏非当前页，PanelHolder 的事件
+    过滤器不能再把它弹回来——否则每一页都可见，拖到当前页的落点会被
+    用户看不见的页抢走，本页的边落点也失去目标。"""
+    host.set_drag_enabled(True)
+    host.set_tree(dock.Tabs((), 1, ((RGB,), (HSV,), (HSL,))))
+    _lay_out(host)
+    tabs = host.findChildren(QTabWidget)[0]
+    assert tabs.currentIndex() == 1
+    assert tabs.widget(1) is host.frame_for(HSV)
+    for index in range(tabs.count()):
+        page = tabs.widget(index)
+        assert page.isVisibleTo(host) == (index == 1), (
+            index, page.isVisible(), page.isHidden(), page.isVisibleTo(host))
 
 
 # ── Qt 自己的拖放事件 ────────────────────────────────────────────────────

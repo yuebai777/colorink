@@ -248,10 +248,10 @@ class TestTabStructure:
     def test_pages_exist(self, sidebar):
         assert hasattr(sidebar, "stack")
         assert sidebar.stack is not None
-        assert sidebar.stack.count() == 6
+        assert sidebar.stack.count() == 7
 
     def test_nav_labels(self, sidebar):
-        expected = ["快捷键", "界面", "取色器", "滤镜", "同步", "关于"]
+        expected = ["快捷键", "界面", "取色器", "面板", "滤镜", "同步", "关于"]
         for i, text in enumerate(expected):
             assert sidebar.nav.item(i).text() == text
 
@@ -415,8 +415,9 @@ class TestReorganizedSettings:
         first = rows.index(sidebar.slider_rows["OKLCh"][1])
         last = rows.index(sidebar.slider_rows["RGB"][1])
         assert first < last
-
-        assert sidebar.btn_hist_down.isEnabled() is False   # bottom of the list
+        # 顺序按钮(btn_hist_up/down)已随"拖面板来排顺序"移除;
+        # test_slider_rows_are_show_switches_only 负责断言没有任何残留。
+        assert not hasattr(sidebar, "btn_hist_down")
 
     def test_sync_and_versions_share_one_card(self, sidebar):
         software_page = sidebar.stack.widget(5)

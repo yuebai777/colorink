@@ -344,6 +344,15 @@ class PanelHolder:
             # False — that is exactly how a hidden owned window comes back.
             if event.type() == QEvent.Type.HideToParent:
                 return super().eventFilter(obj, event)
+            # QStackedWidget turns a single page's "page" into a plain Hide
+            # event on the page's children — the panel inside the page gets
+            # Hide while its own isHidden() is still False. Mirroring that
+            # back pops every non-current tab page visible, so a drop aimed
+            # at the visible page gets claimed by a page the user cannot
+            # even see. Only the panel's own explicit hide (isHidden() True)
+            # is the signal to park the holder.
+            if event.type() == QEvent.Type.Hide and not obj.isHidden():
+                return super().eventFilter(obj, event)
             self.setVisible(not obj.isHidden())
         return super().eventFilter(obj, event)
 
