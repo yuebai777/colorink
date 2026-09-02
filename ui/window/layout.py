@@ -916,14 +916,19 @@ class LayoutMixin:
         try:
             # The swatch cluster is fitted while sliders_container may still
             # have zero real geometry (a grip-toggle rebuild happens in the
-            # middle of the pass). Once the container actually gets its size,
-            # re-clamp the cluster so it can never sit on the tab strip.
+            # middle of the pass) and before the window has grown to the new
+            # content height — a clamp-only correction would just squeeze it
+            # up against the wheel. When the container's geometry lands,
+            # re-fit the cluster against the *current* window/container
+            # geometry so it returns to its natural circle-anchored spot; the
+            # fit's own clearance keeps it off the tab strip.
             if (watched is getattr(self, "sliders_container", None)
                     and event.type() in (QEvent.Type.Resize, QEvent.Type.Move,
                                          QEvent.Type.Show,
                                          QEvent.Type.LayoutRequest)
                     and getattr(self, "preview_box", None) is not None):
-                self._clamp_preview_box(self.preview_box)
+                self._place_floating_chrome(
+                    self.cfg.get("uiScale", 100) / 100.0)
             # Local LAB-toggle shortcuts (keyboard or mouse button) fire while
             # the cursor is over the color wheel / LAB pane. Skipped while a
             # settings hotkey capture is active so the recorded press wins.
