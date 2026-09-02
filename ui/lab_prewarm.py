@@ -67,11 +67,38 @@ class LabPrewarmTask(QRunnable):
             self.signals.failed.emit((self.request, repr(exc)))
 
 
+# sRGB encode is a pow() per channel — three of them on every pixel of the
+# plane. The curve only depends on one scalar, so it is tabulated once and
+# indexed instead: same bytes out (the table is finer than the 8-bit result),
+# a fraction of the time, and it is what makes full-quality rendering cheap
+# enough to keep during a drag.
+_ENCODE_STEPS = 8192
+_ENCODE_LUT: np.ndarray | None = None
+
+
+def _encode_lut() -> np.ndarray:
+    global _ENCODE_LUT
+    if _ENCODE_LUT is None:
+        linear = np.linspace(0.0, 1.0, _ENCODE_STEPS, dtype=np.float64)
+        srgb = np.where(linear <= 0.0031308,
+                        12.92 * linear,
+                        1.055 * np.power(linear, 1.0 / 2.4) - 0.055) * 255.0
+        _ENCODE_LUT = np.clip(np.rint(srgb), 0.0, 255.0).astype(np.uint8)
+    return _ENCODE_LUT
+
+
+def _encode_channel(linear: np.ndarray) -> np.ndarray:
+    """Linear light → 8-bit sRGB, through the lookup table."""
+    index = np.clip(linear, 0.0, 1.0) * (_ENCODE_STEPS - 1)
+    return _encode_lut()[index.astype(np.int32)]
+
+
 def _rgba_bytes(red: np.ndarray, green: np.ndarray, blue: np.ndarray, mask: np.ndarray) -> bytes:
-    rgba = np.zeros((*red.shape, 4), dtype=np.uint8)
-    rgba[..., 0] = np.clip(red, 0.0, 255.0).astype(np.uint8)
-    rgba[..., 1] = np.clip(green, 0.0, 255.0).astype(np.uint8)
-    rgba[..., 2] = np.clip(blue, 0.0, 255.0).astype(np.uint8)
+    """Pack LINEAR-light channels (0..1) + coverage into RGBA8888."""
+    rgba = np.empty((*red.shape, 4), dtype=np.uint8)
+    rgba[..., 0] = _encode_channel(red)
+    rgba[..., 1] = _encode_channel(green)
+    rgba[..., 2] = _encode_channel(blue)
     rgba[..., 3] = np.where(mask, 255, 0).astype(np.uint8)
     return rgba.tobytes()
 
@@ -89,11 +116,9 @@ def _lab_to_rgb(lightness: np.ndarray, a: np.ndarray, b: np.ndarray) -> tuple[np
     r = x65 * 3.2404542 - y65 * 1.5371385 - z65 * 0.4985314
     g = -x65 * 0.9692660 + y65 * 1.8760108 + z65 * 0.0415560
     blue = x65 * 0.0556434 - y65 * 0.2040259 + z65 * 1.0572252
-
-    def gamma(value: np.ndarray) -> np.ndarray:
-        return np.where(value <= 0.0031308, 12.92 * value, 1.055 * np.maximum(0.0, value) ** (1.0 / 2.4) - 0.055) * 255.0
-
-    return gamma(r), gamma(g), gamma(blue)
+    # LINEAR light: the sRGB curve is applied once, by table, in _rgba_bytes.
+    # In-gamut is 0..1 here, exactly what 0..255 was after the curve.
+    return r, g, blue
 
 
 def _oklab_to_rgb(lightness: np.ndarray, a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -104,11 +129,8 @@ def _oklab_to_rgb(lightness: np.ndarray, a: np.ndarray, b: np.ndarray) -> tuple[
     r = 4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3
     g = -1.2684380042 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3
     blue = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3
-
-    def gamma(value: np.ndarray) -> np.ndarray:
-        return np.where(value <= 0.0031308, 12.92 * value, 1.055 * np.maximum(0.0, value) ** (1.0 / 2.4) - 0.055) * 255.0
-
-    return gamma(r), gamma(g), gamma(blue)
+    # LINEAR light (see _lab_to_rgb).
+    return r, g, blue
 
 
 def _max_chroma_array(
@@ -133,9 +155,9 @@ def _max_chroma_array(
         else:
             red, green, blue = _oklab_to_rgb(
                 np.full_like(a_dir, lightness), mid * a_dir, mid * b_dir)
-        ok = ((red >= 0.0) & (red <= 255.0)
-              & (green >= 0.0) & (green <= 255.0)
-              & (blue >= 0.0) & (blue <= 255.0))
+        ok = ((red >= 0.0) & (red <= 1.0)
+              & (green >= 0.0) & (green <= 1.0)
+              & (blue >= 0.0) & (blue <= 1.0))
         lo = np.where(ok, mid, lo)
         hi = np.where(ok, hi, mid)
     return lo
@@ -169,6 +191,34 @@ def smoothed_boundary_chroma(mode: str, lightness: float, hue_deg: float) -> flo
     return min(avg, raw)
 
 
+# The boundary profile costs the same whether the disc is 200px or 700px —
+# 2048 directions x a 16-step binary search — and it only depends on (mode,
+# lightness). Dragging the indicator around the disc does not change either,
+# and a lightness drag repeats each bucket, so a handful of cached profiles
+# removes most of the disc's fixed cost.
+_PROFILE_CACHE: dict[tuple[str, int], tuple[np.ndarray, np.ndarray]] = {}
+_PROFILE_CACHE_LIMIT = 24
+
+
+def _cached_chroma_profile(lightness: float, mode: str) -> tuple[np.ndarray, np.ndarray]:
+    """Boundary profile for this lightness, reused across renders.
+
+    Keyed on the same 0.5-step lightness bucket the plane cache uses, so a
+    cache hit here means the whole disc can be redrawn without re-deriving
+    the gamut boundary.
+    """
+    scale = 200.0 if mode == "oklab" else 2.0
+    key = (mode, int(round(lightness * scale)))
+    hit = _PROFILE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    profile = _disc_chroma_profile(lightness, mode)
+    if len(_PROFILE_CACHE) >= _PROFILE_CACHE_LIMIT:
+        _PROFILE_CACHE.pop(next(iter(_PROFILE_CACHE)))
+    _PROFILE_CACHE[key] = profile
+    return profile
+
+
 def _disc_chroma_profile(lightness: float, mode: str) -> tuple[np.ndarray, np.ndarray]:
     """Raw + circular moving-average chroma boundaries on an angular grid.
 
@@ -179,12 +229,44 @@ def _disc_chroma_profile(lightness: float, mode: str) -> tuple[np.ndarray, np.nd
     the clamp keeps each direction inside its displayable boundary.
     """
     n = _DISC_DIRECTION_BINS
-    theta = (np.arange(n, dtype=np.float64) + 0.5) * (2.0 * np.pi / n)
+    theta = (np.arange(n, dtype=np.float32) + 0.5) * (2.0 * np.pi / n)
     raw = _max_chroma_array(np.full(n, lightness), np.cos(theta), np.sin(theta), mode)
     w = max(1, int(round(DISC_BOUNDARY_SMOOTH_DEG / 360.0 * n)))
     ext = np.concatenate([raw[-w:], raw, raw[:w]])
     window = np.lib.stride_tricks.sliding_window_view(ext, 2 * w + 1)
     return raw, window.mean(axis=1)
+
+
+# The polar grid (radius, direction, angular bin) depends only on the image
+# size — not on the lightness being dragged — yet it costs an arctan2 and a
+# sqrt on every pixel. Caching it per size turns a lightness drag into just
+# "chroma x direction -> colour", which is what lets the disc stay at full
+# resolution while the bar is moving.
+_GRID_CACHE: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
+_GRID_CACHE_LIMIT = 6
+
+
+def _disc_grid(image_size: int):
+    """(radius, a_dir, b_dir, angle_bin) for a square image of this size."""
+    hit = _GRID_CACHE.get(image_size)
+    if hit is not None:
+        return hit
+    coords = (np.arange(image_size, dtype=np.float32) + 0.5) / image_size * 2.0 - 1.0
+    xx, yy = np.meshgrid(coords, -coords)  # x right, y up
+    rr = np.sqrt(xx * xx + yy * yy)
+    # cos(atan2(y, x)) == x / r and sin(...) == y / r, so the direction comes
+    # straight out of the coordinates.
+    safe_r = np.where(rr > 1e-6, rr, np.float32(1.0))
+    a_dir = xx / safe_r
+    b_dir = yy / safe_r
+    theta = np.arctan2(yy, xx) % (2.0 * np.pi)
+    bins = np.floor(theta * _DISC_DIRECTION_BINS / (2.0 * np.pi)).astype(np.intp)
+    bins %= _DISC_DIRECTION_BINS
+    grid = (rr, a_dir, b_dir, bins)
+    if len(_GRID_CACHE) >= _GRID_CACHE_LIMIT:
+        _GRID_CACHE.pop(next(iter(_GRID_CACHE)))
+    _GRID_CACHE[image_size] = grid
+    return grid
 
 
 def render_lab_disc(request: LabPrewarmRequest) -> LabPrewarmResult:
@@ -196,12 +278,7 @@ def render_lab_disc(request: LabPrewarmRequest) -> LabPrewarmResult:
     """
     ratio = max(1.0, request.pixel_ratio)
     image_size = max(1, int(round(request.size * ratio)))
-    coords = (np.arange(image_size, dtype=np.float64) + 0.5) / image_size * 2.0 - 1.0
-    xx, yy = np.meshgrid(coords, -coords)  # x right, y up
-    rr = np.sqrt(xx * xx + yy * yy)
-    theta = np.arctan2(yy, xx) % (2.0 * np.pi)
-    a_dir = np.cos(theta)
-    b_dir = np.sin(theta)
+    rr, a_dir, b_dir, bins = _disc_grid(image_size)
 
     if request.render_mode == "oklab":
         lightness = request.lightness / 100.0
@@ -213,10 +290,8 @@ def render_lab_disc(request: LabPrewarmRequest) -> LabPrewarmResult:
     # Smoothed boundary profile: the moving average kills the knife-cut seam
     # at the concave gamut bay (blue direction); clamping to the raw boundary
     # per bin keeps every pixel displayable.
-    n = _DISC_DIRECTION_BINS
-    raw_profile, smoothed_profile = _disc_chroma_profile(
+    raw_profile, smoothed_profile = _cached_chroma_profile(
         lightness, request.render_mode)
-    bins = np.floor(theta * n / (2.0 * np.pi)).astype(np.intp) % n
     max_c = np.minimum(smoothed_profile, raw_profile)[bins]
 
     # Cap the outer-ring chroma so dark gray/blue areas do not produce a
@@ -224,19 +299,21 @@ def render_lab_disc(request: LabPrewarmRequest) -> LabPrewarmResult:
     # much faster than violet/magenta at low L, so normalising every hue to
     # its own gamut boundary makes blue look cut off.  A uniform ceiling with
     # per-hue gamut clamping keeps the wheel visually even.
-    chroma = np.clip(rr, 0.0, 1.0) * np.minimum(max_c, chroma_ceiling)
+    chroma = (np.clip(rr, 0.0, 1.0)
+              * np.minimum(max_c, chroma_ceiling).astype(np.float32))
     a = chroma * a_dir
     b = chroma * b_dir
 
+    light = np.float32(lightness)
     if request.render_mode == "oklab":
-        red, green, blue = _oklab_to_rgb(np.full_like(a, lightness), a, b)
+        red, green, blue = _oklab_to_rgb(light, a, b)
     else:
-        red, green, blue = _lab_to_rgb(np.full_like(a, lightness), a, b)
+        red, green, blue = _lab_to_rgb(light, a, b)
 
     mask = ((rr <= 1.0)
-            & (red >= 0.0) & (red <= 255.0)
-            & (green >= 0.0) & (green <= 255.0)
-            & (blue >= 0.0) & (blue <= 255.0))
+            & (red >= 0.0) & (red <= 1.0)
+            & (green >= 0.0) & (green <= 1.0)
+            & (blue >= 0.0) & (blue <= 1.0))
     return LabPrewarmResult(
         request=request,
         image_width=image_size,
@@ -254,10 +331,11 @@ def render_lab_plane(request: LabPrewarmRequest) -> LabPrewarmResult:
     y = np.linspace(request.max_b, request.min_b, image_size, dtype=np.float32)
     aa, bb = np.meshgrid(x, y)
     if request.render_mode == "oklab":
-        red, green, blue = _oklab_to_rgb(np.full_like(aa, request.lightness / 100.0), aa, bb)
+        red, green, blue = _oklab_to_rgb(np.float32(request.lightness / 100.0), aa, bb)
     else:
-        red, green, blue = _lab_to_rgb(np.full_like(aa, request.lightness), aa, bb)
-    mask = (red >= 0.0) & (red <= 255.0) & (green >= 0.0) & (green <= 255.0) & (blue >= 0.0) & (blue <= 255.0)
+        red, green, blue = _lab_to_rgb(np.float32(request.lightness), aa, bb)
+    mask = ((red >= 0.0) & (red <= 1.0) & (green >= 0.0) & (green <= 1.0)
+            & (blue >= 0.0) & (blue <= 1.0))
     return LabPrewarmResult(
         request=request,
         image_width=image_size,

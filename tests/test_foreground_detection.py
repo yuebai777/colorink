@@ -320,3 +320,46 @@ class TestCheckForegroundWindow:
         fs.cfg = {"onlyShowInCsp": False}
         mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
         assert fs.visible is True, "follow-mouse keeps it visible without the restriction"
+
+    def test_floating_sync_follows_palette_visibility(self, monkeypatch):
+        """Drawing-app foreground + user did NOT hide → floats get True."""
+        import ui.main_window as mw
+
+        self._stub_win32(monkeypatch, "clip studio paint", 424242)
+        fs = self._make_self()
+        fs.visible = False
+        fs._user_hidden = False
+        sync = []
+        fs.set_floating_foreground_visible = sync.append
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
+        assert sync == [True], sync
+
+    def test_floating_sync_respects_user_hidden(self, monkeypatch):
+        """Drawing app is in the foreground but the user explicitly hid the
+        palette — the floats must NOT be pulled back over it."""
+        import ui.main_window as mw
+
+        self._stub_win32(monkeypatch, "clip studio paint", 424242)
+        fs = self._make_self()
+        fs.visible = False
+        fs._user_hidden = True
+        sync = []
+        fs.set_floating_foreground_visible = sync.append
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
+        assert fs.visible is False
+        assert sync == [False], sync
+
+    def test_floating_sync_hides_when_foreground_lost(self, monkeypatch):
+        """Non-drawing foreground: the tracker hides the main window and
+        tells the floats to hide too (the reported bug)."""
+        import ui.main_window as mw
+
+        self._stub_win32(monkeypatch, "chrome - google chrome", 424242)
+        fs = self._make_self()
+        fs.visible = True
+        fs._user_hidden = False
+        sync = []
+        fs.set_floating_foreground_visible = sync.append
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
+        assert fs.visible is False
+        assert sync == [False], sync

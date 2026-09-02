@@ -16,6 +16,11 @@ from PyQt6.QtWidgets import (
 )
 
 from core import autostart, config, i18n
+from ui.chrome_opacity import (
+    CHROME_OPACITY_KEY,
+    clamp_chrome_opacity,
+    resolve_chrome_opacity,
+)
 from ui.hotkey_button import HotkeyButton, display_hotkey
 from ui.ringless_mode import RinglessConfig
 from ui.settings.appearance_panel import AppearancePanelMixin
@@ -88,6 +93,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
             ("快捷键", "hotkeys"),
             ("界面", "interface"),
             ("取色器", "picker"),
+            ("面板", "panels"),
             ("滤镜", "filter"),
             ("同步", "software"),
             ("关于", "about"),
@@ -111,6 +117,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         page_hotkeys   = self._make_page("快捷键")
         page_interface = self._make_page("界面")
         page_picker    = self._make_page("取色器")
+        page_panels    = self._make_page("面板")
         page_filter    = self._make_page("滤镜")
         page_sync      = self._make_page("同步")
         page_about     = self._make_page("关于")
@@ -177,7 +184,10 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         # ═══════════════════ Page 3: 取色器 ═══════════════════
         self._build_picker_page(page_picker)
 
-        # ═══════════════════ Page 4: 滤镜 ═══════════════════
+        # ═══════════════════ Page 4: 面板 ═══════════════════
+        self._build_panels_page(page_panels)
+
+        # ═══════════════════ Page 5: 滤镜 ═══════════════════
         self._build_filter_page(page_filter)
 
         # ═══════════════════ Page 5: 同步 ═══════════════════
@@ -296,6 +306,19 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
             target_idx = 0  # fall back to first item ("default")
         self.combo_slider_style.setCurrentIndex(target_idx)
         self.combo_slider_style.blockSignals(False)
+
+        # Border theme combo (stored key → combo index; "auto" = 跟随滑块样式)
+        border_style_key = self.cfg.get("borderStyle", "auto")
+        self.combo_border_style.blockSignals(True)
+        border_idx = -1
+        for i in range(self.combo_border_style.count()):
+            if self.combo_border_style.itemData(i) == border_style_key:
+                border_idx = i
+                break
+        if border_idx < 0:
+            border_idx = 0  # fall back to first item ("auto")
+        self.combo_border_style.setCurrentIndex(border_idx)
+        self.combo_border_style.blockSignals(False)
         
         font_val = self.cfg.get("fontSize", 100)
         self.lbl_font_size.setText(f"{font_val}%")
@@ -307,6 +330,12 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.zoom_slider.setValue(self.cfg.get("uiScale", 100))
         self.zoom_slider.blockSignals(False)
         self.lbl_zoom.setText(f"{self.zoom_slider.value()}%")
+
+        opacity_val = resolve_chrome_opacity(self.cfg)
+        self.opacity_slider.blockSignals(True)
+        self.opacity_slider.setValue(opacity_val)
+        self.opacity_slider.blockSignals(False)
+        self.lbl_opacity.setText(f"{opacity_val}%")
         
         # Checkboxes
         for cb, key in [
@@ -327,7 +356,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
             
         # 3. Sliders — load only existing groups, respect module visibility
         for key in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh"]:
-            cb, _, _, _ = self.slider_rows[key]
+            cb, _row = self.slider_rows[key]
             cb.blockSignals(True)
             cb.setChecked(self.cfg.get(f"showSliders{key}", True))
             cb.blockSignals(False)
@@ -386,6 +415,15 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cb_show_lab_lightness.blockSignals(True)
         self.cb_show_lab_lightness.setChecked(self.cfg.get("showLabLightnessSlider", True))
         self.cb_show_lab_lightness.blockSignals(False)
+        for checkbox, key, default in (
+                (getattr(self, "cb_sliders_split", None), "slidersSplit", False),
+                (getattr(self, "cb_sliders_tabs", None), "slidersTabs", False),
+                (getattr(self, "cb_panel_drag", None), "panelDrag", False),):
+            if checkbox is not None:
+                checkbox.blockSignals(True)
+                checkbox.setChecked(self.cfg.get(key, default))
+                checkbox.blockSignals(False)
+        self.refresh_floating_panel_list()
         
         self.cb_flip_wheel.blockSignals(True)
         self.cb_flip_wheel.setChecked(self.cfg.get("flipColorWheelHorizontally", False))
@@ -501,6 +539,10 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         # Slider visual theme (key stored as combo item data)
         slider_key = self.combo_slider_style.currentData()
         self.cfg["sliderStyle"] = slider_key if slider_key else "default"
+
+        # Border visual theme ("auto" = follow the slider theme's pairing)
+        border_key = self.combo_border_style.currentData()
+        self.cfg["borderStyle"] = border_key if border_key else "auto"
         
         self.cfg["followMouseEnabled"] = self.cb_follow_mouse.isChecked()
         self.cfg["lockWindowSize"] = self.cb_lock_size.isChecked()
@@ -555,6 +597,15 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cfg["labViewShape"] = self.combo_lab_shape.currentData() or "square"
         self.cfg["labHarmonyMode"] = self.combo_lab_harmony.currentData() or "analogous"
         self.cfg["showLabLightnessSlider"] = self.cb_show_lab_lightness.isChecked()
+        split = getattr(self, "cb_sliders_split", None)
+        if split is not None:
+            self.cfg["slidersSplit"] = split.isChecked()
+        tabs = getattr(self, "cb_sliders_tabs", None)
+        if tabs is not None:
+            self.cfg["slidersTabs"] = tabs.isChecked()
+        grips = getattr(self, "cb_panel_drag", None)
+        if grips is not None:
+            self.cfg["panelDrag"] = grips.isChecked()
 
         # ── Ringless settings ──
         rcfg = self.ringless_settings.config()
@@ -575,6 +626,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cfg["psVersion"] = self.combo_ps.currentText()
         
         self.cfg["uiScale"] = self.zoom_slider.value()
+        self.cfg[CHROME_OPACITY_KEY] = clamp_chrome_opacity(self.opacity_slider.value())
         self.cfg["flipColorWheelHorizontally"] = self.cb_flip_wheel.isChecked()
         
         self.cfg.update(self._grayscale_filter_config())
@@ -623,14 +675,13 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         """
         module = self.cfg.get("colorSpaceModule", "hsv")
         allowed = set(self._MODULE_SLIDER_MAP.get(module, ["HSV", "RGB", "LAB"]))
-        for key, (cb, btn_up, btn_down, row_layout) in self.slider_rows.items():
+        for key, (cb, row_layout) in self.slider_rows.items():
             visible = key in allowed
             for i in range(row_layout.count()):
                 w = row_layout.itemAt(i).widget()
                 if w:
                     w.setVisible(visible)
         self._reorder_slider_rows_ui()
-        self._update_slider_order_buttons()
 
     def _visible_slider_keys(self):
         """Slider keys the ordering controls act on: the active module's rows
@@ -641,38 +692,21 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
                 if k == "History" or k in allowed]
 
     def _reorder_slider_rows_ui(self):
-        """Visually reorder the slider rows to match the configured order, so
-        every move up/down gives immediate feedback in this panel."""
+        """Show the rows in the order the window shows the panels.
+
+        Order is edited by dragging the panels themselves now; this list
+        just mirrors the result so the two never disagree.
+        """
         cl = getattr(self, "_sl_order_layout", None)
         if cl is None:
             return
-        rows = [self.slider_rows[k][3]
+        rows = [self.slider_rows[k][1]
                 for k in config.sorted_slider_groups(self.cfg)
                 if k in self.slider_rows]
         while cl.count():
             cl.takeAt(0)
         for row in rows:
             cl.addLayout(row)
-
-    def _update_slider_order_buttons(self):
-        """Disable up/down buttons at the visible-list boundaries."""
-        if not hasattr(self, "slider_rows"):
-            return
-        visible = self._visible_slider_keys()
-        if hasattr(self, "btn_hist_up"):
-            try:
-                hist_idx = visible.index("History")
-            except ValueError:
-                hist_idx = -1
-            self.btn_hist_up.setEnabled(hist_idx > 0)
-            self.btn_hist_down.setEnabled(0 <= hist_idx < len(visible) - 1)
-        for key, (cb, btn_up, btn_down, row_layout) in self.slider_rows.items():
-            try:
-                idx = visible.index(key)
-            except ValueError:
-                continue
-            btn_up.setEnabled(idx > 0)
-            btn_down.setEnabled(idx < len(visible) - 1)
 
     def notify_module_changed(self):
         """Called by MainWindow when the module changes externally."""
@@ -705,30 +739,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self._persist_config()
         self.settingChanged.emit()
 
-    def _move_slider_order(self, key, delta):
-        """Move a slider group one step among the rows currently visible in
-        this panel (the active module's rows plus History).
 
-        Hidden groups keep their order slots, so every click produces a
-        visible reorder instead of silently swapping with a row the user
-        cannot see.
-        """
-        ordered = self._visible_slider_keys()
-        try:
-            idx = ordered.index(key)
-        except ValueError:
-            return
-        target = idx + delta
-        if not (0 <= target < len(ordered)):
-            return
-        other = ordered[target]
-        key_val = config.get_slider_order(self.cfg, key)
-        other_val = config.get_slider_order(self.cfg, other)
-        self.cfg[config.slider_order_key(key)] = other_val
-        self.cfg[config.slider_order_key(other)] = key_val
-        self._persist_and_emit()
-        self._reorder_slider_rows_ui()
-        self._update_slider_order_buttons()
 
 
 

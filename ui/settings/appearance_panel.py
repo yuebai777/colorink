@@ -17,6 +17,14 @@ from PyQt6.QtWidgets import (
 )
 
 from core import i18n
+from ui.border_themes import list_border_theme_names
+from ui.chrome_opacity import (
+    CHROME_OPACITY_KEY,
+    CHROME_OPACITY_MAX,
+    CHROME_OPACITY_MIN,
+    CHROME_OPACITY_STEP,
+    clamp_chrome_opacity,
+)
 from ui.lab_harmony import HARMONY_MODE_NAMES
 from ui.ringless_settings import RinglessSettingsWidget
 from ui.settings.settings_helpers import (
@@ -28,6 +36,7 @@ from ui.settings.settings_helpers import (
 )
 from ui.settings.tooltips import SLIDER_SHOW_TIPS
 from ui.slider_themes import list_slider_theme_names
+from ui.theme_contrast import DARK_INK, muted_ink, readable_ink
 
 
 class AppearancePanelMixin:
@@ -144,6 +153,18 @@ class AppearancePanelMixin:
         semantic tokens: accent, muted, success, warning, danger. The
         semantic tokens are computed from the theme's text/bg contrast so
         status labels stay legible in both light and dark chrome.
+
+        Two inks come back, one per surface the settings UI paints:
+
+        * `text` / `muted` — for widgets filled with `bg` (combo boxes,
+          buttons, value fields)
+        * `bar_text` / `bar_muted` — for the panel itself, which is filled
+          with `bar_bg`
+
+        They used to be the same ink. That breaks as soon as a theme's two
+        tones disagree in lightness: the eyedropper theme lets the user pick
+        a dark frame colour next to a light background colour, and the whole
+        settings panel then rendered dark text on a dark surface.
         """
         bg, text, border_color, barBg = "#b2b2b2", "#222222", "#787878", "#787878"
         if hasattr(self, "_parent") and self._parent is not None:
@@ -167,7 +188,10 @@ class AppearancePanelMixin:
                     bg = QColor(bg_stored).name()
                     barBg = c_bar.name()
                     border_color = c_bar.name()
-                    text = "#ffffff" if QColor(bg).lightness() < 128 else "#222222"
+                    # Perceptual luma, not HSL lightness: a saturated pick
+                    # (yellow sits at lightness 127) would otherwise ask for
+                    # white text on a colour the eye reads as bright.
+                    text = readable_ink(bg)
                 except Exception:
                     pass
             else:
@@ -182,17 +206,20 @@ class AppearancePanelMixin:
                 border_color = t["border"]
                 barBg = border_color
 
-        is_dark_text = QColor(text).lightness() < 128
         # Muted = primary text at ~45% alpha (de-emphasized / disabled-like)
-        tc = QColor(text)
-        muted = f"rgba({tc.red()},{tc.green()},{tc.blue()},0.45)"
-        # Status colors chosen for adequate contrast on both light & dark chrome
-        if is_dark_text:  # light chrome → darker status colors
+        muted = muted_ink(text)
+        # The panel is filled with barBg, so its ink is chosen against barBg
+        # instead of being inherited from the body colour.
+        bar_text = readable_ink(barBg)
+        bar_muted = muted_ink(bar_text)
+        # Status labels live on the panel, so their contrast follows it too
+        if bar_text == DARK_INK:  # light panel → darker status colors
             success, warning, danger = "#2e7d32", "#b26a00", "#c62828"
-        else:             # dark chrome → lighter status colors
+        else:                     # dark panel → lighter status colors
             success, warning, danger = "#4caf50", "#ffb74d", "#ef5350"
 
         return {"bg": bg, "text": text, "border": border_color, "bar_bg": barBg,
+                "bar_text": bar_text, "bar_muted": bar_muted,
                 "accent": "#5a94e2", "muted": muted,
                 "success": success, "warning": warning, "danger": danger}
 
@@ -203,10 +230,11 @@ class AppearancePanelMixin:
 
         c = self.theme_colors()
         bg = c["bg"]
-        text = c["text"]
+        text = c["text"]              # ink on the input surface (bg)
         barBg = c["bar_bg"]
+        bar_text = c["bar_text"]      # ink on the panel surface (bar_bg)
+        bar_muted = c["bar_muted"]
         accent = c["accent"]
-        muted = c["muted"]
         success = c["success"]
         warning = c["warning"]
         danger = c["danger"]
@@ -217,19 +245,24 @@ class AppearancePanelMixin:
         # Srgb components for semi-transparent derivations
         tc = QColor(text)
         text_r, text_g, text_b = tc.red(), tc.green(), tc.blue()
+        # Overlays and scrollbars sit on the panel, so they are tinted with
+        # the panel ink; disabled button text stays on the input surface.
+        bc = QColor(bar_text)
+        bar_r, bar_g, bar_b = bc.red(), bc.green(), bc.blue()
+        panel_is_light = bar_text == DARK_INK
 
-        if is_dark_text:
+        if panel_is_light:
             hover_bg = "rgba(0,0,0,0.06)"
             pressed_bg = "rgba(0,0,0,0.10)"
-            disabled_color = f"rgba({text_r},{text_g},{text_b},0.40)"
-            scroll_handle = f"rgba({text_r},{text_g},{text_b},0.25)"
-            scroll_handle_hover = f"rgba({text_r},{text_g},{text_b},0.45)"
+            scroll_handle = f"rgba({bar_r},{bar_g},{bar_b},0.25)"
+            scroll_handle_hover = f"rgba({bar_r},{bar_g},{bar_b},0.45)"
         else:
             hover_bg = "rgba(255,255,255,0.08)"
             pressed_bg = "rgba(255,255,255,0.04)"
-            disabled_color = f"rgba({text_r},{text_g},{text_b},0.30)"
-            scroll_handle = f"rgba({text_r},{text_g},{text_b},0.20)"
-            scroll_handle_hover = f"rgba({text_r},{text_g},{text_b},0.35)"
+            scroll_handle = f"rgba({bar_r},{bar_g},{bar_b},0.20)"
+            scroll_handle_hover = f"rgba({bar_r},{bar_g},{bar_b},0.35)"
+        disabled_color = (f"rgba({text_r},{text_g},{text_b},0.40)" if is_dark_text
+                          else f"rgba({text_r},{text_g},{text_b},0.30)")
 
         # ── Per-widget inline styles ──
         self.lbl_font_size.setStyleSheet(f"""
@@ -265,14 +298,14 @@ class AppearancePanelMixin:
                 padding: 3px;
             }}
             QListWidget#NavRail::item {{
-                color: {muted};
+                color: {bar_muted};
                 border-radius: 3px;
                 padding: 0 8px;
                 margin: 1px 0;
             }}
             QListWidget#NavRail::item:hover {{
                 background-color: {hover_bg};
-                color: {text};
+                color: {bar_text};
             }}
             QListWidget#NavRail::item:selected {{
                 background-color: {accent};
@@ -284,12 +317,12 @@ class AppearancePanelMixin:
                 border: none;
             }}
             QWidget {{
-                color: {text};
+                color: {bar_text};
                 font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei";
                 font-size: {font_size}px;
             }}
             QLabel {{
-                color: {text};
+                color: {bar_text};
                 background: transparent;
             }}
             QLabel#SectionHeader {{
@@ -297,10 +330,10 @@ class AppearancePanelMixin:
                 font-size: {header_font_size}px;
                 margin-top: 2px;
                 margin-bottom: 1px;
-                color: {text};
+                color: {bar_text};
             }}
             QLabel#StatusHint {{
-                color: {muted};
+                color: {bar_muted};
                 background: transparent;
                 font-size: {font_size}px;
             }}
@@ -317,7 +350,7 @@ class AppearancePanelMixin:
                 background: transparent;
             }}
             QCheckBox {{
-                color: {text};
+                color: {bar_text};
                 spacing: 6px;
             }}
             QCheckBox::indicator {{
@@ -507,6 +540,33 @@ class AppearancePanelMixin:
         # Persist to config; on_settings_saved will see scale already matches → cheap update()
         self.save_settings()
 
+    def on_opacity_slider_changed(self):
+        """Repaint the window chrome at the dragged opacity, without saving.
+
+        Transparency is the one setting nobody can judge from a number, so
+        it previews live on the real window: the value goes into the main
+        window's in-memory config and the theme re-runs as a pure repaint
+        (is_resize_event=True skips the content-height pass). Nothing
+        touches the config file while the handle is held, so a settings
+        reload simply restores the stored value.
+        """
+        value = clamp_chrome_opacity(self.opacity_slider.value())
+        self.lbl_opacity.setText(f"{value}%")
+        parent = getattr(self, "_parent", None)
+        if parent is not None:
+            parent.cfg[CHROME_OPACITY_KEY] = value
+            parent.apply_theme(is_resize_event=True)
+        if not self.opacity_slider.isSliderDown():
+            # Arrow keys, page steps and groove clicks change the value
+            # without ever emitting sliderReleased, so they commit here
+            # instead of leaving a preview that no save would pick up.
+            self.on_opacity_slider_released()
+
+    def on_opacity_slider_released(self):
+        """Commit the previewed opacity to the config file."""
+        self.cfg[CHROME_OPACITY_KEY] = clamp_chrome_opacity(self.opacity_slider.value())
+        self.save_settings()
+
     def _refresh_theme_status(self):
         if not hasattr(self, "lbl_theme_status"):
             return
@@ -608,6 +668,135 @@ class AppearancePanelMixin:
         except Exception:
             pass
 
+    def refresh_floating_panel_list(self):
+        """Show which panels are currently out in their own windows.
+
+        The one place that answers "where did that panel go" — a window
+        dragged onto a second monitor or off-screen cannot be right-clicked,
+        so there has to be a way back that does not involve finding it.
+        """
+        from ui.panels import registry, store
+
+        floating = store.load_floating_from(self.cfg)
+        names = [(registry.panel(panel_id).title if registry.panel(panel_id)
+                  else panel_id) for panel_id in floating]
+        label = getattr(self, "lbl_floating_panels", None)
+        if label is not None:
+            label.setText(i18n.tr("浮出的面板：无") if not names
+                          else i18n.tr("浮出的面板：") + "、".join(names))
+        button = getattr(self, "btn_dock_all_panels", None)
+        if button is not None:
+            button.setEnabled(bool(names))
+
+    def dock_all_floating_panels(self):
+        """Bring every torn-off panel home."""
+        from core import config as _config
+        from ui.panels import store
+
+        window = getattr(self, "_parent", None)
+        dock = getattr(window, "dock_panel", None)
+        if callable(dock):
+            for panel_id in list(store.load_floating_from(window.cfg)):
+                dock(panel_id)
+        self.cfg = _config.load_hotkey_config()
+        self.refresh_floating_panel_list()
+
+    def reset_panel_arrangement(self):
+        """Forget a dragged panel arrangement.
+
+        Only the arrangement: the layout switches above are settings the
+        user chose, not the mess they just dragged. The window re-assembles
+        from those switches when settingChanged lands.
+        """
+        from core import config as _config
+        from ui.panels import store
+
+        store.clear(self.cfg)
+        _config.save_hotkey_config(self.cfg)
+        self.settingChanged.emit()
+        self.refresh_floating_panel_list()
+
+    def _build_space_row(self, kind: str):
+        """A -/value/+ row for one spacing setting."""
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        dec = self._make_step_button("-")
+        label = QLabel("6" if kind == "same" else "8")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setFixedSize(45, 20)
+        inc = self._make_step_button("+")
+        if kind == "same":
+            dec.clicked.connect(self.same_space_decrease)
+            inc.clicked.connect(self.same_space_increase)
+            self.btn_same_dec, self.lbl_same_space, self.btn_same_inc = dec, label, inc
+        else:
+            dec.clicked.connect(self.diff_space_decrease)
+            inc.clicked.connect(self.diff_space_increase)
+            self.btn_diff_dec, self.lbl_diff_space, self.btn_diff_inc = dec, label, inc
+        row.addWidget(dec)
+        row.addWidget(label)
+        row.addWidget(inc)
+        row.addStretch()
+        return row
+
+    def _build_panels_page(self, page_panels):
+        """Everything about how the panels are arranged, in one place.
+
+        It got its own rail entry because it is not a sub-topic of the
+        colour picker: arranging panels, tearing them off and spacing them
+        is what a user comes here to do once the window is theirs.
+        """
+        card_panels, cl_panels = self._begin_card(page_panels, i18n.tr("排布"))
+
+        self.cb_panel_drag = QCheckBox(i18n.tr("面板抓手（拖动重排，拖出窗口即独立）"))
+        self.cb_panel_drag.setToolTip(
+            i18n.tr("每块面板上方出现一条抓手：拖动它换位置，拖到窗口外或双击"
+                    "就变成独立窗口，右键有更多操作"))
+        self.cb_panel_drag.stateChanged.connect(self.save_settings)
+        cl_panels.addWidget(self.cb_panel_drag)
+
+        self.cb_sliders_split = QCheckBox(i18n.tr("滑块列并排（可拖动分割）"))
+        self.cb_sliders_split.stateChanged.connect(self.save_settings)
+        cl_panels.addWidget(self.cb_sliders_split)
+
+        self.cb_sliders_tabs = QCheckBox(i18n.tr("滑块组分页签叠放"))
+        self.cb_sliders_tabs.stateChanged.connect(self.save_settings)
+        cl_panels.addWidget(self.cb_sliders_tabs)
+        page_panels.addWidget(card_panels)
+
+        card_float, cl_float = self._begin_card(page_panels, i18n.tr("独立窗口"))
+        self.lbl_floating_panels = QLabel(i18n.tr("浮出的面板：无"))
+        self.lbl_floating_panels.setWordWrap(True)
+        cl_float.addWidget(self.lbl_floating_panels)
+        row_panel_actions = QHBoxLayout()
+        row_panel_actions.setSpacing(6)
+        self.btn_dock_all_panels = QPushButton(i18n.tr("全部收回"))
+        self.btn_dock_all_panels.setToolTip(
+            i18n.tr("把所有浮出的面板收回主窗口 —— 拖到屏幕外找不着时用这个"))
+        self.btn_dock_all_panels.clicked.connect(self.dock_all_floating_panels)
+        row_panel_actions.addWidget(self.btn_dock_all_panels)
+        self.btn_reset_panel_layout = QPushButton(i18n.tr("复位面板布局"))
+        self.btn_reset_panel_layout.setToolTip(
+            i18n.tr("忘掉拖出来的排布，回到上面这些开关决定的布局；"
+                    "不影响显示/隐藏和浮出状态"))
+        self.btn_reset_panel_layout.clicked.connect(self.reset_panel_arrangement)
+        row_panel_actions.addWidget(self.btn_reset_panel_layout)
+        row_panel_actions.addStretch()
+        cl_float.addLayout(row_panel_actions)
+        page_panels.addWidget(card_float)
+
+        card_gap, cl_gap = self._begin_card(page_panels, i18n.tr("间距"))
+        grid_gap = QGridLayout()
+        grid_gap.setSpacing(6)
+        grid_gap.setColumnMinimumWidth(0, 84)
+        grid_gap.setColumnStretch(1, 1)
+        grid_gap.addWidget(QLabel(i18n.tr("同组滑块间距")), 0, 0)
+        grid_gap.addLayout(self._build_space_row("same"), 0, 1)
+        grid_gap.addWidget(QLabel(i18n.tr("面板之间间距")), 1, 0)
+        grid_gap.addLayout(self._build_space_row("diff"), 1, 1)
+        cl_gap.addLayout(grid_gap)
+        page_panels.addWidget(card_gap)
+
     def _build_interface_page(self, page_interface):
         # ═══════════════════ Page 2: 界面 ═══════════════════
         card_appear, cl_appear = self._begin_card(page_interface, i18n.tr("外观"))
@@ -637,8 +826,17 @@ class AppearancePanelMixin:
         self.combo_slider_style.currentIndexChanged.connect(self.save_settings)
         grid_appear.addWidget(self.combo_slider_style, 1, 1)
 
+        # Border visual theme (window frame / group frame / value box chrome).
+        # First item is the "follow the slider style" policy.
+        grid_appear.addWidget(QLabel(i18n.tr("边框样式")), 2, 0)
+        self.combo_border_style = NonScrollComboBox()
+        for _key, _display in list_border_theme_names():
+            self.combo_border_style.addItem(_display, _key)
+        self.combo_border_style.currentIndexChanged.connect(self.save_settings)
+        grid_appear.addWidget(self.combo_border_style, 2, 1)
+
         # Font size controls (- / +)
-        grid_appear.addWidget(QLabel(i18n.tr("字体大小")), 2, 0)
+        grid_appear.addWidget(QLabel(i18n.tr("字体大小")), 3, 0)
         row_font_size = QHBoxLayout()
         row_font_size.setSpacing(4)
         self.btn_font_dec = self._make_step_button("-")
@@ -651,10 +849,10 @@ class AppearancePanelMixin:
         row_font_size.addWidget(self.btn_font_dec)
         row_font_size.addWidget(self.lbl_font_size)
         row_font_size.addWidget(self.btn_font_inc)
-        grid_appear.addLayout(row_font_size, 2, 1)
+        grid_appear.addLayout(row_font_size, 3, 1)
 
         # UI Scale controls (Slider)
-        grid_appear.addWidget(QLabel(i18n.tr("界面缩放")), 3, 0)
+        grid_appear.addWidget(QLabel(i18n.tr("界面缩放")), 4, 0)
         row_zoom = QHBoxLayout()
         self.zoom_slider = NonScrollSlider(Qt.Orientation.Horizontal)
         self.zoom_slider.setObjectName("ScaleSlider")
@@ -668,7 +866,25 @@ class AppearancePanelMixin:
         self.lbl_zoom.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         row_zoom.addWidget(self.zoom_slider)
         row_zoom.addWidget(self.lbl_zoom)
-        grid_appear.addLayout(row_zoom, 3, 1)
+        grid_appear.addLayout(row_zoom, 4, 1)
+
+        # Background / frame opacity (Slider). Live-previewed while dragging,
+        # persisted on release — the same split the UI-scale slider uses.
+        grid_appear.addWidget(QLabel(i18n.tr("背景不透明度")), 5, 0)
+        row_opacity = QHBoxLayout()
+        self.opacity_slider = NonScrollSlider(Qt.Orientation.Horizontal)
+        self.opacity_slider.setObjectName("ScaleSlider")
+        self.opacity_slider.setRange(CHROME_OPACITY_MIN, CHROME_OPACITY_MAX)
+        self.opacity_slider.setSingleStep(CHROME_OPACITY_STEP)
+        self.opacity_slider.setPageStep(CHROME_OPACITY_STEP * 2)
+        self.opacity_slider.valueChanged.connect(self.on_opacity_slider_changed)
+        self.opacity_slider.sliderReleased.connect(self.on_opacity_slider_released)
+        self.lbl_opacity = QLabel("100%")
+        self.lbl_opacity.setFixedWidth(30)
+        self.lbl_opacity.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        row_opacity.addWidget(self.opacity_slider)
+        row_opacity.addWidget(self.lbl_opacity)
+        grid_appear.addLayout(row_opacity, 5, 1)
 
         cl_appear.addLayout(grid_appear)
 
@@ -860,16 +1076,13 @@ class AppearancePanelMixin:
             if tip:
                 cb.setToolTip(i18n.tr(tip))
             cb.stateChanged.connect(self.save_settings)
-            btn_up = self._make_step_button("▲", i18n.tr("上移"), width=24)
-            btn_up.clicked.connect(lambda _checked, k=key: self._move_slider_order(k, -1))
-            btn_down = self._make_step_button("▼", i18n.tr("下移"), width=24)
-            btn_down.clicked.connect(lambda _checked, k=key: self._move_slider_order(k, 1))
             row_layout.addWidget(cb)
             row_layout.addStretch()
-            row_layout.addWidget(btn_up)
-            row_layout.addWidget(btn_down)
             cl_sl_order.addLayout(row_layout)
-            self.slider_rows[key] = (cb, btn_up, btn_down, row_layout)
+            # Order is not edited here any more: you drag the panels. The
+            # rows still follow the current order so this list matches what
+            # the window shows.
+            self.slider_rows[key] = (cb, row_layout)
 
         # Kept so the rows can be visually reordered to match the config.
         self._sl_order_layout = cl_sl_order
@@ -884,14 +1097,8 @@ class AppearancePanelMixin:
         row_hist_show.setSpacing(6)
         self.cb_history = QCheckBox(i18n.tr("显示颜色历史"))
         self.cb_history.stateChanged.connect(self.save_settings)
-        self.btn_hist_up = self._make_step_button("▲", i18n.tr("在滑块顺序中上移"), width=24)
-        self.btn_hist_up.clicked.connect(lambda _checked: self._move_slider_order("History", -1))
-        self.btn_hist_down = self._make_step_button("▼", i18n.tr("在滑块顺序中下移"), width=24)
-        self.btn_hist_down.clicked.connect(lambda _checked: self._move_slider_order("History", 1))
         row_hist_show.addWidget(self.cb_history)
         row_hist_show.addStretch()
-        row_hist_show.addWidget(self.btn_hist_up)
-        row_hist_show.addWidget(self.btn_hist_down)
         cl_hist.addLayout(row_hist_show)
 
         # History grid shape — columns × rows (2×2 grid for label alignment)
@@ -962,6 +1169,7 @@ class AppearancePanelMixin:
 
         page_picker.addWidget(card_wheel)
 
+
         card_sp, cl_sp = self._begin_card(page_picker, i18n.tr("高级"))
 
         grid_sp = QGridLayout()
@@ -985,37 +1193,7 @@ class AppearancePanelMixin:
         row_scroll.addWidget(self.btn_scroll_inc)
         grid_sp.addLayout(row_scroll, 0, 1)
 
-        # 同一空间间距
-        grid_sp.addWidget(QLabel(i18n.tr("同色空间滑块间距")), 1, 0)
-        row_same = QHBoxLayout()
-        row_same.setSpacing(4)
-        self.btn_same_dec = self._make_step_button("-")
-        self.btn_same_dec.clicked.connect(self.same_space_decrease)
-        self.lbl_same_space = QLabel("6")
-        self.lbl_same_space.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_same_space.setFixedSize(45, 20)
-        self.btn_same_inc = self._make_step_button("+")
-        self.btn_same_inc.clicked.connect(self.same_space_increase)
-        row_same.addWidget(self.btn_same_dec)
-        row_same.addWidget(self.lbl_same_space)
-        row_same.addWidget(self.btn_same_inc)
-        grid_sp.addLayout(row_same, 1, 1)
-
-        # 不同色空间滑块间距
-        grid_sp.addWidget(QLabel(i18n.tr("不同色空间滑块间距")), 2, 0)
-        row_diff = QHBoxLayout()
-        row_diff.setSpacing(4)
-        self.btn_diff_dec = self._make_step_button("-")
-        self.btn_diff_dec.clicked.connect(self.diff_space_decrease)
-        self.lbl_diff_space = QLabel("8")
-        self.lbl_diff_space.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_diff_space.setFixedSize(45, 20)
-        self.btn_diff_inc = self._make_step_button("+")
-        self.btn_diff_inc.clicked.connect(self.diff_space_increase)
-        row_diff.addWidget(self.btn_diff_dec)
-        row_diff.addWidget(self.lbl_diff_space)
-        row_diff.addWidget(self.btn_diff_inc)
-        grid_sp.addLayout(row_diff, 2, 1)
+        # 间距移到「面板 → 间距」卡：它决定的是排布，不是取色行为。
 
         cl_sp.addLayout(grid_sp)
         page_picker.addWidget(card_sp)

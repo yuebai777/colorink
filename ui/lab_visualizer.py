@@ -1,6 +1,7 @@
 from typing import Any, cast
 
 import math
+import time
 
 import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, Qt, QThreadPool, QTimer, pyqtSignal
@@ -24,7 +25,9 @@ from ui.color_conversions import (
     rgb_to_lab,
     rgb_to_oklab,
 )
+from ui.color_session import session_of
 from ui.lab_harmony import is_valid_harmony_mode, harmony_hue_offsets
+from ui.window_layout import resolve_picker_geometry
 from ui.lab_prewarm import (
     LAB_DISC_CHROMA_CEILING,
     OKLAB_DISC_CHROMA_CEILING,
@@ -40,6 +43,10 @@ class LabSquare(QWidget):
     # Emits (r, g, b)
     colorChanged = pyqtSignal(int, int, int)
     interactionFinished = pyqtSignal()
+    # Emitted whenever the painted plane box may have moved or resized
+    # (resize, avoid_top, shape switch) so MainWindow can re-align the
+    # vertical lightness bar with it.
+    planeGeometryChanged = pyqtSignal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -92,26 +99,113 @@ class LabSquare(QWidget):
         # the preview box geometry. 0 = no avoidance (plane centered).
         self.avoid_top = 0
 
+        # Vertical lightness bar sharing the LAB pane with this widget.
+        # ``side_total`` is the FULL pane width that the plane and the bar have
+        # to share (0 = bar hidden); the pane is then composed as
+        # [gap][plane][gap][bar][gap], so showing the bar no longer pushes the
+        # plane off-centre with all the slack piled up on one side.
+        self.side_total = 0
+        self.side_bar_width = 0
+        self.side_gap = 8
+
+        # Measured cost of the plane renderer, in ms per pixel of image area.
+        # Drives how many pixels an interactive frame may use.
+        self._render_cost_per_px = 0.0
+        # While this is in the future the widget is mid-resize (see
+        # _RESIZE_QUANTUM_PX); _last_full_px is how that is noticed.
+        self._resize_settles_at = 0.0
+        self._last_full_px = 0
+
     def resizeEvent(self, event):
         cached_size = None
         if isinstance(self._cached_key, tuple) and len(self._cached_key) >= 2:
             cached_size = self._cached_key[1]
         super().resizeEvent(event)
-        if self.shape == "disc":
-            new_size = int(round(self._disc_diameter()))
-        else:
-            new_size = min(self.width(), max(0, self.height() - self.avoid_top))
+        new_size = self._plane_size()
         # QStackedWidget may deliver a same-size resize when a page becomes
         # visible. Do not throw away a valid full image in that case.
         if cached_size is None or cached_size != new_size:
             self._invalidate_full_cache()
+        self.planeGeometryChanged.emit()
+
+    # ── plane composition ─────────────────────────────────────────────────
+    #
+    # Every consumer (cache key, prewarm, renderer, painter, hit-test) goes
+    # through these helpers, so the box an image is rendered for can never
+    # drift from the rectangle it is painted into.
+
+    def _has_side_bar(self) -> bool:
+        return self.side_total > 0 and self.side_bar_width > 0
+
+    def _plane_width_budget(self) -> int:
+        """Widest the plane may be while leaving room for the bar cluster."""
+        if not self._has_side_bar():
+            return self.width()
+        return max(
+            0, int(self.side_total - 3 * self.side_gap - self.side_bar_width))
+
+    def _plane_gap(self, size: float) -> float:
+        """Even margin M of the [M][plane][M][bar][M] pane rhythm."""
+        if not self._has_side_bar():
+            return 0.0
+        return max(float(self.side_gap),
+                   (self.side_total - size - self.side_bar_width) / 3.0)
+
+    def _plane_left(self, size: float) -> float:
+        """Left edge of the plane inside this widget."""
+        if not self._has_side_bar():
+            return (self.width() - size) / 2.0
+        return max(0.0, min(self._plane_gap(size), self.width() - size))
+
+    def _square_plane_size(self) -> int:
+        avail_h = max(0, self.height() - self.avoid_top)
+        return int(max(0, min(self._plane_width_budget(), avail_h, self.width())))
+
+    def _plane_size(self) -> int:
+        """Side of the rendered plane image (square edge / disc bounding box)."""
+        if self.shape == "disc":
+            return int(round(self._disc_diameter()))
+        return self._square_plane_size()
+
+    def plane_geometry(self) -> tuple[float, float, float, float]:
+        """``(gap, x, y, size)`` of the painted plane, in local coordinates.
+
+        ``gap`` is the ideal even margin of the pane rhythm: MainWindow sizes
+        the lightness-bar column from it and aligns the bar's top/bottom with
+        ``y`` / ``y + size`` so the bar reads as part of the plane.
+        """
+        if self.shape == "disc":
+            cx, cy, radius = self._disc_metrics()
+            diameter = radius * 2.0
+            return self._plane_gap(diameter), cx - radius, cy - radius, diameter
+        size = self._square_plane_size()
+        avail_h = max(0, self.height() - self.avoid_top)
+        return (self._plane_gap(size), self._plane_left(size),
+                self.avoid_top + (avail_h - size) / 2.0, float(size))
+
+    def set_side_cluster(self, total_width: int, bar_width: int,
+                         gap: int = 8) -> None:
+        """Describe the lightness-bar cluster that shares the LAB pane.
+
+        Sized from the *pane* width instead of this widget's own width: the
+        latter is exactly what the caller is about to change, so feeding it
+        back in would make the layout pass chase its own tail.
+        """
+        total_width = max(0, int(total_width))
+        bar_width = max(0, int(bar_width))
+        gap = max(0, int(gap))
+        if (total_width, bar_width, gap) == (
+                self.side_total, self.side_bar_width, self.side_gap):
+            return
+        self.side_total = total_width
+        self.side_bar_width = bar_width
+        self.side_gap = gap
+        self._invalidate_full_cache()
+        self.update()
 
     def _cache_key(self, active: bool = False) -> tuple[object, ...]:
-        if self.shape == "disc":
-            size = int(round(self._disc_diameter()))
-        else:
-            size = min(self.width(), max(0, self.height() - self.avoid_top))
-        return (int(self.L * 2), size, active, self.render_mode, self.shape)
+        return (int(self.L * 2), self._plane_size(), active,
+                self.render_mode, self.shape)
 
     def _invalidate_full_cache(self) -> None:
         self._prewarm_generation += 1
@@ -125,6 +219,7 @@ class LabSquare(QWidget):
             return
         self.avoid_top = value
         self._invalidate_full_cache()
+        self.planeGeometryChanged.emit()
         self.update()
 
     def schedule_full_prewarm(self, delay_ms: int = 100) -> None:
@@ -135,10 +230,7 @@ class LabSquare(QWidget):
     def prewarm_full(self) -> None:
         if self._prewarm_inflight:
             return
-        if self.shape == "disc":
-            size = int(round(self._disc_diameter()))
-        else:
-            size = min(self.width(), max(0, self.height() - self.avoid_top))
+        size = self._plane_size()
         if size <= 10:
             return
         min_a, max_a, min_b, max_b = self._get_display_range()
@@ -197,6 +289,7 @@ class LabSquare(QWidget):
         if shape != self.shape:
             self.shape = shape
             self._invalidate_full_cache()
+            self.planeGeometryChanged.emit()
             self.update()
 
     def set_harmony_mode(self, mode: str) -> None:
@@ -442,90 +535,113 @@ class LabSquare(QWidget):
                 best = (ba, bb)
         return best
 
+    # Live rendering budget. The plane is redrawn on every frame of a drag,
+    # so the question is not "cheap or pretty" but "how many pixels fit in a
+    # frame". The renderer measures itself and sizes the next interactive
+    # frame from that, instead of the old fixed 120px cap — on any normal
+    # window that now lands on the full resolution, and a huge window or a
+    # slow machine degrades gradually rather than to a blur.
+    _FRAME_BUDGET_MS = 7.0
+    _INTERACTIVE_FLOOR_PX = 200
+    # While the window is being dragged the plane gets a new size every
+    # frame, and the renderer's polar grid — a third of a cold frame — can
+    # never be reused. Snapping the render size to this step during a resize
+    # makes consecutive frames share one grid; the result is scaled to the
+    # exact box, which on a smooth gradient is invisible.
+    _RESIZE_QUANTUM_PX = 16
+    _RESIZE_SETTLE_S = 0.25
+
+    def _interactive_px(self, full_px: int) -> int:
+        """Pixels the next interactive frame may use."""
+        cost = self._render_cost_per_px          # ms per pixel of image area
+        if not cost:
+            return full_px                       # not measured yet: try full
+        affordable = int(math.sqrt(self._FRAME_BUDGET_MS / cost))
+        return max(min(self._INTERACTIVE_FLOOR_PX, full_px),
+                   min(full_px, affordable))
+
+    def _note_render_cost(self, gen_size: int, elapsed_s: float) -> None:
+        """Fold one render into the running ms-per-pixel estimate."""
+        area = max(1, gen_size * gen_size)
+        if area < 64 * 64:                       # too small to measure well
+            return
+        sample = (elapsed_s * 1000.0) / area
+        previous = self._render_cost_per_px
+        self._render_cost_per_px = (
+            sample if not previous else previous * 0.7 + sample * 0.3)
+
     def _render_ab_plane(self, low_quality=False):
         """Render ab-plane into cache. Called by paintEvent and prerender."""
-        if self.shape == "disc":
-            size = int(round(self._disc_diameter()))
-        else:
-            w = self.width()
-            h = self.height()
-            avail_h = max(0, h - self.avoid_top)
-            size = min(w, avail_h)
+        size = self._plane_size()
         if size <= 10:
             return
 
-        is_active = False
-        win = self.window()
-        if win is not None and hasattr(win, "slider_widgets"):
-            for chan, (slider, _) in cast(Any, win).slider_widgets.items():
-                if slider.isSliderDown():
+        # Is anything else being dragged right now? Ask the shared session
+        # instead of climbing to the window and scanning its sliders: once a
+        # panel floats in its own window that lookup finds nothing.
+        session = session_of(self)
+        if session is not None:
+            is_active = session.interacting
+        else:
+            # No session wired (bare widget, e.g. in tests): fall back to the
+            # old scan so behaviour is unchanged.
+            is_active = False
+            win = self.window()
+            if win is not None and hasattr(win, "slider_widgets"):
+                for chan, (slider, _) in cast(Any, win).slider_widgets.items():
+                    if slider.isSliderDown():
+                        is_active = True
+                        break
+            if not is_active and win is not None and hasattr(win, "lab_slider"):
+                if cast(Any, win).lab_slider.dragging:
                     is_active = True
-                    break
-        # Also check the standalone LabSlider next to the ab plane — it is
-        # not part of slider_widgets, so it would otherwise never trigger the
-        # low-quality rendering path.
-        if not is_active and win is not None and hasattr(win, "lab_slider"):
-            if cast(Any, win).lab_slider.dragging:
-                is_active = True
 
-        cache_key = (int(self.L * 2), size, is_active, self.render_mode, self.shape)
+        cache_key = self._cache_key(is_active)
         if not low_quality and self._cached_key == cache_key and self._cached_img is not None:
             return
 
         ratio = self.devicePixelRatio()
+        full_px = max(1, int(size * ratio))
         if is_active or low_quality:
-            gen_size = min(size, 120)
+            gen_size = self._interactive_px(full_px)
         else:
-            gen_size = int(size * ratio)
+            gen_size = full_px
+        started = time.perf_counter()
+        # Detect a resize from the render itself rather than from resizeEvent:
+        # the event is not delivered to a widget that is not on screen, and
+        # the renderer is the only place that always sees the new size.
+        if full_px != self._last_full_px:
+            self._last_full_px = full_px
+            self._resize_settles_at = started + self._RESIZE_SETTLE_S
+        if started < self._resize_settles_at:
+            quantum = self._RESIZE_QUANTUM_PX
+            gen_size = max(64, min(full_px, (gen_size // quantum) * quantum))
 
+        # Both shapes go through the same renderer (ui.lab_prewarm): the
+        # square used to carry a second, slower copy of the conversion here,
+        # which meant every speed-up had to be made twice and the two could
+        # drift apart.
         if self.shape == "disc":
-            request = LabPrewarmRequest(
-                generation=0, render_mode=self.render_mode,
-                lightness=self.L, size=gen_size,
-                min_a=0.0, max_a=0.0, min_b=0.0, max_b=0.0,
-                pixel_ratio=1.0, shape="disc",
-            )
-            result = render_lab_plane(request)
-            img = QImage(
-                result.image_bytes, result.image_width, result.image_height,
-                result.image_width * 4, QImage.Format.Format_RGBA8888,
-            ).copy()
+            min_a = max_a = min_b = max_b = 0.0
         else:
-            img = QImage(gen_size, gen_size, QImage.Format.Format_ARGB32)
-
             # Dynamic ab display range: zoom into the in-gamut region for current L.
             min_a, max_a, min_b, max_b = self._get_display_range()
-            span_a = max_a - min_a
-            span_b = max_b - min_b
+        request = LabPrewarmRequest(
+            generation=0, render_mode=self.render_mode,
+            lightness=self.L, size=gen_size,
+            min_a=min_a, max_a=max_a, min_b=min_b, max_b=max_b,
+            pixel_ratio=1.0, shape=self.shape,
+        )
+        result = render_lab_plane(request)
+        img = QImage(
+            result.image_bytes, result.image_width, result.image_height,
+            result.image_width * 4, QImage.Format.Format_RGBA8888,
+        ).copy()
 
-            # Vectorized conversion over the whole grid — same matrices as the
-            # scalar functions (single source of truth: ui.color_conversions).
-            cols = np.arange(gen_size, dtype=np.float64) / gen_size
-            rows = np.arange(gen_size, dtype=np.float64) / gen_size
-            a_grid = min_a + cols * span_a   # (gen_size,) one value per column
-            b_grid = max_b - rows * span_b   # (gen_size,) one value per row
-            if self.render_mode == "oklab":
-                r_vals, g_vals, b_vals = oklab_to_rgb_array(
-                    self.L / 100.0, a_grid[None, :], b_grid[:, None])
-            else:
-                r_vals, g_vals, b_vals = lab_to_rgb_array(
-                    self.L, a_grid[None, :], b_grid[:, None])
-            in_gamut = ((r_vals >= 0.0) & (r_vals <= 255.0)
-                        & (g_vals >= 0.0) & (g_vals <= 255.0)
-                        & (b_vals >= 0.0) & (b_vals <= 255.0))
-            argb = np.where(
-                in_gamut,
-                (255 << 24)
-                | (r_vals.astype(np.int64) << 16)
-                | (g_vals.astype(np.int64) << 8)
-                | b_vals.astype(np.int64),
-                0,
-            ).astype(np.uint32)
-            img = QImage(argb.tobytes(), gen_size, gen_size, gen_size * 4,
-                         QImage.Format.Format_ARGB32)
+        self._note_render_cost(gen_size, time.perf_counter() - started)
 
         # Save to cache
-        if is_active:
+        if is_active or gen_size < full_px:
             final_img = img.scaled(int(size * ratio), int(size * ratio), Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
             final_img.setDevicePixelRatio(ratio)
         else:
@@ -543,22 +659,32 @@ class LabSquare(QWidget):
         same center y (``size/2 + 6``) and same outer radius
         (``size/2 - 2``). ``avoid_top`` is deliberately ignored here so the
         disc never shrinks or shifts relative to the colour wheel.
+
+        With the lightness bar shown the disc cannot keep the ring's full
+        width, so it takes the widest diameter the pane rhythm allows and is
+        centred on its own share of the pane — instead of being squeezed into
+        the leftover column with all the air piled up on one side.
         """
         w = self.width()
         h = self.height()
-        size = min(w - 16, max(16, h - 6))
-        cx = w / 2.0
+        if self._has_side_bar():
+            # The drawn diameter is ``size - 4`` (the ring's 2px inset per
+            # side), so the width budget applies to that, not to ``size``.
+            size = min(self._plane_width_budget() + 4, max(16, h - 6), w)
+            diameter = max(1.0, size - 4.0)
+            cx = self._plane_left(diameter) + diameter / 2.0
+        else:
+            # Shared with the hue ring (ui.window_layout) so the disc can
+            # never drift away from it.
+            picker = resolve_picker_geometry(w, h)
+            size = picker.size
+            cx = picker.circle.x
         cy = size / 2.0 + 6.0
         radius = max(1.0, size / 2.0 - 2.0)
         return cx, cy, radius
 
     def _disc_diameter(self) -> float:
         return max(1.0, self._disc_metrics()[2] * 2.0)
-
-    def _disc_draw_offset(self) -> tuple[float, float]:
-        cx, cy, radius = self._disc_metrics()
-        diameter = max(1.0, radius * 2.0)
-        return cx - diameter / 2.0, cy - diameter / 2.0
 
     def _disc_chroma_ceiling(self) -> float:
         """Chroma cap used by the disc renderer (kept in sync with lab_prewarm)."""
@@ -678,17 +804,8 @@ class LabSquare(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        if self.shape == "disc":
-            diameter = max(1.0, self._disc_diameter())
-            size = int(round(diameter))
-            offset_x, offset_y = self._disc_draw_offset()
-        else:
-            w = self.width()
-            h = self.height()
-            avail_h = max(0, h - self.avoid_top)
-            size = min(w, avail_h)
-            offset_x = (w - size) / 2
-            offset_y = self.avoid_top + (avail_h - size) / 2
+        _gap, offset_x, offset_y, plane_size = self.plane_geometry()
+        size = int(round(plane_size))
         if size <= 10:
             return
         
@@ -782,12 +899,9 @@ class LabSquare(QWidget):
             self.colorChanged.emit(r, g, b)
             return
 
-        w = self.width()
-        h = self.height()
-        avail_h = max(0, h - self.avoid_top)
-        size = min(w, avail_h)
-        offset_x = (w - size) / 2
-        offset_y = self.avoid_top + (avail_h - size) / 2
+        _gap, offset_x, offset_y, size = self.plane_geometry()
+        if size <= 0:
+            return
 
         # Convert the RAW mouse position to a and b.  Do not clamp to the
         # square first: a drag outside the diagram should snap to the
@@ -809,18 +923,51 @@ class LabSquare(QWidget):
 class LabSlider(QWidget):
     # Emits lightness (0 to 100)
     lightnessChanged = pyqtSignal(float)
+    # Emitted when the user grabs the bar, so the shared session can tell the
+    # plane renderer to take the cheap path (it used to reach up to the window
+    # and read this widget's .dragging attribute directly).
+    interactionStarted = pyqtSignal()
     # Emitted when the user releases the mouse, so the LabSquare can
     # re-render at full quality (during drag it renders low-res).
     interactionFinished = pyqtSignal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(18, 100)
+        # The column margins align this bar with the LAB plane's own top and
+        # bottom, so the minimum height must stay small enough for a short
+        # plane band; MainWindow keeps the real floor.
+        self.setMinimumSize(12, 24)
         
         self.L = 50.0
         self.dragging = False
         self._gamut_min = 0.0
         self._gamut_max = 100.0
+        # Vertical band this bar actually occupies, in widget coordinates
+        # (0 height = the whole widget). MainWindow aligns it with the a*b*
+        # plane. This is deliberately NOT done with layout margins: those
+        # count towards the column's minimum height, which feeds the window's
+        # content-height policy, which resizes the pane — a loop that inflated
+        # the window and left a huge blank band under the plane.
+        self._band_top = 0.0
+        self._band_h = 0.0
+
+    def set_track_band(self, top: float, height: float) -> None:
+        """Restrict the painted track (and its hit area) to one band."""
+        top = max(0.0, float(top))
+        height = max(0.0, float(height))
+        if (top, height) == (self._band_top, self._band_h):
+            return
+        self._band_top = top
+        self._band_h = height
+        self.update()
+
+    def track_band(self) -> tuple[float, float]:
+        """Effective (top, height) of the track inside this widget."""
+        widget_h = float(self.height())
+        if self._band_h <= 0.0:
+            return 0.0, widget_h
+        top = max(0.0, min(self._band_top, max(0.0, widget_h - 1.0)))
+        return top, max(1.0, min(self._band_h, widget_h - top))
 
     def set_in_gamut_range(self, mn, mx):
         """Set the valid in-gamut L range.
@@ -839,16 +986,16 @@ class LabSlider(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
         w = self.width()
-        h = self.height()
+        top, h = self.track_band()
         
         # Draw L slider background gradient (white to black)
-        gradient = QLinearGradient(0, 0, 0, h)
+        gradient = QLinearGradient(0.0, top, 0.0, top + h)
         gradient.setColorAt(0.0, QColor(255, 255, 255))
         gradient.setColorAt(1.0, QColor(0, 0, 0))
         
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(gradient)
-        painter.drawRect(0, 0, w, h)
+        painter.drawRect(QRectF(0.0, top, float(w), h))
         
         # Draw out-of-gamut gray overlay
         top_frac = 1.0 - self._gamut_max / 100.0
@@ -856,12 +1003,13 @@ class LabSlider(QWidget):
         
         painter.setBrush(QColor(160, 160, 160, 140))
         if top_frac > 0.005:
-            painter.drawRect(0, 0, w, int(h * top_frac))
+            painter.drawRect(QRectF(0.0, top, float(w), h * top_frac))
         if bottom_frac < 0.995:
-            painter.drawRect(0, int(h * bottom_frac), w, int(h * (1.0 - bottom_frac)))
+            painter.drawRect(QRectF(0.0, top + h * bottom_frac,
+                                    float(w), h * (1.0 - bottom_frac)))
         
         # Draw indicator cursor (horizontal bar)
-        cy = (1.0 - self.L / 100.0) * h
+        cy = top + (1.0 - self.L / 100.0) * h
         
         painter.setPen(QPen(QColor(255, 255, 255) if self.L < 50.0 else QColor(0, 0, 0), 2))
         painter.drawLine(0, int(cy), w, int(cy))
@@ -869,6 +1017,7 @@ class LabSlider(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.dragging = True
+            self.interactionStarted.emit()
             self.handle_mouse(event.position())
 
     def mouseMoveEvent(self, event):
@@ -876,12 +1025,14 @@ class LabSlider(QWidget):
             self.handle_mouse(event.position())
 
     def mouseReleaseEvent(self, event):
+        was_dragging = self.dragging
         self.dragging = False
-        self.interactionFinished.emit()
+        if was_dragging:
+            self.interactionFinished.emit()
 
     def handle_mouse(self, pos):
-        h = self.height()
-        local_y = max(0.0, min(float(h), pos.y()))
+        top, h = self.track_band()
+        local_y = max(0.0, min(h, pos.y() - top))
         
         # Convert to L (0 to 100)
         self.L = (1.0 - local_y / h) * 100.0

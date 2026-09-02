@@ -154,7 +154,8 @@ class SettingsHelpersMixin:
     def _nav_icon(kind: str, color: str) -> QIcon:
         """Draw a crisp monochrome rail glyph with QPainter.
 
-        ``kind`` is one of: hotkeys, interface, picker, filter, software, about.
+        ``kind`` is one of: hotkeys, interface, picker, panels, filter, software,
+        about.
         The canvas is 36×36 logical units on a 72×72 device pixmap
         (devicePixelRatio 2.0), so the painter coordinates below match
         the drawing code exactly while the glyph stays sharp on HiDPI.
@@ -191,6 +192,11 @@ class SettingsHelpersMixin:
             p.drawEllipse(QPointF(cx, cy), 6, 6)
             p.setBrush(c)
             p.drawEllipse(QPointF(cx - 11, cy), 2.1, 2.1)
+        elif kind == "panels":
+            # Panels: one wide block over two side-by-side ones
+            p.drawRoundedRect(4, 5, 28, 10, 2, 2)
+            p.drawRoundedRect(4, 19, 12, 12, 2, 2)
+            p.drawRoundedRect(20, 19, 12, 12, 2, 2)
         elif kind == "filter":
             # Sliders/filter: three horizontal lines with knobs
             p.drawLine(QPointF(6, 10), QPointF(30, 10))
@@ -229,7 +235,9 @@ class SettingsHelpersMixin:
         if not hasattr(self, "nav"):
             return
         colors = self.theme_colors()
-        text = colors["text"]
+        # The rail is painted with the panel colour, so its glyphs take the
+        # panel ink — the body ink can be the wrong end of the scale.
+        text = colors.get("bar_text") or colors["text"]
         selected = self.nav.currentRow()
         for i in range(self.nav.count()):
             item = self.nav.item(i)

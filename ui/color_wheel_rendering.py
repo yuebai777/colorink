@@ -6,6 +6,7 @@ wheel, triangle/square slices and OKLCh gamut slice.
 
 import colorsys
 import math
+import time
 
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import (
@@ -30,6 +31,32 @@ from ui.color_wheel_geometry import hsv_to_rgb
 
 
 class ColorWheelRenderingMixin:
+
+    # Live rendering budget for the slice. Dragging used to drop to every
+    # 3rd (or 5th) pixel unconditionally, which is a visible blur — yet at
+    # normal sizes a full-resolution slice costs well under a frame. Render
+    # full, measure, and only coarsen if this machine/size really cannot
+    # keep up.
+    _SLICE_BUDGET_MS = 7.0
+
+    def _slice_subsample(self, coarse: int = 3) -> int:
+        """Pixel step for the next slice render (1 = full resolution)."""
+        if not self.is_active_interaction():
+            return 1
+        measured = getattr(self, "_slice_cost_ms", 0.0)
+        return coarse if measured > self._SLICE_BUDGET_MS else 1
+
+    def _render_slice_timed(self, *args, **kwargs):
+        """_render_slice_image plus a cost sample for _slice_subsample."""
+        started = time.perf_counter()
+        result = self._render_slice_image(*args, **kwargs)
+        if kwargs.get("subsample", 1) == 1:
+            elapsed = (time.perf_counter() - started) * 1000.0
+            previous = getattr(self, "_slice_cost_ms", 0.0)
+            self._slice_cost_ms = (
+                elapsed if not previous else previous * 0.6 + elapsed * 0.4)
+        return result
+
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -267,8 +294,8 @@ class ColorWheelRenderingMixin:
             painter.restore()
             return
 
-        subsample = 3 if self.is_active_interaction() else 1
-        _, img = self._render_slice_image(
+        subsample = self._slice_subsample()
+        _, img = self._render_slice_timed(
             "hsv-square", self.h, cx, cy, r, subsample=subsample)
 
         self._cached_img = img
@@ -405,8 +432,8 @@ class ColorWheelRenderingMixin:
 
         # Keep every active drag responsive; end_drag() invalidates the cache
         # so the next paint restores the full-quality image.
-        subsample = 3 if self.is_active_interaction() else 1
-        result, img = self._render_slice_image(
+        subsample = self._slice_subsample()
+        result, img = self._render_slice_timed(
             "hls-triangle", self.h, cx, cy, r, subsample=subsample)
 
         self._cached_hls_key = cache_key
@@ -459,8 +486,8 @@ class ColorWheelRenderingMixin:
 
         # RGB→Lab conversion is the most expensive slice renderer, so use a
         # slightly coarser active preview to keep the indicator under one frame.
-        subsample = 5 if self.is_active_interaction() else 1
-        result, img = self._render_slice_image(
+        subsample = self._slice_subsample(coarse=5)
+        result, img = self._render_slice_timed(
             "rgb-slice", self.h, cx, cy, r, subsample=subsample)
 
         self._cached_rgb_key = cache_key
@@ -554,9 +581,9 @@ class ColorWheelRenderingMixin:
         if not img_ready:
             # Keep every active drag responsive; end_drag() invalidates the cache
             # so the next paint restores the full-quality image.
-            subsample = 3 if self.is_active_interaction() else 1
+            subsample = self._slice_subsample()
             scale = self._oklch_scale_for_hue(oklch_h, r)
-            result, img = self._render_slice_image(
+            result, img = self._render_slice_timed(
                 "oklch-slice", oklch_h, cx, cy, r,
                 width=box_w, scale=scale, subsample=subsample)
 

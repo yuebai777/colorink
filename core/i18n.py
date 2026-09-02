@@ -82,8 +82,11 @@ _EN: dict[str, str] = {
     "取色": "Eyedropper",
     "滑条样式": "Slider style",
     "滑块样式": "Slider style",
+    "边框样式": "Border style",
+    "跟随滑块样式": "Match slider style",
     "字体大小": "Font size",
     "界面缩放": "UI scale",
+    "背景不透明度": "Background opacity",
     "框色": "Frame color",
     "底色": "Canvas color",
     "边框颜色": "Border color",
@@ -351,9 +354,18 @@ _EN: dict[str, str] = {
     "启用后按跟随鼠标快捷键时，窗口会移动到鼠标位置": "When enabled, pressing the follow-mouse hotkey moves the window to the cursor",
     "设置开关全屏灰度滤镜的快捷键": "Set the hotkey that toggles the fullscreen grayscale filter",
     "选择界面主题：自动匹配绘画软件、屏幕取色或固定灰/白/黑": "Choose the UI theme: auto-match the drawing app, eyedropper, or fixed gray/white/black",
+    "选择窗口边框、分组框与数值框的外观样式；「跟随滑块样式」会自动匹配当前滑块主题": "Choose the window frame, group frame and value-box look; \"Match slider style\" follows the active slider theme",
     "选择色彩滑块的外观样式": "Choose the visual style of the color sliders",
     "减小界面字体大小": "Decrease the UI font size",
     "增大界面字体大小": "Increase the UI font size",
+    "拖动调整窗口背景与边框的不透明度（0% = 完全透明，"
+    "100% = 完全不透明），拖动时实时预览；0% 时窗口仍可拖动、"
+    "点击不会穿透到画布；滑块、色轮与色块始终保持不透明":
+        "Drag to set how opaque the window background and frame are "
+        "(0% = invisible, 100% = fully opaque), previewed live while "
+        "dragging. At 0% the window can still be dragged and clicks never "
+        "fall through to the canvas. Sliders, the wheel and the swatches "
+        "always stay opaque",
     "拖动调整整个窗口的缩放比例（松开后生效）": "Drag to adjust the window scale (applies on release)",
     "在任务栏显示 Colorink 图标；关闭后只保留托盘图标": "Show a Colorink icon in the taskbar; when off, only the tray icon remains",
     "锁定后窗口不能手动缩放": "Locks the window so it cannot be resized manually",

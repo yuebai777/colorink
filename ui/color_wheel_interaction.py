@@ -22,12 +22,22 @@ from ui.color_conversions import (
 from ui.color_wheel_geometry import hls_to_hsv_floats, hsv_to_rgb, project_point_to_triangle
 
 
+from ui.color_session import session_of
+
+
 class ColorWheelInteractionMixin:
 
     def is_active_interaction(self):
-        """Return True when wheel is being dragged or an external slider is active."""
+        """True while this wheel — or anything else — is being dragged.
+
+        The shared session answers it; scanning the window's sliders only
+        works while every picker widget lives in that same window.
+        """
         if self.dragging:
             return True
+        session = session_of(self)
+        if session is not None:
+            return session.interacting
         win = self.window()
         if win is not None:
             slider_widgets = getattr(win, "slider_widgets", None)

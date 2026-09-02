@@ -54,6 +54,10 @@ def apply_preview_mouse_mask(box) -> None:
     drags stop tracking the mouse. The mask makes only the actual swatches
     (+ capsule) clickable and lets everything else pass through.
     """
+    if getattr(box, "_mask_suspended", False):
+        # A caller is probing placements (see preview_clearance.fit_scope);
+        # building a region per trial is pure waste — one mask at the end.
+        return
     region = QRegion()
     rects = box._ringless_swatch_rects()
     if rects is not None:

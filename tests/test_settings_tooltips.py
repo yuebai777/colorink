@@ -57,6 +57,12 @@ def sidebar(qapp, monkeypatch):
         def on_settings_saved(self):
             pass
 
+        def float_panel(self, *args, **kwargs):
+            return False
+
+        def dock_panel(self, *args, **kwargs):
+            return False
+
         def zoom_ui(self, *args, **kwargs):
             pass
 

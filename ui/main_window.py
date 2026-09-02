@@ -1,12 +1,13 @@
 import sys
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QSize, Qt, QTimer
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QMainWindow,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -22,6 +23,8 @@ from core.foreground import (
     bring_process_to_foreground,  # noqa: F401  (re-export)
 )
 from ui.color_model import ColorState
+from ui.color_session import ColorSession
+from ui.panels.host import PanelHost
 from ui.color_picker_overlay import ColorPickerOverlay
 from ui.color_preview_box import ColorPreviewBox
 from ui.color_wheel import ColorWheel
@@ -32,8 +35,10 @@ from ui.widgets import TitleBar, _title_bar_content_offset  # noqa: F401  (re-ex
 from ui.window import (
     ColorSlotsMixin,
     ColorUpdatesMixin,
+    FloatingPanelsMixin,
     HotkeyMixin,
     LayoutMixin,
+    PanelProviderMixin,
     PickerActionsMixin,
     SyncMixin,
     ThemeMixin,
@@ -41,7 +46,51 @@ from ui.window import (
 )
 
 class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
-                 TrayMixin, SyncMixin, HotkeyMixin, ColorSlotsMixin, QMainWindow):
+                 TrayMixin, SyncMixin, HotkeyMixin, ColorSlotsMixin,
+                 PanelProviderMixin, FloatingPanelsMixin, QMainWindow):
+
+    def _panel_mount_changed(self):
+        """The panel mount changed: the content height may have, re-evaluate.
+
+        Mounting happens during construction (before the window is shown) and
+        on arrangement changes. Defer: size hints are unreliable until the
+        surrounding layouts have run.
+        """
+        self._panel_mount_pending = True
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, self._panel_mount_apply)
+
+    def _panel_mount_apply(self):
+        if not getattr(self, "_panel_mount_pending", False):
+            return
+        self._panel_mount_pending = False
+        # An empty column takes no room at all — otherwise its margins keep
+        # a band of nothing under the picker and the window's minimum height
+        # stops hugging it.
+        host = getattr(self, "panel_host", None)
+        if host is not None:
+            self.sliders_container.setVisible(bool(host.mounted_panels()))
+        self._adjust_content_height()
+
+    def _sync_picker_mode_buttons(self):
+        """The wheel/LAB toggle only makes sense while both pages are here."""
+        both = self.stack.count() > 1
+        for name in ("btn_mode_wheel", "btn_mode_lab"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.setEnabled(both)
+
+    def _panel_rearranged(self, tree):
+        """The user dragged a panel somewhere else.
+
+        The host has already re-mounted it, so all that is left is to write
+        the arrangement down and re-run the one path that applies visibility
+        and the height policy — the same one every other arrangement change
+        goes through.
+        """
+        self.save_panel_layout(tree)
+        config.save_hotkey_config(self.cfg)
+        self.refresh_slider_visibility_and_order()
     def __init__(self):
         super().__init__()
         self.cfg = config.load_hotkey_config()
@@ -53,6 +102,14 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.current_rgb = (180, 130, 30)
         # Unified colour model: single source of truth for the picked colour.
         self.color_state = ColorState()
+        # Shared picker session: interaction state + slot commands. Picker
+        # widgets talk to this instead of climbing up to the window, which is
+        # what lets a panel move into its own window later.
+        self.color_session = ColorSession(self)
+        self.color_session.slotRequested.connect(self._on_slot_requested)
+        self._panel_mount_pending = False
+        self.color_session.transparentRequested.connect(
+            lambda: self.set_active_transparent())
         self.active_slot = "fg"  # "fg" | "bg"
         # Transparent-color state per slot. When set, the swatch renders the
         # checker tile and CSP writes are sent with IsColorTransparent=true
@@ -94,6 +151,7 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
 
         # Content-driven window height state
         self._last_auto_height = None
+        self._last_required_height = None
         self._manual_height_override = False
         self._adjusting_content_height = False
         self._content_height_adjust_pending = False
@@ -237,7 +295,10 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
 
         # Stacked pane for visualizers
         self.stack = QStackedWidget()
-        self.main_layout.addWidget(self.stack)
+        # The picker takes the spare height (stretch 1). Someone has to: with
+        # every item content-sized, a QVBoxLayout spreads the leftover
+        # *around* them and the title bar drifts off the top edge.
+        self.main_layout.addWidget(self.stack, 1)
 
         # Pane 1: HSV Color Wheel
         self.pane_wheel = WheelPane()
@@ -280,6 +341,9 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.lab_square = LabSquare()
         self.lab_square.colorChanged.connect(self.on_lab_square_color_changed)
         self.lab_square.interactionFinished.connect(self.on_interaction_finished)
+        # Whenever the plane's box moves (resize, preview-box avoidance,
+        # square ⇄ disc) the lightness bar must be re-aligned with it.
+        self.lab_square.planeGeometryChanged.connect(self._sync_lab_lightness_bar)
         
         # Set initial visualizer mode from config
         viz_mode = self.cfg.get("visualizerMode", "lab")
@@ -296,10 +360,19 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.lab_slider = LabSlider()
         self.lab_slider.lightnessChanged.connect(self._on_lab_lightness_changed)
         self.lab_slider.interactionFinished.connect(self.on_interaction_finished)
+        # Feed the shared session: the LAB plane asks it whether anything is
+        # being dragged instead of reaching up to this window for the answer.
+        self.lab_slider.interactionStarted.connect(
+            self.color_session.begin_interaction)
+        self.lab_slider.interactionFinished.connect(
+            self.color_session.end_interaction)
         slider_col_layout.addWidget(self.lab_slider)
         
         self.lab_layout.addWidget(self.lab_square, stretch=1)
         self.lab_layout.addWidget(self.lab_slider_column)
+        # The bar column owns the whole margin between the plane and the
+        # window edge (see _sync_lab_lightness_bar), so no extra spacing.
+        self.lab_layout.setSpacing(0)
         
         # Floating mode button parented directly to self.pane_lab
         self.btn_mode_lab = QPushButton("△", self.pane_lab)
@@ -313,12 +386,36 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
 
         # Sliders Area
         self.sliders_container = QWidget()
+        # Content-sized, never greedy: an expanding column swallows whatever
+        # room the window has spare — with every panel torn off it grew to
+        # hundreds of pixels of nothing, and the window's minimum height
+        # stopped hugging the picker (a band of empty space under the LAB
+        # checkerboard).
+        self.sliders_container.setSizePolicy(QSizePolicy.Policy.Preferred,
+                                             QSizePolicy.Policy.Maximum)
         self.sliders_layout = QVBoxLayout(self.sliders_container)
         self.sliders_layout.setContentsMargins(10, 6, 10, 10)
         self.sliders_layout.setSpacing(8)
         self.main_layout.addWidget(self.sliders_container)
+        # Whatever the picker cannot use (it is square, so it stops growing
+        # once width caps it) parks at the bottom instead of being spread
+        # around the items — that spreading is what pushed the title bar off
+        # the top edge.
+        self.main_layout.addStretch(0)
 
         self.setup_sliders()
+
+        # The slider column is assembled by the panel host from a dock tree:
+        # the arrangement is data, and the widgets are mounted into it rather
+        # than added by hand. Visibility and order still come from the config
+        # (refresh_slider_visibility_and_order drives both).
+        self.panel_host = PanelHost(self.panel_provider(), self.sliders_container)
+        self.sliders_layout.addWidget(self.panel_host)
+        self.panel_host.mount_changed.connect(self._panel_mount_changed)
+        self.panel_host.rearranged.connect(self._panel_rearranged)
+        # A grip dragged clear of every host means "give it its own window".
+        self.panel_host.float_requested.connect(self.float_panel)
+        self.panel_host.menu_requested.connect(self.show_panel_menu)
 
         # Overlapping swatches box (Floating on MainWindow to avoid clipping)
         self.preview_box = ColorPreviewBox(self)
@@ -346,6 +443,9 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         
         # Apply slider visibility and order on startup
         self.refresh_slider_visibility_and_order()
+        # Re-open whatever was torn off last time (after the column exists,
+        # so the panels have somewhere to come back to).
+        self.restore_floating_panels()
         self.update_mode_buttons_visibility()
         self.update_no_focus_policies()
 

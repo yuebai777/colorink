@@ -65,6 +65,8 @@
 | B17 | `core/crash_report.py` `core/diagnostics.py` | `pytest tests/test_crash_report.py tests/test_diagnostics.py -q` | 故意制造一次异常，`stderr.log` 有可定位的栈；诊断信息含版本 / 同步状态 / 最近日志 |
 | B18 | `Colorink.spec` `Colorink Onefile.spec` `build_pyqt.py` `icons/` | `pytest tests/test_packaging_contract.py tests/test_release_contract.py -q` | **必须真打包一次**（见 C2 + C3）；新增图标/新增二进制资源两个 spec 都要加，测试会拦但打包后要肉眼确认图标真的显示 |
 | B19 | 托盘 `ui/window/tray_mixin.py`、开机启动 `core/autostart.py` | ⚠️ **无自动化覆盖** | 托盘单击/双击/右键菜单各一次（历史上右键崩过）；开机启动开→重启电脑确认真的起来→关掉确认注册项清掉 |
+| B20 | `ui/chrome_opacity.py`（背景 / 边框透明度） | `pytest tests/test_background_opacity.py -q`（34 项） | 拖「背景不透明度」滑块：窗口底色 / 外框 / 标题栏一起变透且实时跟手，松手后重开设置值还在；**拉到 0% 必须仍能拖动标题栏，且在空白处点击不会画到下面的画布上**（1/255 alpha 底线）；滑块、数值框、色环、颜色历史在任何档位都完全不透明；四种边框样式（默认/PS/SAI/CSP）各看一眼；渲染对照 `python tools/preview_window_opacity.py 100 50 0`（每档打印实测像素 vs 期望混合值） |
+| B21 | `ui/theme_contrast.py` `ui/settings/appearance_panel.py`（设置面板字色） | `pytest tests/test_settings_contrast.py -q`（16 项） | 取色主题里把「框色」调深、「底色」调浅（以及反过来）：设置窗口的标签 / 分组标题 / 勾选框文字必须始终看得清；下拉框与按钮里的字跟着输入框底色走；灰 / 白 / 黑三个固定主题各扫一眼 |
 
 ---
 

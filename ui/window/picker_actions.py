@@ -79,6 +79,8 @@ class PickerActionsMixin:
         self.cfg["labViewShape"] = new_shape
         config.save_hotkey_config(self.cfg)
         self.lab_square.set_shape(new_shape)
+        self._sync_lab_lightness_bar()
+        self._refit_preview_box()
         self._update_lab_shape_button()
         self._sync_settings_sidebar_lab_controls()
         self.update()
@@ -179,6 +181,9 @@ class PickerActionsMixin:
         # the user is only asking for a pane switch.
         self._sync_ringless_mode()
         self._update_lab_avoid()
+        refit = getattr(self, "_refit_preview_box", None)
+        if callable(refit):
+            refit()
         self.color_wheel.schedule_slice_prewarm(350)
 
         r, g, b = self.current_rgb
@@ -282,19 +287,34 @@ class PickerActionsMixin:
         self._apply_module(_MODULE_ORDER[next_idx])
 
     def refresh_slider_visibility_and_order(self):
-        # Remove all from layout
+        # Take the blocks out of whatever holds them; the panel host mounts
+        # them again below (they were added by hand before the host existed).
         for group in config.SLIDER_GROUPS:
             self.sliders_layout.removeWidget(self.slider_containers[group])
 
-        # Display order comes from the same shared helper the settings UI
-        # uses, so reordering there always matches this layout.
-        groups = config.sorted_slider_groups(self.cfg)
+        # Display order comes from the panel arrangement (ui/panels): the
+        # tree is built from the same shared config helper the settings UI
+        # uses, so reordering there still matches this layout — but the
+        # arrangement is now data, which is what a dock host can consume.
+        groups = self._slider_groups_in_layout_order()
 
         # Module-aware filtering: only the current module's slider set is
         # eligible; force-hide everything outside it.
         module_key = getattr(self, "_current_module", "hsv")
         allowed = set(_MODULE_DEFS.get(module_key, _MODULE_DEFS["hsv"])["sliders"])
 
+        title_bar = getattr(self, "title_bar", None)
+        sync_grips = getattr(title_bar, "sync_panel_grips", None)
+        if callable(sync_grips):
+            sync_grips(bool(self.cfg.get("panelDrag", False)))
+        host = getattr(self, "panel_host", None)
+        mounted = None
+        if host is not None:
+            # Grips first: switching drag mode re-mounts, so doing it after
+            # set_tree would throw the fresh arrangement away and rebuild it.
+            host.set_drag_enabled(bool(self.cfg.get("panelDrag", False)))
+            mounted = self._slider_column_tree_for(groups)
+            host.set_tree(mounted)
         for g in groups:
             if g == "History":
                 visible = self.cfg.get("showSlidersHistory", True)
@@ -303,11 +323,87 @@ class PickerActionsMixin:
             else:
                 visible = self.cfg.get(f"showSliders{g}", True)
             self.slider_containers[g].setVisible(visible)
-            self.sliders_layout.addWidget(self.slider_containers[g])
+            if host is None:
+                self.sliders_layout.addWidget(self.slider_containers[g])
+
+        # An empty column must take no room at all: with every panel torn
+        # off, its margins alone kept ~20px of nothing under the picker, so
+        # the window's minimum height no longer hugged the LAB checkerboard.
+        container = getattr(self, "sliders_container", None)
+        if container is not None and host is not None:
+            container.setVisible(bool(host.mounted_panels()))
+
+        # Record what was actually mounted, so a drag-reorder survives a
+        # restart. Without a host there is nothing assembled to record, and
+        # the mixin falls back to the derived column.
+        record = getattr(self, "save_panel_layout", None)
+        if callable(record):
+            record(mounted)
 
         # Recalculate layout geometries since height changed
         self.update_geometries()
         self._adjust_content_height()
+
+    def _slider_column_tree_for(self, groups):
+        """The slider column as a dock tree, in this order.
+
+        B-4: with slidersSplit enabled it is two draggable columns, with
+        slidersTabs it is pages behind tabs, otherwise one content-sized
+        stack (the classic layout). A saved arrangement — what the user
+        dragged into place — outranks all three, but only while it belongs
+        to the same switch and still places exactly the same panels.
+        """
+        from ui.panels import registry, store
+        from ui.panels import tree as dock
+
+        scale = self.cfg.get("uiScale", 100) / 100.0
+        spacing = int(self.cfg.get("sliderDiffSpace", 8) * scale)
+        ids = []
+        for group in groups:
+            panel_id = (registry.HISTORY if group == "History"
+                        else registry.slider_panel_id(group))
+            if self.panel_widget(panel_id) is not None:
+                ids.append(panel_id)
+        if self.cfg.get("slidersTabs", False):
+            # Every page holds up to two groups; a single page is a plain column.
+            derived = dock.tabbed_tree(ids, tab_size=2)
+        elif self.cfg.get("slidersSplit", False):
+            derived = dock.two_column_tree(ids, spacing, (0, 0, 0, 0))
+        else:
+            derived = dock.Split(dock.VERTICAL,
+                                 tuple(dock.Leaf(pid) for pid in ids),
+                                 (), False, spacing, (0, 0, 0, 0))
+        seed = getattr(self, "arrangement_seed", None)
+        if not callable(seed):
+            return derived
+        saved = store.load_from(self.cfg, seed())
+        if set(saved.panels()) == set(derived.panels()):
+            return saved
+        return derived
+
+    def _slider_groups_in_layout_order(self):
+        """Slider group names in the order the panel arrangement places them.
+
+        Falls back to the config helper when the panel model is unavailable
+        (narrow test harnesses bind only a few MainWindow methods).
+        """
+        from ui.panels import registry
+
+        tree = getattr(self, "panel_layout_tree", None)
+        if not callable(tree):
+            return config.sorted_slider_groups(self.cfg)
+        placed = list(tree().panels())
+        by_panel = {}
+        for group in config.SLIDER_GROUPS:
+            panel_id = (registry.HISTORY if group == "History"
+                        else registry.slider_panel_id(group))
+            by_panel[panel_id] = group
+        ordered = [by_panel[pid] for pid in placed if pid in by_panel]
+        # Anything the tree did not mention keeps its config position.
+        for group in config.sorted_slider_groups(self.cfg):
+            if group not in ordered:
+                ordered.append(group)
+        return ordered
 
     def zoom_ui(self, factor):
         self.resize(int(320 * factor), int(710 * factor))
@@ -439,6 +535,16 @@ class PickerActionsMixin:
             # unconditional show() at startup when onlyShowInCsp is enabled
             # and no drawing app is in the foreground.
             self.auto_hidden = True
+        # Torn-off panels are the same palette: hide them with the main
+        # window and bring them back when the drawing app returns. The
+        # palette only counts as visible when the user did not explicitly
+        # hide it — otherwise the tracker would show the floats over an
+        # intentionally hidden main window.
+        palette_visible = bool(should_be_visible
+                               and not getattr(self, "_user_hidden", False))
+        sync_floating = getattr(self, "set_floating_foreground_visible", None)
+        if callable(sync_floating):
+            sync_floating(palette_visible)
 
     def on_settings_saved(self):
         # Reload configs
@@ -566,6 +672,10 @@ class PickerActionsMixin:
         # Reapply ringless layout after config/settings reload.
         # Mode OFF restores full ring/circles/bottom-right immediately.
         self._sync_ringless_mode()
+        # Windows already torn off must follow the no-focus setting too.
+        refresh_focus = getattr(self, "refresh_floating_focus", None)
+        if callable(refresh_focus):
+            refresh_focus()
         self._adjust_content_height()
 
     def _apply_ws_ex_noactivate(self, enabled: bool) -> None:
@@ -575,31 +685,14 @@ class PickerActionsMixin:
         extended style is forced directly and refreshed with SetWindowPos so
         the change takes effect immediately.
         """
-        try:
-            # Avoid creating the native window just to toggle the style: at
-            # startup update_window_flags() runs before WA_TranslucentBackground
-            # is set, and creating winId() too early would break transparency.
-            # showEvent() re-applies this once the native handle exists.
-            if self.windowHandle() is None:
-                return
-            import win32con
-            import win32gui
-            hwnd = int(self.winId())
-            ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-            new_style = ex_style
-            if enabled:
-                new_style |= win32con.WS_EX_NOACTIVATE
-            else:
-                new_style &= ~win32con.WS_EX_NOACTIVATE
-            if new_style != ex_style:
-                win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, new_style)
-                win32gui.SetWindowPos(
-                    hwnd, 0, 0, 0, 0, 0,
-                    win32con.SWP_NOMOVE | win32con.SWP_NOSIZE
-                    | win32con.SWP_NOZORDER | win32con.SWP_FRAMECHANGED,
-                )
-        except Exception:
-            pass
+        # Same treatment the floating panel windows need, so it lives in one
+        # place now (ui/panels/floating.apply_no_activate): it skips windows
+        # with no native handle yet, because at startup update_window_flags()
+        # runs before WA_TranslucentBackground is set and creating winId()
+        # too early would break transparency. showEvent() re-applies it.
+        from ui.panels.floating import apply_no_activate
+
+        apply_no_activate(self, enabled)
 
     def update_window_flags(self):
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
