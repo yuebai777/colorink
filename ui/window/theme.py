@@ -680,6 +680,9 @@ class ThemeMixin:
         if not (hasattr(self, 'preview_box') and hasattr(self, 'sliders_container')
                 and hasattr(self, 'title_bar')):
             return
+        # Event-driven re-clamp once the container gets its real geometry
+        # (idempotent; the fit pass may run while it is still zero-sized).
+        self.sliders_container.installEventFilter(self)
         title_offset = _title_bar_content_offset(self.title_bar, self.main_layout)
         sliders_h = self.sliders_container.sizeHint().height()
         h = self.height()
