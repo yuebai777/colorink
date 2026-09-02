@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -101,6 +102,11 @@ class PanelHost(QWidget):
         if built is not None:
             self._root = built
             self._layout.addWidget(built)
+        # The tab strips were built before they had a parent/visible stack;
+        # the stack applies page visibility only when it is shown, so re-apply
+        # it now — after the widget is actually mounted — or the first painted
+        # frame shows every page at once.
+        self._sync_tab_visibility()
         if set(self._mounted) != was_mounted:
             # Which panels are on screen decides the content height; the
             # order they sit in does not, so an ordering change stays quiet.
@@ -189,6 +195,21 @@ class PanelHost(QWidget):
         for widget, title in zip(built, titles):
             tabs.addTab(widget, title)
         tabs.setCurrentIndex(min(node.current, len(built) - 1))
+        # QStackedLayout defers page visibility until the stack itself is
+        # shown/laid out. A freshly rebuilt tab stack that is inserted into an
+        # already-visible host would therefore paint its first frame with every
+        # page "not hidden" — the one-frame overlap the user sees right after
+        # a drop, which only clears after switching tabs a couple of times.
+        # Mark the pages ourselves AND force the internal stack layout to
+        # activate, so the first frame already shows one page.
+        current = tabs.currentIndex()
+        for index in range(tabs.count()):
+            tabs.widget(index).setVisible(index == current)
+        stack = tabs.findChild(QStackedWidget)
+        if stack is not None:
+            stack_layout = stack.layout()
+            if stack_layout is not None:
+                stack_layout.activate()
         self._tabs.append((tabs, node))
         bar = tabs.tabBar()
         # A page is a whole column of panels: the tab names them all, long
@@ -201,8 +222,38 @@ class PanelHost(QWidget):
         bar.installEventFilter(self)
         bar.tabMoved.connect(
             lambda frm, to, bar=bar: self._on_tab_moved(bar, frm, to))
+        # Re-applied on Paint if Qt re-shows every page (see eventFilter).
+        tabs.installEventFilter(self)
         self._style_tabs(tabs)
         return tabs
+
+    def _sync_tab_visibility(self) -> None:
+        """Make each tab strip's non-current pages explicitly hidden.
+
+        QStackedLayout defers page visibility until the stack is shown, then
+        briefly re-shows every page while a freshly built tab strip is mounted
+        into a visible host; only a later layout pass hides them again. This
+        re-applies the current page right after mounting so the first painted
+        frame — and the first tab click — already shows one page.
+        """
+        for tabs, _node in self._tabs:
+            if tabs is None:
+                continue
+            current = tabs.currentIndex()
+            for index in range(tabs.count()):
+                tabs.widget(index).setVisible(index == current)
+            # QStackedLayout.setCurrentIndex hides the outgoing page and shows
+            # the incoming one *synchronously*; a round-trip through another
+            # page forces that bookkeeping to run immediately, while the long
+            # deferred pass on first show would otherwise light every page up
+            # for a frame. Swapping there and back ends on the same page.
+            if tabs.count() > 1:
+                other = (current + 1) % tabs.count()
+                tabs.setCurrentIndex(other)
+                tabs.setCurrentIndex(current)
+            stack = tabs.findChild(QStackedWidget)
+            if stack is not None and stack.layout() is not None:
+                stack.layout().activate()
 
     def _build_split(self, node: Split) -> QWidget | None:
         children = [self._build(child) for child in node.children]
@@ -470,6 +521,14 @@ class PanelHost(QWidget):
         if pending is not None and event.type() == QEvent.Type.MouseButtonRelease:
             self._tab_pending.pop(obj, None)
             self._commit_tab_reorder(obj, *pending)
+        # Qt can re-show every page of a freshly mounted tab stack while it is
+        # first laid out; the Paint filter runs before the widget paints, so
+        # re-applying the current page here keeps every frame single-page.
+        if isinstance(obj, QTabWidget) and event.type() == QEvent.Type.Paint:
+            current = obj.currentIndex()
+            if any(not obj.widget(i).isHidden()
+                   for i in range(obj.count()) if i != current):
+                self._sync_tab_visibility()
         return super().eventFilter(obj, event)
 
     def _commit_tab_reorder(self, bar, from_index: int, to_index: int) -> None:

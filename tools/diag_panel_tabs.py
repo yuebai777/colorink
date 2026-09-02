@@ -26,7 +26,8 @@ try:
 except Exception:
     pass
 
-from PyQt6.QtCore import QPoint  # noqa: E402
+from PyQt6.QtCore import QPoint, QRect  # noqa: E402
+from PyQt6.QtGui import QPaintEvent  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QTabWidget, QWidget  # noqa: E402
 
 from core import config  # noqa: E402
@@ -200,6 +201,17 @@ def main():
               and all(not tabs.widget(i).isVisibleTo(host)
                       for i in range(tabs.count()) if i != current),
               f"current={current} visible={visible_pages}")
+        # 首帧回归：Qt 在首次布局前会把所有页重新 setVisible(True)；宿主在
+        # tab 的第一个 Paint 事件里重新隐藏非当前页，否则用户看到的就是
+        # 一瞬间的叠层（切两次页签才恢复）。
+        for i in range(tabs.count()):
+            tabs.widget(i).setVisible(True)
+        QApplication.sendEvent(tabs, QPaintEvent(QRect(0, 0, 1, 1)))
+        check("首帧绘制前只有当前页可见",
+              not tabs.widget(current).isHidden()
+              and all(tabs.widget(i).isHidden()
+                      for i in range(tabs.count()) if i != current),
+              f"current={current}")
 
     # 5) Edge drop inside the current page must stay in that page, not leak
     #    into the hidden pages (and must not lose panels).

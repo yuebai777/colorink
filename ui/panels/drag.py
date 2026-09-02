@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QEvent, QMimeData, QPoint, QRect, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QDrag, QPainter, QPalette
-from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QStackedWidget, QVBoxLayout, QWidget
 
 #: Payload of a panel drag: the panel id, UTF-8.
 PANEL_MIME = "application/x-colorink-panel"
@@ -328,6 +328,32 @@ class PanelHolder:
             self._panel = None
         return widget
 
+    def _tab_page_widget(self):
+        """The QStackedWidget page this holder sits in, or None."""
+        node = self
+        while node is not None and node.parentWidget() is not None:
+            parent = node.parentWidget()
+            if isinstance(parent, QStackedWidget):
+                return node
+            node = parent
+        return None
+
+    def _in_non_current_tab_page(self) -> bool:
+        """True when this holder sits inside a tab page that is not shown.
+
+        On every refresh the visibility loop re-shows each slider container
+        (`setVisible(True)`) even when its page is not the current one; the
+        panel then gets a ShowToParent while the holder is still explicitly
+        hidden by the stack. Mirroring that back would light every page up at
+        once — the one-frame overlap right after a drop. The stack itself
+        shows the page when it becomes current; keep the holder parked.
+        """
+        page = self._tab_page_widget()
+        if page is None:
+            return False
+        stack = page.parentWidget()
+        return stack.currentWidget() is not page
+
     def eventFilter(self, obj, event):
         """A hidden panel must not leave its chrome behind."""
         if obj is getattr(self, "_panel", None) and event.type() in _VISIBILITY_EVENTS:
@@ -352,6 +378,14 @@ class PanelHolder:
             # even see. Only the panel's own explicit hide (isHidden() True)
             # is the signal to park the holder.
             if event.type() == QEvent.Type.Hide and not obj.isHidden():
+                return super().eventFilter(obj, event)
+            # Show/ShowToParent while the holder is an explicit non-current
+            # tab page is the refresh loop re-showing the panel — not the
+            # stack asking for the page. Keep the page parked; it is shown
+            # when the tab becomes current.
+            if (event.type() in (QEvent.Type.Show, QEvent.Type.ShowToParent)
+                    and self.isHidden()
+                    and self._in_non_current_tab_page()):
                 return super().eventFilter(obj, event)
             self.setVisible(not obj.isHidden())
         return super().eventFilter(obj, event)
