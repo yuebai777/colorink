@@ -169,6 +169,7 @@ class PanelHost(QWidget):
         # column; pages were flattened to single-item pages by __post_init__).
         titles = []
         built = []
+        page_entries = []
         for page in node.pages:
             first_id = page[0]
             spec = registry.panel(first_id)
@@ -186,6 +187,7 @@ class PanelHost(QWidget):
             if widget is None:
                 continue
             built.append(widget)
+            page_entries.append(page)
             titles.append("/".join(names))
         if not built:
             return None
@@ -197,6 +199,9 @@ class PanelHost(QWidget):
             tabs.addTab(widget, title)
             tabs.setTabToolTip(index, title)
         tabs.setCurrentIndex(min(node.current, len(built) - 1))
+        #: tab index -> original page tuple (pages with nothing mounted are
+        #: skipped from the strip, so bar indices do not match node.pages).
+        tabs._panel_pages = tuple(page_entries)
         # QStackedLayout defers page visibility until the stack itself is
         # shown/laid out. A freshly rebuilt tab stack that is inserted into an
         # already-visible host would therefore paint its first frame with every
@@ -591,9 +596,21 @@ class PanelHost(QWidget):
             if not bar_rect.contains(pos):
                 continue
             index = bar.tabAt(bar.mapFrom(self, pos))
-            if (isinstance(node, Tabs) and 0 <= index < len(node.pages)
-                    and node.pages[index]):
-                return (node.pages[index][-1], rearrange.MERGE_PAGE)
+            pages = getattr(tabs, "_panel_pages", None) or node.pages
+            if (isinstance(node, Tabs) and 0 <= index < len(pages)
+                    and pages[index]):
+                # The page's last panel may be the very panel being dragged
+                # / floated right now (not mounted) — aim at a mounted panel
+                # in that page, or skip the header entirely. Otherwise the
+                # drop hint would dereference a None box.
+                target_panel = None
+                for panel_id in reversed(pages[index]):
+                    if panel_id in self._mounted:
+                        target_panel = panel_id
+                        break
+                if target_panel is not None:
+                    return (target_panel, rearrange.MERGE_PAGE)
+                continue
         found = None
         for panel_id in self._mounted:
             box = self._panel_box(panel_id)

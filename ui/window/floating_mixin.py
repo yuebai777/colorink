@@ -231,7 +231,14 @@ class FloatingPanelsMixin:
         host = getattr(self, "panel_host", None)
         if host is None:
             return
-        moved = rearrange.move_panel(host.tree(), panel_id, target[0], target[1])
+        if target[1] == getattr(rearrange, "MERGE_PAGE", None):
+            # Dropped on a page's tab header: join that page rather than
+            # creating a new one (the same rule as dragging inside the host).
+            moved = rearrange.merge_panel_into_page(
+                host.tree(), panel_id, target[0])
+        else:
+            moved = rearrange.move_panel(
+                host.tree(), panel_id, target[0], target[1])
         if moved == host.tree():
             return
         host.set_tree(moved)
