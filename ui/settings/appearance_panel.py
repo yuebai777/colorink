@@ -721,7 +721,8 @@ class AppearancePanelMixin:
         row = QHBoxLayout()
         row.setSpacing(4)
         dec = self._make_step_button("-")
-        label = QLabel("6" if kind == "same" else "8")
+        default = {"same": "6", "diff": "8", "top": "6"}.get(kind, "6")
+        label = QLabel(default)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setFixedSize(45, 20)
         inc = self._make_step_button("+")
@@ -729,6 +730,10 @@ class AppearancePanelMixin:
             dec.clicked.connect(self.same_space_decrease)
             inc.clicked.connect(self.same_space_increase)
             self.btn_same_dec, self.lbl_same_space, self.btn_same_inc = dec, label, inc
+        elif kind == "top":
+            dec.clicked.connect(self.panel_top_gap_decrease)
+            inc.clicked.connect(self.panel_top_gap_increase)
+            self.btn_top_gap_dec, self.lbl_top_gap, self.btn_top_gap_inc = dec, label, inc
         else:
             dec.clicked.connect(self.diff_space_decrease)
             inc.clicked.connect(self.diff_space_increase)
@@ -794,6 +799,8 @@ class AppearancePanelMixin:
         grid_gap.addLayout(self._build_space_row("same"), 0, 1)
         grid_gap.addWidget(QLabel(i18n.tr("面板之间间距")), 1, 0)
         grid_gap.addLayout(self._build_space_row("diff"), 1, 1)
+        grid_gap.addWidget(QLabel(i18n.tr("面板顶部间距")), 2, 0)
+        grid_gap.addLayout(self._build_space_row("top"), 2, 1)
         cl_gap.addLayout(grid_gap)
         page_panels.addWidget(card_gap)
 

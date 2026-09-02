@@ -54,6 +54,9 @@ class PanelChrome:
     content_margins: tuple = (4, 6, 4, 6)
     #: Breathing room between a grip strip and the panel under it.
     grip_gap: int = 4
+    #: Extra space between the tab strip / window top and the first panel,
+    #: in px (already scaled). The "面板顶部间距" setting.
+    top_gap: int = 0
 
 
 #: Grab strip around a frameless window, in px.

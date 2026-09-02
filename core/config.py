@@ -139,6 +139,7 @@ def default_hotkey_config():
         "sliderScrollStep": 1,
         "sliderSameSpace": 6,
         "sliderDiffSpace": 8,
+        "panelTopGap": 6,
         "showSlidersHistory": True,
         "orderSlidersHistory": 7,
         "historyColumns": 8,
@@ -284,7 +285,7 @@ _BOOL_KEYS = frozenset({
 _INT_KEYS = frozenset({
     "uiScale", "pickerZoom", "historyColumns", "historyRows",
     "historySwatchSize", "sliderScrollStep", "sliderSameSpace",
-    "sliderDiffSpace", "backgroundOpacity",
+    "sliderDiffSpace", "panelTopGap", "backgroundOpacity",
 })
 
 

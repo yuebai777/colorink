@@ -249,7 +249,7 @@ class ThemeMixin:
             host.set_stack_spacing(int(diff_space * scale))
         self.sliders_layout.setContentsMargins(
             int(4 * scale), # closer to edge
-            int(6 * scale),
+            int(self.cfg.get("panelTopGap", 6) * scale),
             int(4 * scale), # closer to edge
             int(10 * scale)
         )
@@ -437,7 +437,8 @@ class ThemeMixin:
             title_inset=bool(border_theme.get("title_bar_inset", False)),
             grip_gap=max(2, int(4 * scale)),
             content_margins=(int(4 * scale), int(6 * scale),
-                             int(4 * scale), int(6 * scale)))
+                             int(4 * scale), int(6 * scale)),
+            top_gap=max(0, int(self.cfg.get("panelTopGap", 6) * scale)))
         host = getattr(self, "panel_host", None)
         if host is not None:
             host.apply_chrome(self._floating_chrome)

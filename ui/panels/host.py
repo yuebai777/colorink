@@ -385,7 +385,7 @@ class PanelHost(QWidget):
             return
         scale = max(0.5, float(getattr(chrome, "scale", 1.0) or 1.0))
         pad_x = max(2, int(round(5 * scale)))
-        pad_y = max(1, int(round(2 * scale)))
+        pad_y = max(2, int(round(3 * scale)))
         font = max(7, int(round(
             (getattr(chrome, "font_size", 0) or 11) * 0.85)))
         bar_bg = getattr(chrome, "bar_bg", "") or "transparent"
@@ -394,9 +394,12 @@ class PanelHost(QWidget):
         bar_text = getattr(chrome, "bar_text", "") or text
         divider = getattr(chrome, "divider_color", "") or bar_bg
         divider_w = max(1, int(getattr(chrome, "divider_width", 0) or 1))
+        top_gap = max(0, int(getattr(chrome, "top_gap", 0) or 0))
         css = (
             "QTabWidget { background: transparent; }"
-            "QTabWidget::pane { border: none; background: transparent; }"
+            "QTabWidget::pane { border: none; background: transparent;"
+            f" margin-top: {top_gap}px;"
+            " }"
             "QTabBar { background: transparent;"
             f" font-size: {font}px;"
             " }"
