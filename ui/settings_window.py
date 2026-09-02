@@ -126,7 +126,9 @@ class SettingsWindow(QDialog):
         self.sidebar.apply_theme()
         c = self.sidebar.theme_colors()
         bg = c["bg"]
-        text = c["text"]
+        # This window is filled with bar_bg (see the stylesheet below), and
+        # its title bar with it too, so both take the panel ink.
+        text = c["bar_text"]
         bar_bg = c["bar_bg"]
         border = c["border"]
 

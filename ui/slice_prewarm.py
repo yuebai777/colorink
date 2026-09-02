@@ -9,9 +9,12 @@ from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
 from ui.color_conversions import (
     find_max_lab_c,
     find_max_oklch_c,
+    lab_to_linear_array,
     lab_to_rgb_array,
+    oklab_to_linear_array,
     oklab_to_rgb_array,
     rgb_to_lab,
+    srgb_encode_u8,
 )
 
 
@@ -87,6 +90,22 @@ def _rgba_bytes(red: np.ndarray, green: np.ndarray, blue: np.ndarray, mask: np.n
     rgba[..., 1] = np.clip(green, 0.0, 255.0).astype(np.uint8)
     rgba[..., 2] = np.clip(blue, 0.0, 255.0).astype(np.uint8)
     rgba[..., 3] = 255 if mask is None else np.where(mask, 255, 0).astype(np.uint8)
+    return rgba.tobytes()
+
+
+def _rgba_bytes_linear(red: np.ndarray, green: np.ndarray, blue: np.ndarray,
+                       mask: np.ndarray) -> bytes:
+    """Pack LINEAR-light channels (0-1) + coverage into RGBA8888.
+
+    The sRGB curve is applied here, once, by table — instead of a pow() per
+    channel per pixel inside the conversion (see srgb_encode_u8).
+    """
+    height, width = red.shape
+    rgba = np.empty((height, width, 4), dtype=np.uint8)
+    rgba[..., 0] = srgb_encode_u8(red)
+    rgba[..., 1] = srgb_encode_u8(green)
+    rgba[..., 2] = srgb_encode_u8(blue)
+    rgba[..., 3] = np.where(mask, 255, 0).astype(np.uint8)
     return rgba.tobytes()
 
 
@@ -218,8 +237,9 @@ def _render_rgb_slice(request: SlicePrewarmRequest) -> SlicePrewarmResult:
     chroma = np.maximum(0.0, (x - min_x) / scale)
     a = chroma * a_dir
     b = chroma * b_dir
-    red, green, blue = lab_to_rgb_array(lightness, a, b)
-    mask = (red >= 0.0) & (red <= 255.0) & (green >= 0.0) & (green <= 255.0) & (blue >= 0.0) & (blue <= 255.0)
+    red, green, blue = lab_to_linear_array(lightness, a, b)
+    mask = ((red >= 0.0) & (red <= 1.0) & (green >= 0.0) & (green <= 1.0)
+            & (blue >= 0.0) & (blue <= 1.0))
     # Edge curve: one value per LOGICAL row (the outline is drawn in widget
     # logical coordinates), sampled from the rendered mask. The image→logical
     # scales cover subsampled renders, not just the device pixel ratio.
@@ -231,7 +251,7 @@ def _render_rgb_slice(request: SlicePrewarmRequest) -> SlicePrewarmResult:
     return SlicePrewarmResult(
         request=request, min_x=min_x, min_y=min_y, width=width, height=height,
         image_width=image_width, image_height=image_height,
-        image_bytes=_rgba_bytes(red, green, blue, mask), edge_x=edge_x,
+        image_bytes=_rgba_bytes_linear(red, green, blue, mask), edge_x=edge_x,
     )
 
 
@@ -267,10 +287,11 @@ def _render_oklch_slice(request: SlicePrewarmRequest) -> SlicePrewarmResult:
     angle = np.deg2rad(hue)
     a = chroma * np.cos(angle)
     b = chroma * np.sin(angle)
-    red, green, blue = oklab_to_rgb_array(lightness, a, b)
-    mask = (red >= 0.0) & (red <= 255.0) & (green >= 0.0) & (green <= 255.0) & (blue >= 0.0) & (blue <= 255.0)
+    red, green, blue = oklab_to_linear_array(lightness, a, b)
+    mask = ((red >= 0.0) & (red <= 1.0) & (green >= 0.0) & (green <= 1.0)
+            & (blue >= 0.0) & (blue <= 1.0))
     return SlicePrewarmResult(
         request=request, min_x=min_x, min_y=min_y, width=width, height=height,
         image_width=image_width, image_height=image_height,
-        image_bytes=_rgba_bytes(red, green, blue, mask),
+        image_bytes=_rgba_bytes_linear(red, green, blue, mask),
     )

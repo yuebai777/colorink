@@ -40,6 +40,8 @@ mag_filter_mode.txt
 .reasonix/
 
 # Test artifacts
+.tmp_panel_drag/
+tools/_tmp_*.py
 _test_log.txt
 err.txt
 out.txt

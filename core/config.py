@@ -146,12 +146,25 @@ def default_hotkey_config():
         "historySwatchSize": 18,
         "historyColors": [],
         "sliderStyle": "default",
+        # 边框主题（窗口外框 / 分组框 / 数值框）。"auto" = 跟随滑块样式配对，
+        # 其余取值见 ui/border_themes.py 的 BORDER_THEMES。
+        "borderStyle": "auto",
         "followMouseEnabled": False,
         "noFocusMode": False,
         "showLabLightnessSlider": False,
+        "slidersSplit": False,               # 滑块列并排（B-4 可拖动分割）
+        "slidersTabs": False,                # 滑块组分页签叠放（B-4）
+        "panelDrag": False,                  # 面板抓手：拖拽重排（B-4）
+        # 浮出成独立窗口的面板 → 几何 {id: [x, y, w, h]}（B-5）。停靠树里
+        # 仍然留着它们的位置，所以收回来能回到原处。
+        "floatingPanels": {},
         "syncSoftware": "csp",
         "psVersion": "auto",
         "uiScale": 100,
+        # 窗口背景 / 边框的不透明度（百分比，100 = 完全不透明）。只作用于
+        # 窗口底色、外框与标题栏那一条 chrome，滑块 / 色轮 / 色块等内容
+        # 永远不透明，取值范围见 ui/chrome_opacity.py。
+        "backgroundOpacity": 100,
         "flipColorWheelHorizontally": True,
         "pickerZoom": 6,
         "hideHueRing": False,
@@ -264,13 +277,14 @@ _BOOL_KEYS = frozenset({
     "showTitleBar", "showTaskbarIcon", "lockWindowSize", "lockWindowPosition",
     "onlyShowInCsp", "openAtLogin", "checkUpdatesOnStartup",
     "followMouseEnabled", "noFocusMode", "showLabLightnessSlider",
+    "slidersSplit", "slidersTabs", "panelDrag",
     "flipColorWheelHorizontally", "hideHueRing", "showModuleSwitchButton",
     "showLabToggleButton", "showLabShapeButton", "showLabHarmonyButton",
 })
 _INT_KEYS = frozenset({
     "uiScale", "pickerZoom", "historyColumns", "historyRows",
     "historySwatchSize", "sliderScrollStep", "sliderSameSpace",
-    "sliderDiffSpace",
+    "sliderDiffSpace", "backgroundOpacity",
 })
 
 

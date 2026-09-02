@@ -12,6 +12,13 @@ from core import config
 
 
 class ColorSlotsMixin:
+    def _on_slot_requested(self, slot):
+        """A picker widget asked for a slot through the shared session."""
+        if slot == "bg":
+            self.select_bg_slot()
+        else:
+            self.select_fg_slot()
+
     def select_fg_slot(self):
         # Clicking the fg swatch restores an opaque fg: clear any transparent
         # state so its highlight returns immediately.

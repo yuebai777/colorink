@@ -12,6 +12,7 @@ from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QBrush, QColor, QCursor, QPainter, QPen
 from PyQt6.QtWidgets import QWidget
 
+from ui.color_session import request_slot, request_transparent
 from ui.ringless_mode import (
     RINGLESS_ACTIVE_BORDER,
     RINGLESS_INACTIVE_BORDER,
@@ -47,7 +48,7 @@ class ColorPreviewBox(QWidget):
         self._legacy_tile_above = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._trans_tile = TransparentTile(self)
-        self._trans_tile.clicked.connect(lambda: cast(Any, self._parent).set_active_transparent())
+        self._trans_tile.clicked.connect(lambda: request_transparent(self))
 
     # 鈹€鈹€ Public API 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
@@ -332,10 +333,7 @@ class ColorPreviewBox(QWidget):
             return
 
         if event.button() == Qt.MouseButton.LeftButton:
-            if clicked_slot == "fg":
-                cast(Any, self._parent).select_fg_slot()
-            else:
-                cast(Any, self._parent).select_bg_slot()
+            request_slot(self, clicked_slot)
         elif event.button() == Qt.MouseButton.RightButton:
             color = self.fg_color if clicked_slot == "fg" else self.bg_color
             self._show_color_context_menu(color)

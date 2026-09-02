@@ -50,6 +50,7 @@ from PyQt6.QtWidgets import QApplication, QMenu, QWidget
 MAX_COLS = 16
 MAX_ROWS = 8
 _HALF = 0.5  # sub-pixel offset for crisp 1px borders
+_SEAM = QColor(127, 127, 127)  # the 1px grey line between swatches
 
 
 def _to_int(v):
@@ -186,7 +187,7 @@ class _SwatchCell(QWidget):
                 # 2) 1 physical-pixel gray seam on the right + bottom edges.
                 #    Adjacent swatches share these lines, so the seam between
                 #    two colors is always exactly 1px on screen.
-                painter.setBrush(QBrush(QColor(127, 127, 127)))
+                painter.setBrush(QBrush(_SEAM))
                 painter.drawRect(QRectF(dev_w - 1, 0, 1, dev_h))  # right edge
                 painter.drawRect(QRectF(0, dev_h - 1, dev_w, 1))  # bottom edge
         finally:
@@ -331,6 +332,12 @@ class ColorHistoryWidget(QWidget):
         compatibility but ignored — width drives the cell size now."""
         cols = max(1, min(MAX_COLS, int(cols)))
         rows = max(1, min(MAX_ROWS, int(rows)))
+        if cols == self._cols and rows == self._rows:
+            # Same grid: nothing to rebuild. The theme pass calls this on every
+            # resize event, and going through with it dropped the user's
+            # selected swatch (_selected_index = -1) mid-drag. Width changes
+            # are already handled by this widget's own resizeEvent.
+            return
         self._cols = cols
         self._rows = rows
         capacity = cols * rows
@@ -430,9 +437,25 @@ class ColorHistoryWidget(QWidget):
         swatch = max(8, inner_cells // cols) if cols > 0 else 8
         self._swatch_size = swatch
 
-        # Centre the grid within the widget so left and right margins are
-        # pixel-identical (accounting for the 1px panel border at each edge).
-        total_used_w = cols * swatch + (cols - 1) * gap
+        # Pixels that do not divide evenly across the columns. Parking them in
+        # the side margin (what centring did) makes that margin creep 1px per
+        # pixel of width and then snap back several px each time the cell size
+        # steps — the whole grid visibly twitches sideways while the window is
+        # resized. Spread them one-per-gap instead: cells stay square, the
+        # margin stays put, and the grid always spans the full width.
+        spare = max(0, inner_cells - swatch * cols) if cols > 0 else 0
+        spare = min(spare, max(0, cols - 1))
+        self._spare = spare
+        column_x = []
+        offset = 0
+        for c in range(cols):
+            column_x.append(offset)
+            offset += swatch + gap + (1 if c < spare else 0)
+        self._column_x = column_x
+
+        # Centre whatever is still left over (only when the widget is wider
+        # than the grid can use), so left and right margins stay identical.
+        total_used_w = cols * swatch + (cols - 1) * gap + spare
         left_pad = max(pad, (self.width() - 1 - total_used_w) // 2)
         self._left_pad = left_pad
 
@@ -445,7 +468,7 @@ class ColorHistoryWidget(QWidget):
                 visible = (r < rows and c < cols)
                 if visible:
                     cell.setFixedSize(swatch, swatch)
-                    cell.move(left_pad + c * (swatch + gap), pad + r * (swatch + gap))
+                    cell.move(left_pad + column_x[c], pad + r * (swatch + gap))
                     cell.show()
                 else:
                     cell.hide()
@@ -564,6 +587,38 @@ class ColorHistoryWidget(QWidget):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QBrush(self._bg))
             painter.drawRect(rect)
+
+            # Spare pixels that _relayout distributed one-per-column-gap. The
+            # cell already paints a 1px gray seam on its own right edge, so an
+            # extra +1px gap would render as seam + background = a visible 2px
+            # gap between some swatches. Paint that strip with the RIGHT
+            # neighbour's colour instead: the separating line stays the cell's
+            # own 1px seam everywhere, while the grid still spans the width
+            # (and the square-cell / no-twitch invariants are untouched).
+            col_x = getattr(self, "_column_x", None)
+            spare = getattr(self, "_spare", 0)
+            n_colors = len(self._colors)
+            swatch = self._swatch_size
+            gap = self._gap
+            if col_x and spare > 0 and n_colors:
+                for r in range(self._rows):
+                    y = self._pad + r * (swatch + gap)
+                    for c in range(1, self._cols):
+                        if c - 1 >= spare:
+                            continue
+                        right_idx = r * self._cols + c
+                        if 0 <= right_idx < n_colors:
+                            right = self._colors[n_colors - 1 - right_idx]
+                            x = self._left_pad + col_x[c - 1] + swatch + gap
+                            # Fill the spare strip with the right neighbour's
+                            # colour, but keep the last row grey so the
+                            # horizontal seam stays continuous across the
+                            # strip (otherwise the row seam has a 1px notch).
+                            gap_h = max(1, swatch - 1)
+                            painter.setBrush(QColor(right.rgb()))
+                            painter.drawRect(QRectF(x, y, 1, gap_h))
+                            painter.setBrush(QBrush(_SEAM))
+                            painter.drawRect(QRectF(x, y + gap_h, 1, 1))
 
             # Border
             painter.setBrush(Qt.BrushStyle.NoBrush)

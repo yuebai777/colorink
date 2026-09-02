@@ -204,13 +204,13 @@ class TestThemeColors:
         c = sidebar.theme_colors()
         assert isinstance(c, dict)
         assert set(c.keys()) == {
-            "bg", "text", "border", "bar_bg",
+            "bg", "text", "border", "bar_bg", "bar_text", "bar_muted",
             "accent", "muted", "success", "warning", "danger",
         }
         # Hex colors start with '#', alpha tokens are rgba(...) strings
         for key, v in c.items():
             assert isinstance(v, str)
-            if key != "muted":
+            if key not in ("muted", "bar_muted"):
                 assert v.startswith("#")
 
 
@@ -277,7 +277,7 @@ class TestTabStructure:
 
     def test_grayscale_in_filter_page(self, sidebar):
         # Page index 3 = "滤镜"
-        filter_page = sidebar.stack.widget(3)
+        filter_page = sidebar.stack.widget(4)
         assert filter_page.isAncestorOf(sidebar.combo_grayscale_backend)
 
     def test_btn_pick_in_hotkeys_page(self, sidebar):
@@ -357,10 +357,12 @@ class TestReorganizedSettings:
         assert picker_page.isAncestorOf(sidebar.combo_history_cols)
         assert picker_page.isAncestorOf(sidebar.combo_history_rows)
 
-    def test_slider_rows_have_move_buttons(self, sidebar):
-        cb, btn_up, btn_down, _ = sidebar.slider_rows["HSV"]
-        assert btn_up.text() == "▲"
-        assert btn_down.text() == "▼"
+    def test_slider_rows_are_show_switches_only(self, sidebar):
+        """顺序改成拖面板了，这里只剩"显示/隐藏"。"""
+        cb, row = sidebar.slider_rows["HSV"]
+        assert cb.isCheckable()
+        assert not sidebar.findChildren(QPushButton, "OrderButton")
+        assert not hasattr(sidebar, "btn_hist_up")
 
     def test_advanced_is_regular_section(self, sidebar):
         """高级 is a plain section (no collapse toggle) with its controls."""
@@ -372,8 +374,9 @@ class TestReorganizedSettings:
         ]
         assert "高级" in headers
         assert picker_page.isAncestorOf(sidebar.btn_scroll_dec)
-        assert picker_page.isAncestorOf(sidebar.lbl_same_space)
-        assert picker_page.isAncestorOf(sidebar.lbl_diff_space)
+        panels_page = sidebar.stack.widget(3)
+        assert panels_page.isAncestorOf(sidebar.lbl_same_space)
+        assert panels_page.isAncestorOf(sidebar.lbl_diff_space)
         # No collapsible headers remain anywhere
         assert not picker_page.findChildren(QPushButton, "CollapseHeader")
 
@@ -398,59 +401,25 @@ class TestReorganizedSettings:
         assert sidebar.cfg["toggleTitleBarKey"] == "Ctrl+Alt+T"
         assert sidebar.cfg["showTitleBar"] is False
 
-    def test_move_slider_order_swaps_values(self, sidebar):
-        sidebar.cfg["colorSpaceModule"] = "hsv"  # pin: only module-visible rows participate
-        sidebar.cfg["orderSlidersRGB"] = 1
-        sidebar.cfg["orderSlidersHSV"] = 2
-        sidebar.cfg["orderSlidersHSL"] = 3
-        sidebar.cfg["orderSlidersLAB"] = 4
-        sidebar.cfg["orderSlidersOKLab"] = 5
-        sidebar.cfg["orderSlidersOKLCh"] = 6
-        sidebar.cfg["orderSlidersHistory"] = 7
-        with patch("ui.settings_sidebar.config.save_hotkey_config"):
-            sidebar._move_slider_order("RGB", 1)
-        assert sidebar.cfg["orderSlidersRGB"] == 2
-        assert sidebar.cfg["orderSlidersHSV"] == 1
+    def test_slider_rows_follow_the_configured_order(self, sidebar):
+        """行的先后要跟窗口里一致——这是这张卡现在唯一的顺序职责。"""
+        sidebar.cfg["orderSlidersRGB"] = 6
+        sidebar.cfg["orderSlidersOKLCh"] = 1
+        sidebar._reorder_slider_rows_ui()
+        layout = sidebar._sl_order_layout
+        rows = [layout.itemAt(i) for i in range(layout.count())]
+        order = [key for key, (_cb, row) in sidebar.slider_rows.items()
+                 if row in rows]
+        placed = [key for key, (_cb, row) in sidebar.slider_rows.items()]
+        assert set(order) == set(placed)
+        first = rows.index(sidebar.slider_rows["OKLCh"][1])
+        last = rows.index(sidebar.slider_rows["RGB"][1])
+        assert first < last
 
-    def test_move_slider_order_skips_module_hidden_groups(self, sidebar):
-        """A move must swap with the next *visible* row, never with a group
-        that is hidden in the active module (e.g. HSL while in HSV module)."""
-        sidebar.cfg["colorSpaceModule"] = "hsv"  # HSL row is hidden here
-        sidebar.cfg["orderSlidersRGB"] = 1
-        sidebar.cfg["orderSlidersHSL"] = 2      # hidden neighbour in the full list
-        sidebar.cfg["orderSlidersHSV"] = 3
-        sidebar.cfg["orderSlidersLAB"] = 4
-        sidebar.cfg["orderSlidersOKLab"] = 5
-        sidebar.cfg["orderSlidersOKLCh"] = 6
-        sidebar.cfg["orderSlidersHistory"] = 7
-        with patch("ui.settings_sidebar.config.save_hotkey_config"):
-            sidebar._move_slider_order("RGB", 1)
-        assert sidebar.cfg["orderSlidersRGB"] == 3   # swapped with visible HSV
-        assert sidebar.cfg["orderSlidersHSV"] == 1
-        assert sidebar.cfg["orderSlidersHSL"] == 2   # hidden group untouched
-
-    def test_slider_order_buttons_follow_visibility(self, sidebar):
-        """Up/down buttons disable at the visible-list boundaries."""
-        sidebar.cfg["colorSpaceModule"] = "hsv"
-        sidebar.cfg["orderSlidersRGB"] = 1
-        sidebar.cfg["orderSlidersHSV"] = 2
-        sidebar.cfg["orderSlidersHSL"] = 3
-        sidebar.cfg["orderSlidersLAB"] = 4
-        sidebar.cfg["orderSlidersOKLab"] = 5
-        sidebar.cfg["orderSlidersOKLCh"] = 6
-        sidebar.cfg["orderSlidersHistory"] = 7
-        sidebar._update_slider_order_buttons()
-        _, btn_up, btn_down, _ = sidebar.slider_rows["RGB"]
-        assert btn_up.isEnabled() is False      # top of the visible list
-        assert btn_down.isEnabled() is True
-        _, btn_up, btn_down, _ = sidebar.slider_rows["OKLCh"]
-        assert btn_up.isEnabled() is True
-        assert btn_down.isEnabled() is True     # History still sits below
-        assert sidebar.btn_hist_up.isEnabled() is True
         assert sidebar.btn_hist_down.isEnabled() is False   # bottom of the list
 
     def test_sync_and_versions_share_one_card(self, sidebar):
-        software_page = sidebar.stack.widget(4)
+        software_page = sidebar.stack.widget(5)
         assert software_page.isAncestorOf(sidebar.combo_software)
         assert software_page.isAncestorOf(sidebar.combo_csp)
 

@@ -4,14 +4,16 @@ Extracted from ``ui.main_window``: content-height policy, resize/move
 handling, ringless layout propagation and the local LAB-switch event paths.
 """
 
+import math
 import os
 import time
 
-from PyQt6.QtCore import QEvent, QPoint, QRect, Qt
+from PyQt6.QtCore import QEvent, QPoint, QRect, Qt, QTimer
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import QApplication, QLineEdit, QPlainTextEdit, QTextEdit, QWidget
 
 from core import config
+from ui import preview_clearance, window_layout
 from ui.hotkey_button import MOUSE_BUTTON_NAME_BY_QT, capture_active, parse_key_event
 from ui.ringless_mode import RinglessConfig, resolve_ringless_layout
 from ui.widgets import _title_bar_content_offset, _visible_title_bar_height
@@ -67,13 +69,74 @@ class LayoutMixin:
             + int(margins_top) + int(margins_bottom) + 2 * int(spacing),
         )
 
+    # Kept as a thin alias: the rule itself lives in ui.window_layout.
+    _picker_square_height = staticmethod(window_layout.picker_square_height)
+
     @staticmethod
     def _required_visualizer_height(window_width, margins_left, margins_right,
                                     stack_min_height):
         available_width = int(window_width) - int(margins_left) - int(margins_right)
         return max(available_width, int(stack_min_height))
 
+    # One debounce for everything that belongs *after* a drag rather than
+    # during it. Three separate delays used to be scattered around
+    # (500ms wheel prewarm, 80/100ms LAB prewarm, 160ms height policy).
+    _SETTLE_DELAY_MS = 160
+
+    def _schedule_settle(self, width_changed: bool = False):
+        """Arm the post-drag settle: content height, then full-quality art.
+
+        The picker area is square, so its height follows the window width —
+        but the resize path deliberately skips _adjust_content_height (running
+        it inline would fight the drag and re-introduce DPI drift). Without
+        this the minimum height stayed at the value computed for the *old*
+        width: a narrowed window could not be dragged any shorter and kept a
+        tall blank band under the wheel.
+        """
+        if width_changed:
+            self._settle_needs_height = True
+        timer = getattr(self, "_settle_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._run_settle)
+            self._settle_timer = timer
+        timer.start(self._SETTLE_DELAY_MS)
+
+    def _run_settle(self):
+        """Land the deferred work once the frame stops moving."""
+        if getattr(self, "resizing", False):
+            # Still dragging: snapping the height now would yank the window
+            # out from under the cursor. Re-arm and try again.
+            self._schedule_settle()
+            return
+        if getattr(self, "_settle_needs_height", False):
+            self._settle_needs_height = False
+            self._run_deferred_content_height()
+        # Full-quality art for whichever page is up; the drag itself runs on
+        # the cheap low-resolution path.
+        wheel = getattr(self, "color_wheel", None)
+        square = getattr(self, "lab_square", None)
+        on_wheel = getattr(self, "stack", None) is None or self.stack.currentIndex() == 0
+        if on_wheel and wheel is not None:
+            wheel.schedule_slice_prewarm(0)
+        elif square is not None:
+            square.schedule_full_prewarm(0)
+
+    # Back-compat alias: the width-driven height pass is now one part of the
+    # settle.
+    def _schedule_width_driven_height(self):
+        self._schedule_settle(width_changed=True)
+
     def _run_deferred_content_height(self):
+        if getattr(self, "resizing", False):
+            # Still dragging the frame: snapping the height now would yank the
+            # window out from under the cursor. Re-arm and let the release (or
+            # the next settle) do it.
+            timer = getattr(self, "_width_height_timer", None)
+            if timer is not None:
+                timer.start(max(80, timer.interval()))
+                return
         self._content_height_adjust_pending = False
         if not self.isVisible():
             # 仍处于隐藏状态：不重 arm 定时器（否则 0ms 定时器会无限自旋，
@@ -93,6 +156,18 @@ class LayoutMixin:
         required = 0
         try:
             self.sliders_layout.activate()
+            # The slider column now lives inside a PanelHost, whose own
+            # layout may not have been activated yet — its sizeHint then
+            # reads ~16px and the height policy "grows to fit" against a
+            # phantom content size. Activate every level of the column.
+            host = getattr(self, "panel_host", None)
+            host_layout = host.layout() if host is not None else None
+            if host_layout is not None:
+                host_layout.activate()
+            stack_layout = host.layout() if host is not None else None
+            outer = self.sliders_container.layout()
+            if outer is not None and outer is not stack_layout:
+                outer.activate()
             self.main_layout.activate()
             margins = self.main_layout.contentsMargins()
             visualizer_h = self._required_visualizer_height(
@@ -104,25 +179,47 @@ class LayoutMixin:
                     self.stack.minimumHeight(),
                 ),
             )
+            host = getattr(self, "panel_host", None)
+            if host is not None:
+                # Zero is a real answer: with every panel torn off there is
+                # no column, and falling back to the container's size hint
+                # books ~16px of margins for nothing — the window then
+                # refuses to shrink the last band under the picker.
+                hint = host.column_hint()
+            else:
+                hint = self.sliders_container.sizeHint().height()
+            # The host's own outer layout adds its margins/spacing on top of
+            # the column: pad the deterministic hint with the same amounts —
+            # but only when there is a column to pad.
+            outer = self.sliders_container.layout()
+            if host is not None and outer is not None and hint > 0:
+                hm = outer.contentsMargins()
+                hint += hm.top() + hm.bottom() + outer.spacing() * 1
             required = self._required_content_height(
                 _visible_title_bar_height(self.title_bar),
                 visualizer_h,
-                self.sliders_container.sizeHint().height(),
+                hint,
                 margins.top(), margins.bottom(), self.main_layout.spacing(),
             )
         except AttributeError:
             return
 
         self.setMinimumHeight(required)
+        # What the content asks for right now — the yardstick a manually set
+        # height is measured against (see mouseReleaseEvent).
+        self._last_required_height = required
+        # Height policy lives in _resolve_content_height: grow to fit; keep a
+        # height the user chose as long as the content still needs the same
+        # room; otherwise follow the content back down. Following it down is
+        # what makes the window close up again after panels are torn off or
+        # hidden — without it the picker sits above a band of nothing that
+        # only a manual drag can remove.
         target, manual = self._resolve_content_height(
-            self.height(), required, self._last_auto_height,
-            self._manual_height_override,
-        )
-        self._last_auto_height = required
+            self.height(), required, getattr(self, "_last_auto_height", None),
+            getattr(self, "_manual_height_override", False))
         self._manual_height_override = manual
         if target == self.height():
             return
-
         self._adjusting_content_height = True
         try:
             self.resize(self.width(), target)
@@ -186,6 +283,189 @@ class LayoutMixin:
         else:
             self.stack.setMinimumHeight(0)
 
+    def window_layout(self, scale=None):
+        """This window's bands, computed from plain numbers.
+
+        The single place the picker rectangle and the hue-ring circle come
+        from. Reading them off the widgets instead is what produced this
+        session's geometry bugs: a stacked page that has never been shown
+        still reports its construction-time size, and isVisible() lies until
+        the window is really up.
+        """
+        if scale is None:
+            scale = self.cfg.get("uiScale", 100) / 100.0
+        margins = self.main_layout.contentsMargins()
+        return window_layout.resolve_window_layout(
+            window_width=self.width(),
+            window_height=self.height(),
+            margins=(margins.left(), margins.top(),
+                     margins.right(), margins.bottom()),
+            title_height=_visible_title_bar_height(self.title_bar),
+            sliders_height=self.sliders_container.sizeHint().height(),
+            spacing=int(4 * scale),
+            ui_scale=scale,
+            picker_minimum=self.stack.minimumSizeHint().height(),
+        )
+
+    def _picker_circles(self, layout=None):
+        """Round picker areas in window coordinates: hue ring + LAB disc.
+
+        Both are needed, not just the bigger one: with the lightness bar
+        shown the LAB disc is smaller than the ring BUT sits further up and
+        to the left, so it reaches into the top-left corner where the ring
+        does not.
+        """
+        circles = []
+        try:
+            ring = (layout or self.window_layout()).picker_circle
+            if ring.radius > 0:
+                circles.append((ring.x, ring.y, ring.radius))
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            pass
+        # Only while the LAB page is actually up: a stacked page that has
+        # never been shown still carries its construction-time geometry, and
+        # that phantom circle would shrink the cluster for nothing.
+        stack = getattr(self, "stack", None)
+        on_lab_page = stack is not None and stack.currentIndex() == 1
+        square = getattr(self, "lab_square", None)
+        if (on_lab_page and square is not None
+                and getattr(square, "shape", "") == "disc"):
+            try:
+                if square.width() > 0:
+                    dcx, dcy, radius = square._disc_metrics()
+                    origin = square.mapTo(self, square.rect().topLeft())
+                    circles.append((origin.x() + dcx, origin.y() + dcy, radius))
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                pass
+        return circles
+
+    # Floor for the trim applied when a corner is too shallow to swallow the
+    # cluster's nominal, wheel-proportional size. Deep enough to still clear
+    # the disc in a very narrow window, where the picker circle eats most of
+    # the corner.
+    _PREVIEW_FIT_MIN = 0.68
+
+    def _try_preview_fit(self, preview, factor, metrics, circles, bounds):
+        """Place the cluster at *factor* and report the penetration left."""
+        layout, title_offset, window_h, sliders_h = metrics
+        wheel_size = int(round(layout.picker_size))
+        preview.resize_and_position(
+            max(16, int(wheel_size * factor)), title_offset, window_h,
+            sliders_h, self.active_slot,
+        )
+        if not circles:
+            return 0.0
+        self._anchor_preview_to_circle(preview, circles[0], bounds)
+        return preview_clearance.avoid_circles(preview, circles, bounds)
+
+    def _place_preview_box(self, layout, title_offset, window_h, sliders_h):
+        """Size and position the floating fg/bg + transparent cluster.
+
+        Both are bound to the hue ring: the cluster scales with the wheel and
+        is then slid along its own corner until the swatches and the capsule
+        clear the ring. A narrow window leaves a corner too shallow to
+        swallow the nominal size — the whole cluster is then trimmed a few
+        percent (still one deterministic function of the wheel geometry)
+        instead of being left grazing the arc, which is what it used to do in
+        both corners.
+        """
+        preview = getattr(self, "preview_box", None)
+        if preview is None:
+            return
+        # Size and cage both come from the layout, so the cluster tracks the
+        # ring the window is actually drawing rather than an approximation
+        # recomputed per call site.
+        wheel_size = int(round(layout.picker_size))
+        # Remembered so a page/shape switch can re-fit without a full
+        # geometry pass (those deliberately skip apply_theme).
+        self._preview_metrics = (layout, title_offset, window_h, sliders_h)
+        circles = self._picker_circles(layout)
+        bounds = layout.picker_bounds
+        # Everything the fit depends on. A drag calls this twice per event
+        # (theme pass + geometry pass) and the settled state repeats forever;
+        # re-running the probe loop each time only produces identical moves.
+        signature = (wheel_size, title_offset, window_h, sliders_h,
+                     self.active_slot, preview.position_mode, bounds,
+                     tuple(round(v, 2) for c in circles for v in c))
+        if signature == getattr(self, "_preview_fit_signature", None):
+            return
+        self._preview_fit_signature = signature
+        metrics = (layout, title_offset, window_h, sliders_h)
+        with preview_clearance.fit_scope(preview):
+            # One probe at full size, then the trim in closed form. Probing
+            # repeatedly (ladder or convergence loop) re-measures rounded
+            # intermediate placements, and the answer then wobbles a few px
+            # between neighbouring window widths — the cluster twitches
+            # while the frame is dragged. The closed form only reads
+            # geometry that varies smoothly with the window, so the size
+            # does too.
+            if self._try_preview_fit(preview, 1.0, metrics, circles, bounds) <= 0.25:
+                return
+            factor = self._preview_trim_factor(preview, circles, bounds)
+            if factor >= 0.999:
+                return
+            self._try_preview_fit(preview, factor, metrics, circles, bounds)
+
+    def _preview_trim_factor(self, preview, circles, bounds):
+        """How much smaller the cluster must be to clear the picker circles.
+
+        Everything in the cluster scales from its corner anchor, so an
+        obstacle sitting *depth* away from that corner loses depth * (1 - f)
+        of reach when the cluster is scaled by f. Solving that against the
+        shortfall gives the factor directly — no search, and the result
+        moves continuously with the window size.
+        """
+        clearance = preview_clearance.cluster_clearance(preview)
+        corner_x = float(bounds[0])
+        corner_y = (float(bounds[1]) if preview.position_mode == "top-left"
+                    else float(bounds[3]))
+        obstacles = preview_clearance.cluster_obstacles(preview)
+        factor = 1.0
+        for cx, cy, radius in circles:
+            for px, py, pr in obstacles:
+                shortfall = (radius + pr + clearance) - math.hypot(px - cx, py - cy)
+                if shortfall <= 0.0:
+                    continue
+                depth = math.hypot(px - corner_x, py - corner_y) + pr + clearance
+                if depth <= 1e-6:
+                    continue
+                factor = min(factor, 1.0 - shortfall / depth)
+        return max(self._PREVIEW_FIT_MIN, min(1.0, factor))
+
+    @staticmethod
+    def _anchor_preview_to_circle(preview, circle, bounds):
+        """Pin the cluster's vertical edge to the wheel's own circle.
+
+        resize_and_position anchors it to the picker area instead, so a
+        window taller than its square picker dragged the cluster down with
+        the bottom edge while the wheel stayed put. Riding the circle keeps
+        the pair locked together at any window height — the same contract its
+        size already follows.
+        """
+        _cx, cy, radius = circle
+        y0, y1 = bounds[1], bounds[3]
+        if preview.position_mode == "top-left":
+            y = cy - radius
+        else:
+            y = cy + radius - preview.height()
+        y = max(float(y0), min(y, float(y1) - preview.height()))
+        preview.move(preview.x(), int(round(y)))
+
+    def _refit_preview_box(self):
+        """Re-fit the swatch cluster after a page or LAB-shape switch.
+
+        Those paths skip the full geometry pass on purpose, but the circle
+        the cluster has to clear just changed (ring ⇄ disc), so the fit has
+        to be redone with the metrics the last pass computed.
+        """
+        metrics = getattr(self, "_preview_metrics", None)
+        if metrics is None:
+            return
+        self._place_preview_box(*metrics)
+        preview = getattr(self, "preview_box", None)
+        if preview is not None:
+            preview.raise_()
+
     def _update_lab_avoid(self):
         """Tell LabSquare how much of its top is covered by the floating
         preview box, so the ab plane renders below it instead of being hidden.
@@ -205,31 +485,34 @@ class LayoutMixin:
             ls.avoid_top = 0
             return
 
-        if pb.position_mode != "top-left" or not pb.isVisible():
+        if pb.position_mode != "top-left" or pb.isHidden():
             if callable(getattr(ls, "set_avoid_top", None)):
                 ls.set_avoid_top(0)
             ls.avoid_top = 0
             return
-        # Map the preview box corners into LabSquare's local coordinate system.
-        # QStackedWidget keeps every page at the same geometry as the stack
-        # content rect, so this is valid even while the LAB pane is hidden.
-        try:
-            top_left = ls.mapFromGlobal(pb.mapToGlobal(pb.rect().topLeft()))
-            bottom_right = ls.mapFromGlobal(pb.mapToGlobal(pb.rect().bottomRight()))
-        except Exception:
-            if callable(getattr(ls, "set_avoid_top", None)):
-                ls.set_avoid_top(0)
-            ls.avoid_top = 0
-            return
-        # Only avoid if there is horizontal overlap with LabSquare.
-        if bottom_right.x() <= 0 or top_left.x() >= ls.width():
-            if callable(getattr(ls, "set_avoid_top", None)):
-                ls.set_avoid_top(0)
-            ls.avoid_top = 0
-            return
+        # Both rectangles come from the layout, not from mapFromGlobal on the
+        # two widgets: the LAB page keeps its construction-time geometry until
+        # it is first shown, so mapping through it produced a bogus offset
+        # whenever the wheel page was in front.
         scale = self.cfg.get("uiScale", 100) / 100.0
+        try:
+            picker = self.window_layout(scale).picker
+            box = pb.geometry()
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            if callable(getattr(ls, "set_avoid_top", None)):
+                ls.set_avoid_top(0)
+            ls.avoid_top = 0
+            return
+        # Only avoid while the cluster actually overlaps the plane's column.
+        lab_margins = self.lab_layout.contentsMargins()
+        plane_top = picker.y + lab_margins.top()
+        if box.right() <= picker.x or box.x() >= picker.right:
+            if callable(getattr(ls, "set_avoid_top", None)):
+                ls.set_avoid_top(0)
+            ls.avoid_top = 0
+            return
         pad = int(4 * scale)
-        new_avoid_top = max(0, bottom_right.y() + pad)
+        new_avoid_top = max(0, int(box.bottom() - plane_top + pad))
         if callable(getattr(ls, "set_avoid_top", None)):
             ls.set_avoid_top(new_avoid_top)
         ls.avoid_top = new_avoid_top
@@ -302,6 +585,9 @@ class LayoutMixin:
         
         super().resizeEvent(event)
         self.update_geometries()
+        old = event.oldSize()
+        self._schedule_settle(
+            width_changed=old.isValid() and event.size().width() != old.width())
 
     def moveEvent(self, event):
         """Block window movement when lockWindowPosition is enabled."""
@@ -316,8 +602,10 @@ class LayoutMixin:
         h = self.height()
         dynamic_scale = self.cfg.get("uiScale", 100) / 100.0
         
-        # Apply scaling and updates
-        self.apply_theme(scale=dynamic_scale, is_resize_event=True)
+        # Geometry only: the chrome (every stylesheet in the window) does not
+        # depend on the window size, and rebuilding it per resize event is
+        # what used to make the drag stutter.
+        self.apply_layout(dynamic_scale)
         
         title_h = _visible_title_bar_height(self.title_bar)
         title_offset = _title_bar_content_offset(self.title_bar, self.main_layout)
@@ -328,14 +616,26 @@ class LayoutMixin:
         # than the visualizer pane: a short/wide window (manual resize)
         # shrinks the wheel instead of clipping its lower arc.  Mirrors the
         # clamp in ColorWheel.get_wheel_geometry().
-        spacing = int(4 * dynamic_scale)
-        pane_h = h - margins.top() - margins.bottom() - title_h - sliders_h - 2 * spacing
-        wheel_size = min(w - int(16 * dynamic_scale), max(16, pane_h - 6))
+        # One layout for the whole pass — every band below reads it instead
+        # of measuring widgets (ui.window_layout).
+        layout = self.window_layout(dynamic_scale)
+        # The picker is square, and the content-height policy sizes the window
+        # so it can be. That policy is debounced, though, so mid-drag the pane
+        # would take every spare pixel of height and go tall-and-narrow: the
+        # wheel stops tracking the width, and the corner the swatches live in
+        # collapses. Capping it keeps the picker square the whole way through
+        # and parks the surplus below, where the settle removes it.
+        square = window_layout.picker_square_height(
+            w, margins.left(), margins.right(),
+            self.stack.minimumSizeHint().height())
+        if self.stack.maximumHeight() != square:
+            self.stack.setMaximumHeight(square)
+        wheel_size = int(round(layout.picker_size))
         
         # ── Step 1: legacy preview sizing ALWAYS runs first ──
         # This restores legacy circle sizing/position when ringless is disabled,
         # and provides a baseline that ringless may override below.
-        self.preview_box.resize_and_position(wheel_size, title_offset, h, sliders_h, self.active_slot)
+        self._place_preview_box(layout, title_offset, h, sliders_h)
         self.preview_box.raise_()
 
         # ── Step 2: push DPI-scaled button metrics down; panes do the rest ──
@@ -351,7 +651,6 @@ class LayoutMixin:
         # On LAB page: same rectangle controls + top bar, with layout margin.
         # Do NOT call _adjust_content_height() from resize-driven sync.
         self._sync_ringless_mode(wheel_size=wheel_size, title_bar_height=title_offset)
-        self.color_wheel.schedule_slice_prewarm(500)
 
         # ── Step 4: LAB avoidance observes FINAL preview geometry ──
         # Must run AFTER ringless sync so it sees the page-appropriate
@@ -472,7 +771,11 @@ class LayoutMixin:
             cfg["height"] = self.height()
             config.save_window_config(cfg)
             self._manual_height_override = True
-            self._last_auto_height = self.height()
+            # Remember what the content needed when the user picked this
+            # height: their choice survives while that number holds, and the
+            # window goes back to following the content once it changes.
+            self._last_auto_height = getattr(self, "_last_required_height",
+                                             self.height())
         
         super().mouseReleaseEvent(event)
 

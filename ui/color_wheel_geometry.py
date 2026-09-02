@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QPointF
 
+from ui.window_layout import resolve_picker_geometry
 from ui.color_conversions import (
     find_max_oklch_c,
     hsl_to_hsv,
@@ -244,24 +245,16 @@ class ColorWheelGeometryMixin:
         return self._bdry_scale
 
     def get_wheel_geometry(self):
-        w = self.width()
-        h = self.height()
-        # Enlarge the wheel to touch the sides as much as possible, but never
-        # let the ring overflow the widget height (the ring bottom edge sits
-        # at cy + outer_radius = size + 4).  A short/wide widget (manual
-        # resize, low screen space) shrinks the wheel instead of clipping
-        # the lower arc off-screen.
-        size = min(w - 16, max(16, h - 6))
-        cx = w / 2.0
-        # Position near the top with a constant offset to align closely with the preview circles
-        cy = size / 2.0 + 6.0
-        
-        outer_radius = size / 2.0 - 2.0
-        ring_width = max(12.0, size * 0.08)
-        inner_radius = outer_radius - ring_width
-        triangle_radius = max(1.0, inner_radius - 3.0)
-        
-        return cx, cy, size, outer_radius, inner_radius, triangle_radius
+        """Ring geometry for the current widget size.
+
+        The formula itself lives in :mod:`ui.window_layout` — it is shared
+        with the LAB disc, the resize pass and the theme pass, which used to
+        each carry their own copy (two of them had already drifted apart).
+        """
+        picker = resolve_picker_geometry(self.width(), self.height())
+        return (picker.circle.x, picker.circle.y, picker.size,
+                picker.circle.radius, picker.inner_radius,
+                picker.triangle_radius)
 
     def get_triangle_vertices(self, cx, cy, r):
         hy = r * 0.866

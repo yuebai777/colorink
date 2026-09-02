@@ -411,8 +411,33 @@ def srgb_gamma_encode_array(c):
     return np.where(c <= 0.0031308, 12.92 * c, 1.055 * np.maximum(0.0, c) ** (1.0 / 2.4) - 0.055)
 
 
-def lab_to_rgb_array(l, a, b):
-    """Vectorized lab_to_rgb over broadcastable ndarray inputs."""
+# The sRGB curve is a pow() per channel, i.e. three of them on every pixel of
+# a rendered plane or slice. It depends on one scalar only, so it is
+# tabulated once and indexed instead — the table is finer than the 8-bit
+# result it feeds, and it is what makes full-resolution rendering affordable
+# during a drag.
+SRGB_ENCODE_STEPS = 8192
+_SRGB_ENCODE_LUT = None
+
+
+def srgb_encode_u8(linear):
+    """Linear light (0-1, ndarray) → 8-bit sRGB, through a lookup table."""
+    global _SRGB_ENCODE_LUT
+    if _SRGB_ENCODE_LUT is None:
+        ramp = np.linspace(0.0, 1.0, SRGB_ENCODE_STEPS, dtype=np.float64)
+        curve = srgb_gamma_encode_array(ramp) * 255.0
+        _SRGB_ENCODE_LUT = np.clip(np.rint(curve), 0.0, 255.0).astype(np.uint8)
+    index = np.clip(linear, 0.0, 1.0) * (SRGB_ENCODE_STEPS - 1)
+    return _SRGB_ENCODE_LUT[index.astype(np.int32)]
+
+
+def lab_to_linear_array(l, a, b):
+    """Vectorized Lab → LINEAR sRGB (0-1 in gamut), gamma not applied.
+
+    The renderers keep the light linear so the sRGB curve can be applied once
+    by table (srgb_encode_u8); in-gamut is 0..1 here, exactly what 0..255 is
+    after the curve, so a gamut mask is the same test either way.
+    """
     y = (l + 16.0) / 116.0
     x = a / 500.0 + y
     z = y - b / 200.0
@@ -422,26 +447,40 @@ def lab_to_rgb_array(l, a, b):
     x65 = _LAB_D50_TO_D65[0][0] * x_val + _LAB_D50_TO_D65[0][1] * y_val + _LAB_D50_TO_D65[0][2] * z_val
     y65 = _LAB_D50_TO_D65[1][0] * x_val + _LAB_D50_TO_D65[1][1] * y_val + _LAB_D50_TO_D65[1][2] * z_val
     z65 = _LAB_D50_TO_D65[2][0] * x_val + _LAB_D50_TO_D65[2][1] * y_val + _LAB_D50_TO_D65[2][2] * z_val
-    r = _LAB_D50_TO_RGB[0][0] * x65 + _LAB_D50_TO_RGB[0][1] * y65 + _LAB_D50_TO_RGB[0][2] * z65
-    g = _LAB_D50_TO_RGB[1][0] * x65 + _LAB_D50_TO_RGB[1][1] * y65 + _LAB_D50_TO_RGB[1][2] * z65
-    bl = _LAB_D50_TO_RGB[2][0] * x65 + _LAB_D50_TO_RGB[2][1] * y65 + _LAB_D50_TO_RGB[2][2] * z65
+    return (
+        _LAB_D50_TO_RGB[0][0] * x65 + _LAB_D50_TO_RGB[0][1] * y65 + _LAB_D50_TO_RGB[0][2] * z65,
+        _LAB_D50_TO_RGB[1][0] * x65 + _LAB_D50_TO_RGB[1][1] * y65 + _LAB_D50_TO_RGB[1][2] * z65,
+        _LAB_D50_TO_RGB[2][0] * x65 + _LAB_D50_TO_RGB[2][1] * y65 + _LAB_D50_TO_RGB[2][2] * z65,
+    )
+
+
+def oklab_to_linear_array(L, a, b):
+    """Vectorized OKLab → LINEAR sRGB (see lab_to_linear_array)."""
+    l_ = L + _M2_INV[0][1] * a + _M2_INV[0][2] * b
+    m_ = L + _M2_INV[1][1] * a + _M2_INV[1][2] * b
+    s_ = L + _M2_INV[2][1] * a + _M2_INV[2][2] * b
+    l3, m3, s3 = l_ ** 3, m_ ** 3, s_ ** 3
+    return (
+        _M1_INV[0][0] * l3 + _M1_INV[0][1] * m3 + _M1_INV[0][2] * s3,
+        _M1_INV[1][0] * l3 + _M1_INV[1][1] * m3 + _M1_INV[1][2] * s3,
+        _M1_INV[2][0] * l3 + _M1_INV[2][1] * m3 + _M1_INV[2][2] * s3,
+    )
+
+
+def lab_to_rgb_array(l, a, b):
+    """Vectorized lab_to_rgb over broadcastable ndarray inputs (0-255)."""
+    r, g, bl = lab_to_linear_array(l, a, b)
     return (srgb_gamma_encode_array(r) * 255.0,
             srgb_gamma_encode_array(g) * 255.0,
             srgb_gamma_encode_array(bl) * 255.0)
 
 
 def oklab_to_rgb_array(L, a, b):
-    """Vectorized oklab_to_rgb over broadcastable ndarray inputs."""
-    l_ = L + _M2_INV[0][1] * a + _M2_INV[0][2] * b
-    m_ = L + _M2_INV[1][1] * a + _M2_INV[1][2] * b
-    s_ = L + _M2_INV[2][1] * a + _M2_INV[2][2] * b
-    l3, m3, s3 = l_ ** 3, m_ ** 3, s_ ** 3
-    r_lin = _M1_INV[0][0] * l3 + _M1_INV[0][1] * m3 + _M1_INV[0][2] * s3
-    g_lin = _M1_INV[1][0] * l3 + _M1_INV[1][1] * m3 + _M1_INV[1][2] * s3
-    b_lin = _M1_INV[2][0] * l3 + _M1_INV[2][1] * m3 + _M1_INV[2][2] * s3
-    return (srgb_gamma_encode_array(r_lin) * 255.0,
-            srgb_gamma_encode_array(g_lin) * 255.0,
-            srgb_gamma_encode_array(b_lin) * 255.0)
+    """Vectorized oklab_to_rgb over broadcastable ndarray inputs (0-255)."""
+    r, g, bl = oklab_to_linear_array(L, a, b)
+    return (srgb_gamma_encode_array(r) * 255.0,
+            srgb_gamma_encode_array(g) * 255.0,
+            srgb_gamma_encode_array(bl) * 255.0)
 
 
 def hsv_to_hls_floats(h, s, v):

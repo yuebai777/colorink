@@ -177,6 +177,12 @@ class ColorUpdatesMixin:
             
             # Connect signals
             slider.sliderReleased.connect(self.on_interaction_finished)
+            # Shared session: the wheel / LAB plane ask it whether a drag is
+            # in flight, instead of scanning this dict from the window.
+            session = getattr(self, "color_session", None)
+            if session is not None:
+                slider.sliderPressed.connect(session.begin_interaction)
+                slider.sliderReleased.connect(session.end_interaction)
             if group == "RGB":
                 slider.valueChanged.connect(self.on_rgb_slider_changed)
             elif group == "HSV":

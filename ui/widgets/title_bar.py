@@ -25,12 +25,21 @@ def _visible_title_bar_height(title_bar) -> int:
 
 
 def _title_bar_content_offset(title_bar, main_layout) -> int:
-    """Top offset below the title bar, including the border when it is hidden."""
+    """Top offset below the title bar, including the window's top border.
+
+    A flush title bar leaves the layout's top margin at 0, so this matches the
+    old behaviour there. Border themes that inset the title bar (the frame
+    wraps above it) keep a top margin, and content must clear both bands.
+    """
+    top_margin = 0
+    if main_layout is not None:
+        try:
+            top_margin = int(main_layout.contentsMargins().top())
+        except (AttributeError, TypeError, ValueError):
+            top_margin = 0
     if not title_bar.isVisible():
-        if main_layout is None:
-            return 0
-        return int(main_layout.contentsMargins().top())
-    return _visible_title_bar_height(title_bar)
+        return top_margin
+    return top_margin + _visible_title_bar_height(title_bar)
 
 
 class TitleBar(QWidget):
@@ -121,6 +130,34 @@ class TitleBar(QWidget):
             }
         """)
 
+        # Panel grips toggle — the entry point to the whole panel system.
+        # Next to the hamburger on purpose: arranging panels is something you
+        # reach for while looking at the window, not while reading settings.
+        self.btn_panels = QPushButton("▤")
+        self.btn_panels.setFixedSize(9, 9)
+        self.btn_panels.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_panels.setCheckable(True)
+        self.btn_panels.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_panels.setToolTip(
+            "面板抓手：开启后每块面板多一条把手，可拖动重排、拖出成独立窗口，"
+            "右键还有更多操作")
+        self.btn_panels.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                font-size: 7px;
+            }
+            QPushButton:checked {
+                background-color: rgba(255,255,255,0.20);
+                border-radius: 2px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255,255,255,0.12);
+                border-radius: 2px;
+            }
+        """)
+        self.btn_panels.clicked.connect(self._toggle_panel_grips)
+
         # Title
         self.title_label = QLabel("Colorink")
         self.title_label.setStyleSheet("font-weight: bold; font-size: 7px;")
@@ -162,11 +199,36 @@ class TitleBar(QWidget):
         """)
 
         layout.addWidget(self.btn_settings)
+        layout.addWidget(self.btn_panels)
         layout.addStretch()
         layout.addWidget(self.title_label)
         layout.addStretch()
         layout.addWidget(self.btn_min)
         layout.addWidget(self.btn_close)
+
+    def _toggle_panel_grips(self):
+        """Flip the panel grips on the window this title bar belongs to."""
+        window = self._parent
+        cfg = getattr(window, "cfg", None)
+        if cfg is None:
+            return
+        cfg["panelDrag"] = bool(self.btn_panels.isChecked())
+        config.save_hotkey_config(cfg)
+        refresh = getattr(window, "refresh_slider_visibility_and_order", None)
+        if callable(refresh):
+            refresh()
+        sidebar = getattr(window, "settings_sidebar", None)
+        checkbox = getattr(sidebar, "cb_panel_drag", None) if sidebar else None
+        if checkbox is not None:
+            checkbox.blockSignals(True)
+            checkbox.setChecked(cfg["panelDrag"])
+            checkbox.blockSignals(False)
+
+    def sync_panel_grips(self, enabled: bool) -> None:
+        """Reflect the current setting (the settings page can change it too)."""
+        self.btn_panels.blockSignals(True)
+        self.btn_panels.setChecked(bool(enabled))
+        self.btn_panels.blockSignals(False)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
