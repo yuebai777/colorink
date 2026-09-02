@@ -235,8 +235,8 @@ def test_a_rearranged_tree_survives_the_config_round_trip():
 
 # ── 控件层：抓手、宿主的落点与投放 ───────────────────────────────────────
 
-from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt  # noqa: E402
-from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QMouseEvent  # noqa: E402
+from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, QRect, Qt  # noqa: E402
+from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QMouseEvent, QPaintEvent  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QLabel, QTabWidget, QWidget  # noqa: E402
 
 from ui.panels.drag import PANEL_MIME, PanelFrame, PanelTitleBar  # noqa: E402
@@ -525,6 +525,19 @@ def test_only_the_current_tab_page_stays_visible(host):
         page = tabs.widget(index)
         assert page.isVisibleTo(host) == (index == 1), (
             index, page.isVisible(), page.isHidden(), page.isVisibleTo(host))
+
+
+def test_paint_event_resyncs_tab_pages(host):
+    """回归：Qt 首次布局前把所有页 setVisible(True)，宿主在 Paint 前必须
+    重新隐藏非当前页——否则第一帧就是叠层（切换两次页签才恢复）。"""
+    host.set_drag_enabled(True)
+    host.set_tree(dock.Tabs((), 0, ((RGB,), (HSV,), (HSL,))))
+    tabs = host.findChildren(QTabWidget)[0]
+    for index in range(tabs.count()):
+        tabs.widget(index).setVisible(True)  # mimic Qt's first-layout re-show
+    QApplication.sendEvent(tabs, QPaintEvent(QRect(0, 0, 1, 1)))
+    for index in range(tabs.count()):
+        assert tabs.widget(index).isHidden() == (index != 0), index
 
 
 def test_tab_bar_is_movable_and_reorder_commits_on_release(host):
