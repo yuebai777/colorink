@@ -236,6 +236,17 @@ def main():
               and all(tabs.widget(i).isHidden()
                       for i in range(tabs.count()) if i != current),
               f"current={current}")
+        # 单模块页签：页面高度跟着最高页走，但内容必须贴着页签条，
+        # 多余空间堆在下方（不能垂直居中）。
+        frame = host.frame_for(oklab)
+        panel = frame.panel() if frame is not None else None
+        if frame is not None and panel is not None:
+            p_top = panel.mapTo(frame, panel.rect().topLeft()).y()
+            f_h = frame.height()
+            p_h = panel.height()
+            check("单模块页签内容顶部对齐",
+                  p_top <= 40 and f_h > p_h + 20,
+                  f"panel_y={p_top} frame_h={f_h} panel_h={p_h}")
 
     # 5) Edge drop inside the current page must stay in that page, not leak
     #    into the hidden pages (and must not lose panels).

@@ -325,6 +325,9 @@ class PanelHolder:
         box = self._panel_layout()
         if box is None:
             return
+        # Alignment keeps the content top-anchored even if the stretch below it
+        # is ever removed by another pass.
+        box.setAlignment(Qt.AlignmentFlag.AlignTop)
         if box.count() and box.itemAt(box.count() - 1).spacerItem() is not None:
             return
         box.addStretch(1)
