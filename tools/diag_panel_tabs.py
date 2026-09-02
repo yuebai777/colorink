@@ -30,7 +30,7 @@ from PyQt6.QtCore import QPoint  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QTabWidget, QWidget  # noqa: E402
 
 from core import config  # noqa: E402
-from ui.panels import registry  # noqa: E402
+from ui.panels import rearrange, registry  # noqa: E402
 from ui.panels import tree as dock  # noqa: E402
 import ui.main_window as main_window  # noqa: E402
 
@@ -230,7 +230,24 @@ def main():
               tabs_widget(win) is not None and tabs_widget(win).currentIndex() == target_index,
               f"wanted {target_index}, got {tabs_widget(win).currentIndex() if tabs_widget(win) else None}")
 
-    # 6) Float a panel out of tabs and dock it back: pages must survive.
+    # 6) Tab-header interaction: pages are draggable by their header, and a
+    #    panel dropped onto a header merges into that page.
+    tabs = tabs_widget(win)
+    if tabs is not None:
+        bar = tabs.tabBar()
+        check("页签条可以拖动重排", bar.isMovable())
+        header = bar.mapTo(host, QPoint(bar.width() // 2, bar.height() // 2))
+        header_target = host.drop_target_at(header)
+        check("页签头是合并落点",
+              header_target is not None
+              and header_target[1] == rearrange.MERGE_PAGE,
+              f"target={header_target}")
+        if header_target is not None:
+            box = host.frame_for(header_target[0])
+            check("合并落点是指向该页的面板",
+                  box is not None and box.parent() is not None)
+
+    # 7) Float a panel out of tabs and dock it back: pages must survive.
     rgb = registry.slider_panel_id("RGB")
     before_float = host.tree()
     ok_float = win.float_panel(rgb)
