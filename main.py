@@ -19,6 +19,12 @@ if core_dir not in sys.path:
 from ui.main_window import MainWindow, bring_process_to_foreground
 
 SINGLE_INSTANCE_KEY = "ColorinkPaletteLitePyQt_SingleInstance_v1"
+#: A packaged build may be auto-started at login (or left open from a test)
+#: and hold the single-instance lock; a source run must not then silently
+#: exit — that is how "用源码启动打不开" happens. Keep source launches on
+#: their own lock so they can run side by side with a packaged instance.
+if not getattr(sys, "frozen", False):
+    SINGLE_INSTANCE_KEY += "_dev"
 
 def _is_process_running(pid: int) -> bool:
     """Check if a Windows process with the given PID is still running."""
