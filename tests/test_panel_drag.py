@@ -152,6 +152,54 @@ def test_an_edge_drop_inside_a_tab_page_lands_in_that_page():
     assert grown.pages == ((RGB, LAB, HSV), (HSL,))
 
 
+def test_reordering_tab_pages_keeps_the_selected_page():
+    """拖页签头重排整页：选中的页要跟着它走，索引不能算错。"""
+    node = dock.Tabs((), 0, ((RGB,), (HSV,), (HSL,)))
+    moved = rearrange.reorder_tab_page(node, 0, 2)
+    assert moved.pages == ((HSV,), (HSL,), (RGB,))
+    assert moved.current == 2
+
+    node2 = dock.Tabs((), 2, ((RGB,), (HSV,), (HSL,)))
+    moved2 = rearrange.reorder_tab_page(node2, 2, 0)
+    assert moved2.pages == ((HSL,), (RGB,), (HSV,))
+    assert moved2.current == 0
+
+
+def test_reordering_a_tab_page_changes_nothing_when_it_cannot():
+    node = dock.Tabs((), 0, ((RGB,), (HSV,)))
+    assert rearrange.reorder_tab_page(node, 0, 0) is node
+    assert rearrange.reorder_tab_page(node, 9, 0) is node
+    leaf = dock.Leaf(RGB)
+    assert rearrange.reorder_tab_page(leaf, 0, 0) is leaf
+
+
+def test_merging_a_panel_into_a_page_drops_the_empty_page():
+    """拖到页签头 = 并入那一页；空掉的来源页直接消失。"""
+    node = dock.Tabs((), 0, ((RGB,), (HSV,), (HSL,)))
+    merged = rearrange.merge_panel_into_page(node, HSV, RGB)
+    assert merged.pages == ((RGB, HSV), (HSL,))
+    assert merged.current == 0
+
+
+def test_merging_within_the_same_page_reorders_it():
+    node = dock.Tabs((), 0, ((RGB, HSV), (HSL,)))
+    merged = rearrange.merge_panel_into_page(node, RGB, HSV)
+    assert merged.pages == ((HSV, RGB), (HSL,))
+
+
+def test_merging_keeps_the_rest_and_selects_the_target_page():
+    """源页还有面板时不许删页，当前页要跟着面板走到目标页。"""
+    node = dock.Tabs((), 0, ((RGB, HSV), (LAB,)))
+    merged = rearrange.merge_panel_into_page(node, RGB, LAB)
+    assert merged.pages == ((HSV,), (LAB, RGB))
+    assert merged.current == 1
+
+
+def test_merging_an_unknown_panel_changes_nothing():
+    node = dock.Tabs((), 0, ((RGB,), (HSV,)))
+    assert rearrange.merge_panel_into_page(node, LAB, RGB) is node
+
+
 def test_inserting_next_to_an_unknown_target_changes_nothing():
     node = column(RGB, HSV)
     assert rearrange.insert_panel(node, LAB, "nope", rearrange.TOP) == node
@@ -187,8 +235,8 @@ def test_a_rearranged_tree_survives_the_config_round_trip():
 
 # ── 控件层：抓手、宿主的落点与投放 ───────────────────────────────────────
 
-from PyQt6.QtCore import QMimeData, QPoint, QPointF, Qt  # noqa: E402
-from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent  # noqa: E402
+from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt  # noqa: E402
+from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QMouseEvent  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QLabel, QTabWidget, QWidget  # noqa: E402
 
 from ui.panels.drag import PANEL_MIME, PanelFrame, PanelTitleBar  # noqa: E402
@@ -477,6 +525,57 @@ def test_only_the_current_tab_page_stays_visible(host):
         page = tabs.widget(index)
         assert page.isVisibleTo(host) == (index == 1), (
             index, page.isVisible(), page.isHidden(), page.isVisibleTo(host))
+
+
+def test_tab_bar_is_movable_and_reorder_commits_on_release(host):
+    """页签头可拖；拖完松手才重排，拖的过程中不重建。"""
+    host.set_drag_enabled(True)
+    host.set_tree(dock.Tabs((), 0, ((RGB,), (HSV,), (HSL,))))
+    _lay_out(host)
+    tabs = host.findChildren(QTabWidget)[0]
+    bar = tabs.tabBar()
+    assert bar.isMovable()
+    # QTabBar emits tabMoved mid-drag; the host must wait for the release.
+    bar.tabMoved.emit(0, 2)
+    assert host.tree().pages == ((RGB,), (HSV,), (HSL,))
+    release = QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(0, 0),
+                          Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+                          Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(bar, release)
+    assert host.tree().pages == ((HSV,), (HSL,), (RGB,))
+
+
+def test_drop_on_a_tab_header_merges_into_that_page(host):
+    """拖面板到某页签头上 = 并入那一页（而不是新建一页）。"""
+    host.set_drag_enabled(True)
+    host.set_tree(dock.Tabs((), 0, ((RGB,), (HSV,), (HSL,))))
+    _lay_out(host)
+    tabs = host.findChildren(QTabWidget)[0]
+    bar = tabs.tabBar()
+    header = bar.mapTo(host, QPoint(bar.width() // 2, bar.height() // 2))
+    target = host.drop_target_at(header)
+    assert target == (RGB, rearrange.MERGE_PAGE), target
+    assert host.show_drop_hint(header) == target
+    assert host.drop_hint_rect() is not None
+    assert host.apply_drop(HSV, header) is True
+    assert host.tree() == dock.Tabs((), 0, ((RGB, HSV), (HSL,)))
+
+
+def test_tab_strip_wears_the_chrome(host):
+    """页签条跟着主题色走，而不是 Qt 默认的 Windows 蓝。"""
+    from ui.panels.floating import PanelChrome
+
+    host.set_drag_enabled(True)
+    host.set_tree(dock.Tabs((), 0, ((RGB,), (HSV,))))
+    host.apply_chrome(PanelChrome(
+        background="#101010", border_color="#202020", border_width=1,
+        radius=0, text="#ffffff", bar_bg="#202020", bar_text="#dddddd",
+        divider_color="#303030", divider_width=2, scale=1.0, font_size=11))
+    tabs = host.findChildren(QTabWidget)[0]
+    css = tabs.styleSheet()
+    assert "#202020" in css
+    assert "QTabBar::tab:selected" in css
+    assert "font-size: 11px" in css
 
 
 # ── Qt 自己的拖放事件 ────────────────────────────────────────────────────

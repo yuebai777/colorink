@@ -24,6 +24,10 @@ BOTTOM = "bottom"
 CENTER = "center"
 ZONES = (LEFT, RIGHT, TOP, BOTTOM, CENTER)
 
+#: Drop zone used only when the cursor is over a page's tab header: the
+#: dragged panel merges into that page instead of making a new one.
+MERGE_PAGE = "merge_page"
+
 #: How much of a panel counts as its border band, per side.
 EDGE_FRACTION = 0.25
 
@@ -226,6 +230,70 @@ def _insert_into_tabs(node: Tabs, panel_id: str, target: str, zone: str):
             current = index
         return Tabs((), current, tuple(tuple(page) for page in pages))
     return node
+
+
+# ── whole page / page-merging surgery --------------------------------------
+
+def reorder_tab_page(node: Tabs, from_index: int, to_index: int):
+    """*node* with the page at *from_index* moved to *to_index*.
+
+    The current page follows the page it pointed at: a tab the user drags
+    keeps being the selected tab. Anything that is not a Tabs (or an
+    out-of-range / no-op move) comes back unchanged.
+    """
+    if not isinstance(node, Tabs):
+        return node
+    pages = list(node.pages)
+    if not pages or not (0 <= from_index < len(pages)
+                         and 0 <= to_index < len(pages)
+                         and from_index != to_index):
+        return node
+    page = pages.pop(from_index)
+    pages.insert(to_index, page)
+    current = node.current
+    if current == from_index:
+        current = to_index
+    elif from_index < current <= to_index:
+        current -= 1
+    elif to_index <= current < from_index:
+        current += 1
+    current = max(0, min(current, len(pages) - 1))
+    return Tabs((), current, tuple(pages))
+
+
+def merge_panel_into_page(node: Tabs, panel_id: str, target: str):
+    """Move *panel_id* into the page holding *target* (after *target*).
+
+    This is the "drop onto a tab header" gesture: the panel joins an
+    existing page instead of making a new one, and an emptied page is
+    dropped rather than kept as a ghost tab.
+    """
+    if not isinstance(node, Tabs):
+        return node
+    if panel_id == target or panel_id not in node.panels() \
+            or target not in node.panels():
+        return node
+    pages = [list(page) for page in node.pages]
+    src = next(i for i, page in enumerate(pages) if panel_id in page)
+    dst = next(i for i, page in enumerate(pages) if target in page)
+    pages[src].remove(panel_id)
+    pages[dst].insert(pages[dst].index(target) + 1, panel_id)
+    current = node.current
+    if src != dst:
+        if not pages[src]:
+            del pages[src]
+            if current == src:
+                current = dst if dst < src else dst - 1
+            elif src < current:
+                current -= 1
+        elif current == src:
+            # The source page survives (it had more than one panel); the
+            # selected page is where the panel went — the target page.
+            current = dst
+    if len(pages) == 1:
+        return _page_node(tuple(pages[0]))
+    current = max(0, min(current, len(pages) - 1))
+    return Tabs((), current, tuple(tuple(page) for page in pages))
 
 
 # ── the whole move ───────────────────────────────────────────────────────
