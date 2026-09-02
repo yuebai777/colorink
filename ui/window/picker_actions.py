@@ -313,6 +313,7 @@ class PickerActionsMixin:
             # Grips first: switching drag mode re-mounts, so doing it after
             # set_tree would throw the fresh arrangement away and rebuild it.
             host.set_drag_enabled(bool(self.cfg.get("panelDrag", False)))
+            host.set_allow_tab_drops(bool(self.cfg.get("slidersTabs", False)))
             mounted = self._slider_column_tree_for(groups)
             host.set_tree(mounted)
         for g in groups:
@@ -358,13 +359,27 @@ class PickerActionsMixin:
 
         scale = self.cfg.get("uiScale", 100) / 100.0
         spacing = int(self.cfg.get("sliderDiffSpace", 8) * scale)
+        module_key = getattr(self, "_current_module", "hsv")
+        allowed = set(_MODULE_DEFS.get(module_key, _MODULE_DEFS["hsv"])["sliders"])
+        tabs = bool(self.cfg.get("slidersTabs", False))
         ids = []
         for group in groups:
             panel_id = (registry.HISTORY if group == "History"
                         else registry.slider_panel_id(group))
-            if self.panel_widget(panel_id) is not None:
-                ids.append(panel_id)
-        if self.cfg.get("slidersTabs", False):
+            if self.panel_widget(panel_id) is None:
+                continue
+            # In tabs mode a hidden group must not become a tab page at all —
+            # it would show an empty/ghost tab for a slider set the user never
+            # turned on (or the current module does not provide).
+            if tabs:
+                if group == "History":
+                    if not self.cfg.get("showSlidersHistory", True):
+                        continue
+                elif (group not in allowed
+                      or not self.cfg.get(f"showSliders{group}", True)):
+                    continue
+            ids.append(panel_id)
+        if tabs:
             # Every page holds up to two groups; a single page is a plain column.
             derived = dock.tabbed_tree(ids, tab_size=2)
         elif self.cfg.get("slidersSplit", False):

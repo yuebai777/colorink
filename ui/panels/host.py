@@ -59,6 +59,10 @@ class PanelHost(QWidget):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
         self._root: QWidget | None = None
+        #: When the user asked for tabbed stacking (slidersTabs), the middle
+        #: of a panel is a "stack behind tabs" drop zone. Off by default so a
+        #: plain column never silently swallows a panel into tabs.
+        self._allow_tab_drops = False
         # Never claim more height than the panels need. An expanding host
         # swallows the window's spare room — with every panel torn off it
         # grew to 600px of nothing while the picker stayed frozen, and the
@@ -323,6 +327,15 @@ class PanelHost(QWidget):
     def drag_enabled(self) -> bool:
         return self._drag_enabled
 
+    def set_allow_tab_drops(self, enabled: bool) -> None:
+        """Enable/disable the center "stack behind tabs" drop zone.
+
+        Tied to the user's slidersTabs setting: with tabbed stacking on, the
+        middle of a panel means "add a tab", so dragging into the stack works;
+        with it off, the middle is still a normal reorder zone (four sides).
+        """
+        self._allow_tab_drops = bool(enabled)
+
     def set_floating_panels(self, panel_ids) -> None:
         """Panels torn off into their own windows: mounted by someone else.
 
@@ -356,6 +369,24 @@ class PanelHost(QWidget):
             return frame
         return self._mounted.get(panel_id)
 
+    def _panel_lives_in_tabs(self, panel_id: str) -> bool:
+        """True when *panel_id* is inside a Tabs node of the mounted tree.
+
+        The center "stack behind tabs" drop zone is only meaningful when the
+        target is already tabbed (or the user asked for tabs): dropping onto
+        a plain stacked panel should stay "move beside it", not silently
+        swallow it behind a tab.
+        """
+
+        def walk(node) -> bool:
+            if isinstance(node, Tabs):
+                return panel_id in node.panels()
+            if isinstance(node, Split):
+                return any(walk(child) for child in node.children)
+            return False
+
+        return walk(self._tree)
+
     def drop_target_at(self, pos: QPoint):
         """(panel_id, zone) under a host-local point, or None.
 
@@ -368,8 +399,11 @@ class PanelHost(QWidget):
             if box is None or box.isHidden() or box.parent() is None:
                 continue
             local = box.mapFrom(self, pos)
-            zone = rearrange.zone_at(box.width(), box.height(),
-                                     local.x(), local.y())
+            zone = rearrange.zone_at(
+                box.width(), box.height(),
+                local.x(), local.y(),
+                allow_center=(self._allow_tab_drops
+                              or self._panel_lives_in_tabs(panel_id)))
             if zone is None:
                 continue
             area = box.width() * box.height()

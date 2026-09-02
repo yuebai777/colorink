@@ -427,6 +427,25 @@ def test_reading_back_a_tab_keeps_its_pages(host):
     assert read.current == 1
 
 
+def test_center_drop_is_available_over_a_tabbed_panel(host):
+    """回归：拖到已叠放的页签面板上，中心应该是"再加一页"，而不是被
+    当成某个边带塞进当前页（塞进去之后就是用户说的"奇怪的样子"）。"""
+    host.set_tree(dock.Tabs((), 0, ((RGB,), (HSV,))))
+    _lay_out(host)
+    box = host.widget_for(RGB)
+    center = box.mapTo(host, QPoint(box.width() // 2, box.height() // 2))
+    assert host.drop_target_at(center) == (RGB, rearrange.CENTER)
+
+
+def test_center_drop_follows_the_tabs_setting(host):
+    """slidersTabs 开着时，即使当前只落成单列，中心落点也要是"叠放"。"""
+    host.set_allow_tab_drops(True)
+    _lay_out(host)
+    box = host.widget_for(RGB)
+    center = box.mapTo(host, QPoint(box.width() // 2, box.height() // 2))
+    assert host.drop_target_at(center) == (RGB, rearrange.CENTER)
+
+
 # ── Qt 自己的拖放事件 ────────────────────────────────────────────────────
 
 # 合成的拖放事件只是**借用** QMimeData（Qt 不持有它）。让 Python 在事件还
