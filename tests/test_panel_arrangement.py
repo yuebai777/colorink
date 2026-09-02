@@ -102,6 +102,21 @@ def test_the_seed_says_which_switch_built_the_arrangement(host):
     assert host.arrangement_seed() == "tabs", "页签优先于并排"
 
 
+def test_tab_mode_excludes_hidden_and_out_of_module_groups(host):
+    """回归：分页叠放不能把用户没开启/当前模块不提供的滑块组也开成页签——
+    那会在设置里明明关着、界面上却跑出一个空页签。"""
+    host.cfg["slidersTabs"] = True
+    host.cfg["showSlidersHistory"] = False
+    host.cfg["showSlidersHSL"] = True  # HSL 在 hsv 模块的允许集之外
+    groups = host._slider_groups_in_layout_order()
+    tree = host._slider_column_tree_for(groups)
+    ids = set(tree.panels())
+    assert isinstance(tree, dock.Tabs)
+    assert registry.HISTORY not in ids
+    assert registry.slider_panel_id("HSL") not in ids
+    assert registry.slider_panel_id("RGB") in ids
+
+
 def test_saving_records_the_tree_it_was_given(host):
     """存的必须是真正挂上去的那棵树，否则页签模式会被存成单列。"""
     ids = list(host.slider_column_tree().panels())
