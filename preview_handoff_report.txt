@@ -1,0 +1,61 @@
+preview_handoff_report
+dpr=1.5 screen_geo=PyQt6.QtCore.QRect(0, 0, 2560, 1440) screen_dpr=1.5
+cfg: uiScale=100 slidersTabs=True panelDrag=False lockWindowSize=False onlyShowInCsp=True noFocusMode=True position_mode(preview runtime)=None
+[initial mode=bottom-left] position_mode=bottom-left
+    preview=PyQt6.QtCore.QRect(4, 363, 82, 106) bottom=469
+    sliders_top=475 sliders_hint=325 sliders_h=325
+    tabs=PyQt6.QtCore.QRect(8, 475, 440, 315) overlap=False
+    win_h=809 min_h=809 min_hint=476 size_hint=476 required=809 column_hint=309
+    manual_override=False last_auto=None pending_height_adj=False panel_mount_pending=False visible=True host_vis=True container_vis=True
+    lockWindowSize=False uiScale=100 slidersTabs=True panelDrag=False previewBoxPosition=bottom-left
+[initial mode=bottom-left] position_mode=bottom-left
+    preview=PyQt6.QtCore.QRect(4, 363, 82, 106) bottom=469
+    sliders_top=475 sliders_hint=325 sliders_h=325
+    tabs=PyQt6.QtCore.QRect(8, 475, 440, 315) overlap=False
+    win_h=809 min_h=809 min_hint=476 size_hint=476 required=809 column_hint=309
+    manual_override=False last_auto=None pending_height_adj=False panel_mount_pending=False visible=True host_vis=True container_vis=True
+    lockWindowSize=False uiScale=100 slidersTabs=True panelDrag=False previewBoxPosition=bottom-left
+[refresh drag=ON] position_mode=bottom-left
+    preview=PyQt6.QtCore.QRect(4, 363, 82, 106) bottom=469
+    sliders_top=475 sliders_hint=385 sliders_h=385
+    tabs=PyQt6.QtCore.QRect(8, 475, 440, 375) overlap=False
+    win_h=869 min_h=869 min_hint=524 size_hint=536 required=869 column_hint=369
+    manual_override=False last_auto=None pending_height_adj=False panel_mount_pending=False visible=True host_vis=True container_vis=True
+    lockWindowSize=False uiScale=100 slidersTabs=True panelDrag=True previewBoxPosition=bottom-left
+[settings drag=ON] position_mode=bottom-left
+    preview=PyQt6.QtCore.QRect(4, 363, 82, 106) bottom=469
+    sliders_top=475 sliders_hint=385 sliders_h=385
+    tabs=PyQt6.QtCore.QRect(8, 475, 440, 375) overlap=False
+    win_h=869 min_h=869 min_hint=524 size_hint=536 required=869 column_hint=369
+    manual_override=False last_auto=None pending_height_adj=False panel_mount_pending=False visible=True host_vis=True container_vis=True
+    lockWindowSize=False uiScale=100 slidersTabs=True panelDrag=True previewBoxPosition=bottom-left
+[refresh drag=OFF] position_mode=bottom-left
+    preview=PyQt6.QtCore.QRect(4, 363, 82, 106) bottom=469
+    sliders_top=475 sliders_hint=325 sliders_h=325
+    tabs=PyQt6.QtCore.QRect(8, 475, 440, 315) overlap=False
+    win_h=809 min_h=809 min_hint=476 size_hint=476 required=809 column_hint=309
+    manual_override=False last_auto=None pending_height_adj=False panel_mount_pending=False visible=True host_vis=True container_vis=True
+    lockWindowSize=False uiScale=100 slidersTabs=True panelDrag=False previewBoxPosition=bottom-left
+[settings drag=OFF] position_mode=bottom-left
+    preview=PyQt6.QtCore.QRect(4, 363, 82, 106) bottom=469
+    sliders_top=475 sliders_hint=325 sliders_h=325
+    tabs=PyQt6.QtCore.QRect(8, 475, 440, 315) overlap=False
+    win_h=809 min_h=809 min_hint=476 size_hint=476 required=809 column_hint=309
+    manual_override=False last_auto=None pending_height_adj=False panel_mount_pending=False visible=True host_vis=True container_vis=True
+    lockWindowSize=False uiScale=100 slidersTabs=True panelDrag=False previewBoxPosition=bottom-left
+[refresh drag=ON] position_mode=bottom-left
+    preview=PyQt6.QtCore.QRect(4, 363, 82, 106) bottom=469
+    sliders_top=475 sliders_hint=385 sliders_h=385
+    tabs=PyQt6.QtCore.QRect(8, 475, 440, 375) overlap=False
+    win_h=869 min_h=869 min_hint=524 size_hint=536 required=869 column_hint=369
+    manual_override=False last_auto=None pending_height_adj=False panel_mount_pending=False visible=True host_vis=True container_vis=True
+    lockWindowSize=False uiScale=100 slidersTabs=True panelDrag=True previewBoxPosition=bottom-left
+[settings drag=ON] position_mode=bottom-left
+    preview=PyQt6.QtCore.QRect(4, 363, 82, 106) bottom=469
+    sliders_top=475 sliders_hint=385 sliders_h=385
+    tabs=PyQt6.QtCore.QRect(8, 475, 440, 375) overlap=False
+    win_h=869 min_h=869 min_hint=524 size_hint=536 required=869 column_hint=369
+    manual_override=False last_auto=None pending_height_adj=False panel_mount_pending=False visible=True host_vis=True container_vis=True
+    lockWindowSize=False uiScale=100 slidersTabs=True panelDrag=True previewBoxPosition=bottom-left
+
+report written to D:\Program Files\colorink\preview_handoff_report.txt

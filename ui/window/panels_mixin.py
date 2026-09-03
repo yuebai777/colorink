@@ -65,10 +65,6 @@ class PanelProviderMixin:
                         else registry.slider_panel_id(group))
             if self.panel_widget(panel_id) is not None:
                 ids.append(panel_id)
-        if self.cfg.get("slidersSplit", False):
-            # Two draggable columns (B-4): the arrangement is the same set of
-            # panels, just laid out side by side inside a real splitter.
-            return dock.two_column_tree(ids, spacing, margins)
         return dock.Split(dock.VERTICAL, tuple(dock.Leaf(pid) for pid in ids),
                           (), False, spacing, margins)
 
@@ -83,8 +79,6 @@ class PanelProviderMixin:
         cfg = getattr(self, "cfg", None) or {}
         if cfg.get("slidersTabs", False):
             return "tabs"
-        if cfg.get("slidersSplit", False):
-            return "split"
         return "stack"
 
     def panel_layout_tree(self):

@@ -29,6 +29,22 @@ _ORIENTATION = {
 }
 
 
+class PanelTabWidget(QTabWidget):
+    """QTabWidget whose size hints account for styled pane margin-top."""
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        host = self.parent()
+        top_gap = max(0, int(getattr(getattr(host, "_chrome", None), "top_gap", 0) or 0))
+        return QSize(hint.width(), hint.height() + top_gap)
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        host = self.parent()
+        top_gap = max(0, int(getattr(getattr(host, "_chrome", None), "top_gap", 0) or 0))
+        return QSize(hint.width(), hint.height() + top_gap)
+
+
 class PanelHost(QWidget):
     """Builds (and reads back) a dock tree of panels.
 
@@ -102,6 +118,15 @@ class PanelHost(QWidget):
         if built is not None:
             self._root = built
             self._layout.addWidget(built)
+            # Mounting into a VISIBLE host: make the new root visible NOW,
+            # not on some later event-loop pass. A QTabWidget's internals
+            # stay folded (tab bar height 0, pages unmeasured) until it is
+            # actually shown, so the follow-up _adjust_content_height would
+            # otherwise measure the column short. While the host is hidden
+            # there is nothing to show yet (the deferred height pass waits
+            # for showEvent anyway).
+            if self.isVisible():
+                built.show()
         # The tab strips were built before they had a parent/visible stack;
         # the stack applies page visibility only when it is shown, so re-apply
         # it now — after the widget is actually mounted — or the first painted
@@ -193,7 +218,7 @@ class PanelHost(QWidget):
             return None
         if len(built) == 1:
             return built[0]
-        tabs = QTabWidget(self)
+        tabs = PanelTabWidget(self)
         tabs.setDocumentMode(True)
         for index, (widget, title) in enumerate(zip(built, titles)):
             tabs.addTab(widget, title)
@@ -377,16 +402,29 @@ class PanelHost(QWidget):
 
     def _tabs_hint(self, node: Tabs) -> int:
         """Only one page shows at a time: the tallest one, plus the tab bar."""
-        pages = [sum(self._node_hint(Leaf(pid)) for pid in page)
-                 for page in node.pages]
+        pages = []
+        for page in node.pages:
+            panel_heights = []
+            for pid in page:
+                box = self._panel_box(pid)
+                if box is not None and box.parent() is not None:
+                    panel_heights.append(int(box.sizeHint().height()))
+            if not panel_heights:
+                continue
+            page_h = sum(panel_heights)
+            if len(panel_heights) > 1:
+                page_h += self._stack_spacing * (len(panel_heights) - 1)
+            pages.append(page_h)
+
         bar = 0
+        top_gap = max(0, int(getattr(self._chrome, "top_gap", 0) or 0))
         for tabs, source in self._tabs:
             if source is node and tabs.tabBar() is not None:
                 tab_bar = tabs.tabBar()
                 bar = max(int(tab_bar.sizeHint().height()),
                           int(tab_bar.height()))
                 break
-        return (max(pages) if pages else 0) + bar
+        return (max(pages) if pages else 0) + bar + top_gap
 
     def apply_chrome(self, chrome) -> None:
         """Push the window theme down to every grip strip."""
@@ -443,6 +481,7 @@ class PanelHost(QWidget):
             return
         tabs._panel_css = css
         tabs.setStyleSheet(css)
+        tabs.updateGeometry()
 
     def set_stack_spacing(self, spacing: float) -> None:
         """Retune the gap between stacked panels without a rebuild.

@@ -110,6 +110,8 @@ class PickerActionsMixin:
         mode = self.cfg.get("labHarmonyMode", "analogous")
         label = HARMONY_MODE_NAMES.get(mode, "近似")
         if hasattr(self, "btn_lab_harmony"):
+            char = label[0] if label else "和"
+            self.btn_lab_harmony.setText(char)
             self.btn_lab_harmony.setToolTip(f"LAB 调和模式: {label} (点击切换)")
 
     def _update_module_button_label(self):
@@ -348,10 +350,9 @@ class PickerActionsMixin:
     def _slider_column_tree_for(self, groups):
         """The slider column as a dock tree, in this order.
 
-        B-4: with slidersSplit enabled it is two draggable columns, with
-        slidersTabs it is pages behind tabs, otherwise one content-sized
+        With slidersTabs it is pages behind tabs, otherwise one content-sized
         stack (the classic layout). A saved arrangement — what the user
-        dragged into place — outranks all three, but only while it belongs
+        dragged into place — outranks both, but only while it belongs
         to the same switch and still places exactly the same panels.
         """
         from ui.panels import registry, store
@@ -382,8 +383,6 @@ class PickerActionsMixin:
         if tabs:
             # Every page holds up to two groups; a single page is a plain column.
             derived = dock.tabbed_tree(ids, tab_size=2)
-        elif self.cfg.get("slidersSplit", False):
-            derived = dock.two_column_tree(ids, spacing, (0, 0, 0, 0))
         else:
             derived = dock.Split(dock.VERTICAL,
                                  tuple(dock.Leaf(pid) for pid in ids),
@@ -667,6 +666,8 @@ class PickerActionsMixin:
             self.lab_square.set_harmony_mode(self.cfg.get("labHarmonyMode", "analogous"))
             self._update_lab_shape_button()
             self._update_lab_harmony_button()
+        if hasattr(self, 'pane_lab'):
+            self.pane_lab.set_show_checkerboard(self.cfg.get("showLabCheckerboard", True))
 
         # Update module button visibility
         if hasattr(self, 'btn_module'):

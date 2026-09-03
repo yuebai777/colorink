@@ -192,6 +192,7 @@ class LabPane(PaneWithModeButton):
     """Pane for the LAB visualizer; also paints a tiled checkerboard background."""
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._show_checkerboard = True
         self.checker_pixmap = QPixmap(16, 16)
         self.checker_pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(self.checker_pixmap)
@@ -201,7 +202,14 @@ class LabPane(PaneWithModeButton):
         painter.fillRect(0, 8, 8, 8, QColor(0, 0, 0, 15))
         painter.end()
 
+    def set_show_checkerboard(self, show: bool):
+        show = bool(show)
+        if self._show_checkerboard != show:
+            self._show_checkerboard = show
+            self.update()
+
     def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.drawTiledPixmap(self.rect(), self.checker_pixmap)
-        painter.end()
+        if self._show_checkerboard:
+            painter = QPainter(self)
+            painter.drawTiledPixmap(self.rect(), self.checker_pixmap)
+            painter.end()

@@ -1,6 +1,6 @@
 # 会话交接：抓手开关后「前景/背景预览簇」与页签条重叠
 
-> 交接日：2026-09-02。仓库：`D:\Program Files\colorink`。当前 HEAD：`7f3cecd`（v1.7.1，未 push、未发布、`dist/` 未重打包——EXE 是旧版，所有近期修复只在源码里）。
+> 交接日：2026-09-02。仓库：`D:\Program Files\colorink`。当前 HEAD：`8e756c9`（交接文档+探针的提交；v1.7.1 内容，未 push、未发布、`dist/` 未重打包——EXE 是旧版，所有近期修复只在源码里）。2026-09-03 新会话的修复**尚未提交**（见第 8 节）。
 
 ## 1. 用户症状（原话）
 
@@ -61,3 +61,36 @@
 - DPR / 窗口逻辑与物理尺寸 / `position_mode` / `uiScale`
 - 抓=关与抓=开各一次：`win_h`、`minimumHeight`、`_last_required_height`、`column_hint`、`sliders_hint`、`sliders_top`、`tabs` 矩形、`preview` 矩形与底边、是否相交
 - 输出：控制台 + 仓库根目录 `preview_handoff_report.txt`
+
+## 8. 2026-09-03 新会话结论（真机已复现根因 + 修复）
+
+执行：`python tools/probe_preview_handoff.py`（真机 = 本仓库所在机器）。
+
+- **真机环境**：DPR 1.5 / 屏幕 2560×1440 / uiScale 100 / `slidersTabs=True` /
+  `previewBoxPosition=bottom-left` / `onlyShowInCsp=True` / `noFocusMode=True` /
+  保存的 panelLayout = tabs `[ [oklab], [history, hsv] ]`（current=1）。
+- **探针修正**（原版在真机上会误判）：测量前必须 `quiesce(win)` 并断开
+  `foreground_timer`（`onlyShowInCsp` 会因前台是终端而把窗口藏掉 → 全部
+  几何变成 0/残缺、`pending` 卡死）；退出前 `sys.stdout.flush()`（`os._exit`
+  会吞控制台输出）。另补充 `manual_override/last_auto/pending/visible/
+  container_h/min_hint` 字段与 ON/OFF 截图。
+- **根因（真机实测）**：`PanelHost.set_tree` 重建页签树后新根一直处于
+  「未 show」状态，QTabWidget 内部（页签栏高度、页内面板）因此量不出来，
+  `column_hint()` 在 `_adjust_content_height` 里读 170（真实 248）→
+  refresh 直切路径窗口**不长高**（660→670 而非 748/762），预览簇被向上挤/
+  钳制（正是用户说的「应该延长窗口长度而不是往上面挤」）。设置保存路径因
+  后续 `apply_theme` + 再调一次 `_adjust_content_height` 偶尔被掩盖。
+- **修复（本会话，未提交）**：`ui/panels/host.py:set_tree()` 里，当宿主
+  已可见时立即 `built.show()`（隐藏时不做——离屏/未显示场景会破坏
+  `isVisibleTo` 判定，拖放测试会红）。
+- **回归测试**：`tests/test_panel_drag.py::test_a_remount_into_a_visible_host_shows_the_new_root`
+  （先红后绿）。
+- **修复后真机矩阵**（report 快照，全部 `visible=True`、`pending=False`、
+  无重叠）：抓=关 `win_h=708 column_hint=208`；抓=开 `win_h=748
+  column_hint=248`（refresh 与 settings 两条路径一致）；预览簇恒定
+  `(4,361,79,102)` bottom=463 < `sliders_top=469`，不再被压缩。
+- **视觉证据**：`preview_handoff_refresh_on/off.png`、
+  `preview_handoff_settings_on/off.png`（ON=684×1122，OFF=684×1062，
+  DPR 1.5 → 逻辑高确实 +40；两态页签条与预览簇之间均有可见间隙）。
+- **下一步**：请用户在真机跑新打包的 EXE 验证（当前 `dist/` 未重打包）；
+  若仍复现，把新截图 + `preview_handoff_report.txt` 发回。

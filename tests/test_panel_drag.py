@@ -386,6 +386,22 @@ def test_a_remount_that_changes_the_panel_set_is_announced(host):
     assert seen == [1], "只是换顺序，面板还是那几个"
 
 
+def test_a_remount_into_a_visible_host_shows_the_new_root(host):
+    """重挂后新根必须立刻可见（不只等事件循环）。
+
+    页签树的根在未被 show 前，QTabWidget 的页签栏高度和页内面板都量不
+    出来，column_hint 会少报一截，窗口高度策略因此不增长，预览簇被往上
+    挤。PanelHost.set_tree 挂好新根后要立刻 show。
+    """
+    host.show()
+    QApplication.processEvents()
+    assert host.isVisible()
+    host.set_tree(column(RGB, HSV))
+    _lay_out(host)
+    assert host._root is not None
+    assert host._root.isVisible()
+
+
 def test_turning_grips_on_before_anything_is_mounted_mounts_nothing(qapp):
     """开抓手不能顺手把默认树挂起来。
 
@@ -439,7 +455,7 @@ def test_a_frame_re_adopts_a_panel_that_was_taken_away(host):
 def test_two_columns_are_as_tall_as_the_taller_one(host):
     """并排的两列不能把高度加起来——那会把窗口顶高一倍。
 
-    横向落点会造出这种树（勾选 slidersSplit 也会），高度策略读的就是这个
+    横向落点会造出这种树（通过抓手横向拖放排布时），高度策略读的就是这个
     值，加错了窗口就凭空长一截。
     """
     host.set_tree(dock.Split(dock.HORIZONTAL, (

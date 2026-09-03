@@ -131,6 +131,8 @@ class _Harness:
         self.select_bg_slot = types.MethodType(MainWindow.select_bg_slot, self)
         self._set_slot_transparent = types.MethodType(
             MainWindow._set_slot_transparent, self)
+        self._update_lab_harmony_button = types.MethodType(
+            MainWindow._update_lab_harmony_button, self)
 
 @pytest.fixture
 def harness(qapp):
@@ -229,6 +231,23 @@ class TestModuleHiddenLifecycle:
         h._sync_ringless_mode(wheel_size=384, title_bar_height=28)
         assert not h.btn_lab_harmony.isHidden()
         assert h.btn_lab_harmony.x() == 7  # controls_side right → left edge
+
+    def test_lab_harmony_button_text_shows_first_character_of_mode(self, harness):
+        from ui.lab_harmony import HARMONY_MODE_NAMES
+        h = harness
+        for mode, label in HARMONY_MODE_NAMES.items():
+            h.cfg["labHarmonyMode"] = mode
+            h._update_lab_harmony_button()
+            assert h.btn_lab_harmony.text() == label[0]
+
+    def test_lab_pane_show_checkerboard(self):
+        from ui.picker_panes import LabPane
+        pane = LabPane()
+        assert pane._show_checkerboard is True
+        pane.set_show_checkerboard(False)
+        assert pane._show_checkerboard is False
+        pane.set_show_checkerboard(True)
+        assert pane._show_checkerboard is True
 
 # ── Preview geometry round-trip (real ColorPreviewBox, manual) ───────────
 

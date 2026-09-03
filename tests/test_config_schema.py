@@ -58,6 +58,18 @@ def test_migrate_config_runs_legacy_cleanup_from_version_zero():
     assert cfg[CONFIG_SCHEMA_KEY] == CONFIG_SCHEMA_VERSION
 
 
+def test_migrate_config_drops_sliders_split_in_v4():
+    cfg = migrate_config({
+        "pickKey": "F2",
+        "slidersSplit": True,
+        CONFIG_SCHEMA_KEY: 3,
+    })
+
+    assert "slidersSplit" not in cfg
+    assert cfg["pickKey"] == "F2"
+    assert cfg[CONFIG_SCHEMA_KEY] == CONFIG_SCHEMA_VERSION
+
+
 def test_migrate_config_is_idempotent_for_current_version():
     already = {
         "pickKey": "F2",
