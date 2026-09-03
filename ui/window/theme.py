@@ -250,13 +250,15 @@ class ThemeMixin:
         # 面板顶部间距：非标签模式它决定"标题栏 → 第一块面板"的距离；标签
         # 模式下同样的间距进 QTabWidget::pane（标签页 → 滑条），而滑块区
         # 自身顶部边距固定为 0——否则调间距会把整条标签栏一起往下推。
+        # 底部边距与面板顶部间距同步，保持上下空隙一致。
         top_gap = int(self.cfg.get("panelTopGap", 6) * scale)
         tabs_on = bool(self.cfg.get("slidersTabs", False))
+        bottom_gap = max(0, top_gap - win_bw)
         self.sliders_layout.setContentsMargins(
             int(4 * scale), # closer to edge
             0 if tabs_on else top_gap,
             int(4 * scale), # closer to edge
-            int(10 * scale)
+            bottom_gap
         )
         
         # Update spacing within each color space block

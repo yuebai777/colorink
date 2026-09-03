@@ -719,3 +719,30 @@ def test_drops_are_refused_while_rearranging_is_off(host):
     drag = _panel_drag(host, HSV, QPoint(100, 2), QDragEnterEvent)
     host.set_drag_enabled(False)
     assert not _send(host, drag).isAccepted()
+
+
+def test_drop_into_empty_area_of_tab_page_appends_to_page(host):
+    """Regression: 拖拽到已有标签页的下半部空白区域（Stretch）应判定为追加到当前页末尾。"""
+    host.set_drag_enabled(True)
+    host.set_tree(dock.Tabs((), 0, ((RGB,), (HSV,))))
+    _lay_out(host)
+    tabs = host.findChildren(QTabWidget)[0]
+    curr_page = tabs.currentWidget()
+    rgb_box = host.widget_for(RGB)
+    # Target a point below rgb in the tab page's stretch area
+    empty_pt = QPoint(host.width() // 2, rgb_box.mapTo(host, QPoint(0, rgb_box.height())).y() + 20)
+    target = host.drop_target_at(empty_pt)
+    assert target == (RGB, rearrange.BOTTOM)
+
+
+def test_hovering_tab_header_switches_tab(host):
+    """Regression: 拖拽悬停在其它页签头部时，应自动切换到该页签。"""
+    host.set_drag_enabled(True)
+    host.set_tree(dock.Tabs((), 0, ((RGB,), (HSV,))))
+    _lay_out(host)
+    tabs = host.findChildren(QTabWidget)[0]
+    bar = tabs.tabBar()
+    assert tabs.currentIndex() == 0
+    hsv_tab_pt = bar.mapTo(host, bar.tabRect(1).center())
+    host.check_tab_hover(hsv_tab_pt)
+    assert tabs.currentIndex() == 1
