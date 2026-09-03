@@ -231,18 +231,22 @@ class ColorUpdatesMixin:
         self._project_color(color, source="sliders_hsl")
 
     def on_lab_slider_changed(self):
+        sender = self.sender()
         l_val = self.slider_widgets["L_lab"][0].value()
         a_val = self.slider_widgets["a_lab"][0].value()
         b_val = self.slider_widgets["b_lab"][0].value()
         color = self.color_state.set_from("lab", (l_val, a_val, b_val))
-        self._project_color(color, source="sliders_lab")
+        source = "sliders_lab_L" if sender == self.slider_widgets.get("L_lab", (None,))[0] else "sliders_lab"
+        self._project_color(color, source=source)
 
     def on_oklab_slider_changed(self):
+        sender = self.sender()
         l_raw = self.slider_widgets["L_oklab"][0].value()
         a_raw = self.slider_widgets["a_oklab"][0].value()
         b_raw = self.slider_widgets["b_oklab"][0].value()
         color = self.color_state.set_from("oklab", (l_raw / 100.0, a_raw / 100.0, b_raw / 100.0))
-        self._project_color(color, source="sliders_oklab")
+        source = "sliders_oklab_L" if sender == self.slider_widgets.get("L_oklab", (None,))[0] else "sliders_oklab"
+        self._project_color(color, source=source)
         self._deferred_dynamic_gradients_pending = True
 
     def on_oklch_slider_changed(self):
@@ -386,8 +390,8 @@ class ColorUpdatesMixin:
         # slider handle / wheel indicator could paint first and stay glued
         # to the cursor.
         self._deferred_color_timer.stop()
-        self._deferred_color_pending = None
-        self.update_slider_gradients(r, g, b)
+        rf, gf, bf = getattr(self, "_current_rgb_float", (float(r), float(g), float(b)))
+        self.update_slider_gradients(rf, gf, bf)
         if self._deferred_dynamic_gradients_pending:
             self._update_oklab_slider_gradients()
             self._update_oklch_slider_gradients()
@@ -395,19 +399,24 @@ class ColorUpdatesMixin:
         # An L-only release must keep the chromaticity snapshots from before
         # the drag. Recomputing them from the quantized RGB would turn a
         # chromatic OKLCh color into a different (often gray) mask on release.
-        if getattr(self, "_last_update_source", "") != "sliders_oklch_L":
-            _, a_ok_snap, b_ok_snap = rgb_to_oklab(r, g, b)
-            self._gamut_oklab_a = a_ok_snap
-            self._gamut_oklab_b = b_ok_snap
-            _, a_lb_snap, b_lb_snap = rgb_to_lab(r, g, b)
-            self._gamut_lab_a = a_lb_snap
-            self._gamut_lab_b = b_lb_snap
-        _, c_ok_snap, h_ok_snap = rgb_to_oklch(r, g, b)
-        if self._source_space == "oklch" and self._source_values:
-            c_ok_snap = self._source_values.get("C", c_ok_snap)
-            h_ok_snap = self._source_values.get("h", h_ok_snap)
+        if hasattr(self, "color_state") and self.color_state.current is not None:
+            cur = self.color_state.current
+            _, a_ok_snap, b_ok_snap = cur.oklab
+            _, a_lb_snap, b_lb_snap = cur.lab
+            _, c_ok_snap, h_ok_snap = cur.oklch
+        else:
+            _, a_ok_snap, b_ok_snap = rgb_to_oklab(rf, gf, bf)
+            _, a_lb_snap, b_lb_snap = rgb_to_lab(rf, gf, bf)
+            _, c_ok_snap, h_ok_snap = rgb_to_oklch(rf, gf, bf)
+        self._gamut_oklab_a = a_ok_snap
+        self._gamut_oklab_b = b_ok_snap
+        self._gamut_lab_a = a_lb_snap
+        self._gamut_lab_b = b_lb_snap
         self._gamut_oklch_C = c_ok_snap
         self._gamut_oklch_h = h_ok_snap
+        if self._source_space == "oklch" and self._source_values:
+            self._gamut_oklch_C = self._source_values.get("C", self._gamut_oklch_C)
+            self._gamut_oklch_h = self._source_values.get("h", self._gamut_oklch_h)
         self._update_all_L_gamut_ranges()
         # Record into history before pushing to drawing software so the
         # persisted state reflects *what the user just settled on*.
@@ -456,7 +465,7 @@ class ColorUpdatesMixin:
                 return True
         return bool(getattr(getattr(self, "lab_slider", None), "dragging", False))
 
-    def _schedule_deferred_color_updates(self, r, g, b):
+    def _schedule_deferred_color_updates(self, r, g, b, rgb_float=None):
         """Schedule the heavy visual-only rendering (slider groove gradients
         + L out-of-gamut masks) to run on the next idle event-loop iteration.
 
@@ -469,7 +478,9 @@ class ColorUpdatesMixin:
         most ~16ms. Latest (r,g,b) wins if multiple moves arrive before the
         timer fires.
         """
-        self._deferred_color_pending = (r, g, b)
+        if rgb_float is None:
+            rgb_float = (float(r), float(g), float(b))
+        self._deferred_color_pending = (r, g, b, rgb_float)
         if not self._deferred_color_timer.isActive():
             self._deferred_color_timer.start()
 
@@ -483,8 +494,12 @@ class ColorUpdatesMixin:
         self._deferred_color_pending = None
         if pending is None:
             return
-        r, g, b = pending
-        self.update_slider_gradients(r, g, b)
+        if len(pending) == 4:
+            r, g, b, rgb_float = pending
+        else:
+            r, g, b = pending
+            rgb_float = (float(r), float(g), float(b))
+        self.update_slider_gradients(*rgb_float)
         if self._deferred_dynamic_gradients_pending:
             self._update_oklab_slider_gradients()
             self._update_oklch_slider_gradients()
@@ -498,22 +513,26 @@ class ColorUpdatesMixin:
         L_oklab, a_oklab, b_oklab = rgb_to_oklab(r, g, b)
         L_oklch, C_oklch, h_oklch = rgb_to_oklch(r, g, b)
         
+        ri = int(round(max(0.0, min(255.0, r))))
+        gi = int(round(max(0.0, min(255.0, g))))
+        bi = int(round(max(0.0, min(255.0, b))))
+
         # 1) R Slider
         self.slider_widgets["R"][0].set_gradient([
-            (0.0, QColor(0, g, b)),
-            (1.0, QColor(255, g, b))
+            (0.0, QColor(0, gi, bi)),
+            (1.0, QColor(255, gi, bi))
         ])
         
         # 2) G Slider
         self.slider_widgets["G"][0].set_gradient([
-            (0.0, QColor(r, 0, b)),
-            (1.0, QColor(r, 255, b))
+            (0.0, QColor(ri, 0, bi)),
+            (1.0, QColor(ri, 255, bi))
         ])
         
         # 3) B Slider
         self.slider_widgets["B"][0].set_gradient([
-            (0.0, QColor(r, g, 0)),
-            (1.0, QColor(r, g, 255))
+            (0.0, QColor(ri, gi, 0)),
+            (1.0, QColor(ri, gi, 255))
         ])
         
         # 4) H_hsv Slider
@@ -630,25 +649,32 @@ class ColorUpdatesMixin:
         def in_gamut(L):
             rr, gg, bb = lab_to_rgb(L, a_fixed, b_fixed)
             return 0.0 <= rr <= 255.0 and 0.0 <= gg <= 255.0 and 0.0 <= bb <= 255.0
-        return self._compute_L_gamut_range(in_gamut)
+        current_L = None
+        if "L_lab" in self.slider_widgets:
+            current_L = self.slider_widgets["L_lab"][0].value()
+        return self._compute_L_gamut_range(in_gamut, current_L=current_L, as_int=True)
 
     @staticmethod
-    def _compute_L_gamut_range(in_gamut):
+    def _compute_L_gamut_range(in_gamut, current_L=None, as_int=True):
         """Shared binary search: find [min_L, max_L] of in-gamut L values.
 
         Does NOT assume L=50 is in gamut — high-chroma colours near the
         gamut boundary can push mid-L out of gamut while low/high L
-        remain valid.  Scans for any in-gamut reference point first,
-        then searches outward in both directions from it.
+        remain valid.  Scans for any in-gamut reference point first (prioritizing
+        current_L if valid), then searches outward in both directions from it.
         """
         # ── Find any in-gamut reference L ──
         ref_L = None
-        for test_L in (0.0, 25.0, 50.0, 75.0, 100.0):
-            if in_gamut(test_L):
-                ref_L = test_L
-                break
+        if current_L is not None and 0.0 <= current_L <= 100.0 and in_gamut(current_L):
+            ref_L = float(current_L)
+        else:
+            for test_L in (50.0, 60.0, 40.0, 70.0, 30.0, 80.0, 20.0, 90.0, 10.0,
+                           0.0, 100.0, 25.0, 35.0, 45.0, 55.0, 65.0, 75.0, 85.0, 95.0, 5.0, 15.0):
+                if in_gamut(test_L):
+                    ref_L = test_L
+                    break
         if ref_L is None:
-            return 0, 100  # colour is unreachable at this chromaticity
+            return (0, 100) if as_int else (0.0, 100.0)  # colour is unreachable at this chromaticity
 
         # ── min_L: lowest in-gamut L ──
         if in_gamut(0.0):
@@ -676,7 +702,9 @@ class ColorUpdatesMixin:
                     hi = mid
             max_L = lo
 
-        return int(round(min_L)), int(round(max_L))
+        if as_int:
+            return int(round(min_L)), int(round(max_L))
+        return round(min_L, 1), round(max_L, 1)
 
     def _compute_oklab_L_gamut_range(self):
         """Return (min_L, max_L) for L_oklab at the snapshot OKLab chromaticity."""
@@ -689,7 +717,10 @@ class ColorUpdatesMixin:
         def in_gamut(L):
             rr, gg, bb = oklab_to_rgb(L / 100.0, a_fixed, b_fixed)
             return 0.0 <= rr <= 255.0 and 0.0 <= gg <= 255.0 and 0.0 <= bb <= 255.0
-        return self._compute_L_gamut_range(in_gamut)
+        current_L = None
+        if "L_oklab" in self.slider_widgets:
+            current_L = self.slider_widgets["L_oklab"][0].value()
+        return self._compute_L_gamut_range(in_gamut, current_L=current_L, as_int=True)
 
     def _compute_oklch_L_gamut_range(self):
         """Return (min_L, max_L) for L_oklch at the snapshot chromaticity."""
@@ -704,7 +735,8 @@ class ColorUpdatesMixin:
         def in_gamut(L):
             rr, gg, bb = oklch_to_rgb(L / 100.0, c_val, h_val)
             return 0.0 <= rr <= 255.0 and 0.0 <= gg <= 255.0 and 0.0 <= bb <= 255.0
-        return self._compute_L_gamut_range(in_gamut)
+        current_L = self.slider_widgets["L_oklch"][0].value()
+        return self._compute_L_gamut_range(in_gamut, current_L=current_L, as_int=True)
 
     def _update_lab_slider_gamut_range(self):
         """Update the vertical LabSlider's out-of-gamut L range
@@ -722,31 +754,8 @@ class ColorUpdatesMixin:
                 r, g, bv = lab_to_rgb(L, a_val, b_val)
             return 0.0 <= r <= 255.0 and 0.0 <= g <= 255.0 and 0.0 <= bv <= 255.0
 
-        if not in_gamut(50.0):
-            min_L, max_L = 0.0, 100.0
-        else:
-            if in_gamut(0.0):
-                min_L = 0.0
-            else:
-                lo, hi = 0.0, 50.0
-                for _ in range(24):
-                    mid = (lo + hi) * 0.5
-                    if in_gamut(mid):
-                        hi = mid
-                    else:
-                        lo = mid
-                min_L = hi
-            if in_gamut(100.0):
-                max_L = 100.0
-            else:
-                lo, hi = 50.0, 100.0
-                for _ in range(24):
-                    mid = (lo + hi) * 0.5
-                    if in_gamut(mid):
-                        lo = mid
-                    else:
-                        hi = mid
-                max_L = lo
+        current_L = getattr(self.lab_slider, "L", getattr(self.lab_square, "L", None))
+        min_L, max_L = self._compute_L_gamut_range(in_gamut, current_L=current_L, as_int=False)
         self.lab_slider.set_in_gamut_range(min_L, max_L)
 
     def _update_all_L_gamut_ranges(self):
@@ -788,9 +797,17 @@ class ColorUpdatesMixin:
         self.color_state.apply(color)
         self._source_space = color.source_space
         self._source_values = self._color_source_dict(color)
-        self.update_ui_colors(color.r, color.g, color.b, source=source,
-                              hsv=color.hsv if hsv is None else hsv,
-                              oklch=color.oklch, oklab=color.oklab)
+        self._current_rgb_float = color.rgb_float
+        try:
+            self.update_ui_colors(color.r, color.g, color.b, source=source,
+                                  hsv=color.hsv if hsv is None else hsv,
+                                  oklch=color.oklch, oklab=color.oklab,
+                                  rgb_float=color.rgb_float,
+                                  lab=color.lab)
+        except TypeError:
+            self.update_ui_colors(color.r, color.g, color.b, source=source,
+                                  hsv=color.hsv if hsv is None else hsv,
+                                  oklch=color.oklch, oklab=color.oklab)
 
     def _color_source_dict(self, color: Color):
         """Convert a Color's mapped source coordinates into the dict form the
@@ -815,10 +832,15 @@ class ColorUpdatesMixin:
                 pass
         return Color.from_rgb(*fallback_rgb)
 
-    def update_ui_colors(self, r, g, b, source="", hsv=None, oklch=None, oklab=None):
+    def update_ui_colors(self, r, g, b, source="", hsv=None, oklch=None, oklab=None, rgb_float=None, lab=None):
         self._last_update_source = source
-        self.current_rgb = (r, g, b)
-        color = QColor(r, g, b)
+        r_i, g_i, b_i = int(round(r)), int(round(g)), int(round(b))
+        self.current_rgb = (r_i, g_i, b_i)
+        if rgb_float is None:
+            rgb_float = getattr(self, "_current_rgb_float", (float(r), float(g), float(b)))
+        self._current_rgb_float = rgb_float
+        rf, gf, bf = rgb_float
+        color = QColor(r_i, g_i, b_i)
 
         # User picked a new real color (wheel/slider/picker/history/CSP
         # read-back) → clear the transparent state on the active slot.
@@ -854,13 +876,13 @@ class ColorUpdatesMixin:
             if hsv is not None:
                 self.color_wheel.set_hsv(hsv[0], hsv[1], hsv[2])
             else:
-                self.color_wheel.set_color(r, g, b, block_signals=True)
+                self.color_wheel.set_color(r_i, g_i, b_i, block_signals=True)
             # Push direct OKLCh state so the indicator avoids HSV→RGB→OKLCh drift
             if self.color_wheel.wheel_mode == "oklch-slice":
                 if oklch is not None:
                     L_ok, C_ok, h_ok = oklch
                 else:
-                    L_ok, C_ok, h_ok = rgb_to_oklch(r, g, b)
+                    L_ok, C_ok, h_ok = rgb_to_oklch(rf, gf, bf)
                 self.color_wheel.set_oklch(L_ok, C_ok, h_ok)
 
         # 3) Sync LAB Square / Slider (Only if visible or during init)
@@ -869,7 +891,7 @@ class ColorUpdatesMixin:
                 L_ok, a_ok, b_ok = oklab
                 self.lab_square.set_oklab(L_ok, a_ok, b_ok, block_signals=True)
             else:
-                self.lab_square.set_color(r, g, b, block_signals=True)
+                self.lab_square.set_color(rf, gf, bf, block_signals=True)
             self.lab_slider.set_lightness(
                 self.lab_square.L
             )
@@ -883,9 +905,9 @@ class ColorUpdatesMixin:
             
         # RGB Values
         if source != "sliders_rgb":
-            self.slider_widgets["R"][0].setValue(r)
-            self.slider_widgets["G"][0].setValue(g)
-            self.slider_widgets["B"][0].setValue(b)
+            self.slider_widgets["R"][0].setValue(r_i)
+            self.slider_widgets["G"][0].setValue(g_i)
+            self.slider_widgets["B"][0].setValue(b_i)
         
         # HSV Values
         if source != "sliders_hsv":
@@ -896,7 +918,7 @@ class ColorUpdatesMixin:
             elif hsv is not None:
                 h_hsv, s_hsv, v_hsv = hsv
             else:
-                h_hsv, s_hsv, v_hsv = rgb_to_hsv(r, g, b)
+                h_hsv, s_hsv, v_hsv = rgb_to_hsv(rf, gf, bf)
             self.slider_widgets["S_hsv"][0].setValue(round(s_hsv))
             self.slider_widgets["V_hsv"][0].setValue(round(v_hsv))
             if s_hsv >= 0.5:
@@ -908,7 +930,7 @@ class ColorUpdatesMixin:
                 h_hsl, l_hsl, s_hsl = hsv_to_hls_floats(self.color_wheel.h, self.color_wheel.s, self.color_wheel.v)
                 self.slider_widgets["H_hsl"][0].setValue(round(h_hsl * 360.0))
             else:
-                h_hsl, l_hsl, s_hsl = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
+                h_hsl, l_hsl, s_hsl = colorsys.rgb_to_hls(rf / 255.0, gf / 255.0, bf / 255.0)
                 h_deg = hsv[0] if hsv is not None else h_hsl * 360.0  # Reuse handler's locked hue
                 self.slider_widgets["H_hsl"][0].setValue(round(h_deg))
             self.slider_widgets["L_hsl"][0].setValue(round(l_hsl * 100.0))
@@ -923,14 +945,17 @@ class ColorUpdatesMixin:
                 r_f, g_f, b_f = colorsys.hsv_to_rgb(h_hsv / 360.0, s_hsv / 100.0, v_hsv / 100.0)
                 l_lab, a_lab, b_lab = rgb_to_lab(r_f * 255.0, g_f * 255.0, b_f * 255.0)
             else:
-                l_lab, a_lab, b_lab = rgb_to_lab(r, g, b)
+                l_lab, a_lab, b_lab = rgb_to_lab(rf, gf, bf)
             self.slider_widgets["L_lab"][0].setValue(round(l_lab))
             self.slider_widgets["a_lab"][0].setValue(round(a_lab))
             self.slider_widgets["b_lab"][0].setValue(round(b_lab))
         
         # OKLab Values
         if source != "sliders_oklab":
-            L_ok, a_ok, b_ok = rgb_to_oklab(r, g, b)
+            if oklab is not None:
+                L_ok, a_ok, b_ok = oklab
+            else:
+                L_ok, a_ok, b_ok = rgb_to_oklab(rf, gf, bf)
             if "L_oklab" in self.slider_widgets:
                 self.slider_widgets["L_oklab"][0].setValue(round(L_ok * 100))
             self.slider_widgets["a_oklab"][0].setValue(round(a_ok * 100))
@@ -939,7 +964,7 @@ class ColorUpdatesMixin:
         # OKLCh Values (absolute chroma; the Color already carries the
         # gamut-mapped chroma and the remembered hue, so no re-derivation)
         if source not in ("sliders_oklch_L", "sliders_oklch_C", "sliders_oklch_h"):
-            L_okc, C_okc, h_okc = oklch if oklch is not None else rgb_to_oklch(r, g, b)
+            L_okc, C_okc, h_okc = oklch if oklch is not None else rgb_to_oklch(rf, gf, bf)
             self.slider_widgets["L_oklch"][0].setValue(round(L_okc * 100))
             self.slider_widgets["h_oklch"][0].setValue(round(h_okc))
             self.slider_widgets["C_oklch"][0].setValue(round(C_okc * _C_SCALE))
@@ -959,28 +984,37 @@ class ColorUpdatesMixin:
                     self.slider_widgets[chan][1].setText(str(val))
             
         # ── Gamut-range chromaticity snapshots ─────
-        # L-only drags keep all snapshots unchanged until release.
-        if source != "sliders_oklch_L":
-            _, a_ok, b_ok = rgb_to_oklab(r, g, b)
-            self._gamut_oklab_a = a_ok
-            self._gamut_oklab_b = b_ok
-            _, a_lb, b_lb = rgb_to_lab(r, g, b)
-            self._gamut_lab_a = a_lb
-            self._gamut_lab_b = b_lb
-            if oklch is not None:
-                _, c_ok, h_ok = oklch
-            else:
-                _, c_ok, h_ok = rgb_to_oklch(r, g, b)
-            self._gamut_oklch_C = c_ok
-            self._gamut_oklch_h = h_ok
+        # Direct high-precision floats: inside gamut, coordinates are constant (zero jitter).
+        # When dragged out of gamut, Color.from_space / LabSquare gamut-maps to the boundary
+        # so the effective range dynamically tracks the handle out of the original range.
+        if oklab is not None:
+            _, a_ok, b_ok = oklab
+        else:
+            _, a_ok, b_ok = rgb_to_oklab(rf, gf, bf)
+        self._gamut_oklab_a = a_ok
+        self._gamut_oklab_b = b_ok
+
+        if lab is not None:
+            _, a_lb, b_lb = lab
+        else:
+            _, a_lb, b_lb = rgb_to_lab(rf, gf, bf)
+        self._gamut_lab_a = a_lb
+        self._gamut_lab_b = b_lb
+
+        if oklch is not None:
+            _, c_ok, h_ok = oklch
+        else:
+            _, c_ok, h_ok = rgb_to_oklch(rf, gf, bf)
+        self._gamut_oklch_C = c_ok
+        self._gamut_oklch_h = h_ok
 
         # Heavy visual-only cosmetics (slider groove gradients + L out-of-gamut
         # masks) are deferred + coalesced so they never block the dragged
         # widget's paint. This is what keeps every slider handle and the color
         # wheel indicator perfectly following the cursor on every mouse move;
         # the colored groove bars / grayed gamut regions trail by ≤~16ms.
-        self._schedule_deferred_color_updates(r, g, b)
+        self._schedule_deferred_color_updates(r_i, g_i, b_i, rgb_float=(rf, gf, bf))
 
         # 5) Push to drawing software — delegated to SyncMixin so the god
         # class no longer owns the companion/memory write path.
-        self._push_color_to_sync(r, g, b, source, hsv)
+        self._push_color_to_sync(r_i, g_i, b_i, source, hsv)

@@ -66,6 +66,7 @@ class PanelHost(QWidget):
 
     mount_changed = pyqtSignal()
     rearranged = pyqtSignal(object)
+    tab_changed = pyqtSignal(int)
     #: A grip was dragged somewhere no host would take it: tear it off.
     float_requested = pyqtSignal(str)
     #: A grip was right-clicked: (panel id, global position).
@@ -111,6 +112,16 @@ class PanelHost(QWidget):
     def set_tree(self, node) -> None:
         """Mount *node*. Panels missing from the provider are skipped."""
         was_mounted = set(self._mounted)
+        # Capture current active tab page before detaching so setting adjustments
+        # or module refreshes never flip the user's foreground tab.
+        prev_active_page = None
+        for tabs, _ in self._tabs:
+            if tabs is not None and tabs.count() > 0:
+                idx = tabs.currentIndex()
+                if hasattr(tabs, "_panel_pages") and 0 <= idx < len(tabs._panel_pages):
+                    prev_active_page = tabs._panel_pages[idx]
+                break
+        self._prev_active_page = prev_active_page
         self._detach_mounted()
         self._splitters.clear()
         self._tabs.clear()
@@ -144,6 +155,7 @@ class PanelHost(QWidget):
         # it now — after the widget is actually mounted — or the first painted
         # frame shows every page at once.
         self._sync_tab_visibility()
+        self._prev_active_page = None
         if set(self._mounted) != was_mounted:
             # Which panels are on screen decides the content height; the
             # order they sit in does not, so an ordering change stays quiet.
@@ -235,7 +247,12 @@ class PanelHost(QWidget):
         for index, (widget, title) in enumerate(zip(built, titles)):
             tabs.addTab(widget, title)
             tabs.setTabToolTip(index, title)
-        tabs.setCurrentIndex(min(node.current, len(built) - 1))
+        prev_page = getattr(self, "_prev_active_page", None)
+        if prev_page is not None and prev_page in page_entries:
+            target_index = page_entries.index(prev_page)
+        else:
+            target_index = min(node.current, len(built) - 1)
+        tabs.setCurrentIndex(target_index)
         #: tab index -> original page tuple (pages with nothing mounted are
         #: skipped from the strip, so bar indices do not match node.pages).
         tabs._panel_pages = tuple(page_entries)
@@ -272,8 +289,20 @@ class PanelHost(QWidget):
             lambda frm, to, bar=bar: self._on_tab_moved(bar, frm, to))
         # Re-applied on Paint if Qt re-shows every page (see eventFilter).
         tabs.installEventFilter(self)
+        tabs.currentChanged.connect(
+            lambda idx, t=tabs: self._on_tab_current_changed(t, idx))
         self._style_tabs(tabs)
         return tabs
+
+    def _on_tab_current_changed(self, tabs: QTabWidget, idx: int) -> None:
+        if getattr(self, "_syncing_tabs", False):
+            return
+        for i, (t, n) in enumerate(self._tabs):
+            if t is tabs:
+                updated = Tabs(items=n.items, current=idx, pages=n.pages)
+                self._tabs[i] = (t, updated)
+                break
+        self.tab_changed.emit(idx)
 
     def _sync_tab_visibility(self) -> None:
         """Make each tab strip's non-current pages explicitly hidden.
@@ -284,24 +313,28 @@ class PanelHost(QWidget):
         re-applies the current page right after mounting so the first painted
         frame — and the first tab click — already shows one page.
         """
-        for tabs, _node in self._tabs:
-            if tabs is None:
-                continue
-            current = tabs.currentIndex()
-            for index in range(tabs.count()):
-                tabs.widget(index).setVisible(index == current)
-            # QStackedLayout.setCurrentIndex hides the outgoing page and shows
-            # the incoming one *synchronously*; a round-trip through another
-            # page forces that bookkeeping to run immediately, while the long
-            # deferred pass on first show would otherwise light every page up
-            # for a frame. Swapping there and back ends on the same page.
-            if tabs.count() > 1:
-                other = (current + 1) % tabs.count()
-                tabs.setCurrentIndex(other)
-                tabs.setCurrentIndex(current)
-            stack = tabs.findChild(QStackedWidget)
-            if stack is not None and stack.layout() is not None:
-                stack.layout().activate()
+        self._syncing_tabs = True
+        try:
+            for tabs, _node in self._tabs:
+                if tabs is None:
+                    continue
+                current = tabs.currentIndex()
+                for index in range(tabs.count()):
+                    tabs.widget(index).setVisible(index == current)
+                # QStackedLayout.setCurrentIndex hides the outgoing page and shows
+                # the incoming one *synchronously*; a round-trip through another
+                # page forces that bookkeeping to run immediately, while the long
+                # deferred pass on first show would otherwise light every page up
+                # for a frame. Swapping there and back ends on the same page.
+                if tabs.count() > 1:
+                    other = (current + 1) % tabs.count()
+                    tabs.setCurrentIndex(other)
+                    tabs.setCurrentIndex(current)
+                stack = tabs.findChild(QStackedWidget)
+                if stack is not None and stack.layout() is not None:
+                    stack.layout().activate()
+        finally:
+            self._syncing_tabs = False
 
     def _top_align_panel(self, widget) -> None:
         """Keep a single-panel tab page's content glued to the tab strip.
@@ -880,7 +913,7 @@ class PanelHost(QWidget):
                          node.spacing, node.margins)
         if isinstance(node, Tabs):
             for tabs, source in self._tabs:
-                if source is node:
+                if source is node or (hasattr(source, "pages") and source.pages == node.pages):
                     # Keep the pages: rebuilding from *items* alone would
                     # break a page holding several panels into one tab each.
                     return Tabs((), max(0, tabs.currentIndex()), node.pages)

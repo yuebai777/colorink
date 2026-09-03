@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import socket
 import sys
 import time
@@ -641,17 +642,15 @@ class CSPCompanionSync:
         try:
             if chunk:
                 self._recv_buf += chunk
-            # Collect any remaining fragmented TCP data
-            try:
-                self._sock.settimeout(0.1)
+            # Collect any remaining fragmented TCP data non-blockingly without stalling
+            while True:
+                rlist, _, _ = select.select([self._sock], [], [], 0)
+                if not rlist:
+                    break
                 more = self._sock.recv(65536)
-                while more:
-                    self._recv_buf += more
-                    more = self._sock.recv(65536)
-            except socket.timeout:
-                pass
-            finally:
-                self._sock.settimeout(timeout)
+                if not more:
+                    break
+                self._recv_buf += more
         except Exception:
             pass  # Best-effort drain; parse what we already have
 

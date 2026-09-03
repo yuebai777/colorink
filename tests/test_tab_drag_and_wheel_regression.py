@@ -14,7 +14,8 @@ import os, sys
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 sys.path.insert(0, r'ROOT_PLACEHOLDER')
 from PyQt6.QtWidgets import QApplication, QTabWidget
-from PyQt6.QtCore import QPoint
+from PyQt6.QtCore import QPoint, QPointF, Qt
+from PyQt6.QtGui import QMouseEvent
 from core import config
 import ui.main_window as main_window
 from unittest.mock import patch
@@ -75,13 +76,55 @@ with patch('core.config.load_hotkey_config', return_value=dict(test_cfg)), \
         win._adjust_content_height()
         app.processEvents()
         scale = win.cfg.get('uiScale', 100) / 100.0
-        win_bw = max(1, int(round(4 * scale)))
-        expected_bottom_margin = max(0, int(gap * scale) - win_bw)
+        expected_bottom_margin = int(gap * scale)
         assert win.sliders_layout.contentsMargins().bottom() == expected_bottom_margin
-        # Total distance from content to window bottom equals panelTopGap
-        # (sliders_layout bottom margin + win_bw window border == panelTopGap)
-        assert expected_bottom_margin + win_bw == int(gap * scale)
         assert win.height() < 900
+
+    # 4. Verify Bug 4: Color wheel is strictly bound to window width and never compressed
+    start_w = win.width()
+    start_h = win.height()
+    expected_diam = (start_w - 8) - 16
+    assert win.color_wheel.get_wheel_geometry()[2] == expected_diam
+    assert win.stack.width() == win.stack.height()
+
+    # Simulate horizontal drag by +40px
+    win.resizing = True
+    win.resize_dir = 'right'
+    win.resize_start_pos = QPoint(win.x() + start_w, win.y() + 100)
+    win.resize_start_geometry = win.geometry()
+    event = QMouseEvent(
+        QMouseEvent.Type.MouseMove,
+        QPointF(start_w + 40, 100),
+        QPointF(win.x() + start_w + 40, win.y() + 100),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    win.mouseMoveEvent(event)
+    app.processEvents()
+    assert win.width() == start_w + 40
+    assert win.height() == start_h + 40
+    assert win.color_wheel.get_wheel_geometry()[2] == (start_w + 40 - 8) - 16
+
+    # 5. Verify Bug 5: Switching tabs and adjusting settings does not switch the active tab
+    tabs_widget = host.findChildren(QTabWidget)[0]
+    tabs_widget.setCurrentIndex(0)
+    app.processEvents()
+    assert tabs_widget.currentIndex() == 0
+    # Simulate on_settings_saved
+    win.on_settings_saved()
+    app.processEvents()
+    tabs_widget_after = host.findChildren(QTabWidget)[0]
+    assert tabs_widget_after.currentIndex() == 0
+
+    tabs_widget_after.setCurrentIndex(1)
+    app.processEvents()
+    assert tabs_widget_after.currentIndex() == 1
+    win.on_settings_saved()
+    app.processEvents()
+    tabs_widget_after2 = host.findChildren(QTabWidget)[0]
+    assert tabs_widget_after2.currentIndex() == 1
+
     print("ALL REGRESSIONS VERIFIED SUCCESSFULLY")
     sys.stdout.flush()
     os._exit(0)

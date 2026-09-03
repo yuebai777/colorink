@@ -74,8 +74,8 @@ class LayoutMixin:
 
     @staticmethod
     def _required_visualizer_height(window_width, margins_left, margins_right,
-                                    stack_min_height):
-        available_width = int(window_width) - int(margins_left) - int(margins_right)
+                                    stack_min_height=0):
+        available_width = max(1, int(window_width) - int(margins_left) - int(margins_right))
         return max(available_width, int(stack_min_height))
 
     # One debounce for everything that belongs *after* a drag rather than
@@ -168,17 +168,29 @@ class LayoutMixin:
                 self.central.updateGeometry()
             self.main_layout.activate()
             margins = self.main_layout.contentsMargins()
+            stack_msh = 0
+            if hasattr(self, "stack") and self.stack is not None:
+                msh = getattr(self.stack, "minimumSizeHint", None)
+                if callable(msh):
+                    try:
+                        stack_msh = max(stack_msh, int(msh().height()))
+                    except Exception:
+                        pass
+                mh = getattr(self.stack, "minimumHeight", None)
+                if callable(mh):
+                    try:
+                        stack_msh = max(stack_msh, int(mh()))
+                    except Exception:
+                        pass
             visualizer_h = self._required_visualizer_height(
                 self.width(),
                 margins.left(),
                 margins.right(),
-                max(
-                    self.stack.minimumSizeHint().height(),
-                    self.stack.minimumHeight(),
-                ),
+                stack_msh,
             )
-            # Protect stack minimum height so Qt layout cannot compress the color wheel!
+            # Protect stack height so Qt layout cannot compress the color wheel!
             self.stack.setMinimumHeight(visualizer_h)
+            self.stack.setMaximumHeight(visualizer_h)
 
             host = getattr(self, "panel_host", None)
             if host is not None:
@@ -569,10 +581,9 @@ class LayoutMixin:
             cfg = getattr(self, "cfg", {})
             is_settings_open = hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible()
             apply_noactivate(cfg.get("noFocusMode", False) and not is_settings_open)
-        if self._content_height_adjust_pending:
-            self._content_height_adjust_pending = False
-            from PyQt6.QtCore import QTimer as _QTimer
-            _QTimer.singleShot(0, self._adjust_content_height)
+        self._content_height_adjust_pending = False
+        from PyQt6.QtCore import QTimer as _QTimer
+        _QTimer.singleShot(0, self._adjust_content_height)
 
     def resizeEvent(self, event):
         """Handle resize, preventing DPI-induced size drift when dragged between monitors.
@@ -667,8 +678,9 @@ class LayoutMixin:
         # collapses. Capping it keeps the picker square the whole way through
         # and parks the surplus below, where the settle removes it.
         square = window_layout.picker_square_height(
-            w, margins.left(), margins.right(),
-            self.stack.minimumSizeHint().height())
+            w, margins.left(), margins.right(), 0)
+        if self.stack.minimumHeight() != square:
+            self.stack.setMinimumHeight(square)
         if self.stack.maximumHeight() != square:
             self.stack.setMaximumHeight(square)
         wheel_size = int(round(layout.picker_size))
@@ -792,6 +804,13 @@ class LayoutMixin:
             if "bottom" in resize_dir:
                 new_h = max(min_h, geom.height() + delta.y())
                 new_geom.setHeight(new_h)
+            elif "right" in resize_dir or "left" in resize_dir:
+                # Color wheel is square and bound to width: when dragging width,
+                # automatically adjust height by the same delta so the wheel
+                # expands/shrinks without squeezing sliders or needing manual height drag.
+                delta_w = new_geom.width() - geom.width()
+                new_h = max(min_h, geom.height() + delta_w)
+                new_geom.setHeight(new_h)
 
             self.setGeometry(new_geom)
             event.accept()
@@ -800,6 +819,7 @@ class LayoutMixin:
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        resize_dir = getattr(self, "resize_dir", None)
         was_resizing = self.resizing
         self.resizing = False
         self.resize_dir = None
@@ -811,12 +831,12 @@ class LayoutMixin:
             cfg["width"] = self.width()
             cfg["height"] = self.height()
             config.save_window_config(cfg)
-            self._manual_height_override = True
-            # Remember what the content needed when the user picked this
-            # height: their choice survives while that number holds, and the
-            # window goes back to following the content once it changes.
-            self._last_auto_height = getattr(self, "_last_required_height",
-                                             self.height())
+            if resize_dir and "bottom" in resize_dir:
+                self._manual_height_override = True
+                self._last_auto_height = getattr(self, "_last_required_height",
+                                                 self.height())
+            else:
+                self._manual_height_override = False
         
         super().mouseReleaseEvent(event)
 

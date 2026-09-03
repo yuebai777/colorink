@@ -7,7 +7,18 @@ class HotkeySignals(QObject):
     # Emits the configuration key name, e.g. "pickKey", "hideWindowKey", "followMouseKey"
     triggered = pyqtSignal(str)
 
+
 hotkey_signals = HotkeySignals()
+
+
+def get_hotkey_signals() -> HotkeySignals:
+    global hotkey_signals
+    try:
+        hotkey_signals.objectName()
+    except (RuntimeError, AttributeError):
+        hotkey_signals = HotkeySignals()
+    return hotkey_signals
+
 
 _bound_hotkeys = {}
 
@@ -42,7 +53,7 @@ def bind_hotkey(hotkey_type: str, hotkey_str: str):
     old_key = _bound_hotkeys.get(hotkey_type)
 
     def callback():
-        hotkey_signals.triggered.emit(hotkey_type)
+        get_hotkey_signals().triggered.emit(hotkey_type)
 
     # 先注册新键、成功后再移除旧键：新组合非法/失败时用户原来的
     # 可用热键不会被先删掉（旧实现先 remove 再 add，失败即丢失）。
@@ -79,7 +90,7 @@ def bind_mouse_hotkey(hotkey_type: str, hotkey_str: str):
     old_handler = _bound_mouse_hotkeys.get(hotkey_type)
 
     def callback(*_args):
-        hotkey_signals.triggered.emit(hotkey_type)
+        get_hotkey_signals().triggered.emit(hotkey_type)
 
     try:
         handler = _mouse.on_button(callback, buttons=(button,), types=(_mouse.DOWN,))
