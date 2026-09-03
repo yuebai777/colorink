@@ -8,11 +8,10 @@ from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
 
 from ui.color_conversions import find_max_lab_c, find_max_oklch_c
 
-# Uniform outer-ring chroma cap for the circulant disc renderer.  Keeping it
-# below every hue's gamut maximum avoids the dark "cake-slice" look around
-# blue at low L (see render_lab_disc for details).
-LAB_DISC_CHROMA_CEILING = 75.0
-OKLAB_DISC_CHROMA_CEILING = 0.26
+# The disc reproduces the square a*b* plane's colours: the rim uses each
+# hue's own sRGB gamut boundary (no uniform chroma cap), so no colour of
+# the original square LAB visualiser is lost.  The visual edge is kept
+# circular by LabSquare's antialiased outline around the disc.
 
 # Colour-window (degrees) for smoothing the disc's radial chroma boundary.
 # The sRGB gamut's constant-lightness cross-section is slightly non-convex,
@@ -282,10 +281,8 @@ def render_lab_disc(request: LabPrewarmRequest) -> LabPrewarmResult:
 
     if request.render_mode == "oklab":
         lightness = request.lightness / 100.0
-        chroma_ceiling = OKLAB_DISC_CHROMA_CEILING
     else:
         lightness = request.lightness
-        chroma_ceiling = LAB_DISC_CHROMA_CEILING
 
     # Smoothed boundary profile: the moving average kills the knife-cut seam
     # at the concave gamut bay (blue direction); clamping to the raw boundary
@@ -294,13 +291,11 @@ def render_lab_disc(request: LabPrewarmRequest) -> LabPrewarmResult:
         lightness, request.render_mode)
     max_c = np.minimum(smoothed_profile, raw_profile)[bins]
 
-    # Cap the outer-ring chroma so dark gray/blue areas do not produce a
-    # sharp "cake-slice" boundary: in CIELAB the blue direction loses chroma
-    # much faster than violet/magenta at low L, so normalising every hue to
-    # its own gamut boundary makes blue look cut off.  A uniform ceiling with
-    # per-hue gamut clamping keeps the wheel visually even.
-    chroma = (np.clip(rr, 0.0, 1.0)
-              * np.minimum(max_c, chroma_ceiling).astype(np.float32))
+    # Per-hue gamut boundary as the rim: each hue reaches its own maximum
+    # chroma, i.e. exactly the colours the square a*b* plane shows, so no
+    # colour of the original square LAB visualiser is lost.  The visual edge
+    # is kept crisp and circular by LabSquare's antialiased outline.
+    chroma = np.clip(rr, 0.0, 1.0) * max_c
     a = chroma * a_dir
     b = chroma * b_dir
 
@@ -310,10 +305,14 @@ def render_lab_disc(request: LabPrewarmRequest) -> LabPrewarmResult:
     else:
         red, green, blue = _lab_to_rgb(light, a, b)
 
-    mask = ((rr <= 1.0)
-            & (red >= 0.0) & (red <= 1.0)
-            & (green >= 0.0) & (green <= 1.0)
-            & (blue >= 0.0) & (blue <= 1.0))
+    # The disc's alpha edge is exclusively the geometric circle.  ``max_c``
+    # comes from 2048 bin-centre directions, so at sharp gamut corners a
+    # pixel's exact direction can be a hair more restrictive than its bin —
+    # a few rim pixels would be out of gamut.  Instead of punching tiny
+    # transparent notches into the circle (_rgba_bytes already clamps the
+    # out-of-gamut channels to 0..1), the mask stays a perfect circle and no
+    # visible "bite" appears at the edge.
+    mask = rr <= 1.0
     return LabPrewarmResult(
         request=request,
         image_width=image_size,

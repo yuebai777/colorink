@@ -29,8 +29,6 @@ from ui.color_session import session_of
 from ui.lab_harmony import is_valid_harmony_mode, harmony_hue_offsets
 from ui.window_layout import resolve_picker_geometry
 from ui.lab_prewarm import (
-    LAB_DISC_CHROMA_CEILING,
-    OKLAB_DISC_CHROMA_CEILING,
     LabPrewarmRequest,
     LabPrewarmResult,
     LabPrewarmTask,
@@ -47,6 +45,11 @@ class LabSquare(QWidget):
     # (resize, avoid_top, shape switch) so MainWindow can re-align the
     # vertical lightness bar with it.
     planeGeometryChanged = pyqtSignal()
+
+    # Anti-jitter tolerance for presses that start ON a harmony point
+    # (sub-point or main point): movements within this many pixels are
+    # treated as a click, not a drag.  Blank-area presses are unaffected.
+    _POINT_CLICK_TOLERANCE_PX = 5.0
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -63,6 +66,28 @@ class LabSquare(QWidget):
         self.render_mode = "lab"  # "lab" or "oklab"
         self.shape = "square"     # "square" or "disc"
         self.harmony_mode = "analogous"
+
+        # Anchor: the point every harmony dot position is computed from
+        # (the "initial main point").  Clicking a harmony dot only changes
+        # which dot is the current main point; it never moves this anchor.
+        # Clicking/dragging the anchor itself, or a blank area, re-anchors
+        # the whole harmony pattern.
+        self._anchor_ab = (self.a, self.b)
+        # The colour currently picked / emitted (same as the current main
+        # point, self.a/self.b).
+        self._picked_ab = (self.a, self.b)
+        # Which harmony point is currently the main point: 0 = the anchor
+        # itself, 1.. = one of the harmony dots.
+        self._picked_harmony_index: int | None = 0
+        # True when the press started on a harmony dot: a click (no move)
+        # selects it without re-anchoring, a drag re-anchors the pattern.
+        self._drag_from_dot = False
+        # Press-on-point anti-jitter state: the press origin and whether the
+        # drag threshold has been crossed.  Used ONLY for presses that start
+        # on a point; blank presses keep the immediate re-anchor behaviour.
+        self._press_on_point = False
+        self._press_origin = None
+        self._drag_armed = False
 
         self.dragging = False
         
@@ -278,6 +303,10 @@ class LabSquare(QWidget):
         if mode != self.render_mode:
             self.render_mode = mode
             self.max_val = 110.0 if mode == "lab" else 0.3
+            self._anchor_ab = (self.a, self.b)
+            self._picked_ab = (self.a, self.b)
+            self._picked_harmony_index = 0
+            self._drag_from_dot = False
             self._invalidate_full_cache()
             self._precompute_bboxes()
             self.update()
@@ -288,6 +317,10 @@ class LabSquare(QWidget):
             return
         if shape != self.shape:
             self.shape = shape
+            self._anchor_ab = (self.a, self.b)
+            self._picked_ab = (self.a, self.b)
+            self._picked_harmony_index = 0
+            self._drag_from_dot = False
             self._invalidate_full_cache()
             self.planeGeometryChanged.emit()
             self.update()
@@ -296,6 +329,11 @@ class LabSquare(QWidget):
         """Set the colour-harmony preset drawn on the circulant disc."""
         if mode != self.harmony_mode:
             self.harmony_mode = mode if is_valid_harmony_mode(mode) else "analogous"
+            # A new preset re-centers around the anchor; selection resets to it.
+            self.a, self.b = self._anchor_ab
+            self._picked_ab = (self.a, self.b)
+            self._picked_harmony_index = 0
+            self._drag_from_dot = False
             self.update()
 
     def set_color(self, r, g, b, block_signals=False, update_widget=True):
@@ -311,6 +349,10 @@ class LabSquare(QWidget):
             self.L = l
             self.a = a
             self.b = b_val
+        self._anchor_ab = (self.a, self.b)
+        self._picked_ab = (self.a, self.b)
+        self._picked_harmony_index = 0
+        self._drag_from_dot = False
         if int(self.L * 2) != old_l_bucket:
             self._invalidate_full_cache()
         if update_widget:
@@ -325,6 +367,10 @@ class LabSquare(QWidget):
         self.a = a
         self.b = b
         self.a, self.b = self._clamp_to_gamut(self.a, self.b)
+        self._anchor_ab = (self.a, self.b)
+        self._picked_ab = (self.a, self.b)
+        self._picked_harmony_index = 0
+        self._drag_from_dot = False
         if update_widget:
             self.update()
         if not block_signals:
@@ -333,29 +379,47 @@ class LabSquare(QWidget):
 
     def native_color_values(self):
         """Return (space, values) for the LabSquare's current colour."""
+        picked_a, picked_b = self._picked_ab
         if self.render_mode == "oklab":
-            return "oklab", (self.L / 100.0, self.a, self.b)
-        return "lab", (self.L, self.a, self.b)
+            return "oklab", (self.L / 100.0, picked_a, picked_b)
+        return "lab", (self.L, picked_a, picked_b)
 
     def set_lightness(self, lightness, update_widget=True):
         old_l_bucket = int(self.L * 2)
         self.L = lightness
         if int(self.L * 2) != old_l_bucket:
             self._invalidate_full_cache()
-        # Keep (a, b) inside the gamut at the new L so the cursor doesn't
-        # drift into the black out-of-gamut corners after L has changed
-        # significantly from the L at which the color was selected.
-        self.a, self.b = self._clamp_to_gamut(self.a, self.b)
+        # Keep the anchor and the current main point inside the gamut at the
+        # new L.
+        self._anchor_ab = self._clamp_to_gamut(*self._anchor_ab)
+        # If the current main point is a harmony dot, keep that dot's index
+        # under the new lightness (same harmony position, new boundary);
+        # otherwise the main point is the anchor itself.
+        index = self._picked_harmony_index or 0
+        if self.shape == "disc" and index > 0:
+            points = self._harmony_points_ab()
+            if index < len(points):
+                self.a, self.b = points[index]
+                self._picked_ab = (self.a, self.b)
+            else:
+                self.a, self.b = self._anchor_ab
+                self._picked_ab = (self.a, self.b)
+                self._picked_harmony_index = 0
+        else:
+            self.a, self.b = self._anchor_ab
+            self._picked_ab = (self.a, self.b)
+            self._picked_harmony_index = 0
         if update_widget:
             self.update()
         r, g, b = self.get_current_rgb()
         self.colorChanged.emit(r, g, b)
 
     def get_current_rgb(self):
+        picked_a, picked_b = self._picked_ab
         if self.render_mode == "oklab":
-            r, g, b = oklab_to_rgb(self.L / 100.0, self.a, self.b)
+            r, g, b = oklab_to_rgb(self.L / 100.0, picked_a, picked_b)
         else:
-            r, g, b = lab_to_rgb(self.L, self.a, self.b)
+            r, g, b = lab_to_rgb(self.L, picked_a, picked_b)
         r = max(0, min(255, int(r)))
         g = max(0, min(255, int(g)))
         b = max(0, min(255, int(b)))
@@ -687,22 +751,20 @@ class LabSquare(QWidget):
         return max(1.0, self._disc_metrics()[2] * 2.0)
 
     def _disc_chroma_ceiling(self) -> float:
-        """Chroma cap used by the disc renderer (kept in sync with lab_prewarm)."""
-        return (OKLAB_DISC_CHROMA_CEILING if self.render_mode == "oklab"
-                else LAB_DISC_CHROMA_CEILING)
+        """No uniform chroma cap — the disc reproduces every square-plane
+        colour at each hue (the outer ring reaches its own gamut boundary)."""
+        return float("inf")
 
     def _max_chroma_for_direction(self, a: float, b: float) -> float:
+        """Max in-gamut chroma along this hue (smoothed boundary, same as
+        the disc renderer), so picking matches the painted colours."""
         C = math.hypot(a, b)
         if C <= 1e-9:
             return 0.0
-        # Smoothed boundary (same moving-minimum as the disc renderer), so
-        # indicator/harmony dots and screen→ab mapping agree with the edge.
         hue = math.degrees(math.atan2(b, a)) % 360.0
         if self.render_mode == "oklab":
-            full = smoothed_boundary_chroma("oklab", self.L / 100.0, hue)
-        else:
-            full = smoothed_boundary_chroma("lab", self.L, hue)
-        return min(full, self._disc_chroma_ceiling())
+            return smoothed_boundary_chroma("oklab", self.L / 100.0, hue)
+        return smoothed_boundary_chroma("lab", self.L, hue)
 
     def _disc_ab_to_screen(self, a: float, b: float) -> QPointF:
         cx, cy, r = self._disc_metrics()
@@ -730,11 +792,14 @@ class LabSquare(QWidget):
     def _harmony_points_ab(self) -> list[tuple[float, float]]:
         """Harmony points for the active preset, in a/b coordinates.
 
-        Every point keeps the base colour's *relative* chroma (fraction of its
-        own hue's gamut boundary), so the small dots sit on a smooth circle
-        like Procreate's harmony wheel and always stay inside sRGB.
+        Every point keeps the *anchor* colour's relative chroma (fraction of
+        its own hue's gamut boundary), so the dots sit on a smooth circle
+        like Procreate's harmony wheel and always stay inside sRGB.  The
+        anchor is moved by re-anchoring (blank click/drag) and by inverse-
+        dragging a harmony dot; selecting a harmony dot never re-forms the
+        pattern.
         """
-        base_a, base_b = self.a, self.b
+        base_a, base_b = self._anchor_ab
         base_C = math.hypot(base_a, base_b)
         max_c = self._max_chroma_for_direction(base_a, base_b)
         rho = 0.0 if max_c <= 1e-9 else min(1.0, base_C / max_c)
@@ -748,6 +813,27 @@ class LabSquare(QWidget):
             C = rho * hue_max
             points.append((C * a_dir, C * b_dir))
         return points
+
+    def _anchor_from_harmony_point(self, a: float, b: float, index: int) -> tuple[float, float]:
+        """Invert the harmony relationship for dot *index*.
+
+        The harmony pattern is ``f_harmonic(Anchor)``: dot *i* sits at
+        ``hue = anchor_hue + offset_i`` and ``C = rho * max_c(hue)``.  When
+        the user drags dot *index* to ``(a, b)``, the anchor must be solved
+        back so that dot still satisfies the same relationship — the dragged
+        point is the handle, NOT the new geometric centre.
+        """
+        offsets = harmony_hue_offsets(self.harmony_mode)
+        if not (0 <= index < len(offsets)):
+            index = 0
+        C = math.hypot(a, b)
+        hue_i = math.atan2(b, a) if C > 1e-9 else 0.0
+        max_c_i = self._max_chroma_for_direction(math.cos(hue_i), math.sin(hue_i))
+        rho = 0.0 if max_c_i <= 1e-9 else min(1.0, C / max_c_i)
+        h0 = hue_i - math.radians(offsets[index])
+        max_c_0 = self._max_chroma_for_direction(math.cos(h0), math.sin(h0))
+        C0 = rho * max_c_0
+        return C0 * math.cos(h0), C0 * math.sin(h0)
 
     def _ab_to_rgb(self, a: float, b: float) -> tuple[int, int, int]:
         if self.render_mode == "oklab":
@@ -764,9 +850,10 @@ class LabSquare(QWidget):
         if self.shape != "disc":
             return None
         points = self._harmony_points_ab()
-        for i, (a, b) in enumerate(points):
-            if i == 0:
-                continue  # base indicator is the large dot, not a harmony dot
+        for (a, b) in points:
+            # The current main point is the large dot; clicking it is a no-op.
+            if abs(a - self.a) <= 1e-9 and abs(b - self.b) <= 1e-9:
+                continue
             p = self._disc_ab_to_screen(a, b)
             if math.hypot(pos.x() - p.x(), pos.y() - p.y()) <= 9.0:
                 return a, b
@@ -776,10 +863,12 @@ class LabSquare(QWidget):
         if self.shape != "disc":
             return
         points = self._harmony_points_ab()
-        # Harmony dots first, base large dot on top.
-        for i, (a, b) in enumerate(points):
-            if i == 0:
-                continue
+        # Harmony dots first, then the current main point as the large dot on
+        # top.  The anchor may be one of the small dots when a harmony dot is
+        # the current main point.
+        for a, b in points:
+            if abs(a - self.a) <= 1e-9 and abs(b - self.b) <= 1e-9:
+                continue  # current main point is drawn large below
             pos = self._disc_ab_to_screen(a, b)
             r, g, bv = self._ab_to_rgb(a, b)
             painter.setPen(Qt.PenStyle.NoPen)
@@ -859,33 +948,84 @@ class LabSquare(QWidget):
             # toggles stay responsive while the low-res preview is visible.
             QTimer.singleShot(80, self.update)
 
+    def _begin_press(self, pos: QPointF, on_point: bool) -> None:
+        """Arm a press.  Point presses get the anti-jitter tolerance; blank
+        presses re-anchor immediately (handle_mouse is called by the caller)."""
+        self._press_on_point = on_point
+        self._press_origin = QPointF(pos) if on_point else None
+        self._drag_armed = False
+        self.dragging = True
+        self.setCursor(Qt.CursorShape.BlankCursor)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            # A small harmony dot is clickable: it becomes the new base
-            # colour (large dot) without starting a drag.
-            hit = self._hit_harmony_point(event.position())
+            pos = event.position()
+            # A harmony dot (including the anchor when it is currently a small
+            # dot) is clickable as a *selection*: it becomes the current main
+            # point immediately, but the harmony layout stays anchored to the
+            # original main point — no re-forming around the new selection.
+            hit = self._hit_harmony_point(pos)
             if hit is not None:
+                points = self._harmony_points_ab()
+                for i, (pa, pb) in enumerate(points):
+                    if abs(pa - hit[0]) <= 1e-9 and abs(pb - hit[1]) <= 1e-9:
+                        self._picked_harmony_index = i
+                        break
                 self.a, self.b = hit
+                self._picked_ab = hit
+                self._drag_from_dot = True
+                self._begin_press(pos, on_point=True)
                 self.update()
                 r, g, b = self.get_current_rgb()
                 self.colorChanged.emit(r, g, b)
                 return
-            self.dragging = True
-            # Mirror the color wheel's inner-region drag: while picking on
-            # the LAB plane the crosshair hides (the indicator dot shows the
-            # position) and comes back on release.
-            self.setCursor(Qt.CursorShape.BlankCursor)
-            self.handle_mouse(event.position())
+
+            # Pressing the large dot (current main point) is also a POINT
+            # press: it gets the anti-jitter tolerance.  For a promoted dot
+            # (index > 0) a later drag uses the inverse transform; for the
+            # anchor (index 0) a later drag moves the anchor directly.
+            selected = self._picked_harmony_index or 0
+            if self.shape == "disc":
+                main_pos = self._disc_ab_to_screen(self.a, self.b)
+                if (math.hypot(pos.x() - main_pos.x(),
+                                pos.y() - main_pos.y()) <= 10.0):
+                    self._drag_from_dot = selected > 0
+                    self._begin_press(pos, on_point=True)
+                    self.update()
+                    return
+
+            # Blank area: a press re-anchors immediately, like normal picking.
+            self._drag_from_dot = False
+            self._begin_press(pos, on_point=False)
+            self.handle_mouse(pos)
 
     def mouseMoveEvent(self, event):
-        if self.dragging:
-            self.handle_mouse(event.position())
+        if not self.dragging:
+            return
+        pos = event.position()
+        if self._press_on_point:
+            if not self._drag_armed:
+                origin = self._press_origin
+                if (origin is not None
+                        and math.hypot(pos.x() - origin.x(),
+                                       pos.y() - origin.y())
+                        <= self._POINT_CLICK_TOLERANCE_PX):
+                    # Small jitter on a point press: keep it a pure click.
+                    return
+                self._drag_armed = True
+            self.handle_mouse(pos)
+        else:
+            self.handle_mouse(pos)
 
     def mouseReleaseEvent(self, event):
         self.end_drag()
 
     def end_drag(self):
         self.dragging = False
+        self._drag_from_dot = False
+        self._press_on_point = False
+        self._press_origin = None
+        self._drag_armed = False
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.update()
         self.interactionFinished.emit()
@@ -894,6 +1034,22 @@ class LabSquare(QWidget):
         if self.shape == "disc":
             # Polar mapping: angle = hue, radius = relative chroma.
             self.a, self.b = self._disc_screen_to_ab(pos)
+            self._picked_ab = (self.a, self.b)
+            if (self._drag_from_dot and self._picked_harmony_index
+                    and self._picked_harmony_index > 0):
+                # Dragging a harmony dot: the mouse controls A, and the
+                # anchor is recomputed by INVERTING the harmony relationship
+                # from A_new, so the whole pattern follows A while the anchor
+                # remains the source of the relative geometry (the harmony
+                # skeleton never re-forms around A directly).
+                self._anchor_ab = self._anchor_from_harmony_point(
+                    self.a, self.b, self._picked_harmony_index)
+            else:
+                # Blank / anchor drag: the dragged point IS the anchor, so
+                # the anchor moves directly and the pattern follows it.
+                self._anchor_ab = (self.a, self.b)
+                self._picked_harmony_index = 0
+                self._drag_from_dot = False
             self.update()
             r, g, b = self.get_current_rgb()
             self.colorChanged.emit(r, g, b)
@@ -914,6 +1070,10 @@ class LabSquare(QWidget):
         # (rendered transparent/black). Snap a/b to the closest boundary point.
         self.a, self.b = self._nearest_in_gamut(
             self.a, self.b, pos.x(), pos.y(), offset_x, offset_y, size)
+        self._anchor_ab = (self.a, self.b)
+        self._picked_ab = (self.a, self.b)
+        self._picked_harmony_index = 0
+        self._drag_from_dot = False
 
         self.update()
         r, g, b = self.get_current_rgb()

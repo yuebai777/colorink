@@ -96,10 +96,8 @@ def test_save_panel_layout_writes_a_readable_record(host):
 
 def test_the_seed_says_which_switch_built_the_arrangement(host):
     assert host.arrangement_seed() == "stack"
-    host.cfg["slidersSplit"] = True
-    assert host.arrangement_seed() == "split"
     host.cfg["slidersTabs"] = True
-    assert host.arrangement_seed() == "tabs", "页签优先于并排"
+    assert host.arrangement_seed() == "tabs"
 
 
 def test_tab_mode_excludes_hidden_and_out_of_module_groups(host):
@@ -141,13 +139,12 @@ def test_a_dragged_arrangement_survives_the_next_refresh(host):
 
 
 def test_flipping_a_layout_switch_reseeds_the_arrangement(host):
-    """勾选"并排"必须真的换成两列——不能被上一份存档顶回去。"""
+    """勾选"页签"必须真的换成分页——不能被上一份存档顶回去。"""
     groups = host._slider_groups_in_layout_order()
     host.save_panel_layout(host._slider_column_tree_for(groups))
-    host.cfg["slidersSplit"] = True
+    host.cfg["slidersTabs"] = True
     rebuilt = host._slider_column_tree_for(groups)
-    assert rebuilt.orientation == dock.HORIZONTAL
-    assert rebuilt.resizable is True
+    assert isinstance(rebuilt, dock.Tabs)
 
 
 def test_a_saved_arrangement_with_a_foreign_panel_set_is_ignored(host):
@@ -183,13 +180,13 @@ def test_reset_is_harmless_when_nothing_was_saved(host):
 
 def test_reset_keeps_the_layout_switches(host):
     """复位的是"拖出来的排布"，不是用户勾的开关。"""
-    host.cfg["slidersSplit"] = True
+    host.cfg["slidersTabs"] = True
     host.save_panel_layout(host._slider_column_tree_for(
         host._slider_groups_in_layout_order()))
     host.reset_panel_layout()
-    assert host.cfg["slidersSplit"] is True
-    assert host._slider_column_tree_for(
-        host._slider_groups_in_layout_order()).orientation == dock.HORIZONTAL
+    assert host.cfg["slidersTabs"] is True
+    assert isinstance(host._slider_column_tree_for(
+        host._slider_groups_in_layout_order()), dock.Tabs)
 
 
 def test_layout_order_falls_back_without_the_panel_model(qapp):

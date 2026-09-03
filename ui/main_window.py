@@ -334,6 +334,7 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
 
         # Pane 2: LAB Space
         self.pane_lab = LabPane(self)
+        self.pane_lab.set_show_checkerboard(self.cfg.get("showLabCheckerboard", True))
         self.lab_layout = QHBoxLayout(self.pane_lab)
         self.lab_layout.setContentsMargins(0, 0, 0, 0)
         self.lab_layout.setSpacing(6)

@@ -512,3 +512,14 @@ class TestGrayscaleFilterSettings:
             "grayscaleFilterMode": "luma",
             "grayscaleFilterBackend": "mag",
         }
+
+
+def test_lab_checkerboard_setting_round_trip(sidebar):
+    sidebar.cb_show_lab_checkerboard.setChecked(False)
+    sidebar.save_settings()
+    assert sidebar.cfg["showLabCheckerboard"] is False
+
+    sidebar.cb_show_lab_checkerboard.setChecked(True)
+    sidebar.save_settings()
+    assert sidebar.cfg["showLabCheckerboard"] is True
+

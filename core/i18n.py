@@ -129,6 +129,8 @@ _EN: dict[str, str] = {
     "在 LAB 区域显示方形/圆形切换按钮": "Show the square/circle shape toggle in the LAB area",
     "显示 LAB 调和按钮": "Show LAB harmony toggle",
     "在 LAB 区域显示互补/近似/三等分等调和模式按钮": "Show the harmony-mode toggle (complementary/analogous/triadic...) in the LAB area",
+    "显示 LAB 背景灰白网格": "Show LAB checkerboard background",
+    "在 LAB 区域背景显示灰白透明度网格": "Show the checkerboard background in the LAB area",
     "RGB 滑条": "RGB sliders",
     "HSV 滑条": "HSV sliders",
     "HLS 滑条": "HLS sliders",

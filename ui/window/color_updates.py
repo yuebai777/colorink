@@ -9,7 +9,7 @@ import colorsys
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QLayout, QVBoxLayout, QWidget
 
 from ui.color_conversions import (
     hsv_to_hls_floats,
@@ -89,6 +89,7 @@ class ColorUpdatesMixin:
         history_lay = QVBoxLayout(self.slider_containers["History"])
         history_lay.setContentsMargins(0, 0, 0, 0)
         history_lay.setSpacing(0)
+        history_lay.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self.color_history = ColorHistoryWidget(self.slider_containers["History"])
         self.color_history.color_picked.connect(self.on_history_color_picked)
         # Initial grid geometry from config

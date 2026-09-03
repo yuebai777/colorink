@@ -10,7 +10,7 @@ HOTKEY_CFG_NAME = "hotkey-config.json"
 # when the shape of the config changes and register a migration below; old
 # configs are migrated forward on load instead of relying on ad-hoc key pops.
 CONFIG_SCHEMA_KEY = "schemaVersion"
-CONFIG_SCHEMA_VERSION = 3
+CONFIG_SCHEMA_VERSION = 4
 
 # Envelope marker for the settings backup/restore JSON export.
 SETTINGS_EXPORT_FORMAT = "colorink-settings"
@@ -91,6 +91,7 @@ def default_hotkey_config():
         "showLabToggleButton": True,      # 显示/隐藏色轮与LAB之间的浮动切换按钮
         "showLabShapeButton": True,       # 显示/隐藏 LAB 视图形状切换按钮
         "showLabHarmonyButton": True,     # 显示/隐藏 LAB 调和模式按钮
+        "showLabCheckerboard": True,      # 显示/隐藏 LAB 视图灰白网格背景
         "showTitleBar": True,             # 显示/隐藏标题栏（隐藏后顶部边框与四周一致）
         "grayscaleFilterScreen": "all",
         "grayscaleFilterMode": "oklch",
@@ -153,7 +154,6 @@ def default_hotkey_config():
         "followMouseEnabled": False,
         "noFocusMode": False,
         "showLabLightnessSlider": False,
-        "slidersSplit": False,               # 滑块列并排（B-4 可拖动分割）
         "slidersTabs": False,                # 滑块组分页签叠放（B-4）
         "panelDrag": False,                  # 面板抓手：拖拽重排（B-4）
         # 浮出成独立窗口的面板 → 几何 {id: [x, y, w, h]}（B-5）。停靠树里
@@ -234,11 +234,18 @@ def _migrate_2_to_3(cfg: dict) -> dict:
     return cfg
 
 
+def _migrate_3_to_4(cfg: dict) -> dict:
+    """Drop ``slidersSplit``; custom multi-column layouts are handled via drag-and-drop."""
+    cfg.pop("slidersSplit", None)
+    return cfg
+
+
 # Registered migrations, keyed by the target schema version they produce.
 _CONFIG_MIGRATIONS: dict[int, Callable[[dict], dict]] = {
     1: _migrate_0_to_1,
     2: _migrate_1_to_2,
     3: _migrate_2_to_3,
+    4: _migrate_3_to_4,
 }
 
 
@@ -278,9 +285,10 @@ _BOOL_KEYS = frozenset({
     "showTitleBar", "showTaskbarIcon", "lockWindowSize", "lockWindowPosition",
     "onlyShowInCsp", "openAtLogin", "checkUpdatesOnStartup",
     "followMouseEnabled", "noFocusMode", "showLabLightnessSlider",
-    "slidersSplit", "slidersTabs", "panelDrag",
+    "slidersTabs", "panelDrag",
     "flipColorWheelHorizontally", "hideHueRing", "showModuleSwitchButton",
     "showLabToggleButton", "showLabShapeButton", "showLabHarmonyButton",
+    "showLabCheckerboard",
 })
 _INT_KEYS = frozenset({
     "uiScale", "pickerZoom", "historyColumns", "historyRows",

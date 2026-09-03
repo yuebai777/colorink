@@ -150,3 +150,54 @@ def test_store_prunes_panels_this_build_dropped():
                 {"kind": "leaf", "panel": "removed-panel"},
                 {"kind": "leaf", "panel": registry.HISTORY}]}}
     assert store.parse(data) == dock.Leaf(registry.HISTORY)
+
+
+def test_tabs_hint_includes_multi_panel_spacing_and_top_gap(panels):
+    provider, _ = panels
+    host = PanelHost(provider)
+    host.set_stack_spacing(10)
+    class _DummyChrome:
+        top_gap = 15
+        font_size = 11
+        scale = 1.0
+        bar_bg = ""
+        background = ""
+        text = ""
+        bar_text = ""
+        divider_color = ""
+        divider_width = 1
+    host.apply_chrome(_DummyChrome())
+    node = dock.Tabs(pages=(
+        (registry.HISTORY, registry.slider_panel_id("RGB")),
+        (registry.slider_panel_id("LAB"),)
+    ), current=0)
+    host.set_tree(node)
+    hint = host.column_hint()
+    p0_height = (host._panel_box(registry.HISTORY).sizeHint().height() +
+                 host._panel_box(registry.slider_panel_id("RGB")).sizeHint().height() + 10)
+    assert hint >= p0_height + 15
+
+
+def test_panel_tab_widget_size_hint_includes_top_gap(panels):
+    from ui.panels.host import PanelTabWidget
+    provider, _ = panels
+    host = PanelHost(provider)
+    class _DummyChrome:
+        top_gap = 20
+        font_size = 11
+        scale = 1.0
+        bar_bg = ""
+        background = ""
+        text = ""
+        bar_text = ""
+        divider_color = ""
+        divider_width = 1
+    host.apply_chrome(_DummyChrome())
+    node = dock.Tabs(pages=((registry.HISTORY,), (registry.slider_panel_id("RGB"),)), current=0)
+    host.set_tree(node)
+    tab_widgets = host.findChildren(PanelTabWidget)
+    assert len(tab_widgets) == 1
+    hint = tab_widgets[0].sizeHint()
+    min_hint = tab_widgets[0].minimumSizeHint()
+    assert hint.height() >= 20
+    assert min_hint.height() >= 20

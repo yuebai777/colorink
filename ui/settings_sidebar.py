@@ -397,6 +397,11 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cb_show_lab_harmony_btn.setChecked(self.cfg.get("showLabHarmonyButton", True))
         self.cb_show_lab_harmony_btn.blockSignals(False)
 
+        if hasattr(self, "cb_show_lab_checkerboard"):
+            self.cb_show_lab_checkerboard.blockSignals(True)
+            self.cb_show_lab_checkerboard.setChecked(self.cfg.get("showLabCheckerboard", True))
+            self.cb_show_lab_checkerboard.blockSignals(False)
+
         _idx = self.combo_viz_mode.findData(self.cfg.get("visualizerMode", "lab"))
         self.combo_viz_mode.blockSignals(True)
         self.combo_viz_mode.setCurrentIndex(_idx if _idx >= 0 else 0)
@@ -416,7 +421,6 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cb_show_lab_lightness.setChecked(self.cfg.get("showLabLightnessSlider", True))
         self.cb_show_lab_lightness.blockSignals(False)
         for checkbox, key, default in (
-                (getattr(self, "cb_sliders_split", None), "slidersSplit", False),
                 (getattr(self, "cb_sliders_tabs", None), "slidersTabs", False),
                 (getattr(self, "cb_panel_drag", None), "panelDrag", False),):
             if checkbox is not None:
@@ -596,13 +600,12 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cfg["showLabToggleButton"] = self.cb_show_lab_toggle.isChecked()
         self.cfg["showLabShapeButton"] = self.cb_show_lab_shape_btn.isChecked()
         self.cfg["showLabHarmonyButton"] = self.cb_show_lab_harmony_btn.isChecked()
+        if hasattr(self, "cb_show_lab_checkerboard"):
+            self.cfg["showLabCheckerboard"] = self.cb_show_lab_checkerboard.isChecked()
         self.cfg["visualizerMode"] = self.combo_viz_mode.currentData() or "lab"
         self.cfg["labViewShape"] = self.combo_lab_shape.currentData() or "square"
         self.cfg["labHarmonyMode"] = self.combo_lab_harmony.currentData() or "analogous"
         self.cfg["showLabLightnessSlider"] = self.cb_show_lab_lightness.isChecked()
-        split = getattr(self, "cb_sliders_split", None)
-        if split is not None:
-            self.cfg["slidersSplit"] = split.isChecked()
         tabs = getattr(self, "cb_sliders_tabs", None)
         if tabs is not None:
             self.cfg["slidersTabs"] = tabs.isChecked()

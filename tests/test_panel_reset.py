@@ -28,12 +28,12 @@ def test_the_button_forgets_a_dragged_arrangement(sidebar):
 
 
 def test_the_button_leaves_the_layout_switches_alone(sidebar):
-    sidebar.cfg["slidersSplit"] = True
+    sidebar.cfg["slidersTabs"] = True
     sidebar.cfg["panelDrag"] = True
 
     sidebar.btn_reset_panel_layout.click()
 
-    assert sidebar.cfg["slidersSplit"] is True
+    assert sidebar.cfg["slidersTabs"] is True
     assert sidebar.cfg["panelDrag"] is True
 
 
@@ -47,7 +47,7 @@ def test_the_button_survives_being_clicked_twice(sidebar):
 def test_panel_settings_live_on_their_own_page(sidebar):
     """面板的事有自己的一级分组，不再挂在"取色器"底下。"""
     page = sidebar.stack.widget(3)
-    for name in ("cb_panel_drag", "cb_sliders_split", "cb_sliders_tabs",
+    for name in ("cb_panel_drag", "cb_sliders_tabs",
                  "btn_reset_panel_layout", "btn_dock_all_panels",
                  "lbl_floating_panels", "lbl_same_space", "lbl_diff_space",
                  "lbl_top_gap"):

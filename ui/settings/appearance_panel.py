@@ -760,10 +760,6 @@ class AppearancePanelMixin:
         self.cb_panel_drag.stateChanged.connect(self.save_settings)
         cl_panels.addWidget(self.cb_panel_drag)
 
-        self.cb_sliders_split = QCheckBox(i18n.tr("滑块列并排（可拖动分割）"))
-        self.cb_sliders_split.stateChanged.connect(self.save_settings)
-        cl_panels.addWidget(self.cb_sliders_split)
-
         self.cb_sliders_tabs = QCheckBox(i18n.tr("滑块组分页签叠放"))
         self.cb_sliders_tabs.stateChanged.connect(self.save_settings)
         cl_panels.addWidget(self.cb_sliders_tabs)
@@ -1062,6 +1058,11 @@ class AppearancePanelMixin:
         self.cb_show_lab_harmony_btn.setToolTip(i18n.tr("在 LAB 区域显示互补/近似/三等分等调和模式按钮"))
         self.cb_show_lab_harmony_btn.stateChanged.connect(self.save_settings)
         cl_pz.addWidget(self.cb_show_lab_harmony_btn)
+
+        self.cb_show_lab_checkerboard = QCheckBox(i18n.tr("显示 LAB 背景灰白网格"))
+        self.cb_show_lab_checkerboard.setToolTip(i18n.tr("在 LAB 区域背景显示灰白透明度网格"))
+        self.cb_show_lab_checkerboard.stateChanged.connect(self.save_settings)
+        cl_pz.addWidget(self.cb_show_lab_checkerboard)
 
         page_picker.addWidget(card_pz)
 

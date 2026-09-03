@@ -15,7 +15,9 @@ HARMONY_MODE_OFFSETS: dict[str, tuple[float, ...]] = {
     "split": (0.0, 150.0, 210.0),
     "analogous": (0.0, -30.0, 30.0),
     "triadic": (0.0, 120.0, 240.0),
-    "rectangle": (0.0, 60.0, 180.0, 240.0),
+    # Procreate-style "rectangle": four colours 90° apart, which on the hue
+    # circle form a square (tetradic scheme with the base at 0°).
+    "rectangle": (0.0, 90.0, 180.0, 270.0),
 }
 
 HARMONY_MODE_NAMES: dict[str, str] = {

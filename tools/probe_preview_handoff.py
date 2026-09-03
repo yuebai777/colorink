@@ -77,15 +77,25 @@ def geometry_snapshot(win, label, out):
     line = (f"[{label}] position_mode={preview.position_mode}\n"
             f"    preview={prev_rect} bottom={p.y() + preview.height()}\n"
             f"    sliders_top={sliders_top} sliders_hint="
-            f"{win.sliders_container.sizeHint().height()}\n"
+            f"{win.sliders_container.sizeHint().height()} "
+            f"sliders_h={win.sliders_container.height()}\n"
             f"    tabs={tabs_rect} overlap={overlap}\n"
             f"    win_h={win.height()} min_h={win.minimumHeight()} "
+            f"min_hint={win.minimumSizeHint().height()} "
+            f"size_hint={win.sizeHint().height()} "
             f"required={getattr(win, '_last_required_height', None)} "
             f"column_hint={host.column_hint() if host else None}\n"
+            f"    manual_override={getattr(win, '_manual_height_override', None)} "
+            f"last_auto={getattr(win, '_last_auto_height', None)} "
+            f"pending_height_adj={getattr(win, '_content_height_adjust_pending', None)} "
+            f"panel_mount_pending={getattr(win, '_panel_mount_pending', None)} "
+            f"visible={win.isVisible()} host_vis={host.isVisible() if host else None} "
+            f"container_vis={win.sliders_container.isVisible()}\n"
             f"    lockWindowSize={win.cfg.get('lockWindowSize', False)} "
             f"uiScale={win.cfg.get('uiScale', 100)} "
             f"slidersTabs={win.cfg.get('slidersTabs', False)} "
-            f"panelDrag={win.cfg.get('panelDrag', False)}")
+            f"panelDrag={win.cfg.get('panelDrag', False)} "
+            f"previewBoxPosition={win.cfg.get('previewBoxPosition', 'top-left')}")
     print(line)
     out.append(line + "\n")
 
@@ -104,14 +114,40 @@ def main():
         f"cfg: uiScale={cfg.get('uiScale', 100)} slidersTabs="
         f"{cfg.get('slidersTabs', False)} panelDrag={cfg.get('panelDrag', False)} "
         f"lockWindowSize={cfg.get('lockWindowSize', False)} "
+        f"onlyShowInCsp={cfg.get('onlyShowInCsp', False)} "
+        f"noFocusMode={cfg.get('noFocusMode', False)} "
         f"position_mode(preview runtime)={None}\n"
     )
     print(header)
     out.append(header)
 
     win = main_window.MainWindow()
+    # The foreground tracker can hide the window right after show()
+    # (onlyShowInCsp / noFocusMode), which makes every measured layout
+    # degenerate (0-height tab strip, pending height adjustment). Stop it
+    # BEFORE measuring and force the window to stay up.
+    quiesce(win)
+    # on_settings_saved() re-calls check_foreground_window() when
+    # onlyShowInCsp is on; from this console the foreground is not a drawing
+    # app, so it would hide the window right in the middle of the "settings"
+    # path and poison every later measurement. The probe measures geometry,
+    # not foreground policy — neutralize it at runtime only.
+    win.check_foreground_window = lambda: None
+    # The timer connected timeouts to the ORIGINAL bound method at
+    # construction; replacing the instance attribute is not enough.
+    # on_settings_saved() restarts the timer, so disconnect it too.
+    fg_timer = getattr(win, "foreground_timer", None)
+    if fg_timer is not None:
+        try:
+            fg_timer.timeout.disconnect()
+        except TypeError:
+            pass
+        fg_timer.timeout.connect(lambda: None)
+    win._user_hidden = False
+    win.auto_hidden = False
     win.resize(456, 777)
     win.show()
+    win.raise_()
     QApplication.processEvents()
     host = win.panel_host
     activate(host)
@@ -134,6 +170,8 @@ def main():
         activate(host)
         settle(win)
         geometry_snapshot(win, f"refresh drag={'ON' if drag else 'OFF'}", out)
+        win.grab().save(os.path.join(
+            _ROOT, f"preview_handoff_refresh_{'on' if drag else 'off'}.png"))
         # 路径 B：设置保存全流程（on_settings_saved 会从磁盘重载，所以
         # 备份 → 写入目标值 → 保存 → 跑 → 结束前恢复原配置）。
         try:
@@ -145,6 +183,8 @@ def main():
             activate(host)
             settle(win)
             geometry_snapshot(win, f"settings drag={'ON' if drag else 'OFF'}", out)
+            win.grab().save(os.path.join(
+                _ROOT, f"preview_handoff_settings_{'on' if drag else 'off'}.png"))
         finally:
             config.save_hotkey_config(original_cfg)
             win.cfg = config.load_hotkey_config()
@@ -154,6 +194,7 @@ def main():
     with open(REPORT_PATH, "w", encoding="utf-8") as fh:
         fh.write("".join(out))
     quiesce(win)
+    sys.stdout.flush()
     os._exit(0)
 
 
