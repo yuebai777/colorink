@@ -91,6 +91,7 @@ class Color:
     """
 
     rgb: tuple[int, int, int]
+    rgb_float: tuple[float, float, float]
     hsv: tuple[float, float, float]
     hls: tuple[float, float, float]
     lab: tuple[float, float, float]
@@ -110,7 +111,7 @@ class Color:
         hue_hsv: float | None = None,
         hue_oklch: float | None = None,
     ) -> "Color":
-        """Build from sRGB (0-255), clamped and quantized to 8-bit."""
+        """Build from sRGB (0-255), clamped and quantized to 8-bit for display while preserving float."""
         return cls.from_space("rgb", (r, g, b), hue_hsv, hue_oklch)
 
     @classmethod
@@ -126,14 +127,14 @@ class Color:
             raise ValueError(f"unknown colour space: {space}")
         values = tuple(float(v) for v in values)
         mapped = _gamut_map(space, values)          # 1) map once, in source space
-        rgb = cc.clamp_rgb(*_space_to_rgb(space, mapped))
-        r8, g8, b8 = (int(round(x)) for x in rgb)
+        rgb_f = cc.clamp_rgb(*_space_to_rgb(space, mapped))
+        r8, g8, b8 = (int(round(x)) for x in rgb_f)
 
-        hsv = cc.rgb_to_hsv(*rgb)
-        hls = cc.rgb_to_hsl(*rgb)
-        lab = cc.rgb_to_lab(*rgb)
-        oklab = cc.rgb_to_oklab(*rgb)
-        oklch = cc.rgb_to_oklch(*rgb)
+        hsv = cc.rgb_to_hsv(*rgb_f)
+        hls = cc.rgb_to_hsl(*rgb_f)
+        lab = cc.rgb_to_lab(*rgb_f)
+        oklab = cc.rgb_to_oklab(*rgb_f)
+        oklch = cc.rgb_to_oklch(*rgb_f)
 
         # 2) Source space round-trips exactly: store the (mapped) values the
         #    user edited, not an RGB-derived re-computation.
@@ -156,7 +157,7 @@ class Color:
         if oklch[1] < 0.002 and hue_oklch is not None:
             oklch = (oklch[0], 0.0, hue_oklch)
 
-        return cls((r8, g8, b8), hsv, hls, lab, oklab, oklch, space, values)
+        return cls((r8, g8, b8), rgb_f, hsv, hls, lab, oklab, oklch, space, values)
 
     # -- accessors --------------------------------------------------------
 
@@ -174,6 +175,18 @@ class Color:
     @property
     def b(self) -> int:
         return self.rgb[2]
+
+    @property
+    def r_float(self) -> float:
+        return self.rgb_float[0]
+
+    @property
+    def g_float(self) -> float:
+        return self.rgb_float[1]
+
+    @property
+    def b_float(self) -> float:
+        return self.rgb_float[2]
 
 
 class ColorState:

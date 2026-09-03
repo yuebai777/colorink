@@ -1,4 +1,6 @@
+import colorsys
 import sys
+import threading
 import time
 from typing import Any
 from collections.abc import Mapping
@@ -47,6 +49,8 @@ class MemorySyncThread(QThread):
         super().__init__(parent)
         self.signals = MemorySyncSignals()
         self.running = True
+        self._wake_event = threading.Event()
+        self._is_writing = False
         
         # State variables
         self.software_mode = "csp"  # "csp" | "sai" | "udm" | "ps" | "companion"
@@ -152,6 +156,17 @@ class MemorySyncThread(QThread):
             "old_color": old_color,
         }
         self.last_write_time = time.time()
+        self._wake_event.set()
+
+    def flush_pending_writes(self, timeout: float = 0.2):
+        """Immediately wake the background thread and wait up to *timeout*
+        seconds until all pending writes have been dispatched to the drawing software."""
+        self._wake_event.set()
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            if not self._pending_writes and not self._is_writing:
+                break
+            time.sleep(0.002)
 
     def get_active_pid(self):
         if not self.sync_enabled or self.paused:
@@ -178,6 +193,7 @@ class MemorySyncThread(QThread):
         we terminate the thread to unblock the caller.
         """
         self.running = False
+        self._wake_event.set()
         if not self.wait(timeout_ms):
             # Thread is stuck — likely in a hung COM RPC call
             self.terminate()
@@ -187,8 +203,9 @@ class MemorySyncThread(QThread):
         last_status = None
         
         while self.running:
-            # Sleep 100ms
-            time.sleep(0.1)
+            # Wake up immediately when a write is queued; otherwise poll every 100ms
+            self._wake_event.wait(timeout=0.1)
+            self._wake_event.clear()
             
             if not self.sync_enabled or self.paused:
                 continue
@@ -196,46 +213,93 @@ class MemorySyncThread(QThread):
             try:
                 # 1) Handle write request
                 if self._pending_writes:
-                    # GUI 线程可能同时整体替换 _pending_writes（
-                    # set_sync_enabled/set_software_mode），判空与取键
-                    # 之间被替换会抛 StopIteration/KeyError——必须捕获，
-                    # 否则写入被裸 except 静默吞掉。
+                    self._is_writing = True
                     try:
-                        color_index = next(iter(self._pending_writes))
-                    except StopIteration:
-                        continue
-                    try:
-                        pending = self._pending_writes.pop(color_index)
-                    except KeyError:
-                        continue
-                    r, g, b = pending["rgb"]
-                    hsv_override = pending["hsv_u32"]
-                    src_space = pending["source_space"]
-                    src_vals = pending["source_values"]
-                    transparent = pending["transparent"]
+                        # GUI 线程可能同时整体替换 _pending_writes（
+                        # set_sync_enabled/set_software_mode），判空与取键
+                        # 之间被替换会抛 StopIteration/KeyError——必须捕获，
+                        # 否则写入被裸 except 静默吞掉。
+                        try:
+                            color_index = next(iter(self._pending_writes))
+                        except StopIteration:
+                            continue
+                        try:
+                            pending = self._pending_writes.pop(color_index)
+                        except KeyError:
+                            continue
+                        r, g, b = pending["rgb"]
+                        hsv_override = pending["hsv_u32"]
+                        src_space = pending["source_space"]
+                        src_vals = pending["source_values"]
+                        transparent = pending["transparent"]
 
-                    old_color = pending.get("old_color")
-                    if old_color is None:
-                        old_color = self._last_write_old_color.get(
-                            color_index, self._last_synced_color.get(color_index))
-                    if transparent and self.software_mode not in ("companion", "csp"):
-                        print(f"[Sync] transparent write unsupported in mode '{self.software_mode}' — skipped")
-                        continue
-                    self._last_write_old_color[color_index] = old_color
-                    self._last_synced_color[color_index] = (r, g, b)
-                    self._last_write_ts[color_index] = time.time()
+                        old_color = pending.get("old_color")
+                        if old_color is None:
+                            old_color = self._last_write_old_color.get(
+                                color_index, self._last_synced_color.get(color_index))
+                        if transparent and self.software_mode not in ("companion", "csp"):
+                            print(f"[Sync] transparent write unsupported in mode '{self.software_mode}' — skipped")
+                            continue
+                        self._last_write_old_color[color_index] = old_color
+                        self._last_synced_color[color_index] = (r, g, b)
+                        self._last_write_ts[color_index] = time.time()
 
-                    if transparent:
-                        # Transparent is a flag on the ACTIVE slot
-                        # (companion: IsColorTransparent; CSP 5.1 memory:
-                        # +0x08 = 0xFFFFFFFF). Both main and sub slots
-                        # support it — the backends activate the target
-                        # slot before setting the flag.
-                        if self.software_mode == 'companion':
-                            self.companion_sync.set_color(
-                                r, g, b, hsv_u32=hsv_override, transparent=True,
-                                color_index=color_index,
+                        if transparent:
+                            # Transparent is a flag on the ACTIVE slot
+                            # (companion: IsColorTransparent; CSP 5.1 memory:
+                            # +0x08 = 0xFFFFFFFF). Both main and sub slots
+                            # support it — the backends activate the target
+                            # slot before setting the flag.
+                            if self.software_mode == 'companion':
+                                self.companion_sync.set_color(
+                                    r, g, b, hsv_u32=hsv_override, transparent=True,
+                                    color_index=color_index,
+                                )
+                                if hsv_override:
+                                    _U32 = 4294967295
+                                    self.companion_hsv = (
+                                        hsv_override[0] / _U32 * 360.0,
+                                        hsv_override[1] / _U32 * 100.0,
+                                        hsv_override[2] / _U32 * 100.0,
+                                    )
+                                    self._last_companion_hsv = self.companion_hsv
+                                self._last_read_transparent[color_index] = True
+                            elif self.software_mode == 'csp':
+                                self.csp_sync.set_color(
+                                    r, g, b, source_space=src_space,
+                                    source_values=src_vals, transparent=True,
+                                    color_index=color_index,
+                                )
+                                # CSP 内存模式的透明标志属于激活槽，读回总是以
+                                # index 0 报告（get_color），所以种子必须落在 0
+                                # 上——否则下一轮 get_sub_color (transparent=0)
+                                # 会把它误判为"槽 1 已清除"并发
+                                # 出虚假的 transparent_changed(1, False)。
+                                self._last_read_transparent[0] = True
+                            continue
+
+                        if self.software_mode == 'csp':
+                            # 纯内存写副色：`_write_sub_color` 会把新模式写入
+                            # 进程内搜索到的全部副本（含权威笔刷副本），不依赖
+                            # companion —— csp 内存模式与 companion 完全独立。
+                            self.csp_sync.set_color(
+                                r, g, b, source_space=src_space,
+                                source_values=src_vals, color_index=color_index,
                             )
+                            self._last_synced_color[color_index] = (r, g, b)
+                            self._last_read_transparent[color_index] = False
+                        elif self.software_mode == 'sai':
+                            self.sai2_sync.set_color(r, g, b)
+                        elif self.software_mode == 'udm':
+                            self.udm_sync.set_color(r, g, b)
+                        elif self.software_mode == 'ps':
+                            self.ps_sync.set_color(r, g, b, color_index=color_index)
+                        elif self.software_mode == 'companion':
+                            self.companion_sync.set_color(
+                                r, g, b, hsv_u32=hsv_override, color_index=color_index,
+                            )
+                            # Seed dedup with what we just wrote so the read-back
+                            # echo is suppressed (HSV dedup below catches it).
                             if hsv_override:
                                 _U32 = 4294967295
                                 self.companion_hsv = (
@@ -243,53 +307,13 @@ class MemorySyncThread(QThread):
                                     hsv_override[1] / _U32 * 100.0,
                                     hsv_override[2] / _U32 * 100.0,
                                 )
-                                self._last_companion_hsv = self.companion_hsv
-                            self._last_read_transparent[color_index] = True
-                        elif self.software_mode == 'csp':
-                            self.csp_sync.set_color(
-                                r, g, b, source_space=src_space,
-                                source_values=src_vals, transparent=True,
-                                color_index=color_index,
-                            )
-                            # CSP 内存模式的透明标志属于激活槽，读回总是以
-                            # index 0 报告（get_color），所以种子必须落在 0
-                            # 上——否则下一轮 get_sub_color (transparent=0)
-                            # 会把它误判为"槽 1 已清除"并发
-                            # 出虚假的 transparent_changed(1, False)。
-                            self._last_read_transparent[0] = True
-                        continue
-
-                    if self.software_mode == 'csp':
-                        # 纯内存写副色：`_write_sub_color` 会把新模式写入
-                        # 进程内搜索到的全部副本（含权威笔刷副本），不依赖
-                        # companion —— csp 内存模式与 companion 完全独立。
-                        self.csp_sync.set_color(
-                            r, g, b, source_space=src_space,
-                            source_values=src_vals, color_index=color_index,
-                        )
-                        self._last_synced_color[color_index] = (r, g, b)
-                        self._last_read_transparent[color_index] = False
-                    elif self.software_mode == 'sai':
-                        self.sai2_sync.set_color(r, g, b)
-                    elif self.software_mode == 'udm':
-                        self.udm_sync.set_color(r, g, b)
-                    elif self.software_mode == 'ps':
-                        self.ps_sync.set_color(r, g, b, color_index=color_index)
-                    elif self.software_mode == 'companion':
-                        self.companion_sync.set_color(
-                            r, g, b, hsv_u32=hsv_override, color_index=color_index,
-                        )
-                        # Seed dedup with what we just wrote so the read-back
-                        # echo is suppressed (HSV dedup below catches it).
-                        if hsv_override:
-                            _U32 = 4294967295
-                            self.companion_hsv = (
-                                hsv_override[0] / _U32 * 360.0,
-                                hsv_override[1] / _U32 * 100.0,
-                                hsv_override[2] / _U32 * 100.0,
-                            )
+                            else:
+                                h_norm, s_norm, v_norm = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+                                self.companion_hsv = (h_norm * 360.0, s_norm * 100.0, v_norm * 100.0)
                             self._last_companion_hsv = self.companion_hsv
-                        self._last_read_transparent[color_index] = False
+                            self._last_read_transparent[color_index] = False
+                    finally:
+                        self._is_writing = False
                     continue
                 
                 # 2) Handle read request (polling)

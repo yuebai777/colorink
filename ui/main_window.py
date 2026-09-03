@@ -91,6 +91,14 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.save_panel_layout(tree)
         config.save_hotkey_config(self.cfg)
         self.refresh_slider_visibility_and_order()
+
+    def _on_panel_tab_changed(self, idx: int):
+        record = getattr(self, "save_panel_layout", None)
+        if callable(record):
+            record(self.panel_host.tree())
+            config.save_hotkey_config(self.cfg)
+        self._adjust_content_height()
+
     def __init__(self):
         super().__init__()
         self.cfg = config.load_hotkey_config()
@@ -414,6 +422,7 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.sliders_layout.addWidget(self.panel_host)
         self.panel_host.mount_changed.connect(self._panel_mount_changed)
         self.panel_host.rearranged.connect(self._panel_rearranged)
+        self.panel_host.tab_changed.connect(self._on_panel_tab_changed)
         # A grip dragged clear of every host means "give it its own window".
         self.panel_host.float_requested.connect(self.float_panel)
         self.panel_host.menu_requested.connect(self.show_panel_menu)

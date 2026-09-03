@@ -253,12 +253,11 @@ class ThemeMixin:
         # 底部边距与面板顶部间距同步，保持上下空隙一致。
         top_gap = int(self.cfg.get("panelTopGap", 6) * scale)
         tabs_on = bool(self.cfg.get("slidersTabs", False))
-        bottom_gap = max(0, top_gap - win_bw)
         self.sliders_layout.setContentsMargins(
             int(4 * scale), # closer to edge
             0 if tabs_on else top_gap,
             int(4 * scale), # closer to edge
-            bottom_gap
+            top_gap
         )
         
         # Update spacing within each color space block

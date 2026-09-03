@@ -12,7 +12,7 @@ from ui.hotkey_button import is_mouse_hotkey
 class HotkeyMixin:
     def init_hotkeys(self):
         # Register global hotkeys from config
-        global_hotkeys.hotkey_signals.triggered.connect(self.on_hotkey_triggered)
+        global_hotkeys.get_hotkey_signals().triggered.connect(self.on_hotkey_triggered)
         self.update_hotkey_bindings()
 
     def update_hotkey_bindings(self):
@@ -117,8 +117,5 @@ class HotkeyMixin:
         color = self.color_state.set_from("rgb", (r, g, b))
         self._project_color(color, source="picker")
         if hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
-            color_index = 0 if self.active_slot == "fg" else 1
-            self.sync_thread.write_color(r, g, b, source_space="rgb",
-                                         source_values={"r": float(r), "g": float(g), "b": float(b)},
-                                         color_index=color_index)
-            print(f"[Picker] Picked color RGB({r}, {g}, {b})")
+            self.sync_thread.flush_pending_writes()
+            print(f"[Picker] Picked color RGB({r}, {g}, {b}) and flushed to sync")

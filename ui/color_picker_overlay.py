@@ -272,10 +272,39 @@ class ColorPickerOverlay(QWidget):
         self.deactivated.emit()       # never leave the sync thread paused
         super().closeEvent(ev)
 
+    def _sample_pos(self, pos: QPoint) -> tuple[int, int, int] | None:
+        """Sample RGB from the cached screen snapshots at the given logical position."""
+        x, y = pos.x(), pos.y()
+        sc = QApplication.screenAt(pos)
+        if sc is None:
+            return None
+        shot = None
+        for s, img, geo, dpr in self._shots:
+            if s is sc or geo.contains(pos):
+                shot = (img, geo, dpr)
+                break
+        if shot is None:
+            return None
+        img, geo, dpr = shot
+        if dpr < 0.1:
+            dpr = 1.0
+        iw, ih = img.width(), img.height()
+        lx = int((x - geo.x()) * dpr)
+        ly = int((y - geo.y()) * dpr)
+        if 0 <= lx < iw and 0 <= ly < ih:
+            rgb = img.pixel(lx, ly)
+            return ((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF)
+        return None
+
     def _tick(self):
         if not self._active: return
         if _hook_dll and _hook_dll.left_clicked():
-            r,g,b=self._center_color; self.stop(); self.colorPicked.emit(r,g,b); return
+            pos = QCursor.pos()
+            exact = self._sample_pos(pos)
+            r, g, b = exact if exact is not None else self._center_color
+            self.colorPicked.emit(r, g, b)
+            self.stop()
+            return
         if _hook_dll and _hook_dll.right_clicked():
             self.stop(); return
         if win32api.GetAsyncKeyState(win32con.VK_ESCAPE)&0x8000:
