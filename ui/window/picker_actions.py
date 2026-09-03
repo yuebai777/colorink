@@ -692,6 +692,9 @@ class PickerActionsMixin:
         refresh_focus = getattr(self, "refresh_floating_focus", None)
         if callable(refresh_focus):
             refresh_focus()
+        # Reset manual override on settings save so spacing/gap adjustments
+        # immediately resize the window to match the new configuration.
+        self._manual_height_override = False
         self._adjust_content_height()
 
     def _apply_ws_ex_noactivate(self, enabled: bool) -> None:

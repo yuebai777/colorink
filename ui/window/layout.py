@@ -155,19 +155,17 @@ class LayoutMixin:
         self._content_height_adjust_pending = False
         required = 0
         try:
-            self.sliders_layout.activate()
-            # The slider column now lives inside a PanelHost, whose own
-            # layout may not have been activated yet — its sizeHint then
-            # reads ~16px and the height policy "grows to fit" against a
-            # phantom content size. Activate every level of the column.
             host = getattr(self, "panel_host", None)
-            host_layout = host.layout() if host is not None else None
-            if host_layout is not None:
-                host_layout.activate()
-            stack_layout = host.layout() if host is not None else None
-            outer = self.sliders_container.layout()
-            if outer is not None and outer is not stack_layout:
-                outer.activate()
+            if host is not None:
+                host.updateGeometry()
+                host_layout = host.layout()
+                if host_layout is not None:
+                    host_layout.activate()
+            if hasattr(self, "sliders_container"):
+                self.sliders_container.updateGeometry()
+            self.sliders_layout.activate()
+            if hasattr(self, "central"):
+                self.central.updateGeometry()
             self.main_layout.activate()
             margins = self.main_layout.contentsMargins()
             visualizer_h = self._required_visualizer_height(
@@ -179,13 +177,19 @@ class LayoutMixin:
                     self.stack.minimumHeight(),
                 ),
             )
+            # Protect stack minimum height so Qt layout cannot compress the color wheel!
+            self.stack.setMinimumHeight(visualizer_h)
+
             host = getattr(self, "panel_host", None)
             if host is not None:
-                # Zero is a real answer: with every panel torn off there is
-                # no column, and falling back to the container's size hint
-                # books ~16px of margins for nothing — the window then
+                # Ask the dock tree for its column height. QWidget.sizeHint()
+                # includes all child widgets (even those hidden behind another
+                # tab!), so when tabs are in use sizeHint sums every page and
                 # refuses to shrink the last band under the picker.
                 hint = host.column_hint()
+                if hint > 0:
+                    hint = max(hint, host.sizeHint().height(),
+                               host.minimumSizeHint().height())
             else:
                 hint = self.sliders_container.sizeHint().height()
             # The host's own outer layout adds its margins/spacing on top of
@@ -194,7 +198,23 @@ class LayoutMixin:
             outer = self.sliders_container.layout()
             if host is not None and outer is not None and hint > 0:
                 hm = outer.contentsMargins()
-                hint += hm.top() + hm.bottom() + outer.spacing() * 1
+                extra_spacing = outer.spacing() * max(0, outer.count() - 1)
+                hint += hm.top() + hm.bottom() + extra_spacing
+            if hint > 0 and host is None:
+                sc = getattr(self, "sliders_container", None)
+                if sc is not None:
+                    sh = getattr(sc, "sizeHint", None)
+                    if callable(sh):
+                        try:
+                            hint = max(hint, int(sh().height()))
+                        except (TypeError, ValueError, AttributeError):
+                            pass
+                    msh = getattr(sc, "minimumSizeHint", None)
+                    if callable(msh):
+                        try:
+                            hint = max(hint, int(msh().height()))
+                        except (TypeError, ValueError, AttributeError):
+                            pass
             required = self._required_content_height(
                 _visible_title_bar_height(self.title_bar),
                 visualizer_h,

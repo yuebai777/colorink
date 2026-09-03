@@ -33,14 +33,26 @@ class PanelTabWidget(QTabWidget):
     """QTabWidget whose size hints account for styled pane margin-top."""
 
     def sizeHint(self) -> QSize:
-        hint = super().sizeHint()
         host = self.parent()
+        if host is not None and hasattr(host, "_tabs") and hasattr(host, "_tabs_hint"):
+            node = next((n for t, n in host._tabs if t is self), None)
+            if node is not None:
+                h = host._tabs_hint(node)
+                if h > 0:
+                    return QSize(super().sizeHint().width(), h)
+        hint = super().sizeHint()
         top_gap = max(0, int(getattr(getattr(host, "_chrome", None), "top_gap", 0) or 0))
         return QSize(hint.width(), hint.height() + top_gap)
 
     def minimumSizeHint(self) -> QSize:
-        hint = super().minimumSizeHint()
         host = self.parent()
+        if host is not None and hasattr(host, "_tabs") and hasattr(host, "_tabs_hint"):
+            node = next((n for t, n in host._tabs if t is self), None)
+            if node is not None:
+                h = host._tabs_hint(node)
+                if h > 0:
+                    return QSize(super().minimumSizeHint().width(), h)
+        hint = super().minimumSizeHint()
         top_gap = max(0, int(getattr(getattr(host, "_chrome", None), "top_gap", 0) or 0))
         return QSize(hint.width(), hint.height() + top_gap)
 
@@ -408,7 +420,9 @@ class PanelHost(QWidget):
             for pid in page:
                 box = self._panel_box(pid)
                 if box is not None and box.parent() is not None:
-                    panel_heights.append(int(box.sizeHint().height()))
+                    h = max(int(box.sizeHint().height()),
+                            int(box.minimumSizeHint().height()))
+                    panel_heights.append(h)
             if not panel_heights:
                 continue
             page_h = sum(panel_heights)
@@ -618,6 +632,20 @@ class PanelHost(QWidget):
         self.set_tree(moved)
         self.rearranged.emit(moved)
 
+    def check_tab_hover(self, pos: QPoint) -> None:
+        """Switch tab if pos hovers over a different tab header during drag."""
+        for tabs, _node in self._tabs:
+            if not tabs.isVisibleTo(self):
+                continue
+            bar = tabs.tabBar()
+            if bar is None or bar.isHidden():
+                continue
+            pos_in_bar = bar.mapFrom(self, pos)
+            if bar.rect().contains(pos_in_bar):
+                index = bar.tabAt(pos_in_bar)
+                if 0 <= index < tabs.count() and index != tabs.currentIndex():
+                    tabs.setCurrentIndex(index)
+
     def drop_target_at(self, pos: QPoint):
         """(panel_id, zone) under a host-local point, or None.
 
@@ -661,32 +689,89 @@ class PanelHost(QWidget):
             # even for a host that is not shown yet.
             if box is None or not box.isVisibleTo(self) or box.parent() is None:
                 continue
+            rect = box.rect()
+            tl = box.mapTo(self, rect.topLeft())
+            global_rect = QRect(tl, rect.size())
+            if not global_rect.contains(pos):
+                continue
             local = box.mapFrom(self, pos)
-            zone = rearrange.zone_at(
-                box.width(), box.height(),
-                local.x(), local.y(),
-                allow_center=(self._allow_tab_drops
-                              or self._panel_lives_in_tabs(panel_id)))
+            content = getattr(box, "_panel", None)
+            if content is not None and content.isVisibleTo(box):
+                content_bottom = content.y() + content.height()
+                if local.y() >= content_bottom:
+                    zone = rearrange.BOTTOM
+                else:
+                    zone = rearrange.zone_at(
+                        box.width(), max(1, content_bottom),
+                        local.x(), local.y(),
+                        allow_center=(self._allow_tab_drops
+                                      or self._panel_lives_in_tabs(panel_id)))
+            else:
+                zone = rearrange.zone_at(
+                    box.width(), box.height(),
+                    local.x(), local.y(),
+                    allow_center=(self._allow_tab_drops
+                                  or self._panel_lives_in_tabs(panel_id)))
             if zone is None:
                 continue
             area = box.width() * box.height()
             if found is None or area < found[0]:
                 found = (area, panel_id, zone)
-        return None if found is None else (found[1], found[2])
+        if found is not None:
+            return (found[1], found[2])
+
+        # Check if cursor is in the empty space of an active tab page (e.g. stretch below panels)
+        for tabs, node in self._tabs:
+            if not tabs.isVisibleTo(self):
+                continue
+            bar = tabs.tabBar()
+            bar_bottom = bar.mapTo(self, QPoint(0, bar.height())).y() if bar is not None else 0
+            tabs_rect = QRect(tabs.mapTo(self, QPoint(0, 0)), tabs.size())
+            if tabs_rect.contains(pos) and pos.y() >= bar_bottom:
+                curr_idx = tabs.currentIndex()
+                pages = getattr(tabs, "_panel_pages", None) or (node.pages if isinstance(node, Tabs) else ())
+                if 0 <= curr_idx < len(pages):
+                    page_pids = [pid for pid in pages[curr_idx]
+                                 if pid in self._mounted and self._panel_box(pid) is not None
+                                 and self._panel_box(pid).isVisibleTo(self)]
+                    if page_pids:
+                        last_box = self._panel_box(page_pids[-1])
+                        last_bottom = last_box.mapTo(self, QPoint(0, last_box.height())).y()
+                        if pos.y() >= last_bottom:
+                            return (page_pids[-1], rearrange.BOTTOM)
+                        first_box = self._panel_box(page_pids[0])
+                        first_top = first_box.mapTo(self, QPoint(0, 0)).y()
+                        if pos.y() <= first_top:
+                            return (page_pids[0], rearrange.TOP)
+                        for i in range(len(page_pids) - 1):
+                            b_bottom = self._panel_box(page_pids[i]).mapTo(self, QPoint(0, self._panel_box(page_pids[i]).height())).y()
+                            b_next_top = self._panel_box(page_pids[i+1]).mapTo(self, QPoint(0, 0)).y()
+                            if b_bottom <= pos.y() <= b_next_top:
+                                return (page_pids[i], rearrange.BOTTOM)
+
+        return None
 
     def show_drop_hint(self, pos: QPoint):
         """Highlight where a drop at *pos* would land; returns the target."""
+        self.check_tab_hover(pos)
         target = self.drop_target_at(pos)
         if target is None:
             self.clear_drop_hint()
             return None
         box = self._panel_box(target[0])
+        if box is None:
+            self.clear_drop_hint()
+            return None
         zone = target[1]
         if zone == rearrange.MERGE_PAGE:
             # The whole panel is the landing zone; the page's header just
             # points at it.
             zone = rearrange.CENTER
-        x, y, width, height = rearrange.drop_rect(box.width(), box.height(),
+        content = getattr(box, "_panel", None)
+        effective_h = box.height()
+        if content is not None and content.isVisibleTo(box):
+            effective_h = max(1, content.y() + content.height())
+        x, y, width, height = rearrange.drop_rect(box.width(), effective_h,
                                                   zone)
         if self._indicator is None:
             self._indicator = DropIndicator(self)
@@ -713,8 +798,21 @@ class PanelHost(QWidget):
         if target is None:
             return False
         if target[1] == rearrange.MERGE_PAGE:
+            target_panel = target[0]
+            if target_panel == panel_id:
+                for tabs, node in self._tabs:
+                    bar = tabs.tabBar()
+                    if bar is not None and not bar.isHidden():
+                        pos_in_bar = bar.mapFrom(self, pos)
+                        if bar.rect().contains(pos_in_bar):
+                            idx = bar.tabAt(pos_in_bar)
+                            pages = getattr(tabs, "_panel_pages", None) or (node.pages if isinstance(node, Tabs) else ())
+                            if 0 <= idx < len(pages):
+                                others = [p for p in pages[idx] if p != panel_id]
+                                if others:
+                                    target_panel = others[-1]
             moved = rearrange.merge_panel_into_page(
-                self._tree, panel_id, target[0])
+                self._tree, panel_id, target_panel)
         else:
             moved = rearrange.move_panel(
                 self._tree, panel_id, target[0], target[1])

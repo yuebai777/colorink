@@ -269,27 +269,37 @@ def merge_panel_into_page(node: Tabs, panel_id: str, target: str):
     dropped rather than kept as a ghost tab.
     """
     if not isinstance(node, Tabs):
+        if target in node.panels():
+            return insert_panel(node, panel_id, target, CENTER)
         return node
     if panel_id == target or panel_id not in node.panels() \
             or target not in node.panels():
         return node
     pages = [list(page) for page in node.pages]
+    try:
+        dst = next(i for i, page in enumerate(pages) if target in page)
+    except StopIteration:
+        return node
+
     src = next(i for i, page in enumerate(pages) if panel_id in page)
-    dst = next(i for i, page in enumerate(pages) if target in page)
+    if src == dst:
+        pages[dst].remove(panel_id)
+        target_idx = pages[dst].index(target)
+        pages[dst].insert(target_idx + 1, panel_id)
+        return Tabs((), node.current, tuple(tuple(p) for p in pages))
     pages[src].remove(panel_id)
-    pages[dst].insert(pages[dst].index(target) + 1, panel_id)
+    target_idx = pages[dst].index(target)
+    pages[dst].insert(target_idx + 1, panel_id)
     current = node.current
-    if src != dst:
-        if not pages[src]:
-            del pages[src]
-            if current == src:
-                current = dst if dst < src else dst - 1
-            elif src < current:
-                current -= 1
-        elif current == src:
-            # The source page survives (it had more than one panel); the
-            # selected page is where the panel went — the target page.
-            current = dst
+    if not pages[src]:
+        del pages[src]
+        if current == src:
+            current = dst if dst < src else dst - 1
+        elif src < current:
+            current -= 1
+    elif current == src:
+        current = dst
+
     if len(pages) == 1:
         return _page_node(tuple(pages[0]))
     current = max(0, min(current, len(pages) - 1))
@@ -308,9 +318,12 @@ def move_panel(node, source: str, target: str, zone: str):
     if source == target or zone not in ZONES:
         return node
     placed = node.panels()
-    if source not in placed or target not in placed:
+    if target not in placed:
         return node
-    pruned = remove_panel(node, source)
+    if source in placed:
+        pruned = remove_panel(node, source)
+    else:
+        pruned = node
     if pruned is None or target not in pruned.panels():
         return node
     return insert_panel(pruned, source, target, zone)
