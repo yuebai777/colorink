@@ -1,3 +1,33 @@
+## v1.8.1
+
+新增「自动识别」同步模式、前台绘图软件识别重构、Photoshop 桥 v11 双向同步，以及切换软件时防回读。
+
+### 新增
+
+- **自动识别同步模式**：`syncSoftware` 默认值由 `csp` 改为 `auto`——启动和运行中根据**当前前台绘图软件**自动选择同步模式（CSP / SAI2 / UDM / Photoshop / 手机 Companion）；同步页在 auto 下指示当前激活的后端，切换前台软件时无需手动改设置
+- **前台绘图软件识别重构**：`core/foreground.py` 把绘图应用按模式映射（`photoshop→ps`、`sai→sai`、`csp→csp`、`udm→udm`），并新增**非绘图应用排除列表**（浏览器 / 系统外壳 / 开发工具 / 编辑器 / 办公通信 / 媒体娱乐进程 + 窗口类 + 网页标题关键词），前台匹配更准确、不再被浏览器 / 编辑器误判
+- **Photoshop 桥 v11**：`PANEL_VERSION` 9 → 11，命令支持 `both`（一次同时写前景 + 背景），并新增 `client_alive.txt` / `drawing.txt` 标记；配合面板状态回读节流（0.5s → 1.0s）与每 40 tick 心跳
+
+### 修复
+
+- **切换软件防回读**：`set_software_mode(mode, initial_palette)` 支持一次性 seed 调色板——切到新软件（如从别的软件切回 Photoshop）时立即以当前调色板播种写入追踪并抑制过期回读，避免把颜色切回去
+- **切走清理**：离开 Photoshop 模式时清理运行时标志（`cleanup_runtime_flags`），避免残留状态影响下次连接
+- **前台识别防误判**：明确排除浏览器 / 编辑器 / 办公等非绘图应用，`onlyShowInCsp` 与自动同步切换不再被网页 / 代码窗口触发
+- **UI 调整**：色环隐藏模式下切换形状 / 布局不再误触发 `_refit_preview_box`；主题、面板浮动、同步页提示、preview box 等多项细调
+
+### 变更
+
+- **`syncSoftware` 默认值 `auto`**：旧配置仍保留显式选择（csp / sai / udm / ps / companion），仅新安装默认自动识别；`MemorySyncThread.set_software_mode` 新增可选 `initial_palette` 参数，向后兼容
+- **Photoshop 桥协议升级到 v11**：面板版本号更新，旧部署面板会提示重启 Photoshop
+
+### 开发说明
+
+- 本次无新增图标 / 二进制资源，均为纯 Python / UI 逻辑；`Colorink.spec` 与 `Colorink Onefile.spec` 资源集保持一致
+- 新增 / 扩展测试：`test_foreground_detection.py`（前台识别排除列表）、`test_photoshop_script_bridge.py`、`test_memory_sync_ps_echo.py`、`test_sync_mixin.py`、`test_companion_protocol.py`、`test_ringless_lifecycle.py` 等，测试总数 1450 → 1485（+35）
+- 已同步更新 `core/updater.py`、`file_version_info.txt`、`release_notes.md` 三处版本号，统一到 **1.8.1 / 1.8.1.0**
+
+---
+
 ## v1.8.0
 
 前台标签页防跳页、全局取色画笔同步与极速低延迟、Float RGB 高精度色彩桥梁、滑条 Qt 类型安全隔离、有效色域范围动态跟随与双向完全同步，并包含面板窗口布局重构与 LAB 圆形色盘增强。
@@ -6,7 +36,7 @@
 
 - **前台标签页防跳页**：调整选项、切换色彩模式或刷新设置时，尊重用户当前停留的前台标签页，不再强行切走（`ui/panels/host.py` 记录活动页并在重建后恢复）
 - **全局取色画笔同步 & 极速低延迟**：Companion 模式同步由 450ms 套接字超时等待改为非阻塞 drain，延迟降至约 5.5ms~7.5ms（瞬时落笔）；全局取色后完整保留原始取色数据并立即 flush 写入 CSP，修复取色后画在 CSP 上颜色不一致的问题
-- **面板窗口布局重构**：新增可拖拽 / 浮动 / 合并重排的面板系统——页签拖拽悬停自动切换、页签页空白区追加、同页合并重排、顶部间距撑高底部边距联动、页签主题化与表头重排 / 合并、浮动面板拖回页签头不再崩溃、单面板页签内容顶部对齐等；新增「面板顶部间距」设置
+- **面板窗口布局重构**：新增可拖拽 / 浮动 / 合并重排的面板系统——页签拖拽悬停自动切换、页签页空白区追加、同页合并重排、顶部间距撑高底部边距联动、页签主题化与表头重排 / 合并、浮动面板拖回页签头不再崩溃、单面板页签内容顶部对齐等；新增「顶部以及底部距离」设置
 - **LAB 圆形色盘增强**：圆形模式下点击副点 / 主点防抖容差、锚点反解跟随、矩形 90° 方阵、LAB 色盘纯几何圆形遮罩、和谐点双侧可点击
 
 ### 修复
