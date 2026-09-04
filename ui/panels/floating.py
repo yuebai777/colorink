@@ -55,7 +55,7 @@ class PanelChrome:
     #: Breathing room between a grip strip and the panel under it.
     grip_gap: int = 4
     #: Extra space between the tab strip / window top and the first panel,
-    #: in px (already scaled). The "面板顶部间距" setting.
+    #: in px (already scaled). The "顶部以及底部距离" setting.
     top_gap: int = 0
 
 

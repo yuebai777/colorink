@@ -47,16 +47,28 @@ class SyncPanelMixin:
         self.lbl_csp_hint.setText(text)
 
     def update_version_visibility(self):
-        selected = self.combo_software.currentData() or "csp"
+        selected = self.combo_software.currentData() or "auto"
+        is_auto = (selected == "auto")
+        if hasattr(self, "row_auto_mode_tip_widget"):
+            self.row_auto_mode_tip_widget.setVisible(is_auto)
+
+        active_mode = selected
+        parent = self._parent
+        if selected == "auto" and parent is not None:
+            sync_thread = getattr(parent, "sync_thread", None)
+            if sync_thread is not None:
+                active_mode = getattr(sync_thread, "software_mode", "csp")
+
+        show_companion = (selected == "companion") or (selected == "auto" and active_mode == "companion")
         self.row_csp_widget.setVisible(selected == "csp")
         self.row_csp_hint_widget.setVisible(selected == "csp")
         self.row_sai_widget.setVisible(selected == "sai")
         self.row_sai_refresh_widget.setVisible(selected == "sai")
         self.row_udm_widget.setVisible(selected == "udm")
         self.row_ps_widget.setVisible(selected == "ps")
-        self.row_companion_widget.setVisible(selected == "companion")
+        self.row_companion_widget.setVisible(show_companion)
         self._refresh_csp_mode_tip(selected)
-        if selected == "companion":
+        if show_companion:
             self._refresh_companion_status()
         if selected == "csp":
             self._refresh_csp_version_hint()
@@ -94,48 +106,82 @@ class SyncPanelMixin:
     def _refresh_sync_status(self):
         if not hasattr(self, "lbl_sync_status"):
             return
-        selected = self.combo_software.currentData() or "csp"
+        selected = self.combo_software.currentData() or "auto"
         software_names = {
+            "auto": i18n.tr("自动识别"),
             "csp": "CSP",
             "sai": "SAI2",
             "udm": "UDM",
             "ps": "Photoshop",
             "companion": i18n.tr("手机"),
         }
-        name = software_names.get(selected, selected)
+
+        # In auto mode, inspect the currently active backend on the sync thread
+        parent = self._parent
+        active_mode = selected
+        if selected == "auto" and parent is not None:
+            sync_thread = getattr(parent, "sync_thread", None)
+            if sync_thread is not None:
+                active_mode = getattr(sync_thread, "software_mode", "csp")
+
+        name = software_names.get(active_mode, active_mode)
         connected = None
-        if self._parent is not None:
-            status = getattr(self._parent, "_sync_status", None)
-            if status and len(status) == 2 and status[0] == self.cfg.get("syncSoftware"):
-                connected = status[1]
-        if connected is True:
-            self.lbl_sync_status.setText(i18n.tr("{name} 已连接", name=name))
-            self._set_label_state(self.lbl_sync_status, "success")
-        elif connected is False:
-            text = i18n.tr("{name} 未连接", name=name)
-            parent = self._parent
-            sync_err = getattr(parent, "_sync_error", None) if parent is not None else None
-            if sync_err and len(sync_err) >= 2 and sync_err[0] == self.cfg.get("syncSoftware"):
-                err = sync_err[1]
-                if err:
-                    text += f" — {err}"
-                    # Keep the label compact; full reason lives in the tooltip.
-                    if len(text) > 90:
-                        text = text[:90] + "…"
-            self.lbl_sync_status.setText(text)
-            self.lbl_sync_status.setToolTip(text)
-            self._set_label_state(self.lbl_sync_status, "danger")
+        if parent is not None:
+            status = getattr(parent, "_sync_status", None)
+            if status and len(status) == 2:
+                if selected == "auto":
+                    connected = status[1]
+                    name = software_names.get(status[0], status[0])
+                elif status[0] == self.cfg.get("syncSoftware"):
+                    connected = status[1]
+
+        if selected == "auto":
+            prefix = i18n.tr("自动识别：")
+            if connected is True:
+                self.lbl_sync_status.setText(prefix + i18n.tr("当前跟随 {name}（已连接）", name=name))
+                self._set_label_state(self.lbl_sync_status, "success")
+            elif connected is False:
+                text = prefix + i18n.tr("当前跟随 {name}（未连接）", name=name)
+                sync_err = getattr(parent, "_sync_error", None) if parent is not None else None
+                if sync_err and len(sync_err) >= 2 and sync_err[0] == active_mode:
+                    err = sync_err[1]
+                    if err:
+                        text += f" — {err}"
+                        if len(text) > 90:
+                            text = text[:90] + "…"
+                self.lbl_sync_status.setText(text)
+                self.lbl_sync_status.setToolTip(text)
+                self._set_label_state(self.lbl_sync_status, "danger")
+            else:
+                self.lbl_sync_status.setText(prefix + i18n.tr("等待绘画软件前台（当前通道：{name}）", name=name))
+                self._set_label_state(self.lbl_sync_status, "muted")
         else:
-            mode = self.cfg.get("syncSoftware", "csp")
-            version = {
-                "csp": self.combo_csp.currentData() or "auto",
-                "sai": self.combo_sai.currentText(),
-                "udm": self.combo_udm.currentText(),
-                "ps": self.combo_ps.currentText(),
-                "companion": "",
-            }.get(mode, "")
-            self.lbl_sync_status.setText(i18n.tr("当前同步：{name} {version}", name=name, version=version).strip())
-            self._set_label_state(self.lbl_sync_status, "muted")
+            if connected is True:
+                self.lbl_sync_status.setText(i18n.tr("{name} 已连接", name=name))
+                self._set_label_state(self.lbl_sync_status, "success")
+            elif connected is False:
+                text = i18n.tr("{name} 未连接", name=name)
+                sync_err = getattr(parent, "_sync_error", None) if parent is not None else None
+                if sync_err and len(sync_err) >= 2 and sync_err[0] == self.cfg.get("syncSoftware"):
+                    err = sync_err[1]
+                    if err:
+                        text += f" — {err}"
+                        if len(text) > 90:
+                            text = text[:90] + "…"
+                self.lbl_sync_status.setText(text)
+                self.lbl_sync_status.setToolTip(text)
+                self._set_label_state(self.lbl_sync_status, "danger")
+            else:
+                mode = self.cfg.get("syncSoftware", "csp")
+                version = {
+                    "csp": self.combo_csp.currentData() or "auto",
+                    "sai": self.combo_sai.currentText(),
+                    "udm": self.combo_udm.currentText(),
+                    "ps": self.combo_ps.currentText(),
+                    "companion": "",
+                }.get(mode, "")
+                self.lbl_sync_status.setText(i18n.tr("当前同步：{name} {version}", name=name, version=version).strip())
+                self._set_label_state(self.lbl_sync_status, "muted")
         self._refresh_ps_bridge_status()
 
     def _on_copy_diagnostics(self):
@@ -374,14 +420,29 @@ class SyncPanelMixin:
         grid_sync.setColumnStretch(1, 1)
         grid_sync.addWidget(QLabel(i18n.tr("同步目标")), 0, 0)
         self.combo_software = NonScrollComboBox()
-        for _val, _disp in [("csp", "CLIP Studio Paint"), ("sai", "SAI2"),
+        for _val, _disp in [("auto", "自动识别（跟随前台软件）·推荐"),
+                            ("csp", "CLIP Studio Paint"), ("sai", "SAI2"),
                             ("udm", "UDM Paint"), ("ps", "Photoshop"),
-                            ("companion", "CSP Companion（手机）·推荐")]:
+                            ("companion", "CSP Companion（手机）")]:
             self.combo_software.addItem(i18n.tr(_disp), _val)
         self.combo_software.currentTextChanged.connect(self.save_settings)
         self.combo_software.currentTextChanged.connect(self._on_software_changed)
         grid_sync.addWidget(self.combo_software, 0, 1)
         cl_sync.addLayout(grid_sync)
+
+        # 自动识别提示：前台切换绘画软件时自动切换同步通道
+        self.row_auto_mode_tip_widget = QWidget()
+        row_auto_mode_tip = QVBoxLayout(self.row_auto_mode_tip_widget)
+        row_auto_mode_tip.setContentsMargins(0, 0, 0, 0)
+        row_auto_mode_tip.setSpacing(4)
+        self.lbl_auto_mode_tip = QLabel(i18n.tr(
+            "已开启自动识别：在前台切换绘画软件时自动切换同步通道（支持 SAI2 / Photoshop / CLIP Studio Paint / UDM Paint，其中 CSP 优先使用手机模式）。"
+            "若需指定具体软件的版本或高级选项，可临时切换到对应软件进行配置。"
+        ))
+        self.lbl_auto_mode_tip.setWordWrap(True)
+        self.lbl_auto_mode_tip.setObjectName("StatusHint")
+        row_auto_mode_tip.addWidget(self.lbl_auto_mode_tip)
+        cl_sync.addWidget(self.row_auto_mode_tip_widget)
 
         # CSP 各连接模式的问题/推荐说明：5.1 内存同步已移除，推荐手机模式。
         self.row_csp_mode_tip_widget = QWidget()

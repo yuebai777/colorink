@@ -159,7 +159,7 @@ def default_hotkey_config():
         # 浮出成独立窗口的面板 → 几何 {id: [x, y, w, h]}（B-5）。停靠树里
         # 仍然留着它们的位置，所以收回来能回到原处。
         "floatingPanels": {},
-        "syncSoftware": "csp",
+        "syncSoftware": "auto",
         "psVersion": "auto",
         "uiScale": 100,
         # 窗口背景 / 边框的不透明度（百分比，100 = 完全不透明）。只作用于

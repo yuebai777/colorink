@@ -190,7 +190,11 @@ class LayoutMixin:
             )
             # Protect stack height so Qt layout cannot compress the color wheel!
             self.stack.setMinimumHeight(visualizer_h)
-            self.stack.setMaximumHeight(visualizer_h)
+            cfg = getattr(self, "cfg", {})
+            if not cfg.get("hideHueRing", False):
+                self.stack.setMaximumHeight(visualizer_h)
+            else:
+                self.stack.setMaximumHeight(16777215)
 
             host = getattr(self, "panel_host", None)
             if host is not None:
@@ -312,6 +316,7 @@ class LayoutMixin:
         # ── Stack minimum height ──
         if layout.controls_enabled:
             self.stack.setMinimumHeight(max(1, _ws + layout.control_bar_height))
+            self.stack.setMaximumHeight(16777215)
         else:
             self.stack.setMinimumHeight(0)
 
@@ -404,6 +409,10 @@ class LayoutMixin:
         preview = getattr(self, "preview_box", None)
         if preview is None:
             return
+        if getattr(self, "cfg", {}).get("hideHueRing", False):
+            wheel_size = int(round(layout.picker_size))
+            self._sync_ringless_mode(wheel_size=wheel_size, title_bar_height=title_offset)
+            return
         # Size and cage both come from the layout, so the cluster tracks the
         # ring the window is actually drawing rather than an approximation
         # recomputed per call site.
@@ -449,6 +458,8 @@ class LayoutMixin:
         is also called again from update_geometries after the themed pass —
         clamp on the container's real geometry whenever it exists.
         """
+        if getattr(self, "cfg", {}).get("hideHueRing", False):
+            return
         container = getattr(self, "sliders_container", None)
         if container is None or container.height() <= 0:
             return
@@ -511,6 +522,12 @@ class LayoutMixin:
         the cluster has to clear just changed (ring ⇄ disc), so the fit has
         to be redone with the metrics the last pass computed.
         """
+        if getattr(self, "cfg", {}).get("hideHueRing", False):
+            self._sync_ringless_mode()
+            preview = getattr(self, "preview_box", None)
+            if preview is not None:
+                preview.raise_()
+            return
         metrics = getattr(self, "_preview_metrics", None)
         if metrics is None:
             return
@@ -677,19 +694,31 @@ class LayoutMixin:
         # wheel stops tracking the width, and the corner the swatches live in
         # collapses. Capping it keeps the picker square the whole way through
         # and parks the surplus below, where the settle removes it.
-        square = window_layout.picker_square_height(
-            w, margins.left(), margins.right(), 0)
-        if self.stack.minimumHeight() != square:
-            self.stack.setMinimumHeight(square)
-        if self.stack.maximumHeight() != square:
-            self.stack.setMaximumHeight(square)
-        wheel_size = int(round(layout.picker_size))
-        
-        # ── Step 1: legacy preview sizing ALWAYS runs first ──
-        # This restores legacy circle sizing/position when ringless is disabled,
-        # and provides a baseline that ringless may override below.
-        self._place_preview_box(layout, title_offset, h, sliders_h)
-        self.preview_box.raise_()
+        ringless_enabled = bool(getattr(self, "cfg", {}).get("hideHueRing", False))
+        if not ringless_enabled:
+            square = window_layout.picker_square_height(
+                w, margins.left(), margins.right(), 0)
+            if self.stack.minimumHeight() != square:
+                self.stack.setMinimumHeight(square)
+            if self.stack.maximumHeight() != square:
+                self.stack.setMaximumHeight(square)
+            wheel_size = int(round(layout.picker_size))
+            
+            # ── Step 1: legacy preview sizing ALWAYS runs first ──
+            # This restores legacy circle sizing/position when ringless is disabled,
+            # and provides a baseline that ringless may override below.
+            self._place_preview_box(layout, title_offset, h, sliders_h)
+            self.preview_box.raise_()
+        else:
+            square = window_layout.picker_square_height(
+                w, margins.left(), margins.right(), 0)
+            cb_h = max(1, round(30 * dynamic_scale))
+            ringless_min_h = square + cb_h
+            if self.stack.minimumHeight() != ringless_min_h:
+                self.stack.setMinimumHeight(ringless_min_h)
+            if self.stack.maximumHeight() != 16777215:
+                self.stack.setMaximumHeight(16777215)
+            wheel_size = int(round(layout.picker_size))
 
         # ── Step 2: push DPI-scaled button metrics down; panes do the rest ──
         btn_size = int(28 * dynamic_scale)
@@ -812,7 +841,13 @@ class LayoutMixin:
                 new_h = max(min_h, geom.height() + delta_w)
                 new_geom.setHeight(new_h)
 
-            self.setGeometry(new_geom)
+            if self.pos() != new_geom.topLeft():
+                self.move(new_geom.topLeft())
+            if self.size() != new_geom.size():
+                self.resize(new_geom.size())
+            else:
+                self.setGeometry(new_geom)
+
             event.accept()
             return
         self._sync_resize_cursor(event.globalPosition().toPoint())

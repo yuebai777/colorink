@@ -459,6 +459,48 @@ class PhotoshopSync:
             self._reset()
             return False
 
+    def set_both_colors(self, fg_r: int, fg_g: int, fg_b: int,
+                        bg_r: int, bg_g: int, bg_b: int) -> bool:
+        """Write both foreground and background colours in a single atomic command."""
+        fg_r, fg_g, fg_b = clamp8(fg_r), clamp8(fg_g), clamp8(fg_b)
+        bg_r, bg_g, bg_b = clamp8(bg_r), clamp8(bg_g), clamp8(bg_b)
+
+        if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
+            return self._bridge.send_both_colors(
+                str(time.time_ns()), self._pid,
+                fg_r, fg_g, fg_b, bg_r, bg_g, bg_b)
+
+        if self._app is None:
+            if not self.connect():
+                return False
+        if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
+            return self._bridge.send_both_colors(
+                str(time.time_ns()), self._pid,
+                fg_r, fg_g, fg_b, bg_r, bg_g, bg_b)
+        assert self._app is not None
+
+        if not self._is_process_alive():
+            self._reset()
+            return False
+
+        try:
+            fg = self._app.ForegroundColor
+            fg.RGB.Red = fg_r
+            fg.RGB.Green = fg_g
+            fg.RGB.Blue = fg_b
+            bg = self._app.BackgroundColor
+            bg.RGB.Red = bg_r
+            bg.RGB.Green = bg_g
+            bg.RGB.Blue = bg_b
+            return True
+        except Exception as exc:
+            _print_error(f"set_both_colors: {exc}")
+            if _com_hresult(exc) in _PERMISSION_HRESULTS:
+                self.permission_issue = True
+            self.last_error = f"写入 Photoshop 双色失败：{exc}"
+            self._reset()
+            return False
+
     # -- status / meta -----------------------------------------------------------
 
     def status(self) -> dict[str, object]:
@@ -507,6 +549,26 @@ class PhotoshopSync:
                                 and self._bridge.is_alive(self._pid)),
             "lastError": self.last_error,
         }
+
+    @property
+    def pid(self) -> int | None:
+        """Return the active Photoshop process ID, or None."""
+        return self._pid
+
+    def touch_client_alive(self) -> None:
+        """Signal to the CEP bridge that Colorink is alive."""
+        if self._bridge is not None:
+            self._bridge.touch_client_alive()
+
+    def set_drawing(self, is_drawing: bool) -> None:
+        """Flag whether the user is actively painting in Photoshop."""
+        if self._bridge is not None:
+            self._bridge.set_drawing(is_drawing)
+
+    def cleanup_runtime_flags(self) -> None:
+        """Clean up transient runtime flag files."""
+        if self._bridge is not None:
+            self._bridge.cleanup_runtime_flags()
 
     def set_version(self, version: str) -> bool:
         """Select the sync target: ``"auto"`` or an instance label from

@@ -795,7 +795,7 @@ class AppearancePanelMixin:
         grid_gap.addLayout(self._build_space_row("same"), 0, 1)
         grid_gap.addWidget(QLabel(i18n.tr("面板之间间距")), 1, 0)
         grid_gap.addLayout(self._build_space_row("diff"), 1, 1)
-        grid_gap.addWidget(QLabel(i18n.tr("面板顶部间距")), 2, 0)
+        grid_gap.addWidget(QLabel(i18n.tr("顶部以及底部距离")), 2, 0)
         grid_gap.addLayout(self._build_space_row("top"), 2, 1)
         cl_gap.addLayout(grid_gap)
         page_panels.addWidget(card_gap)

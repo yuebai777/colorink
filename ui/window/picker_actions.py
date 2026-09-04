@@ -15,6 +15,8 @@ from core.foreground import (
     _exe_matches_drawing_app,
     _resolve_process_exe,
     _title_matches_drawing_app,
+    identify_drawing_app,
+    resolve_auto_sync_mode,
 )
 from ui.lab_harmony import HARMONY_MODE_NAMES
 from ui.window.module_defs import _MODULE_DEFS, _MODULE_NAMES, _MODULE_ORDER
@@ -80,7 +82,10 @@ class PickerActionsMixin:
         config.save_hotkey_config(self.cfg)
         self.lab_square.set_shape(new_shape)
         self._sync_lab_lightness_bar()
-        self._refit_preview_box()
+        if self.cfg.get("hideHueRing", False):
+            self._sync_ringless_mode()
+        else:
+            self._refit_preview_box()
         self._update_lab_shape_button()
         self._sync_settings_sidebar_lab_controls()
         self.update()
@@ -183,9 +188,10 @@ class PickerActionsMixin:
         # the user is only asking for a pane switch.
         self._sync_ringless_mode()
         self._update_lab_avoid()
-        refit = getattr(self, "_refit_preview_box", None)
-        if callable(refit):
-            refit()
+        if not self.cfg.get("hideHueRing", False):
+            refit = getattr(self, "_refit_preview_box", None)
+            if callable(refit):
+                refit()
         self.color_wheel.schedule_slice_prewarm(350)
 
         r, g, b = self.current_rgb
@@ -453,17 +459,18 @@ class PickerActionsMixin:
     def init_foreground_tracker(self):
         from PyQt6.QtCore import QTimer
         self.foreground_timer = QTimer(self)
-        self.foreground_timer.setInterval(400)
+        self.foreground_timer.setInterval(100)
         self.foreground_timer.timeout.connect(self.check_foreground_window)
-        # Only poll while the feature is enabled; on_settings_saved() starts
-        # or stops the timer when the setting changes.
-        if self.cfg.get("onlyShowInCsp", False):
+        # Only poll while either onlyShowInCsp is enabled OR auto sync switching is active
+        is_auto_sync = (self.cfg.get("syncSoftware", "auto") == "auto")
+        if self.cfg.get("onlyShowInCsp", False) or is_auto_sync:
             self.foreground_timer.start()
             self.check_foreground_window()
 
     def check_foreground_window(self):
-        # If settings onlyShowInCsp is False, do nothing
-        if not self.cfg.get("onlyShowInCsp", False):
+        only_show_in_csp = bool(self.cfg.get("onlyShowInCsp", False))
+        is_auto_sync = bool(self.cfg.get("syncSoftware", "auto") == "auto")
+        if not only_show_in_csp and not is_auto_sync:
             return
 
         try:
@@ -475,12 +482,18 @@ class PickerActionsMixin:
         hwnd = win32gui.GetForegroundWindow()
         is_drawing_active = False
         pid = 0
+        detected_app = None
 
         if hwnd:
             try:
-                title = (win32gui.GetWindowText(hwnd) or "").lower()
+                title = (win32gui.GetWindowText(hwnd) or "")
             except Exception:
                 title = ""
+
+            try:
+                win_class = (win32gui.GetClassName(hwnd) or "")
+            except Exception:
+                win_class = ""
 
             try:
                 _, pid = win32process.GetWindowThreadProcessId(hwnd)
@@ -489,10 +502,7 @@ class PickerActionsMixin:
 
             if pid:
                 # Cache the resolved exe per PID so an unchanged foreground
-                # window doesn't re-query the process on every tick.  Only
-                # cache successful resolutions: a transient failure (process
-                # still starting, antivirus, protected process) must not pin
-                # an empty result for the whole foreground session.
+                # window doesn't re-query the process on every tick.
                 if getattr(self, "_fg_exe_cache_pid", None) == pid:
                     exe_name = getattr(self, "_fg_exe_cache", "")
                 else:
@@ -500,65 +510,73 @@ class PickerActionsMixin:
                     if exe_name:
                         self._fg_exe_cache_pid = pid
                         self._fg_exe_cache = exe_name
-                if _exe_matches_drawing_app(exe_name):
-                    is_drawing_active = True
+            else:
+                exe_name = ""
 
-            # Title fallback covers localized windows and cases where the
-            # process query was denied.
-            if not is_drawing_active and _title_matches_drawing_app(title):
+            # Multi-layer identification of foreground drawing software
+            detected_app = identify_drawing_app(
+                exe_name=exe_name,
+                title=title,
+                win_class=win_class,
+            )
+            if detected_app is not None:
                 is_drawing_active = True
 
         # A foreground window owned by this process (main window, settings
         # window or picker overlay) means the user is interacting with us.
-        # The REAL foreground PID (win32) is the source of truth here:
-        # Qt's isActiveWindow() bookkeeping is unreliable — in no-focus mode
-        # the palette can never become "active", and the separate settings
-        # window's activation state can get stuck (activateWindow() denied
-        # by the OS foreground lock leaves Qt thinking it is active forever).
-        # Trusting that stale state kept the palette visible even when a
-        # non-drawing app took the foreground ("仅在画图软件前台时显示"失效).
         is_our_focused = bool(pid and pid == os.getpid())
 
-        should_be_visible = is_drawing_active or is_our_focused
+        # Auto-switch sync software channel when a drawing app is active
+        if is_auto_sync and detected_app is not None:
+            sync_thread = getattr(self, "sync_thread", None)
+            if sync_thread is not None:
+                c_sync = getattr(sync_thread, "companion_sync", None)
+                has_session = (
+                    getattr(c_sync, "has_session", None) or getattr(c_sync, "_has_session", None)
+                )
+                has_session_val = bool(has_session()) if callable(has_session) else False
+                current_mode = getattr(sync_thread, "software_mode", None)
+                target_mode = resolve_auto_sync_mode(
+                    detected_app,
+                    current_mode=current_mode,
+                    has_companion_session=has_session_val,
+                )
+                if target_mode and current_mode != target_mode:
+                    switch_fn = getattr(self, "switch_sync_software_mode", None)
+                    if callable(switch_fn):
+                        switch_fn(target_mode)
+                    else:
+                        sync_thread.set_software_mode(target_mode)
 
-        # Keep the window up during an active color pick
-        picker = getattr(self, "picker_overlay", None)
-        if picker is not None and picker.is_active:
-            should_be_visible = True
+        if only_show_in_csp:
+            should_be_visible = is_drawing_active or is_our_focused
 
-        # If follow_mouse_active is enabled and the window is visible, avoid auto-hiding it.
-        # But when the user explicitly restricted visibility to the drawing app's
-        # foreground (onlyShowInCsp), that restriction wins — otherwise the palette
-        # would never hide while following the mouse ("切走不隐藏").
-        if (getattr(self, "follow_mouse_active", False) and self.isVisible()
-                and not self.cfg.get("onlyShowInCsp", False)):
-            should_be_visible = True
+            # Keep the window up during an active color pick
+            picker = getattr(self, "picker_overlay", None)
+            if picker is not None and picker.is_active:
+                should_be_visible = True
 
-        if should_be_visible:
-            # 用户手动隐藏（热键/托盘/关闭到托盘）后，前台追踪器不能立刻又把它
-            # 拉出来；只有用户再次手动显示时才清除 _user_hidden。
-            if not self.isVisible() and not getattr(self, "_user_hidden", False):
-                self.show()
-                self.raise_()
-            self.auto_hidden = False
-        else:
-            if self.isVisible():
-                self.hide()
-            # Record that the foreground restriction wants the window hidden
-            # even when it is already hidden.  This lets main.py avoid an
-            # unconditional show() at startup when onlyShowInCsp is enabled
-            # and no drawing app is in the foreground.
-            self.auto_hidden = True
-        # Torn-off panels are the same palette: hide them with the main
-        # window and bring them back when the drawing app returns. The
-        # palette only counts as visible when the user did not explicitly
-        # hide it — otherwise the tracker would show the floats over an
-        # intentionally hidden main window.
-        palette_visible = bool(should_be_visible
-                               and not getattr(self, "_user_hidden", False))
-        sync_floating = getattr(self, "set_floating_foreground_visible", None)
-        if callable(sync_floating):
-            sync_floating(palette_visible)
+            # If follow_mouse_active is enabled and the window is visible, avoid auto-hiding it.
+            if (getattr(self, "follow_mouse_active", False) and self.isVisible()
+                    and not only_show_in_csp):
+                should_be_visible = True
+
+            if should_be_visible:
+                # 用户手动隐藏后不强制显示；再次手动显示时清除 _user_hidden。
+                if not self.isVisible() and not getattr(self, "_user_hidden", False):
+                    self.show()
+                    self.raise_()
+                self.auto_hidden = False
+            else:
+                if self.isVisible():
+                    self.hide()
+                self.auto_hidden = True
+
+            palette_visible = bool(should_be_visible
+                                   and not getattr(self, "_user_hidden", False))
+            sync_floating = getattr(self, "set_floating_foreground_visible", None)
+            if callable(sync_floating):
+                sync_floating(palette_visible)
 
     def on_settings_saved(self):
         # Reload configs
@@ -603,13 +621,16 @@ class PickerActionsMixin:
         self.update_window_flags()
         self.update_no_focus_policies()
 
-        # Keep the foreground tracker running only while the feature is on,
-        # and apply the new state immediately instead of waiting a tick.
+        # Keep the foreground tracker running while onlyShowInCsp or auto sync is on
         fg_timer = getattr(self, "foreground_timer", None)
-        if self.cfg.get("onlyShowInCsp", False):
+        is_auto_sync = (self.cfg.get("syncSoftware", "auto") == "auto")
+        need_tracker = bool(self.cfg.get("onlyShowInCsp", False) or is_auto_sync)
+        if need_tracker:
             if fg_timer is not None and not fg_timer.isActive():
                 fg_timer.start()
-            self.check_foreground_window()
+            check_fg = getattr(self, "check_foreground_window", None)
+            if callable(check_fg):
+                check_fg()
         else:
             if fg_timer is not None:
                 fg_timer.stop()
@@ -617,14 +638,26 @@ class PickerActionsMixin:
         # Restore visibility if onlyShowInCsp is turned off while auto_hidden
         if not self.cfg.get("onlyShowInCsp", False):
             if getattr(self, "auto_hidden", False) and not getattr(self, "_user_hidden", False):
-                self.show()
+                show_fn = getattr(self, "show", None)
+                if callable(show_fn):
+                    show_fn()
                 self.auto_hidden = False
         
         # Update active software mode in thread
-        mode = self.cfg.get("syncSoftware", "csp")
-        if mode not in ("csp", "sai", "udm", "ps", "companion"):
-            mode = "csp"
-        self.sync_thread.set_software_mode(mode)
+        mode = self.cfg.get("syncSoftware", "auto")
+        if mode not in ("auto", "csp", "sai", "udm", "ps", "companion"):
+            mode = "auto"
+        if mode != "auto":
+            switch_fn = getattr(self, "switch_sync_software_mode", None)
+            if callable(switch_fn):
+                switch_fn(mode)
+            else:
+                self.sync_thread.set_software_mode(mode)
+        else:
+            check_fg = getattr(self, "check_foreground_window", None)
+            if callable(check_fg):
+                check_fg()
+
         
         # Companion mode: show setup dialog if no saved session
         if mode == "companion":

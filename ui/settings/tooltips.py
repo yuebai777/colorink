@@ -50,7 +50,7 @@ _SETTINGS_TOOLTIPS: dict[str, str] = {
     "btn_diff_dec": "减小不同色彩空间滑块之间的间距",
     "btn_diff_inc": "增大不同色彩空间滑块之间的间距",
     # ── Sync page ────────────────────────────────────────────────────────
-    "combo_software": "选择颜色同步到哪个绘画软件（CSP / SAI2 / UDM / Photoshop / 手机 Companion）",
+    "combo_software": "选择颜色同步到哪个绘画软件（支持自动识别前台软件 / CSP / SAI2 / UDM / Photoshop / 手机 Companion）",
     "combo_udm": "选择 UDM 版本；自动检测失败时可手动指定",
     "combo_ps": "选择 Photoshop 版本；自动检测失败时可手动指定",
     "btn_companion_reconnect": "重新连接手机 Companion 模式；未保存会话时按钮会改为「连接智能手机」",

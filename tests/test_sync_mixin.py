@@ -90,3 +90,28 @@ def test_external_active_slot_change_projects_full_state(qapp):
     color, source = sync.projected
     assert source == "slot_change"
     assert color.rgb == (0, 0, 255)
+
+
+def test_switch_sync_software_mode_pushes_initial_palette(qapp):
+    class FakeSyncThread:
+        def __init__(self):
+            self.software_mode = "csp"
+            self.last_switch = None
+        def set_software_mode(self, mode, initial_palette=None):
+            self.software_mode = mode
+            self.last_switch = (mode, initial_palette)
+
+    sync = _FakeSync()
+    sync.sync_thread = FakeSyncThread()
+    sync.current_rgb = (255, 128, 64)
+    sync._resolve_sync_source = lambda: ("rgb", {"r": 255.0, "g": 128.0, "b": 64.0})
+
+    SyncMixin.switch_sync_software_mode(sync, "ps")
+
+    assert sync.sync_thread.software_mode == "ps"
+    mode, pal = sync.sync_thread.last_switch
+    assert mode == "ps"
+    assert pal is not None
+    assert pal["active_slot"] == 0
+    assert pal[0]["rgb"] == (255, 0, 0)
+    assert pal[1]["rgb"] == (0, 0, 255)

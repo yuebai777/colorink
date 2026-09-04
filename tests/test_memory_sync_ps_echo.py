@@ -30,6 +30,11 @@ class FakePs:
         self._pending[color_index] = ((r, g, b), time.time() + APPLY_LATENCY)
         return True
 
+    def set_both_colors(self, fg_r, fg_g, fg_b, bg_r, bg_g, bg_b):
+        self._pending[0] = ((fg_r, fg_g, fg_b), time.time() + APPLY_LATENCY)
+        self._pending[1] = ((bg_r, bg_g, bg_b), time.time() + APPLY_LATENCY)
+        return True
+
     def get_color(self):
         return self._read(0)
 
@@ -251,5 +256,36 @@ def test_ps_bg_write_echo_suppressed(qapp):
         h.thread.write_color(200, 30, 10, color_index=1)
         h.drain(2.5)
         assert all(not e.startswith("color(") for e in h.events), h.events
+    finally:
+        h.stop()
+
+
+def test_ps_mode_switch_initial_palette_suppresses_stale_color(qapp):
+    """Switching mode to 'ps' with an initial palette must write the palette
+    and suppress reading back Photoshop's stale pre-switch colors (切到ps把颜色切回去)."""
+    ps = FakePs()
+    ps.fg = {"r": 1, "g": 2, "b": 3, "index": 0}
+    ps.bg = {"r": 4, "g": 5, "b": 6, "index": 1}
+
+    h = _Harness(ps, qapp)
+    # Start thread in another mode, e.g. sai
+    h.thread.software_mode = "sai"
+    h.start()
+    try:
+        palette = {
+            0: {"rgb": (255, 0, 100), "transparent": False},
+            1: {"rgb": (0, 200, 255), "transparent": False},
+            "active_slot": 0,
+        }
+        h.thread.set_software_mode("ps", initial_palette=palette)
+        h.drain(2.0)
+
+        # Stale colors (1,2,3) or (4,5,6) must never be emitted as external color changes
+        stale_emitted = [e for e in h.events if "color(1,2,3" in e or "color(4,5,6" in e]
+        assert stale_emitted == [], f"Stale pre-switch colors were emitted: {stale_emitted}"
+
+        # Photoshop must have received the initial palette colors
+        assert ps.fg["r"] == 255 and ps.fg["g"] == 0 and ps.fg["b"] == 100
+        assert ps.bg["r"] == 0 and ps.bg["g"] == 200 and ps.bg["b"] == 255
     finally:
         h.stop()
