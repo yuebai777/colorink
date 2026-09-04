@@ -225,6 +225,8 @@ _EN: dict[str, str] = {
     "当前版本": "Current version",
     "检查更新": "Check for updates",
     "关于作者": "About the author",
+    "查看源码": "View source",
+    "打开 GitHub 上的项目源码仓库": "Open the project source repository on GitHub",
     "导出配置": "Export settings",
     "导入配置": "Import settings",
     "恢复默认": "Reset to defaults",

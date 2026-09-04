@@ -254,6 +254,14 @@ class UpdatePanelMixin:
         """Open the author's Bilibili homepage in the default browser."""
         webbrowser.open(updater.BILIBILI_URL)
 
+    def on_view_source(self):
+        """Open the GitHub source repository in the default browser.
+
+        GPL-3.0 compliance: the distributed copies must point users to the
+        complete corresponding source, which lives in the GitHub repo.
+        """
+        webbrowser.open(updater.GITHUB_URL)
+
     def _on_check_updates_toggled(self, checked: bool):
         self.cfg["checkUpdatesOnStartup"] = bool(checked)
         self._persist_config()
@@ -334,9 +342,8 @@ class UpdatePanelMixin:
         QMessageBox.information(self, i18n.tr("恢复默认"), i18n.tr("设置已恢复为默认值。"))
 
 
-    def _build_about_page(self, page_about):
-        # ═══════════════════ Page 6: 关于 ═══════════════════
-        card_about, cl_about = self._begin_card(page_about, i18n.tr("关于"))
+    def _build_about_card(self, parent_layout):
+        card_about, cl_about = self._begin_card(parent_layout, i18n.tr("关于与更新"))
 
         row_version = QHBoxLayout()
         row_version.addWidget(QLabel(i18n.tr("当前版本")))
@@ -347,27 +354,36 @@ class UpdatePanelMixin:
         cl_about.addLayout(row_version)
 
         row_about_actions = QHBoxLayout()
-        row_about_actions.setSpacing(6)
+        row_about_actions.setSpacing(8)
         self.btn_check_update = QPushButton(i18n.tr("检查更新"))
         self.btn_check_update.clicked.connect(self.on_check_update)
         self.btn_about_author = QPushButton(i18n.tr("关于作者"))
         self.btn_about_author.clicked.connect(self.on_about_author)
+        self.btn_view_source = QPushButton(i18n.tr("查看源码"))
+        self.btn_view_source.setToolTip(i18n.tr("打开 GitHub 上的项目源码仓库"))
+        self.btn_view_source.clicked.connect(self.on_view_source)
         row_about_actions.addWidget(self.btn_check_update)
         row_about_actions.addWidget(self.btn_about_author)
+        row_about_actions.addWidget(self.btn_view_source)
         row_about_actions.addStretch()
         cl_about.addLayout(row_about_actions)
 
         self.cb_check_updates = QCheckBox(i18n.tr("启动时自动检查更新"))
         self.cb_check_updates.setChecked(self.cfg.get("checkUpdatesOnStartup", True))
         self.cb_check_updates.toggled.connect(self._on_check_updates_toggled)
-        cl_about.addWidget(self.cb_check_updates)
+        cl_about.addWidget(self._make_setting_row(
+            i18n.tr("启动自动检查更新"),
+            i18n.tr("启动软件时在后台检查 GitHub 最新版本"),
+            self.cb_check_updates,
+        ))
 
-        cl_about.addStretch()
-        page_about.addWidget(card_about)
+        parent_layout.addWidget(card_about)
+        return card_about
 
-        card_config, cl_config = self._begin_card(page_about, i18n.tr("配置管理"))
+    def _build_config_card(self, parent_layout):
+        card_config, cl_config = self._begin_card(parent_layout, i18n.tr("配置管理"))
         row_config_actions = QHBoxLayout()
-        row_config_actions.setSpacing(6)
+        row_config_actions.setSpacing(8)
         self.btn_export_config = QPushButton(i18n.tr("导出配置"))
         self.btn_export_config.setToolTip(i18n.tr("把当前设置保存为 JSON 文件"))
         self.btn_export_config.clicked.connect(self.export_config)
@@ -381,7 +397,12 @@ class UpdatePanelMixin:
         row_config_actions.addWidget(self.btn_import_config)
         row_config_actions.addWidget(self.btn_reset_config)
         cl_config.addLayout(row_config_actions)
-        page_about.addWidget(card_config)
+        parent_layout.addWidget(card_config)
+        return card_config
+
+    def _build_about_page(self, page_about):
+        self._build_about_card(page_about)
+        self._build_config_card(page_about)
 
 
 class _UpdateWorker(QThread):
