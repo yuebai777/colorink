@@ -153,3 +153,10 @@ python build_pyqt.py
 ## License
 
 [GPL-3.0](LICENSE) —— 使用、修改或分发本项目代码时，你的衍生作品也必须以 GPL-3.0 开源（copyleft）。
+
+## 免责声明 / Disclaimer
+
+- 本项目（Colorink）是一个独立的开源辅助工具，遵循 GNU General Public License v3.0 (GPL-3.0) 协议开源。
+- 本项目及文档中提及的 Adobe Photoshop®、CLIP STUDIO PAINT®、PaintTool SAI®、Procreate® 等软件名称与商标，其著作权、商标权及其他知识产权均归各自的权利人所有。
+- 本项目仅为提升绘画与设计工作流效率而通过公开系统 API 或兼容协议实现画笔颜色同步与辅助取色，与 Adobe、CELSYS、SYSTEMAX 等商业公司不存在任何从属、投资、合作、赞助或官方背书关系。
+
