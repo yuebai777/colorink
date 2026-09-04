@@ -69,3 +69,4 @@ docs/superpowers/plans/tourbox-conflict-repro-message.md
 # AI agent local config (contains machine-specific paths)
 .opencode/
 pyrightconfig.json
+Snipaste_*.png
