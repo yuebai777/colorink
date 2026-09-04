@@ -163,6 +163,18 @@ def build():
         onedir_path = os.path.join("dist", "Onedir", "Colorink")
         if os.path.isdir(onedir_path):
             _strip_dist(onedir_path)
+            # GPL-3.0 compliance: ship the LICENSE text inside the onedir
+            # bundle (and therefore inside the Colorink-Onedir.zip produced
+            # from it). Kept at the bundle root next to Colorink.exe.
+            try:
+                src_license = os.path.join(".", "LICENSE")
+                if os.path.isfile(src_license):
+                    shutil.copy2(src_license, os.path.join(onedir_path, "LICENSE"))
+                    print("  -> Added LICENSE to onedir bundle (GPL-3.0)")
+                else:
+                    print("  WARN: LICENSE not found at repo root; onedir bundle has no license")
+            except Exception as exc:
+                print(f"  WARN: could not copy LICENSE into onedir bundle: {exc}")
     results["onefile"] = run_pyinstaller("Colorink Onefile.spec", "Onefile")
 
     print(f"\n{'='*60}")
