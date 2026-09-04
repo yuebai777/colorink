@@ -153,8 +153,8 @@ def test_build_flavor_defaults_to_onefile(tmp_path):
 
 def test_check_for_update_extracts_assets():
     fake_response = _FakeResponse(json.dumps({
-        "tag_name": "v1.8.1",
-        "html_url": "https://github.com/yuebai777/colorink/releases/tag/v1.8.1",
+        "tag_name": "v1.8.2",
+        "html_url": "https://github.com/yuebai777/colorink/releases/tag/v1.8.2",
         "body": "notes",
         "assets": [
             {"name": "Colorink.exe", "browser_download_url": "https://x/a.exe",
