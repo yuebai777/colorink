@@ -75,11 +75,20 @@ def test_overlay_sample_pos(qapp):
     assert overlay._sample_pos(QPoint(200, 200)) is None
 
 
-def test_picker_color_picked_flow_preserves_hsv_and_flushes(qapp, monkeypatch):
-    """MainWindow._on_picker_color_picked must call flush_pending_writes and not overwrite hsv_u32."""
+@pytest.fixture(scope="module")
+def shared_win(qapp):
     from ui.main_window import MainWindow
-
     win = MainWindow()
+    win.sync_thread.sync_enabled = False
+    yield win
+    win.sync_thread.stop()
+    win.sync_thread.wait(500)
+    win.close()
+
+
+def test_picker_color_picked_flow_preserves_hsv_and_flushes(shared_win, monkeypatch):
+    """MainWindow._on_picker_color_picked must call flush_pending_writes and not overwrite hsv_u32."""
+    win = shared_win
     win.sync_thread.software_mode = "companion"
 
     # Track writes to sync_thread
@@ -109,16 +118,10 @@ def test_picker_color_picked_flow_preserves_hsv_and_flushes(qapp, monkeypatch):
     # Verify flush was called
     assert len(flushed) == 1
 
-    win.sync_thread.stop()
-    win.sync_thread.wait(500)
-    win.close()
 
-
-def test_l_gamut_range_continuity_oklab_and_oklch(qapp):
+def test_l_gamut_range_continuity_oklab_and_oklch(shared_win):
     """Ensure L gamut range does not collapse to [0, 100] when L=50 is out of gamut."""
-    from ui.main_window import MainWindow
-
-    win = MainWindow()
+    win = shared_win
     # High-chroma warm color where L=50 is slightly out of gamut (range [52.1, 92.3])
     win._gamut_oklab_a = -0.0038
     win._gamut_oklab_b = 0.1063
@@ -144,10 +147,6 @@ def test_l_gamut_range_continuity_oklab_and_oklch(qapp):
     assert 50 <= mn_c <= 54, f"OKLCh mn should be around 52, got {mn_c}"
     assert 90 <= mx_c <= 94, f"OKLCh mx should be around 92, got {mx_c}"
 
-    win.sync_thread.stop()
-    win.sync_thread.wait(500)
-    win.close()
-
 
 def test_color_model_rgb_float_preservation():
     """Ensure Color preserves float RGB and round-trips OKLab without quantization error."""
@@ -169,15 +168,11 @@ def test_color_model_rgb_float_preservation():
     assert abs(b_rec - 0.1063) < 1e-5
 
 
-def test_update_ui_colors_uses_float_rgb_without_jitter(qapp):
+def test_update_ui_colors_uses_float_rgb_without_jitter(shared_win):
     """Ensure adjusting Lightness in OKLab produces zero jitter in L gamut ranges."""
-    from ui.main_window import MainWindow
     from ui.color_model import Color
 
-    win = MainWindow()
-    win.sync_thread.stop()
-    win.sync_thread.wait(500)
-
+    win = shared_win
     fixed_a = -0.0038
     fixed_b = 0.1063
     gamut_ranges = []
@@ -192,16 +187,10 @@ def test_update_ui_colors_uses_float_rgb_without_jitter(qapp):
     first_range = gamut_ranges[0]
     assert all(r == first_range for r in gamut_ranges), f"Gamut range jitter detected: {set(gamut_ranges)}"
 
-    win.close()
 
-
-def test_l_gamut_range_moves_outside_gamut_and_syncs_with_right_slider(qapp):
+def test_l_gamut_range_moves_outside_gamut_and_syncs_with_right_slider(shared_win):
     """Ensure dragging L beyond initial gamut moves the effective range and syncs with right slider."""
-    from ui.main_window import MainWindow
-
-    win = MainWindow()
-    win.sync_thread.stop()
-    win.sync_thread.wait(500)
+    win = shared_win
 
     # Initial state with bounded gamut
     win.slider_widgets["L_oklab"][0].setValue(73)
@@ -230,7 +219,5 @@ def test_l_gamut_range_moves_outside_gamut_and_syncs_with_right_slider(qapp):
     assert win.lab_slider._gamut_min <= 97 <= win.lab_slider._gamut_max
     assert g_oklab._gamut_min <= 97 <= g_oklab._gamut_max
     assert abs(win.lab_slider._gamut_max - g_oklab._gamut_max) <= 1
-
-    win.close()
 
 
