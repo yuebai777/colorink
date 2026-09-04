@@ -119,3 +119,14 @@ class HotkeyMixin:
         if hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
             self.sync_thread.flush_pending_writes()
             print(f"[Picker] Picked color RGB({r}, {g}, {b}) and flushed to sync")
+
+    def _on_picker_zoom_changed(self, new_zoom: int):
+        """Handle zoom dynamically adjusted via mouse wheel during global color picking."""
+        self.cfg["pickerZoom"] = new_zoom
+        config.save_config(self.cfg)
+        sidebar = getattr(self, "settings_sidebar", None)
+        if sidebar is not None and hasattr(sidebar, "lbl_picker_zoom"):
+            sidebar.lbl_picker_zoom.setText(f"{new_zoom}×")
+        sw = getattr(self, "settings_window", None)
+        if sw is not None and hasattr(sw, "lbl_picker_zoom"):
+            sw.lbl_picker_zoom.setText(f"{new_zoom}×")

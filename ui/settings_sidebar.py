@@ -82,7 +82,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         # ── Left rail: category navigation (like CSP 環境設定) ──
         self.nav = QListWidget()
         self.nav.setObjectName("NavRail")
-        self.nav.setFixedWidth(96)
+        self.nav.setFixedWidth(100)
         self.nav.setIconSize(QSize(18, 18))
         self.nav.setUniformItemSizes(True)
         self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -94,13 +94,11 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
             ("界面", "interface"),
             ("取色器", "picker"),
             ("面板", "panels"),
-            ("滤镜", "filter"),
             ("同步", "software"),
-            ("关于", "about"),
         ]:
             item = QListWidgetItem(i18n.tr(text))
             item.setData(Qt.ItemDataRole.UserRole, kind)
-            item.setSizeHint(QSize(0, 28))
+            item.setSizeHint(QSize(0, 32))
             self.nav.addItem(item)
         self.nav.currentRowChanged.connect(self._on_nav_changed)
         body.addWidget(self.nav)
@@ -113,21 +111,19 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
 
         self._page_layouts = {}
 
-        # Create all 6 pages
+        # Create 5 core pages
         page_hotkeys   = self._make_page("快捷键")
         page_interface = self._make_page("界面")
         page_picker    = self._make_page("取色器")
         page_panels    = self._make_page("面板")
-        page_filter    = self._make_page("滤镜")
         page_sync      = self._make_page("同步")
-        page_about     = self._make_page("关于")
 
         # ═══════════════════ Page 1: 快捷键 ═══════════════════
         card_hk, cl_hk = self._begin_card(page_hotkeys, i18n.tr("全局热键"))
 
         grid_hotkeys = QGridLayout()
-        grid_hotkeys.setSpacing(6)
-        grid_hotkeys.setColumnMinimumWidth(0, 84)
+        grid_hotkeys.setSpacing(8)
+        grid_hotkeys.setColumnMinimumWidth(0, 140)
         grid_hotkeys.setColumnStretch(1, 1)
 
         grid_hotkeys.addWidget(QLabel(i18n.tr("全局取色")), 0, 0)
@@ -147,9 +143,8 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         row_follow.setSpacing(6)
         self.cb_follow_mouse = QCheckBox(i18n.tr("启用"))
         self.cb_follow_mouse.stateChanged.connect(self.save_settings)
-        row_follow.addWidget(self.btn_follow)
-        row_follow.addWidget(self.cb_follow_mouse)
-        row_follow.addStretch()
+        row_follow.addWidget(self.btn_follow, 1)
+        row_follow.addWidget(self.cb_follow_mouse, 0)
         grid_hotkeys.addLayout(row_follow, 2, 1)
 
         grid_hotkeys.addWidget(QLabel(i18n.tr("灰度滤镜")), 3, 0)
@@ -178,6 +173,29 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         cl_hk.addLayout(grid_hotkeys)
         page_hotkeys.addWidget(card_hk)
 
+        # ── Card 2: 取色视窗快捷操作 ──
+        card_tips, cl_tips = self._begin_card(page_hotkeys, i18n.tr("取色视窗快捷操作"))
+        grid_tips = QGridLayout()
+        grid_tips.setSpacing(8)
+        grid_tips.setColumnMinimumWidth(0, 80)
+        grid_tips.setColumnStretch(1, 1)
+        tips_data = [
+            ("Alt", i18n.tr("按住或松开临时冻结取色画面")),
+            (i18n.tr("滚轮"), i18n.tr("上下滚动调节放大镜倍率 (2× ~ 20×)")),
+            ("Shift", i18n.tr("按住锁定水平或垂直采样轴")),
+            (i18n.tr("空格"), i18n.tr("按住临时隐藏准星，查看底层像素")),
+        ]
+        for idx, (key_label, tip_desc) in enumerate(tips_data):
+            lbl_k = QLabel(key_label)
+            lbl_k.setObjectName("TipKey")
+            lbl_d = QLabel(tip_desc)
+            lbl_d.setObjectName("TipDesc")
+            lbl_d.setWordWrap(True)
+            grid_tips.addWidget(lbl_k, idx, 0)
+            grid_tips.addWidget(lbl_d, idx, 1)
+        cl_tips.addLayout(grid_tips)
+        page_hotkeys.addWidget(card_tips)
+
         # ═══════════════════ Page 2: 界面 ═══════════════════
         self._build_interface_page(page_interface)
 
@@ -187,14 +205,8 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         # ═══════════════════ Page 4: 面板 ═══════════════════
         self._build_panels_page(page_panels)
 
-        # ═══════════════════ Page 5: 滤镜 ═══════════════════
-        self._build_filter_page(page_filter)
-
         # ═══════════════════ Page 5: 同步 ═══════════════════
         self._build_sync_page(page_sync)
-
-        # ═══════════════════ Page 6: 关于 ═══════════════════
-        self._build_about_page(page_about)
         # Keep section cards at their natural size, top-aligned: one trailing
         # stretch absorbs the fixed window's leftover height on short pages.
         for page_layout in self._page_layouts.values():

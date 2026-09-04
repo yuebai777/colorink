@@ -235,6 +235,7 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.picker_overlay = ColorPickerOverlay(None)
         self.picker_overlay.set_zoom(self.cfg.get("pickerZoom", 6))
         self.picker_overlay.colorPicked.connect(self._on_picker_color_picked)
+        self.picker_overlay.zoomChanged.connect(self._on_picker_zoom_changed)
         # Pause the sync thread while the picker is up: its GIL traffic
         # and repaint signals make the picker's 16 ms tick drop frames
         # while sweeping, shifting the picked position.
