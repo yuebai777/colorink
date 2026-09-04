@@ -48,12 +48,14 @@ CMD_FILENAME: Final = "cmd.txt"
 STATE_FILENAME: Final = "state.txt"
 HEARTBEAT_FILENAME: Final = "heartbeat.txt"
 PANEL_VERSION_FILENAME: Final = "panel_version.txt"
+CLIENT_ALIVE_FILENAME: Final = "client_alive.txt"
+DRAWING_FILENAME: Final = "drawing.txt"
 # Bump when the panel's behaviour changes in a way Colorink needs to
 # detect. The panel rewrites panel_version_<pid>.txt every 4 s; a running
 # panel with an older protocol keeps writing the old value (or nothing),
 # so Colorink can tell "deployed file is new" from "running panel is
 # new" — only the latter clears the "restart Photoshop" hint.
-PANEL_VERSION: Final = 9
+PANEL_VERSION: Final = 11
 
 EXTENSION_ID: Final = "com.colorink.bridge"
 EXTENSION_DIR_NAME: Final = "ColorinkBridge"
@@ -242,10 +244,11 @@ claimStaleCmd();
 })();
 var tick = 0;
 var FAST_MS = 100;     // command mailbox check interval
-var STATE_EVERY = 5;   // state read-back every 5 ticks (0.5 s)
+var STATE_EVERY = 10;  // state read-back every 10 ticks (1.0 s)
 var BEAT_EVERY = 40;   // heartbeat + panel_version every 40 ticks (4 s)
 var cmdMtime = 0;
 var lastToken = "";
+var lastStateStr = "";
 
 function stateScript(d) {
     var suff = pidSuffix();
@@ -260,12 +263,12 @@ function beatScript(d) {
     var suff = pidSuffix();
     return "var d='" + d + "';" +
         "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
-        "pv.write('9');pv.close();" +
+        "pv.write('11');pv.close();" +
         "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
         "h.write(String(new Date().getTime()));h.close();";
 }
 function applyScript(d, parts) {
-    // parts: <token>|<pid>|<index>|<r>|<g>|<b>  or  <token>|<pid>|swap
+    // parts: <token>|<pid>|<index>|<r>|<g>|<b>  or  <token>|<pid>|swap  or  <token>|<pid>|both|<fg_r>|<fg_g>|<fg_b>|<bg_r>|<bg_g>|<bg_b>
     // Mutate the existing SolidColor objects in place: constructing
     // `new SolidColor()` fails with "EvalScript error" on this green
     // build, while reading/mutating app.foregroundColor works.
@@ -276,6 +279,14 @@ function applyScript(d, parts) {
             "var br=bg.rgb.red;var bg3=bg.rgb.green;var bb=bg.rgb.blue;" +
             "fg.rgb.red=br;fg.rgb.green=bg3;fg.rgb.blue=bb;" +
             "bg.rgb.red=fr;bg.rgb.green=fg2;bg.rgb.blue=fb;";
+    } else if (parts[2] === 'both' && parts.length >= 9) {
+        s += "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
+            "fg.rgb.red=" + parseInt(parts[3], 10) + ";" +
+            "fg.rgb.green=" + parseInt(parts[4], 10) + ";" +
+            "fg.rgb.blue=" + parseInt(parts[5], 10) + ";" +
+            "bg.rgb.red=" + parseInt(parts[6], 10) + ";" +
+            "bg.rgb.green=" + parseInt(parts[7], 10) + ";" +
+            "bg.rgb.blue=" + parseInt(parts[8], 10) + ";";
     } else {
         var target = (parseInt(parts[2], 10) === 1) ? "app.backgroundColor" : "app.foregroundColor";
         s += "var c=" + target + ";" +
@@ -292,7 +303,14 @@ function poll() {
         var d = String(dir).replace(/\\/g, "/");
         var doState = (tick % STATE_EVERY === 0);
         var doBeat  = (tick % BEAT_EVERY === 0);
+        var suff = pidSuffix();
         if (useNodeFs) {
+            if (doBeat) {
+                try {
+                    fs.writeFileSync(d + '/panel_version' + suff + '.txt', '11');
+                    fs.writeFileSync(d + '/heartbeat' + suff + '.txt', String(Date.now()));
+                } catch (eBeat) {}
+            }
             try {
                 var st = fs.existsSync(d + '/cmd.txt') ? fs.statSync(d + '/cmd.txt') : null;
                 var m = 0;
@@ -324,6 +342,51 @@ function poll() {
                     fs.writeFileSync(d + '/error.txt', String(e && e.message ? e.message : e));
                 } catch (e4) {}
             }
+
+            if (doState) {
+                // Check if Colorink is active: if client_alive.txt is absent or stale (>4s),
+                // Colorink is closed/paused — skip ExtendScript entirely (zero idle load).
+                var isClientAlive = false;
+                try {
+                    var caPath = d + '/client_alive.txt';
+                    if (fs.existsSync(caPath)) {
+                        var stCa = fs.statSync(caPath);
+                        var caMtime = stCa ? (stCa.mtimeMs !== undefined ? stCa.mtimeMs : stCa.mtime.getTime()) : 0;
+                        if (Date.now() - caMtime < 4000) {
+                            isClientAlive = true;
+                        }
+                    }
+                } catch (eCa) {}
+
+                // Check if the user is painting in Photoshop: drawing.txt touched within 1.5s
+                // indicates active stylus/mouse drag on canvas — skip ExtendScript so
+                // Photoshop's UI thread is never interrupted during brush strokes!
+                var isDrawing = false;
+                try {
+                    var drPath = d + '/drawing.txt';
+                    if (fs.existsSync(drPath)) {
+                        var stDr = fs.statSync(drPath);
+                        var drMtime = stDr ? (stDr.mtimeMs !== undefined ? stDr.mtimeMs : stDr.mtime.getTime()) : 0;
+                        if (Date.now() - drMtime < 1500) {
+                            isDrawing = true;
+                        }
+                    }
+                } catch (eDr) {}
+
+                if (isClientAlive && !isDrawing) {
+                    evalScript("try{var fg=app.foregroundColor.rgb,bg=app.backgroundColor.rgb;Math.round(fg.red)+'|'+Math.round(fg.green)+'|'+Math.round(fg.blue)+'|'+Math.round(bg.red)+'|'+Math.round(bg.green)+'|'+Math.round(bg.blue);}catch(e){''}", function (code, result) {
+                        if (code === 0 && result && typeof result === 'string' && result.indexOf('|') !== -1) {
+                            if (result !== lastStateStr) {
+                                lastStateStr = result;
+                                try {
+                                    fs.writeFileSync(d + '/state' + suff + '.txt', result);
+                                } catch (eFs) {}
+                            }
+                        }
+                    });
+                }
+            }
+            return;
         } else {
             // Fallback: one lightweight script per tick — reads cmd.txt,
             // applies only when addressed to this instance (or in shared
@@ -363,7 +426,7 @@ function poll() {
                 "}" +
                 (doBeat ?
                 "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
-                "pv.write('9');pv.close();" +
+                "pv.write('10');pv.close();" +
                 "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
                 "h.write(String(new Date().getTime()));h.close();" : "");
             evalScript(script, function () {});
@@ -494,6 +557,13 @@ class PhotoshopScriptBridge:
         """Swap that Photoshop's foreground/background (like pressing X)."""
         return self._write_cmd(f"{token}|{int(pid)}|swap")
 
+    def send_both_colors(self, token: str, pid: int,
+                         fg_r: int, fg_g: int, fg_b: int,
+                         bg_r: int, bg_g: int, bg_b: int) -> bool:
+        """Write both foreground and background colors in a single atomic command."""
+        return self._write_cmd(
+            f"{token}|{int(pid)}|both|{int(fg_r)}|{int(fg_g)}|{int(fg_b)}|{int(bg_r)}|{int(bg_g)}|{int(bg_b)}")
+
     # -- read side ------------------------------------------------------------
 
     def read_state(self, pid: int) -> dict | None:
@@ -565,3 +635,41 @@ class PhotoshopScriptBridge:
     def is_alive(self, pid: int, max_age: float = 8.0) -> bool:
         age = self.heartbeat_age(pid)
         return age is not None and age <= max_age
+
+    def touch_client_alive(self) -> None:
+        """Touch client_alive.txt so the CEP bridge knows Colorink is active."""
+        try:
+            os.makedirs(self.dir, exist_ok=True)
+            path = os.path.join(self.dir, CLIENT_ALIVE_FILENAME)
+            with open(path, "w", encoding="ascii") as f:
+                f.write(str(int(time.time() * 1000)))
+        except Exception:
+            pass
+
+    def set_drawing(self, is_drawing: bool) -> None:
+        """Flag whether the user is actively painting in Photoshop."""
+        try:
+            os.makedirs(self.dir, exist_ok=True)
+            path = os.path.join(self.dir, DRAWING_FILENAME)
+            if is_drawing:
+                with open(path, "w", encoding="ascii") as f:
+                    f.write(str(int(time.time() * 1000)))
+            else:
+                if os.path.isfile(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+        except Exception:
+            pass
+
+    def cleanup_runtime_flags(self) -> None:
+        """Remove transient client_alive.txt and drawing.txt."""
+        for name in (CLIENT_ALIVE_FILENAME, DRAWING_FILENAME):
+            path = os.path.join(self.dir, name)
+            if os.path.isfile(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+

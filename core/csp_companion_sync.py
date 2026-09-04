@@ -1058,8 +1058,12 @@ class CSPCompanionSync:
             "color": color,
         }
 
-    def _has_session(self) -> bool:
+    def has_session(self) -> bool:
+        """True if host, port, and password session parameters are set."""
         return bool(self._host and self._port and self._password)
+
+    def _has_session(self) -> bool:
+        return self.has_session()
 
     # ------------------------------------------------------------------
     # Connection setup dialog

@@ -158,20 +158,23 @@ def main():
                     for i in range(bar0.count()))
         check("页签标题完整显示不截断", bool(fits0),
               f"fits={fits0} widths={[metrics0.horizontalAdvance(bar0.tabText(i)) for i in range(bar0.count())]} rects={[bar0.tabRect(i).width() for i in range(bar0.count())]}")
-        # 顶部间距只应推开"标签页 → 滑条"的内容，不能把标签栏一起往下推。
+        # 顶部以及底部距离：在页签模式下只推开"标签栏 → 模块"内容与底部边距，不推动标签栏。
         bar_y_before = tabs0.mapTo(win, QPoint(0, 0)).y()
         win.cfg["panelTopGap"] = 18
         win.apply_theme()
+        win._adjust_content_height()
         QApplication.processEvents()
         tabs1 = tabs_widget(win)
         bar_y_after = tabs1.mapTo(win, QPoint(0, 0)).y()
         top_margin = win.sliders_layout.contentsMargins().top()
-        check("增加顶部间距不推动标签栏",
-              bar_y_after == bar_y_before and top_margin == 0
+        bottom_margin = win.sliders_layout.contentsMargins().bottom()
+        check("页签模式下增加间距不推动标签栏且内部与底部生效",
+              bar_y_after == bar_y_before and top_margin == 0 and bottom_margin == 18
               and "margin-top: 18px" in tabs1.styleSheet(),
-              f"bar_y {bar_y_before} -> {bar_y_after} sliders_top={top_margin}")
+              f"bar_y {bar_y_before} -> {bar_y_after} top={top_margin} bottom={bottom_margin}")
         win.cfg["panelTopGap"] = 6
         win.apply_theme()
+        win._adjust_content_height()
         QApplication.processEvents()
 
     # 3) Center drop on a tabbed panel adds a NEW page (stacking), not stuffing.

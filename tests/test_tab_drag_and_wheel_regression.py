@@ -22,9 +22,16 @@ from unittest.mock import patch
 
 app = QApplication(sys.argv)
 test_cfg = config.load_hotkey_config()
+test_cfg['showSlidersRGB'] = True
+test_cfg['showSlidersHSV'] = True
+test_cfg['showSlidersHistory'] = True
+test_cfg['colorSpaceModule'] = 'hsv'
+test_cfg['hideHueRing'] = False
 test_cfg['panelDrag'] = True
 test_cfg['slidersTabs'] = True
+test_cfg['onlyShowInCsp'] = False
 test_cfg['floatingPanels'] = {}
+
 test_cfg['panelLayout'] = {
     'version': 1, 'seed': 'tabs',
     'root': {'kind': 'tabs', 'current': 0, 'pages': [['history', 'sliders.hsv', 'sliders.rgb']]}

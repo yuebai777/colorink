@@ -23,10 +23,24 @@ class SyncMixin:
         self._ps_perm_prompted = False
 
         # Set active software mode
-        mode = self.cfg.get("syncSoftware", "csp")
-        if mode not in ("csp", "sai", "udm", "ps", "companion"):
-            mode = "csp"
-        self.sync_thread.set_software_mode(mode)
+        mode = self.cfg.get("syncSoftware", "auto")
+        if mode not in ("auto", "csp", "sai", "udm", "ps", "companion"):
+            mode = "auto"
+        if mode == "auto":
+            from core.foreground import find_running_drawing_software, resolve_auto_sync_mode
+            running = find_running_drawing_software()
+            c_sync = getattr(self.sync_thread, "companion_sync", None)
+            has_session = (
+                getattr(c_sync, "has_session", None) or getattr(c_sync, "_has_session", None)
+            )
+            has_session_val = bool(has_session()) if callable(has_session) else False
+            initial_mode = resolve_auto_sync_mode(
+                running or "csp",
+                has_companion_session=has_session_val,
+            ) or "csp"
+            self.sync_thread.set_software_mode(initial_mode)
+        else:
+            self.sync_thread.set_software_mode(mode)
 
         self.sync_thread.csp_version = self.cfg.get("cspVersion", "auto")
         self.sync_thread.sai2_version = self.cfg.get("sai2Version", "auto")
@@ -300,3 +314,77 @@ class SyncMixin:
                                      source_space=src_sp, source_values=src_v,
                                      transparent=is_transparent,
                                      color_index=color_index)
+
+    def _get_hsv_u32_for_sync(self, slot_index: int = 0):
+        """Compute u32 scaled HSV for companion/CSP synchronization."""
+        _U32 = 4294967295
+        try:
+            active_idx = 0 if getattr(self, "active_slot", "fg") == "fg" else 1
+            if slot_index == active_idx and hasattr(self, "color_wheel"):
+                return (round(self.color_wheel.h / 360.0 * _U32),
+                        round(self.color_wheel.s / 100.0 * _U32),
+                        round(self.color_wheel.v / 100.0 * _U32))
+            pbox = getattr(self, "preview_box", None)
+            col = getattr(pbox, "fg_color" if slot_index == 0 else "bg_color", None)
+            if col is not None and col.isValid():
+                h, s, v, _ = col.getHsv()
+                if h < 0:
+                    h = 0
+                return (round(h / 360.0 * _U32),
+                        round((s / 255.0) * _U32),
+                        round((v / 255.0) * _U32))
+        except Exception:
+            pass
+        return None
+
+    def switch_sync_software_mode(self, new_mode: str):
+        """Switch active software sync channel and immediately synchronize
+        Colorink's current palette state (both slots) to the new software.
+
+        This prevents the newly focused software's stale colors from overwriting
+        Colorink's active colors ("切到ps把颜色切回去") and ensures the new
+        software receives the palette colors with zero delay.
+        """
+        sync_thread = getattr(self, "sync_thread", None)
+        if sync_thread is None:
+            return
+        if getattr(sync_thread, "software_mode", None) == new_mode:
+            return
+
+        active_slot = getattr(self, "active_slot", "fg")
+        active_idx = 0 if active_slot == "fg" else 1
+
+        pbox = getattr(self, "preview_box", None)
+        fg_col = getattr(pbox, "fg_color", None)
+        bg_col = getattr(pbox, "bg_color", None)
+
+        fg_rgb = (fg_col.red(), fg_col.green(), fg_col.blue()) if (fg_col and fg_col.isValid()) else getattr(self, "current_rgb", (255, 255, 255))
+        bg_rgb = (bg_col.red(), bg_col.green(), bg_col.blue()) if (bg_col and bg_col.isValid()) else (255, 255, 255)
+
+        src_sp, src_v = self._resolve_sync_source()
+        get_hsv = getattr(self, "_get_hsv_u32_for_sync", None)
+        hsv_0 = get_hsv(0) if callable(get_hsv) else None
+        hsv_1 = get_hsv(1) if callable(get_hsv) else None
+
+        palette = {
+            0: {
+                "rgb": fg_rgb,
+                "transparent": bool(getattr(self, "_fg_transparent", False)),
+                "source_space": src_sp if active_idx == 0 else getattr(self, "_fg_source_space", "rgb"),
+                "source_values": src_v if active_idx == 0 else getattr(self, "_fg_source_values", None),
+                "hsv_u32": hsv_0,
+            },
+            1: {
+                "rgb": bg_rgb,
+                "transparent": bool(getattr(self, "_bg_transparent", False)),
+                "source_space": src_sp if active_idx == 1 else getattr(self, "_bg_source_space", "rgb"),
+                "source_values": src_v if active_idx == 1 else getattr(self, "_bg_source_values", None),
+                "hsv_u32": hsv_1,
+            },
+            "active_slot": active_idx,
+        }
+
+        try:
+            sync_thread.set_software_mode(new_mode, initial_palette=palette)
+        except TypeError:
+            sync_thread.set_software_mode(new_mode)

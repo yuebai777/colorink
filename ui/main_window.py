@@ -21,6 +21,9 @@ from core.foreground import (
     _resolve_process_exe,  # noqa: F401  (re-export)
     _title_matches_drawing_app,  # noqa: F401  (re-export)
     bring_process_to_foreground,  # noqa: F401  (re-export)
+    identify_drawing_app,  # noqa: F401  (re-export)
+    is_known_non_drawing_exe,  # noqa: F401  (re-export)
+    find_running_drawing_software,  # noqa: F401  (re-export)
 )
 from ui.color_model import ColorState
 from ui.color_session import ColorSession

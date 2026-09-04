@@ -422,3 +422,28 @@ class TestLabTopControlBarLifecycle:
         harness.preview_box.show()
         MainWindow._update_lab_avoid(harness)
         assert harness.lab_square.avoid_top == 0
+
+    def test_ringless_bottom_control_bar_lab_margin(self, harness):
+        harness.cfg["hideHueRing"] = True
+        harness.cfg["ringlessControlBarPosition"] = "bottom"
+        harness.stack.setCurrentIndex(1)
+        harness._sync_ringless_mode(wheel_size=384, title_bar_height=28)
+        harness.lab_layout.setContentsMargins.assert_called_with(0, 0, 0, 30)
+
+    def test_ringless_stack_maximum_height_unconstrained(self, harness):
+        harness.cfg["hideHueRing"] = True
+        harness._sync_ringless_mode(wheel_size=384, title_bar_height=28)
+        assert harness.stack.maximumHeight() == 16777215
+
+    def test_refit_preview_box_guards_ringless_layout(self, harness):
+        harness.cfg["hideHueRing"] = True
+        harness.cfg["ringlessControlBarPosition"] = "bottom"
+        harness.stack.setCurrentIndex(1)
+        harness._sync_ringless_mode(wheel_size=384, title_bar_height=28)
+        initial_width = harness.preview_box.width()
+        assert initial_width > 100
+        # Call _refit_preview_box
+        MainWindow._refit_preview_box(harness)
+        # Sizing and layout must not be clobbered to legacy circle fit
+        assert harness.preview_box.width() == initial_width
+        assert harness.preview_box._ringless_layout is not None

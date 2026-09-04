@@ -1,4 +1,5 @@
 import colorsys
+import ctypes
 import sys
 import threading
 import time
@@ -111,7 +112,13 @@ class MemorySyncThread(QThread):
         self.udm_sync.set_version(self.udm_version)
         self.ps_sync.set_version(getattr(self, 'ps_version', 'auto'))
         
-    def set_software_mode(self, mode):
+    def set_software_mode(self, mode, initial_palette: dict | None = None):
+        if self.software_mode == 'ps' and mode != 'ps':
+            try:
+                if hasattr(self.ps_sync, "cleanup_runtime_flags"):
+                    self.ps_sync.cleanup_runtime_flags()
+            except Exception:
+                pass
         self.software_mode = mode
         self._last_synced_color = {}
         self._last_write_ts = {}
@@ -123,6 +130,37 @@ class MemorySyncThread(QThread):
         # 一直停在"5.1 内存同步已移除"而不再重新检测（比如换成了 5.0）。
         self.csp_sync.unsupported_reason = ""
         self._last_error_text = ("", False)
+
+        if initial_palette:
+            active_idx = int(initial_palette.get("active_slot", 0))
+            off_idx = 1 if active_idx == 0 else 0
+            now = time.time()
+            self._last_active_slot = active_idx
+
+            # Seed write tracking so stale read-back echoes from the newly
+            # focused software are suppressed immediately (避免切到PS把颜色切回去)
+            for idx in (0, 1):
+                item = initial_palette.get(idx)
+                if item and "rgb" in item:
+                    self._last_synced_color[idx] = item["rgb"]
+                    self._last_write_ts[idx] = now
+                    self._last_write_old_color[idx] = None
+
+            # Queue off-slot first, active-slot last (so active slot remains focused)
+            for idx in (off_idx, active_idx):
+                item = initial_palette.get(idx)
+                if item and "rgb" in item:
+                    self._pending_writes[idx] = {
+                        "rgb": item["rgb"],
+                        "hsv_u32": item.get("hsv_u32"),
+                        "source_space": item.get("source_space"),
+                        "source_values": item.get("source_values"),
+                        "transparent": bool(item.get("transparent", False)),
+                        "old_color": None,
+                    }
+
+        if hasattr(self, "_wake_event"):
+            self._wake_event.set()
         
     def set_sync_enabled(self, enabled):
         self.sync_enabled = enabled
@@ -131,6 +169,11 @@ class MemorySyncThread(QThread):
             self._last_write_ts = {}
             self._last_write_old_color = {}
             self._pending_writes = {}
+            try:
+                if hasattr(self.ps_sync, "cleanup_runtime_flags"):
+                    self.ps_sync.cleanup_runtime_flags()
+            except Exception:
+                pass
 
     def write_color(self, r, g, b, hsv_u32=None, source_space=None, source_values=None,
                     transparent=False, color_index=0):
@@ -194,6 +237,11 @@ class MemorySyncThread(QThread):
         """
         self.running = False
         self._wake_event.set()
+        try:
+            if hasattr(self.ps_sync, "cleanup_runtime_flags"):
+                self.ps_sync.cleanup_runtime_flags()
+        except Exception:
+            pass
         if not self.wait(timeout_ms):
             # Thread is stuck — likely in a hung COM RPC call
             self.terminate()
@@ -215,6 +263,30 @@ class MemorySyncThread(QThread):
                 if self._pending_writes:
                     self._is_writing = True
                     try:
+                        # PS CEP bridge atomic dual-write optimization:
+                        # If both slot 0 (fg) and slot 1 (bg) are queued, write both in one command
+                        # so cmd.txt is not overwritten mid-poll.
+                        if self.software_mode == 'ps' and 0 in self._pending_writes and 1 in self._pending_writes:
+                            p0 = self._pending_writes.pop(0)
+                            p1 = self._pending_writes.pop(1)
+                            r0, g0, b0 = p0["rgb"]
+                            r1, g1, b1 = p1["rgb"]
+                            now = time.time()
+                            for idx, (r, g, b), p in ((0, (r0, g0, b0), p0), (1, (r1, g1, b1), p1)):
+                                old = p.get("old_color")
+                                if old is None:
+                                    old = self._last_write_old_color.get(
+                                        idx, self._last_synced_color.get(idx))
+                                self._last_write_old_color[idx] = old
+                                self._last_synced_color[idx] = (r, g, b)
+                                self._last_write_ts[idx] = now
+                            if hasattr(self.ps_sync, "set_both_colors"):
+                                self.ps_sync.set_both_colors(r0, g0, b0, r1, g1, b1)
+                            else:
+                                self.ps_sync.set_color(r1, g1, b1, color_index=1)
+                                self.ps_sync.set_color(r0, g0, b0, color_index=0)
+                            continue
+
                         # GUI 线程可能同时整体替换 _pending_writes（
                         # set_sync_enabled/set_software_mode），判空与取键
                         # 之间被替换会抛 StopIteration/KeyError——必须捕获，
@@ -373,37 +445,61 @@ class MemorySyncThread(QThread):
                     status = self.udm_sync.status()
                     connected = status.get('connected', False)
                 elif self.software_mode == 'ps':
+                    # Signal liveness so the CEP panel knows Colorink is active
+                    if hasattr(self.ps_sync, "touch_client_alive"):
+                        self.ps_sync.touch_client_alive()
+
+                    # Painting protection: detect if the user is actively painting in Photoshop
+                    # (Photoshop is foreground and stylus / left mouse button is pressed).
+                    is_painting = False
+                    try:
+                        ps_pid = getattr(self.ps_sync, "pid", None)
+                        if ps_pid and ctypes is not None:
+                            hwnd = ctypes.windll.user32.GetForegroundWindow()
+                            if hwnd:
+                                fg_pid = ctypes.c_ulong()
+                                ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(fg_pid))
+                                if fg_pid.value == ps_pid:
+                                    # VK_LBUTTON = 0x01
+                                    if ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000:
+                                        is_painting = True
+                    except Exception:
+                        pass
+                    if hasattr(self.ps_sync, "set_drawing"):
+                        self.ps_sync.set_drawing(is_painting)
+
                     # Single sync path for every Photoshop edition: the
                     # user-level CEP bridge. read_state() is a plain local
                     # file read, so no throttling is needed — the only
-                    # latency is the panel's own 0.5 s write cadence.
+                    # latency is the panel's own write cadence.
                     # Writes (pending_writes above) are never throttled.
-                    fg = self.ps_sync.get_color()
-                    bg = self.ps_sync.get_bg_color()
-                    if fg is not None:
-                        colors.append(fg)
-                    if bg is not None:
-                        colors.append(bg)
-                    # External X-swap detection: the user pressed X in
-                    # Photoshop, so each slot now holds the OTHER slot's
-                    # previous value. Without clearing the write-echo
-                    # suppression here, the slot whose write timestamp is
-                    # still fresh keeps its stale swatch while the other
-                    # slot updates — both swatches then end up showing the
-                    # same color ("把前景色背景色同步成一样的").
-                    if fg is not None and bg is not None:
-                        prev_fg = self._last_synced_color.get(0)
-                        prev_bg = self._last_synced_color.get(1)
-                        if prev_fg is not None and prev_bg is not None:
-                            fg_rgb = (fg.get("r"), fg.get("g"), fg.get("b"))
-                            bg_rgb = (bg.get("r"), bg.get("g"), bg.get("b"))
-                            fg_is_old_bg = _rgb_close(fg_rgb, prev_bg)
-                            bg_is_old_fg = _rgb_close(bg_rgb, prev_fg)
-                            if fg_is_old_bg and bg_is_old_fg:
-                                # Genuine external swap, not a write echo:
-                                # let both slots refresh immediately.
-                                self._last_write_ts.pop(0, None)
-                                self._last_write_ts.pop(1, None)
+                    if not is_painting:
+                        fg = self.ps_sync.get_color()
+                        bg = self.ps_sync.get_bg_color()
+                        if fg is not None:
+                            colors.append(fg)
+                        if bg is not None:
+                            colors.append(bg)
+                        # External X-swap detection: the user pressed X in
+                        # Photoshop, so each slot now holds the OTHER slot's
+                        # previous value. Without clearing the write-echo
+                        # suppression here, the slot whose write timestamp is
+                        # still fresh keeps its stale swatch while the other
+                        # slot updates — both swatches then end up showing the
+                        # same color ("把前景色背景色同步成一样的").
+                        if fg is not None and bg is not None:
+                            prev_fg = self._last_synced_color.get(0)
+                            prev_bg = self._last_synced_color.get(1)
+                            if prev_fg is not None and prev_bg is not None:
+                                fg_rgb = (fg.get("r"), fg.get("g"), fg.get("b"))
+                                bg_rgb = (bg.get("r"), bg.get("g"), bg.get("b"))
+                                fg_is_old_bg = _rgb_close(fg_rgb, prev_bg)
+                                bg_is_old_fg = _rgb_close(bg_rgb, prev_fg)
+                                if fg_is_old_bg and bg_is_old_fg:
+                                    # Genuine external swap, not a write echo:
+                                    # let both slots refresh immediately.
+                                    self._last_write_ts.pop(0, None)
+                                    self._last_write_ts.pop(1, None)
                     # status() is cheap (file/process checks) — keep the
                     # connection flag fresh every loop.
                     status = self.ps_sync.status()
@@ -493,26 +589,22 @@ class MemorySyncThread(QThread):
                         if prev is not None:
                             lr, lg, lb = prev
                             if abs(r - lr) <= 2 and abs(g - lg) <= 2 and abs(b - lb) <= 2:
-                                if self.software_mode == 'ps':
-                                    # The target value has been observed, so
-                                    # the asynchronous write is applied and
-                                    # the echo window can close immediately.
-                                    self._last_write_ts.pop(color_index, None)
-                                    self._last_write_old_color.pop(color_index, None)
+                                # The target value has been observed in the drawing software;
+                                # close the write window immediately.
+                                self._last_write_ts.pop(color_index, None)
+                                self._last_write_old_color.pop(color_index, None)
                                 continue
 
-                    # PS script/CEP bridge applies writes asynchronously
-                    # (up to ~100 ms poll latency): the read-back echoes
-                    # the previous value while our write is still in
-                    # flight. Accepting it would yank the UI back to the
-                    # stale color (乱跳). Suppress only that stale echo;
-                    # a genuinely new PS-side change still propagates.
-                    if self.software_mode == 'ps':
-                        age = time.time() - self._last_write_ts.get(color_index, 0.0)
-                        if age < 1.5:
-                            old = self._last_write_old_color.get(color_index)
-                            if old is None or _rgb_close((r, g, b), old):
-                                continue
+                    # Asynchronous write suppression (up to 1.5s):
+                    # While a write is in flight or settling in the drawing software,
+                    # the read-back may echo the previous/stale value. Suppress
+                    # that stale echo so switching software or picking colors never
+                    # causes the UI to revert or jitter ("把颜色切回去").
+                    age = time.time() - self._last_write_ts.get(color_index, 0.0)
+                    if age < 1.5:
+                        old = self._last_write_old_color.get(color_index)
+                        if old is None or _rgb_close((r, g, b), old):
+                            continue
 
                     color_tuple = (r, g, b)
                     if self._last_synced_color.get(color_index) != color_tuple:
@@ -526,3 +618,8 @@ class MemorySyncThread(QThread):
                 if now - getattr(self, "_last_loop_error_ts", 0.0) > 5.0:
                     self._last_loop_error_ts = now
                     print(f"[Sync] poll loop error: {e!r}")
+        try:
+            if hasattr(self.ps_sync, "cleanup_runtime_flags"):
+                self.ps_sync.cleanup_runtime_flags()
+        except Exception:
+            pass

@@ -454,7 +454,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.lbl_top_gap.setText(str(top_val))
         
         # 4. Software Version
-        _idx = self.combo_software.findData(self.cfg.get("syncSoftware", "csp"))
+        _idx = self.combo_software.findData(self.cfg.get("syncSoftware", "auto"))
         self.combo_software.blockSignals(True)
         self.combo_software.setCurrentIndex(_idx if _idx >= 0 else 0)
         self.combo_software.blockSignals(False)
@@ -619,7 +619,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cfg["ringlessControlsSide"] = rcfg.controls_side
         self.cfg["ringlessControlBarPosition"] = rcfg.control_bar_position
         
-        self.cfg["syncSoftware"] = self.combo_software.currentData() or "csp"
+        self.cfg["syncSoftware"] = self.combo_software.currentData() or "auto"
         
         self.cfg["previewBoxPosition"] = self.combo_pos.currentData() or "top-left"
         

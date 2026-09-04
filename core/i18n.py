@@ -172,6 +172,7 @@ _EN: dict[str, str] = {
     "同色空间滑块间距": "Same color-space spacing",
     "不同空间间距": "Different-space spacing",
     "不同色空间滑块间距": "Between color-space spacing",
+    "顶部以及底部距离": "Top & bottom margin",
     # ── Software ──
     "同步软件": "Sync software",
     "同步目标": "Sync target",
@@ -389,9 +390,12 @@ _EN: dict[str, str] = {
     "增大同一色彩空间内滑块之间的间距": "Increase spacing between sliders in the same color space",
     "减小不同色彩空间滑块之间的间距": "Decrease spacing between sliders of different color spaces",
     "增大不同色彩空间滑块之间的间距": "Increase spacing between sliders of different color spaces",
+    "选择颜色同步到哪个绘画软件（支持自动识别前台软件 / CSP / SAI2 / UDM / Photoshop / 手机 Companion）": "Choose which painting software to sync colors with (Supports auto-detect foreground app / CSP / SAI2 / UDM / Photoshop / phone Companion)",
     "选择颜色同步到哪个绘画软件（CSP / SAI2 / UDM / Photoshop / 手机 Companion）": "Choose which painting software to sync colors with (CSP / SAI2 / UDM / Photoshop / phone Companion)",
     "选择 UDM 版本；自动检测失败时可手动指定": "Choose the UDM version; set manually if auto-detection fails",
     "选择 Photoshop 版本；自动检测失败时可手动指定": "Choose the Photoshop version; set manually if auto-detection fails",
+
+
     "重新连接手机 Companion 模式；未保存会话时按钮会改为「连接智能手机」": "Reconnect the phone Companion mode; the button shows \"Connect smartphone\" when no session is saved",
     "断开当前手机 Companion 连接": "Disconnect the current phone Companion session",
     "重新检测 Photoshop 实例和同步桥状态": "Re-detect Photoshop instances and the sync-bridge status",

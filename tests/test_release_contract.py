@@ -57,7 +57,7 @@ def test_first_run_defaults_are_compact_and_discoverable():
     assert config["showSlidersLAB"] is False
     assert config["historyColumns"] == 8
     assert config["historyRows"] == 2
-    assert config["syncSoftware"] == "csp"
+    assert config["syncSoftware"] == "auto"
     assert config["openAtLogin"] is False
     assert config["hideHueRing"] is False
     assert config["ringlessControlsSide"] == "right"

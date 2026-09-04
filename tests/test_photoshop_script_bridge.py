@@ -108,6 +108,15 @@ class TestDeploy:
         assert "bg.rgb.red=fr" in html
         assert "new SolidColor();" not in html
 
+    def test_panel_supports_both_command(self, bridge):
+        bridge.deploy()
+        with open(os.path.join(_bridge_dir(bridge), INDEX_FILENAME),
+                  encoding="utf-8") as f:
+            html = f.read()
+        assert "'both'" in html
+        assert "fg.rgb.red=" in html
+        assert "bg.rgb.red=" in html
+
     def test_deploy_is_idempotent(self, bridge):
         assert bridge.deploy() is True
         manifest = os.path.join(_bridge_dir(bridge), "CSXS", MANIFEST_FILENAME)
@@ -163,6 +172,13 @@ class TestSendColor:
         with open(os.path.join(_bridge_dir(bridge), CMD_FILENAME),
                   encoding="ascii") as f:
             assert f.read() == "swap-1|4321|swap"
+
+    def test_send_both_colors_writes_both_command(self, bridge):
+        bridge.deploy()
+        assert bridge.send_both_colors("both-1", 4321, 255, 0, 128, 10, 20, 30) is True
+        with open(os.path.join(_bridge_dir(bridge), CMD_FILENAME),
+                  encoding="ascii") as f:
+            assert f.read() == "both-1|4321|both|255|0|128|10|20|30"
 
 
 # ── Panel version (restart-Photoshop hint) ───────────────────────────────
@@ -302,3 +318,47 @@ class TestCleanupInstallDirs:
 
         monkeypatch.setattr(psi, "detect_instances", lambda: [FakeInst()])
         assert PhotoshopScriptBridge.cleanup_install_dirs() == []
+
+
+# ── Runtime flags & paint protection ─────────────────────────────────────
+
+class TestRuntimeFlags:
+    def test_touch_client_alive(self, bridge):
+        bridge.deploy()
+        bridge.touch_client_alive()
+        alive_path = os.path.join(_bridge_dir(bridge), "client_alive.txt")
+        assert os.path.isfile(alive_path)
+        with open(alive_path, encoding="ascii") as f:
+            ts = int(f.read())
+        assert ts > 0
+
+    def test_set_drawing_and_cleanup(self, bridge):
+        bridge.deploy()
+        bridge.set_drawing(True)
+        draw_path = os.path.join(_bridge_dir(bridge), "drawing.txt")
+        assert os.path.isfile(draw_path)
+
+        bridge.set_drawing(False)
+        assert not os.path.isfile(draw_path)
+
+        bridge.touch_client_alive()
+        bridge.set_drawing(True)
+        alive_path = os.path.join(_bridge_dir(bridge), "client_alive.txt")
+        assert os.path.isfile(alive_path)
+        assert os.path.isfile(draw_path)
+
+        bridge.cleanup_runtime_flags()
+        assert not os.path.isfile(alive_path)
+        assert not os.path.isfile(draw_path)
+
+    def test_template_contains_drawing_and_client_alive_checks(self, bridge):
+        bridge.deploy()
+        with open(os.path.join(_bridge_dir(bridge), INDEX_FILENAME),
+                  encoding="utf-8") as f:
+            html = f.read()
+        assert "client_alive.txt" in html
+        assert "drawing.txt" in html
+        assert "isClientAlive" in html
+        assert "isDrawing" in html
+        assert "fs.writeFileSync(d + '/panel_version" in html
+

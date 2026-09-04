@@ -363,3 +363,270 @@ class TestCheckForegroundWindow:
         mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
         assert fs.visible is False
         assert sync == [False], sync
+
+    def test_browser_with_drawing_title_never_shows_window(self, monkeypatch):
+        """Browser with a title like 'Photoshop 教程 - Google Chrome' must NEVER
+        falsely show the window when onlyShowInCsp is enabled."""
+        import ui.main_window as mw
+        import ui.window.picker_actions as pa
+
+        self._stub_win32(monkeypatch, "Photoshop 教程 - Google Chrome", 424242)
+        monkeypatch.setattr(pa, "_resolve_process_exe", lambda pid: "chrome.exe")
+
+        fs = self._make_self()
+        fs.visible = False
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
+        assert fs.visible is False, "Browser with drawing title must not trigger visibility"
+        assert fs.auto_hidden is True
+
+    def test_auto_sync_switches_when_drawing_app_active(self, monkeypatch):
+        """When syncSoftware is 'auto', switching to Photoshop automatically
+        updates the sync thread's software mode."""
+        import ui.main_window as mw
+        import ui.window.picker_actions as pa
+
+        self._stub_win32(monkeypatch, "Adobe Photoshop 2025", 11111)
+        monkeypatch.setattr(pa, "_resolve_process_exe", lambda pid: "photoshop.exe")
+
+        class FakeSyncThread:
+            software_mode = "csp"
+            def set_software_mode(self, mode):
+                self.software_mode = mode
+
+        fs = self._make_self()
+        fs.cfg = {"syncSoftware": "auto", "onlyShowInCsp": False}
+        fs.sync_thread = FakeSyncThread()
+        fs.visible = True
+
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
+        assert fs.sync_thread.software_mode == "ps", "Auto sync should switch to ps"
+
+        # Now switch foreground to SAI2
+        self._stub_win32(monkeypatch, "SAI Ver.2", 22222)
+        monkeypatch.setattr(pa, "_resolve_process_exe", lambda pid: "sai2.exe")
+        fs._fg_exe_cache_pid = None
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
+        assert fs.sync_thread.software_mode == "sai", "Auto sync should switch to sai"
+
+        # Now switch foreground to Chrome (browsing drawing tutorials)
+        self._stub_win32(monkeypatch, "SAI2 笔刷 - Microsoft Edge", 33333)
+        monkeypatch.setattr(pa, "_resolve_process_exe", lambda pid: "msedge.exe")
+        fs._fg_exe_cache_pid = None
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
+        assert fs.sync_thread.software_mode == "sai", "Non-drawing app must not alter active channel"
+
+    def test_auto_sync_switches_csp_prioritizing_companion(self, monkeypatch):
+        """When syncSoftware is 'auto', switching to CSP prioritizes 'companion'
+        if companion session exists, or falls back to 'csp' if no session exists."""
+        import ui.main_window as mw
+        import ui.window.picker_actions as pa
+
+        class FakeCompanionSync:
+            def __init__(self, has_sess=True):
+                self._has_sess = has_sess
+            def has_session(self):
+                return self._has_sess
+            def _has_session(self):
+                return self._has_sess
+
+        class FakeSyncThread:
+            def __init__(self, has_sess=True):
+                self.software_mode = "ps"
+                self.companion_sync = FakeCompanionSync(has_sess)
+            def set_software_mode(self, mode):
+                self.software_mode = mode
+
+        # 1. With companion session -> switches to companion
+        self._stub_win32(monkeypatch, "CLIP STUDIO PAINT", 12345)
+        monkeypatch.setattr(pa, "_resolve_process_exe", lambda pid: "clipstudiopaint.exe")
+
+        fs = self._make_self()
+        fs.cfg = {"syncSoftware": "auto", "onlyShowInCsp": False}
+        fs.sync_thread = FakeSyncThread(has_sess=True)
+        fs.visible = True
+
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
+        assert fs.sync_thread.software_mode == "companion", "CSP with companion session must select companion"
+
+        # Repeated check in companion mode must stay companion
+        fs._fg_exe_cache_pid = None
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
+        assert fs.sync_thread.software_mode == "companion", "Must remain companion without flip-flop"
+
+        # 2. Without companion session -> falls back to csp
+        fs.sync_thread = FakeSyncThread(has_sess=False)
+        fs.sync_thread.software_mode = "ps"
+        fs._fg_exe_cache_pid = None
+        mw.MainWindow.check_foreground_window(cast(mw.MainWindow, fs))
+        assert fs.sync_thread.software_mode == "csp", "CSP without companion session falls back to csp"
+
+
+class TestIdentifyDrawingApp:
+    """Core identify_drawing_app tests for authoritative matching and false-positive prevention."""
+
+    def test_direct_exe_matching(self):
+        from core.foreground import identify_drawing_app
+
+        assert identify_drawing_app("photoshop.exe") == "ps"
+        assert identify_drawing_app("Photoshop.exe") == "ps"
+        assert identify_drawing_app("sai.exe") == "sai"
+        assert identify_drawing_app("sai2.exe") == "sai"
+        assert identify_drawing_app("SAI2.exe") == "sai"
+        assert identify_drawing_app("clipstudiopaint.exe") == "csp"
+        assert identify_drawing_app("clipstudiopaintapp.exe") == "csp"
+        assert identify_drawing_app("clipstudio.exe") == "csp"
+        assert identify_drawing_app("udmpaintpro.exe") == "udm"
+        assert identify_drawing_app("udmpaintex.exe") == "udm"
+
+    def test_non_drawing_browsers_with_drawing_titles_return_none(self):
+        from core.foreground import identify_drawing_app
+
+        # Browsers with titles containing drawing software keywords must NEVER match
+        assert identify_drawing_app("chrome.exe", "Photoshop 2025 教程") is None
+        assert identify_drawing_app("msedge.exe", "SAI2 笔刷下载") is None
+        assert identify_drawing_app("firefox.exe", "CLIP STUDIO PAINT 技巧") is None
+        assert identify_drawing_app("360chrome.exe", "Photoshop 抠图教程") is None
+        assert identify_drawing_app("qqbrowser.exe", "优动漫 PAINT 基础") is None
+        assert identify_drawing_app("opera.exe", "Photoshop调色技巧") is None
+
+    def test_browser_classes_with_drawing_titles_return_none(self):
+        from core.foreground import identify_drawing_app
+
+        assert identify_drawing_app("", "Photoshop 2025", "Chrome_WidgetWin_1") is None
+        assert identify_drawing_app("", "SAI 教程", "MozillaWindowClass") is None
+        assert identify_drawing_app("", "CSP 笔刷", "CabinetWClass") is None
+
+    def test_browser_title_markers_return_none(self):
+        from core.foreground import identify_drawing_app
+
+        assert identify_drawing_app("", "Photoshop 教程 - Google Chrome") is None
+        assert identify_drawing_app("", "SAI2 调色 - 哔哩哔哩_bilibili") is None
+        assert identify_drawing_app("", "CSP 快速入门 - 百度搜索") is None
+        assert identify_drawing_app("", "Photoshop 新建文档 - 知乎") is None
+
+    def test_genuine_title_fallback(self):
+        from core.foreground import identify_drawing_app
+
+        # When exe is not a known browser / non-drawing app, title fallback works
+        assert identify_drawing_app("", "Adobe Photoshop 2024") == "ps"
+        assert identify_drawing_app("", "SAI Ver.2") == "sai"
+        assert identify_drawing_app("", "CLIP STUDIO PAINT") == "csp"
+        assert identify_drawing_app("", "优动漫 PAINT EX") == "csp"
+
+
+class TestFindRunningDrawingSoftware:
+    """find_running_drawing_software scanner tests."""
+
+    def test_find_running_drawing_software_priority(self, monkeypatch):
+        from core.foreground import find_running_drawing_software
+
+        class FakeProcess:
+            def __init__(self, name):
+                self._name = name
+                self.info = {"name": self._name}
+            def name(self):
+                return self._name
+
+        def fake_process_iter(attrs=None):
+            return [
+                FakeProcess("explorer.exe"),
+                FakeProcess("chrome.exe"),
+                FakeProcess("Photoshop.exe"),
+            ]
+
+        import psutil
+        monkeypatch.setattr(psutil, "process_iter", fake_process_iter)
+        assert find_running_drawing_software() == "ps"
+
+    def test_find_running_none(self, monkeypatch):
+        from core.foreground import find_running_drawing_software
+
+        class FakeProcess:
+            def __init__(self, name):
+                self._name = name
+                self.info = {"name": self._name}
+            def name(self):
+                return self._name
+
+        def fake_process_iter(attrs=None):
+            return [
+                FakeProcess("explorer.exe"),
+                FakeProcess("chrome.exe"),
+                FakeProcess("code.exe"),
+            ]
+
+        import psutil
+        monkeypatch.setattr(psutil, "process_iter", fake_process_iter)
+        assert find_running_drawing_software() is None
+
+
+class TestResolveAutoSyncMode:
+    """Auto sync software channel resolution tests."""
+
+    def test_csp_with_companion_session_resolves_to_companion(self):
+        from core.foreground import resolve_auto_sync_mode
+        assert resolve_auto_sync_mode("csp", has_companion_session=True) == "companion"
+
+    def test_csp_without_companion_session_resolves_to_csp(self):
+        from core.foreground import resolve_auto_sync_mode
+        assert resolve_auto_sync_mode("csp", current_mode="ps", has_companion_session=False) == "csp"
+
+    def test_csp_already_in_companion_preserves_companion(self):
+        from core.foreground import resolve_auto_sync_mode
+        assert resolve_auto_sync_mode("csp", current_mode="companion", has_companion_session=False) == "companion"
+
+    def test_ps_sai_udm_direct_resolution(self):
+        from core.foreground import resolve_auto_sync_mode
+        assert resolve_auto_sync_mode("ps") == "ps"
+        assert resolve_auto_sync_mode("sai") == "sai"
+        assert resolve_auto_sync_mode("udm") == "udm"
+        assert resolve_auto_sync_mode(None) is None
+
+    def test_csp_defaults_to_disk_session(self, monkeypatch):
+        import core.foreground as fg
+        monkeypatch.setattr(fg, "has_saved_companion_session", lambda: True)
+        assert fg.resolve_auto_sync_mode("csp") == "companion"
+
+        monkeypatch.setattr(fg, "has_saved_companion_session", lambda: False)
+        assert fg.resolve_auto_sync_mode("csp", current_mode="ps") == "csp"
+
+
+class TestHasSavedCompanionSession:
+    """Tests for has_saved_companion_session."""
+
+    def test_valid_session_file(self, tmp_path, monkeypatch):
+        import json
+        from core.foreground import has_saved_companion_session
+
+        colorink_dir = tmp_path / "Colorink"
+        colorink_dir.mkdir()
+        session_file = colorink_dir / "csp_companion_session.json"
+        session_file.write_text(json.dumps({
+            "host": "192.168.1.10",
+            "port": 32035,
+            "password": "secret",
+        }), encoding="utf-8")
+
+        monkeypatch.setenv("APPDATA", str(tmp_path))
+        assert has_saved_companion_session() is True
+
+    def test_missing_or_invalid_session_file(self, tmp_path, monkeypatch):
+        import json
+        from core.foreground import has_saved_companion_session
+
+        monkeypatch.setenv("APPDATA", str(tmp_path))
+        # File doesn't exist
+        assert has_saved_companion_session() is False
+
+        # Incomplete file (missing password)
+        colorink_dir = tmp_path / "Colorink"
+        colorink_dir.mkdir()
+        session_file = colorink_dir / "csp_companion_session.json"
+        session_file.write_text(json.dumps({
+            "host": "192.168.1.10",
+            "port": 32035,
+            "password": "",
+        }), encoding="utf-8")
+        assert has_saved_companion_session() is False
+
+

@@ -38,6 +38,7 @@ _BACKEND_ATTRS = {
 }
 
 _MODE_NAMES = {
+    "auto": "自动识别 (跟随前台绘画软件)",
     "csp": "CLIP Studio Paint (内存)",
     "sai": "SAI2",
     "udm": "UDM Paint",

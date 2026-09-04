@@ -129,6 +129,10 @@ class ColorPreviewBox(QWidget):
         self.update()
 
     def resize_and_position(self, wheel_size, title_bar_h, window_h, sliders_h, active_slot):
+        # Clear any ringless layout state so legacy paint is restored cleanly
+        self._ringless_layout = None
+        self._cached_ringless_rects = None
+
         # Calculate scale factor relative to default wheel size 304 to dynamically scale with the color wheel width
         wheel_scale = wheel_size / 304.0
         

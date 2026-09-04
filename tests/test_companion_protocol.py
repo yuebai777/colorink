@@ -68,3 +68,18 @@ def test_parse_hsv_response_reports_transparent_flag():
     }, 0)
     assert out is not None
     assert out["transparent"] is True
+
+
+def test_has_session():
+    sync = _make_sync()
+    sync._host = ""
+    sync._port = 0
+    sync._password = ""
+    assert sync.has_session() is False
+    assert sync._has_session() is False
+
+    sync._host = "127.0.0.1"
+    sync._port = 32035
+    sync._password = "secret"
+    assert sync.has_session() is True
+    assert sync._has_session() is True
