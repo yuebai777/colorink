@@ -10,8 +10,10 @@ import os
 from PyQt6.QtCore import QPointF, Qt
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFrame,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
@@ -90,11 +92,11 @@ class SettingsHelpersMixin:
                     SettingsHelpersMixin._clear_layout(sub)
 
     @staticmethod
-    def _make_step_button(text, tooltip="", width=22):
-        """Compact step/arrow button (-, +, ▲, ▼) with a uniform 22px hit area."""
+    def _make_step_button(text, tooltip="", width=28, height=26):
+        """Compact step/arrow button (-, +, ▲, ▼) with a comfortable hit area."""
         btn = QPushButton(text)
         btn.setObjectName("StepButton")
-        btn.setFixedSize(width, 20)
+        btn.setFixedSize(width, height)
         if tooltip:
             btn.setToolTip(tooltip)
         return btn
@@ -124,8 +126,8 @@ class SettingsHelpersMixin:
 
         page = QWidget()
         page_layout = QVBoxLayout(page)
-        page_layout.setSpacing(6)
-        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(10)
+        page_layout.setContentsMargins(2, 2, 4, 4)
 
         scroll.setWidget(page)
         self.stack.addWidget(scroll)
@@ -134,14 +136,51 @@ class SettingsHelpersMixin:
         return page_layout
 
     def _begin_card(self, page_layout, header_text):
-        """Create a flat settings section with header, return (card, content_layout)."""
+        """Create a rounded card settings section with header, return (card, content_layout)."""
         card = QFrame()
         card.setObjectName("SettingsCard")
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(0, 1, 0, 1)
-        card_layout.setSpacing(6)
+        card_layout.setContentsMargins(10, 8, 10, 10)
+        card_layout.setSpacing(8)
         card_layout.addWidget(self.create_header(header_text))
         return card, card_layout
+
+    def _make_setting_row(self, title_text: str, subtitle_text: str = "", control_widget: QWidget | None = None) -> QWidget:
+        """Create a standardized settings row with left title+subtitle and right control."""
+        class _ClickableRow(QWidget):
+            def mouseReleaseEvent(self, event):
+                if event.button() == Qt.MouseButton.LeftButton and isinstance(control_widget, QCheckBox):
+                    control_widget.click()
+                super().mouseReleaseEvent(event)
+
+        row_widget = _ClickableRow()
+        row_widget.setObjectName("SettingRow")
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(2, 3, 2, 3)
+        row_layout.setSpacing(8)
+
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(1)
+
+        title_lbl = QLabel(title_text)
+        title_lbl.setObjectName("RowTitle")
+        text_layout.addWidget(title_lbl)
+
+        if subtitle_text:
+            sub_lbl = QLabel(subtitle_text)
+            sub_lbl.setObjectName("RowSubtitle")
+            sub_lbl.setWordWrap(True)
+            text_layout.addWidget(sub_lbl)
+
+        row_layout.addLayout(text_layout, 1)
+
+        if control_widget is not None:
+            if isinstance(control_widget, QCheckBox):
+                control_widget.setText("")  # Crucial: eliminate duplicate text on the right
+            row_layout.addWidget(control_widget, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        return row_widget
 
     def create_header(self, text):
         lbl = QLabel(text)

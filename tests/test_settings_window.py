@@ -248,10 +248,10 @@ class TestTabStructure:
     def test_pages_exist(self, sidebar):
         assert hasattr(sidebar, "stack")
         assert sidebar.stack is not None
-        assert sidebar.stack.count() == 7
+        assert sidebar.stack.count() == 5
 
     def test_nav_labels(self, sidebar):
-        expected = ["快捷键", "界面", "取色器", "面板", "滤镜", "同步", "关于"]
+        expected = ["快捷键", "界面", "取色器", "面板", "同步"]
         for i, text in enumerate(expected):
             assert sidebar.nav.item(i).text() == text
 
@@ -352,10 +352,10 @@ class TestReorganizedSettings:
     def test_history_settings_merged(self, sidebar):
         assert "History" not in sidebar.slider_rows
         assert hasattr(sidebar, "cb_history")
-        picker_page = sidebar.stack.widget(2)
-        assert picker_page.isAncestorOf(sidebar.cb_history)
-        assert picker_page.isAncestorOf(sidebar.combo_history_cols)
-        assert picker_page.isAncestorOf(sidebar.combo_history_rows)
+        panels_page = sidebar.stack.widget(3)
+        assert panels_page.isAncestorOf(sidebar.cb_history)
+        assert panels_page.isAncestorOf(sidebar.combo_history_cols)
+        assert panels_page.isAncestorOf(sidebar.combo_history_rows)
 
     def test_slider_rows_are_show_switches_only(self, sidebar):
         """顺序改成拖面板了，这里只剩"显示/隐藏"。"""
@@ -367,18 +367,17 @@ class TestReorganizedSettings:
     def test_advanced_is_regular_section(self, sidebar):
         """高级 is a plain section (no collapse toggle) with its controls."""
         from PyQt6.QtWidgets import QLabel
-        picker_page = sidebar.stack.widget(2)
+        panels_page = sidebar.stack.widget(3)
         headers = [
-            lbl.text() for lbl in picker_page.findChildren(QLabel)
+            lbl.text() for lbl in panels_page.findChildren(QLabel)
             if lbl.objectName() == "SectionHeader"
         ]
         assert "高级" in headers
-        assert picker_page.isAncestorOf(sidebar.btn_scroll_dec)
-        panels_page = sidebar.stack.widget(3)
+        assert panels_page.isAncestorOf(sidebar.btn_scroll_dec)
         assert panels_page.isAncestorOf(sidebar.lbl_same_space)
         assert panels_page.isAncestorOf(sidebar.lbl_diff_space)
         # No collapsible headers remain anywhere
-        assert not picker_page.findChildren(QPushButton, "CollapseHeader")
+        assert not panels_page.findChildren(QPushButton, "CollapseHeader")
 
     def test_last_tab_is_remembered(self, sidebar):
         sidebar.stack.setCurrentIndex(3)
@@ -420,7 +419,7 @@ class TestReorganizedSettings:
         assert not hasattr(sidebar, "btn_hist_down")
 
     def test_sync_and_versions_share_one_card(self, sidebar):
-        software_page = sidebar.stack.widget(5)
+        software_page = sidebar.stack.widget(4)
         assert software_page.isAncestorOf(sidebar.combo_software)
         assert software_page.isAncestorOf(sidebar.combo_csp)
 

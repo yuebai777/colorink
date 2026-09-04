@@ -402,7 +402,7 @@ class SyncPanelMixin:
         card_sync, cl_sync = self._begin_card(page_sync, i18n.tr("同步与版本"))
 
         row_sync_status = QHBoxLayout()
-        row_sync_status.setSpacing(6)
+        row_sync_status.setSpacing(8)
         self.lbl_sync_status = QLabel("")
         self.lbl_sync_status.setObjectName("StatusHint")
         row_sync_status.addWidget(self.lbl_sync_status, 1)
@@ -415,8 +415,8 @@ class SyncPanelMixin:
         cl_sync.addLayout(row_sync_status)
 
         grid_sync = QGridLayout()
-        grid_sync.setSpacing(6)
-        grid_sync.setColumnMinimumWidth(0, 84)
+        grid_sync.setSpacing(8)
+        grid_sync.setColumnMinimumWidth(0, 110)
         grid_sync.setColumnStretch(1, 1)
         grid_sync.addWidget(QLabel(i18n.tr("同步目标")), 0, 0)
         self.combo_software = NonScrollComboBox()
@@ -432,8 +432,9 @@ class SyncPanelMixin:
 
         # 自动识别提示：前台切换绘画软件时自动切换同步通道
         self.row_auto_mode_tip_widget = QWidget()
+        self.row_auto_mode_tip_widget.setObjectName("TipBanner")
         row_auto_mode_tip = QVBoxLayout(self.row_auto_mode_tip_widget)
-        row_auto_mode_tip.setContentsMargins(0, 0, 0, 0)
+        row_auto_mode_tip.setContentsMargins(10, 8, 10, 8)
         row_auto_mode_tip.setSpacing(4)
         self.lbl_auto_mode_tip = QLabel(i18n.tr(
             "已开启自动识别：在前台切换绘画软件时自动切换同步通道（支持 SAI2 / Photoshop / CLIP Studio Paint / UDM Paint，其中 CSP 优先使用手机模式）。"
@@ -446,8 +447,9 @@ class SyncPanelMixin:
 
         # CSP 各连接模式的问题/推荐说明：5.1 内存同步已移除，推荐手机模式。
         self.row_csp_mode_tip_widget = QWidget()
+        self.row_csp_mode_tip_widget.setObjectName("TipBanner")
         row_csp_mode_tip = QVBoxLayout(self.row_csp_mode_tip_widget)
-        row_csp_mode_tip.setContentsMargins(0, 0, 0, 0)
+        row_csp_mode_tip.setContentsMargins(10, 8, 10, 8)
         row_csp_mode_tip.setSpacing(4)
         self.lbl_csp_mode_tip = QLabel("")
         self.lbl_csp_mode_tip.setWordWrap(True)
@@ -459,7 +461,8 @@ class SyncPanelMixin:
         # Companion status row (visible only when "CSP 智能手机" selected)
         self.row_companion_widget = QWidget()
         row_comp = QHBoxLayout(self.row_companion_widget)
-        row_comp.setContentsMargins(0, 0, 0, 0); row_comp.setSpacing(6)
+        row_comp.setContentsMargins(0, 0, 0, 0)
+        row_comp.setSpacing(8)
         self.lbl_companion_status = QLabel(i18n.tr("未连接"))
         self.btn_companion_reconnect = QPushButton(i18n.tr("重新连接"))
         self.btn_companion_reconnect.clicked.connect(self._on_companion_reconnect)
@@ -475,7 +478,10 @@ class SyncPanelMixin:
         self.row_csp_widget = QWidget()
         row_csp_layout = QHBoxLayout(self.row_csp_widget)
         row_csp_layout.setContentsMargins(0, 0, 0, 0)
-        row_csp_layout.addWidget(QLabel(i18n.tr("CSP 版本")))
+        row_csp_layout.setSpacing(8)
+        lbl_csp_title = QLabel(i18n.tr("CSP 版本"))
+        lbl_csp_title.setFixedWidth(110)
+        row_csp_layout.addWidget(lbl_csp_title)
         self.combo_csp = NonScrollComboBox()
         for _val, _disp in _CSP_VERSION_ITEMS:
             self.combo_csp.addItem(i18n.tr(_disp), _val)
@@ -490,10 +496,12 @@ class SyncPanelMixin:
         self.combo_csp.currentTextChanged.connect(self._on_csp_version_changed)
         row_csp_layout.addWidget(self.combo_csp)
         cl_sync.addWidget(self.row_csp_widget)
+
         # 版本能力说明行：明确 5.0 与 5.1 的同步能力差异
         self.row_csp_hint_widget = QWidget()
+        self.row_csp_hint_widget.setObjectName("TipBanner")
         row_csp_hint = QVBoxLayout(self.row_csp_hint_widget)
-        row_csp_hint.setContentsMargins(0, 0, 0, 0)
+        row_csp_hint.setContentsMargins(10, 8, 10, 8)
         row_csp_hint.setSpacing(4)
         self.lbl_csp_hint = QLabel("")
         self.lbl_csp_hint.setWordWrap(True)
@@ -505,7 +513,10 @@ class SyncPanelMixin:
         self.row_sai_widget = QWidget()
         row_sai_layout = QHBoxLayout(self.row_sai_widget)
         row_sai_layout.setContentsMargins(0, 0, 0, 0)
-        row_sai_layout.addWidget(QLabel(i18n.tr("SAI2 版本")))
+        row_sai_layout.setSpacing(8)
+        lbl_sai_title = QLabel(i18n.tr("SAI2 版本"))
+        lbl_sai_title.setFixedWidth(110)
+        row_sai_layout.addWidget(lbl_sai_title)
         self.combo_sai = NonScrollComboBox()
         self.combo_sai.addItems(["auto", "pre-2024-sai2", "after-2024-sai2"])
         self.combo_sai.setToolTip(i18n.tr("2024 年后的 SAI2 版本地址偏移不同，自动检测失败时可手动指定"))
@@ -517,7 +528,10 @@ class SyncPanelMixin:
         self.row_sai_refresh_widget = QWidget()
         row_sai_refresh = QHBoxLayout(self.row_sai_refresh_widget)
         row_sai_refresh.setContentsMargins(0, 0, 0, 0)
-        row_sai_refresh.addWidget(QLabel(i18n.tr("SAI 界面刷新")))
+        row_sai_refresh.setSpacing(8)
+        lbl_sai_refresh_title = QLabel(i18n.tr("SAI 界面刷新"))
+        lbl_sai_refresh_title.setFixedWidth(110)
+        row_sai_refresh.addWidget(lbl_sai_refresh_title)
         self.combo_sai_refresh = NonScrollComboBox()
         for _val, _disp in _SAI_REFRESH_ITEMS:
             self.combo_sai_refresh.addItem(i18n.tr(_disp), _val)
@@ -537,7 +551,10 @@ class SyncPanelMixin:
         self.row_udm_widget = QWidget()
         row_udm_layout = QHBoxLayout(self.row_udm_widget)
         row_udm_layout.setContentsMargins(0, 0, 0, 0)
-        row_udm_layout.addWidget(QLabel(i18n.tr("UDM 版本")))
+        row_udm_layout.setSpacing(8)
+        lbl_udm_title = QLabel(i18n.tr("UDM 版本"))
+        lbl_udm_title.setFixedWidth(110)
+        row_udm_layout.addWidget(lbl_udm_title)
         self.combo_udm = NonScrollComboBox()
         self.combo_udm.addItems(["auto", "udm4.0pro", "udm4.0ex"])
         self.combo_udm.currentTextChanged.connect(self.save_settings)
@@ -548,7 +565,10 @@ class SyncPanelMixin:
         self.row_ps_widget = QWidget()
         row_ps_layout = QHBoxLayout(self.row_ps_widget)
         row_ps_layout.setContentsMargins(0, 0, 0, 0)
-        row_ps_layout.addWidget(QLabel(i18n.tr("Photoshop 版本")))
+        row_ps_layout.setSpacing(8)
+        lbl_ps_title = QLabel(i18n.tr("Photoshop 版本"))
+        lbl_ps_title.setFixedWidth(110)
+        row_ps_layout.addWidget(lbl_ps_title)
         self.combo_ps = NonScrollComboBox()
         self.combo_ps.addItems(["auto"])
         self.combo_ps.currentTextChanged.connect(self.save_settings)
@@ -558,15 +578,16 @@ class SyncPanelMixin:
         # Green/portable Photoshop script-bridge notice row (visible only
         # when a green edition is detected and PS sync is selected).
         self.row_ps_bridge_widget = QWidget()
+        self.row_ps_bridge_widget.setObjectName("TipBanner")
         row_ps_bridge = QVBoxLayout(self.row_ps_bridge_widget)
-        row_ps_bridge.setContentsMargins(0, 0, 0, 0)
+        row_ps_bridge.setContentsMargins(10, 8, 10, 8)
         row_ps_bridge.setSpacing(4)
         self.lbl_ps_bridge_status = QLabel("")
         self.lbl_ps_bridge_status.setWordWrap(True)
         self.lbl_ps_bridge_status.setObjectName("StatusHint")
         row_ps_bridge.addWidget(self.lbl_ps_bridge_status)
         row_ps_bridge_btns = QHBoxLayout()
-        row_ps_bridge_btns.setSpacing(6)
+        row_ps_bridge_btns.setSpacing(8)
         self.btn_ps_bridge_recheck = QPushButton(i18n.tr("重新检测"))
         self.btn_ps_bridge_recheck.clicked.connect(self._on_ps_bridge_recheck)
         self.btn_ps_bridge_restart = QPushButton(i18n.tr("重启 Photoshop"))
@@ -588,5 +609,17 @@ class SyncPanelMixin:
         self._ps_bridge_prompted = False
 
         page_sync.addWidget(card_sync)
+
+        # ── Card 2: 全屏灰度滤镜 ──
+        if hasattr(self, "_build_grayscale_card"):
+            self._build_grayscale_card(page_sync)
+
+        # ── Card 3: 配置管理 ──
+        if hasattr(self, "_build_config_card"):
+            self._build_config_card(page_sync)
+
+        # ── Card 4: 关于与更新 ──
+        if hasattr(self, "_build_about_card"):
+            self._build_about_card(page_sync)
 
 
