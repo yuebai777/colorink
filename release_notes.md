@@ -1,3 +1,20 @@
+## v1.8.5
+
+修复 Photoshop CEP 扩展桥双向同步与状态回读、升级内置面板协议至 Version 12。
+
+### 修复
+
+- **Photoshop CEP 扩展桥回调兼容性修复**：修复 Adobe CEP 环境下 `evalScript` 回调函数接收单一 `(result)` 参数的规范契约，彻底解决在部分 Photoshop 版本中前景色/背景色回读及多实例 PID 路由失效的偶发问题
+- **同步响应灵敏度提升**：将 CEP 面板前景色/背景色状态回读轮询频率提升一倍（由 1.0 秒缩短至 0.5 秒），大幅提升 Photoshop 画布取色与调色板双向同步的实时跟手感
+
+### 变更
+
+- **内置 CEP 面板协议升级**：面板通信协议版本递增至 `Panel Version 12`，支持错误状态检测与自动清除
+- **测试套件扩充**：新增 `test_evalscript_callback_signature_and_state_readback` 测试，全量单测总数提升至 **1517 项（100% 全绿）**
+- 版本号统一更新至 **v1.8.5 / 1.8.5.0**
+
+---
+
 ## v1.8.4
 
 新增 DirectComposition 硬件加速灰度滤镜后端（DComp）、滑条点击跳转与微调交互增强。
