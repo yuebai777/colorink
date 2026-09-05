@@ -55,7 +55,7 @@ DRAWING_FILENAME: Final = "drawing.txt"
 # panel with an older protocol keeps writing the old value (or nothing),
 # so Colorink can tell "deployed file is new" from "running panel is
 # new" — only the latter clears the "restart Photoshop" hint.
-PANEL_VERSION: Final = 11
+PANEL_VERSION: Final = 12
 
 EXTENSION_ID: Final = "com.colorink.bridge"
 EXTENSION_DIR_NAME: Final = "ColorinkBridge"
@@ -172,10 +172,10 @@ try {
 } catch (e) { useNodeFs = false; }
 function evalScript(script, cb) {
     if (window.__adobe_cep__) {
-        window.__adobe_cep__.evalScript(script, function (code, result) {
-            if (cb) cb(code, result);
+        window.__adobe_cep__.evalScript(script, function (result) {
+            if (cb) cb(result);
         });
-    } else if (cb) { cb(-1, null); }
+    } else if (cb) { cb(null); }
 }
 // Resolve this Photoshop's PID for multi-instance routing. Not every
 // ExtendScript engine exposes $.pid (green builds return undefined), so
@@ -191,10 +191,10 @@ try {
         myPid = String(env.appPid).trim();
     }
 } catch (e) {}
-evalScript("try{var pv=$.pid;pv!==undefined&&pv!==null?String(pv):''}catch(e){''}", function (code, result) {
-    if (myPid === "" && code === 0 && result !== null && result !== undefined) {
+evalScript("try{var pv=$.pid;pv!==undefined&&pv!==null?String(pv):''}catch(e){''}", function (result) {
+    if (myPid === "" && result && typeof result === 'string') {
         var v = String(result).trim();
-        if (v !== "" && v !== "undefined") { myPid = v; }
+        if (v !== "" && v !== "undefined" && v.indexOf("EvalScript error") === -1) { myPid = v; }
     }
     // Diagnostics: record which pid the panel resolved to ('' = shared
     // mode) so Colorink / support can see the routing mode.
@@ -225,7 +225,7 @@ function claimStaleCmd() {
         } else {
             var s = "var f=new File('" + d0 + "/cmd.txt');" +
                 "if(f.exists){var t=f.modified?f.modified.getTime():0;if(t>0&&t<" + panelStart + "){f.remove();}}true;";
-            evalScript(s, function (code, result) { claimed = true; });
+            evalScript(s, function (result) { claimed = true; });
         }
     } catch (e) { claimed = true; }
 }
@@ -244,7 +244,7 @@ claimStaleCmd();
 })();
 var tick = 0;
 var FAST_MS = 100;     // command mailbox check interval
-var STATE_EVERY = 10;  // state read-back every 10 ticks (1.0 s)
+var STATE_EVERY = 5;   // state read-back every 5 ticks (0.5 s)
 var BEAT_EVERY = 40;   // heartbeat + panel_version every 40 ticks (4 s)
 var cmdMtime = 0;
 var lastToken = "";
@@ -263,7 +263,7 @@ function beatScript(d) {
     var suff = pidSuffix();
     return "var d='" + d + "';" +
         "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
-        "pv.write('11');pv.close();" +
+        "pv.write('12');pv.close();" +
         "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
         "h.write(String(new Date().getTime()));h.close();";
 }
@@ -307,7 +307,7 @@ function poll() {
         if (useNodeFs) {
             if (doBeat) {
                 try {
-                    fs.writeFileSync(d + '/panel_version' + suff + '.txt', '11');
+                    fs.writeFileSync(d + '/panel_version' + suff + '.txt', '12');
                     fs.writeFileSync(d + '/heartbeat' + suff + '.txt', String(Date.now()));
                 } catch (eBeat) {}
             }
@@ -325,11 +325,13 @@ function poll() {
                     var forUs = (myPid === "" || parts[1] === myPid);
                     if (forUs && parts.length >= 3 && parts[0] !== lastToken) {
                         lastToken = parts[0];
-                        evalScript(applyScript(d, parts), function (code, result) {
+                        evalScript(applyScript(d, parts), function (result) {
                             // Diagnostics: surface any apply failure.
                             try {
-                                if (code !== 0) {
-                                    fs.writeFileSync(d + '/apply_error.txt', "code=" + code + " result=" + String(result) + " cmd=" + raw);
+                                if (result && typeof result === 'string' && result.indexOf("EvalScript error") !== -1) {
+                                    fs.writeFileSync(d + '/apply_error.txt', "error=" + result + " cmd=" + raw);
+                                } else if (useNodeFs && fs.existsSync(d + '/apply_error.txt')) {
+                                    try { fs.unlinkSync(d + '/apply_error.txt'); } catch (e) {}
                                 }
                             } catch (e3) {}
                         });
@@ -374,8 +376,8 @@ function poll() {
                 } catch (eDr) {}
 
                 if (isClientAlive && !isDrawing) {
-                    evalScript("try{var fg=app.foregroundColor.rgb,bg=app.backgroundColor.rgb;Math.round(fg.red)+'|'+Math.round(fg.green)+'|'+Math.round(fg.blue)+'|'+Math.round(bg.red)+'|'+Math.round(bg.green)+'|'+Math.round(bg.blue);}catch(e){''}", function (code, result) {
-                        if (code === 0 && result && typeof result === 'string' && result.indexOf('|') !== -1) {
+                    evalScript("try{var fg=app.foregroundColor.rgb,bg=app.backgroundColor.rgb;Math.round(fg.red)+'|'+Math.round(fg.green)+'|'+Math.round(fg.blue)+'|'+Math.round(bg.red)+'|'+Math.round(bg.green)+'|'+Math.round(bg.blue);}catch(e){''}", function (result) {
+                        if (result && typeof result === 'string' && result.indexOf('|') !== -1) {
                             if (result !== lastStateStr) {
                                 lastStateStr = result;
                                 try {
@@ -426,7 +428,7 @@ function poll() {
                 "}" +
                 (doBeat ?
                 "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
-                "pv.write('10');pv.close();" +
+                "pv.write('12');pv.close();" +
                 "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
                 "h.write(String(new Date().getTime()));h.close();" : "");
             evalScript(script, function () {});

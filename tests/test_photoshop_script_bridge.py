@@ -362,3 +362,23 @@ class TestRuntimeFlags:
         assert "isDrawing" in html
         assert "fs.writeFileSync(d + '/panel_version" in html
 
+    def test_evalscript_callback_signature_and_state_readback(self, bridge):
+        """CEP evalScript callback only receives (result), not (code, result).
+        State read-back and PID resolution must never expect code === 0."""
+        bridge.deploy()
+        with open(os.path.join(_bridge_dir(bridge), INDEX_FILENAME),
+                  encoding="utf-8") as f:
+            html = f.read()
+        # evalScript helper must only take (result)
+        assert "window.__adobe_cep__.evalScript(script, function (result)" in html
+        assert "function (code, result)" not in html
+        assert "code === 0" not in html
+        # state read-back checks string output
+        assert "typeof result === 'string'" in html
+        assert "result.indexOf('|') !== -1" in html
+        # STATE_EVERY is 5 ticks (0.5 s)
+        assert "var STATE_EVERY = 5;" in html
+        # Fallback panel_version matches PANEL_VERSION
+        assert f"pv.write('{PANEL_VERSION}')" in html
+
+
