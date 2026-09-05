@@ -19,7 +19,7 @@ SETTINGS_EXPORT_FORMAT = "colorink-settings"
 # reasons about slider order (main window layout, settings sidebar moves,
 # config normalization) must go through this list and the helpers below so
 # the default values and tie-breaks can never drift apart.
-SLIDER_GROUPS = ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh", "History"]
+SLIDER_GROUPS = ["RGB", "HSV", "VHSV", "HSL", "LAB", "OKLab", "OKLCh", "History"]
 
 
 def slider_order_key(group: str) -> str:
@@ -121,28 +121,30 @@ def default_hotkey_config():
         "language": "auto",
         "showSlidersRGB": False,
         "showSlidersHSV": True,
+        "showSlidersVHSV": False,
         "showSlidersHSL": False,
         "showSlidersLAB": False,
         "orderSlidersRGB": 1,
         "orderSlidersHSV": 2,
-        "orderSlidersHSL": 3,
-        "orderSlidersLAB": 4,
+        "orderSlidersVHSV": 3,
+        "orderSlidersHSL": 4,
+        "orderSlidersLAB": 5,
         "showSlidersOKLab": True,
         "showSlidersOKLCh": True,
-        "orderSlidersOKLab": 5,
-        "orderSlidersOKLCh": 6,
+        "orderSlidersOKLab": 6,
+        "orderSlidersOKLCh": 7,
         "visualizerMode": "lab",
         "labViewShape": "square",
         "labHarmonyMode": "analogous",
         "colorWheelMode": "hsv",
-        "colorSpaceModule": "hsv",          # "hsv" | "hls" | "rgb" | "lch"
+        "colorSpaceModule": "hsv",          # "hsv" | "vhsv" | "hls" | "rgb" | "lch"
         "showModuleSwitchButton": True,     # floating button next to ⊙/△
         "sliderScrollStep": 1,
         "sliderSameSpace": 6,
         "sliderDiffSpace": 8,
         "panelTopGap": 6,
         "showSlidersHistory": True,
-        "orderSlidersHistory": 7,
+        "orderSlidersHistory": 8,
         "historyColumns": 8,
         "historyRows": 2,
         "historySwatchSize": 18,
@@ -280,7 +282,7 @@ def _merge_with_defaults(loaded: dict) -> dict:
 # UI (e.g. ``cfg["uiScale"] / 100.0`` raising TypeError). Invalid values are
 # dropped so _merge_with_defaults re-fills the default.
 _BOOL_KEYS = frozenset({
-    "showSlidersRGB", "showSlidersHSV", "showSlidersHSL", "showSlidersLAB",
+    "showSlidersRGB", "showSlidersHSV", "showSlidersVHSV", "showSlidersHSL", "showSlidersLAB",
     "showSlidersOKLab", "showSlidersOKLCh", "showSlidersHistory",
     "showTitleBar", "showTaskbarIcon", "lockWindowSize", "lockWindowPosition",
     "onlyShowInCsp", "openAtLogin", "checkUpdatesOnStartup",

@@ -1,4 +1,4 @@
-﻿"""Regression coverage for background full-resolution slice warmups."""
+"""Regression coverage for background full-resolution slice warmups."""
 
 import os
 from unittest.mock import patch
@@ -26,7 +26,7 @@ def _layout() -> RinglessLayout:
 
 
 def test_all_module_slice_modes_render_full_resolution():
-    for mode in ("hsv-square", "hls-triangle", "rgb-slice", "oklch-slice"):
+    for mode in ("hsv-square", "vhsv-square", "hls-triangle", "rgb-slice", "oklch-slice"):
         result = render_slice(SlicePrewarmRequest(1, mode, 35.0, 200.0, 200.0, 190.0, 1.0))
         assert result.image_width > 1
         assert result.image_height > 1

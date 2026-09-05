@@ -88,6 +88,89 @@ def test_settle_defers_while_the_frame_is_being_dragged(qapp):
     assert host.calls == 1
 
 
+class _DpiHost(LayoutMixin, QWidget):
+    def __init__(self, current_dpr=1.5):
+        super().__init__()
+        self.calls = 0
+        self._last_dpr = 1.0
+        self.resizing = False
+        self._dpi_settle_suppress = False
+        self._mock_dpr = current_dpr
+        self.resized_to = None
+        self.resize(320, 700)
+
+    def screen(self):
+        mock_screen = MagicMock()
+        mock_screen.devicePixelRatio.return_value = self._mock_dpr
+        return mock_screen
+
+    def resize(self, *args):
+        if len(args) == 1:
+            self.resized_to = (args[0].width(), args[0].height())
+            super().resize(args[0])
+        else:
+            self.resized_to = (args[0], args[1])
+            super().resize(args[0], args[1])
+
+    def update_geometries(self):
+        pass
+
+    def _run_deferred_content_height(self):
+        self.calls += 1
+
+
+def test_dpi_change_restores_logical_size_and_suppresses_height_settle(qapp):
+    """跨屏 DPI 变化时保持逻辑像素尺寸，不许触发内容高度收缩。"""
+    from PyQt6.QtCore import QSize
+    from PyQt6.QtGui import QResizeEvent
+
+    host = _DpiHost(current_dpr=1.5)
+    host._dpi_transition = True
+    event = QResizeEvent(QSize(320, 700), QSize(320, 700))
+    host.resizeEvent(event)
+
+    assert host._last_dpr == 1.5
+    assert getattr(host, "_settle_needs_height", False) is False
+    host._run_settle()
+    assert host.calls == 0  # 没有触发高度重置
+
+
+def test_native_event_adapts_dpi_changed_rect(qapp):
+    """Windows WM_DPICHANGED 消息到达时，根据用户设定的逻辑尺寸计算物理尺寸并改写建议矩形。"""
+    import sys
+    if sys.platform != "win32":
+        return
+    import ctypes
+    import ctypes.wintypes
+    from ui.main_window import MainWindow
+
+    w = MainWindow()
+    try:
+        w.sync_thread.sync_enabled = False
+        w._user_logical_width = 320
+        w._user_manual_height = 700
+        w._manual_height_override = True
+
+        rect = ctypes.wintypes.RECT(100, 100, 100 + 480, 100 + 1050)
+        wparam = (120 << 16) | 120  # 120 DPI = 1.25x DPR
+        msg = ctypes.wintypes.MSG()
+        msg.message = 0x02E0
+        msg.wParam = wparam
+        msg.lParam = ctypes.addressof(rect)
+
+        handled, result = w.nativeEvent(b"windows_generic_MSG", ctypes.addressof(msg))
+        assert handled is False  # 允许 Qt 继续处理更新后的 suggested rect
+        assert w._dpi_transition is True
+        # 物理尺寸应被重写为 320 * 1.25 = 400, 700 * 1.25 = 875
+        assert rect.right - rect.left == 400
+        assert rect.bottom - rect.top == 875
+    finally:
+        w.sync_thread.stop()
+        w.sync_thread.wait(500)
+        w.close()
+
+
+
 # ── 模块锚定在色轮圆上 ─────────────────────────────────────────────────
 
 def _preview(mode):
@@ -228,3 +311,83 @@ def test_adjust_grows_when_the_content_needs_it(qapp):
     host._adjust_content_height()
     assert host.height() >= first
     assert host.height() >= host.minimumHeight()
+
+
+def test_wm_getdpiscaledsize_native_event(qapp):
+    """Windows Per-Monitor v2 WM_GETDPISCALEDSIZE 必须返回目标 DPI 的准确物理尺寸。"""
+    import sys
+    if sys.platform != "win32":
+        return
+    import ctypes
+    import ctypes.wintypes
+    from ui.main_window import MainWindow
+
+    class SIZE(ctypes.Structure):
+        _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
+
+    w = MainWindow()
+    try:
+        w.sync_thread.sync_enabled = False
+        w._user_logical_width = 320
+        w._user_manual_height = 800
+        w._manual_height_override = True
+
+        size = SIZE(0, 0)
+        msg = ctypes.wintypes.MSG()
+        msg.message = 0x02E4  # WM_GETDPISCALEDSIZE
+        msg.wParam = 120      # 120 DPI = 1.25x DPR
+        msg.lParam = ctypes.addressof(size)
+
+        handled, result = w.nativeEvent(b"windows_generic_MSG", ctypes.addressof(msg))
+        assert handled is True
+        assert result == 1
+        assert size.cx == int(round(320 * 1.25))  # 400
+        assert size.cy == int(round(800 * 1.25))  # 1000
+
+        # 再测试切回 144 DPI (150%)
+        msg.wParam = 144
+        handled, result = w.nativeEvent(b"windows_generic_MSG", ctypes.addressof(msg))
+        assert handled is True
+        assert result == 1
+        assert size.cx == int(round(320 * 1.5))   # 480
+        assert size.cy == int(round(800 * 1.5))   # 1200
+    finally:
+        w.sync_thread.stop()
+        w.sync_thread.wait(500)
+        w.close()
+
+
+def test_multi_cycle_dpi_invariance(qapp):
+    """跨屏幕来回切换 DPI 时，逻辑尺寸必须始终锁定为 320，不可等比例缩放或缩小。"""
+    import sys
+    if sys.platform != "win32":
+        return
+    import ctypes
+    import ctypes.wintypes
+    from ui.main_window import MainWindow
+
+    w = MainWindow()
+    try:
+        w.sync_thread.sync_enabled = False
+        w.show()
+        qapp.processEvents()
+
+        initial_user_w = w._user_logical_width or 320
+        dpis = [120, 144, 120, 144, 120, 144]  # 连续 6 次跨屏
+
+        rect = ctypes.wintypes.RECT(100, 100, 100 + 480, 100 + 1000)
+        msg = ctypes.wintypes.MSG()
+        msg.message = 0x02E0
+
+        for dpi in dpis:
+            msg.wParam = (dpi << 16) | dpi
+            msg.lParam = ctypes.addressof(rect)
+            w.nativeEvent(b"windows_generic_MSG", ctypes.addressof(msg))
+            expected_target_w = int(round(initial_user_w * (dpi / 96.0)))
+            assert rect.right - rect.left == expected_target_w
+            # 内部保存的逻辑宽度必须零漂移
+            assert w._user_logical_width == initial_user_w
+    finally:
+        w.sync_thread.stop()
+        w.sync_thread.wait(500)
+        w.close()

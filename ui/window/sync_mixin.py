@@ -7,7 +7,7 @@ from PyQt6.QtCore import pyqtSlot
 from PyQt6.QtGui import QColor
 
 from core import memory_sync
-from ui.color_conversions import lab_to_rgb, oklab_to_rgb, oklch_to_rgb
+from ui.color_conversions import lab_to_rgb, oklab_to_rgb, oklch_to_rgb, vhsv_to_rgb
 
 
 class SyncMixin:
@@ -256,7 +256,9 @@ class SyncMixin:
             return (src, vals)
         # Fallback: convert non-SPACE_ORDER sources to float RGB
         try:
-            if src == "lab":
+            if src == "vhsv":
+                r, g, b = vhsv_to_rgb(vals["h"], vals["s"], vals["v"])
+            elif src == "lab":
                 r, g, b = lab_to_rgb(vals["l"], vals["a"], vals["b"])
             elif src == "oklab":
                 r, g, b = oklab_to_rgb(vals["L"], vals["a"], vals["b"])
@@ -299,9 +301,15 @@ class SyncMixin:
                 # Fallback: wheel HSV was already updated in the color-sync
                 # step above. This preserves hue when RGB→HSV would lose it
                 # (grayscale).
-                hsv_ov = (round(self.color_wheel.h/360*_U32),
-                          round(self.color_wheel.s/100*_U32),
-                          round(self.color_wheel.v/100*_U32))
+                if hasattr(self, "color_wheel") and getattr(self.color_wheel, "wheel_mode", None) == "vhsv-square":
+                    h_act, s_act, v_act = rgb_to_hsv(r, g, b)
+                    hsv_ov = (round(h_act/360*_U32),
+                              round(s_act/100*_U32),
+                              round(v_act/100*_U32))
+                else:
+                    hsv_ov = (round(self.color_wheel.h/360*_U32),
+                              round(self.color_wheel.s/100*_U32),
+                              round(self.color_wheel.v/100*_U32))
         src_sp, src_v = self._resolve_sync_source()
         color_index = 0 if self.active_slot == "fg" else 1
         # A transparent active slot must keep the transparent semantics when
@@ -321,9 +329,10 @@ class SyncMixin:
         try:
             active_idx = 0 if getattr(self, "active_slot", "fg") == "fg" else 1
             if slot_index == active_idx and hasattr(self, "color_wheel"):
-                return (round(self.color_wheel.h / 360.0 * _U32),
-                        round(self.color_wheel.s / 100.0 * _U32),
-                        round(self.color_wheel.v / 100.0 * _U32))
+                if getattr(self.color_wheel, "wheel_mode", None) != "vhsv-square":
+                    return (round(self.color_wheel.h / 360.0 * _U32),
+                            round(self.color_wheel.s / 100.0 * _U32),
+                            round(self.color_wheel.v / 100.0 * _U32))
             pbox = getattr(self, "preview_box", None)
             col = getattr(pbox, "fg_color" if slot_index == 0 else "bg_color", None)
             if col is not None and col.isValid():

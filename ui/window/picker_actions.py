@@ -121,7 +121,7 @@ class PickerActionsMixin:
 
     def _update_module_button_label(self):
         if hasattr(self, "btn_module"):
-            name = {"hsv": "◉", "hls": "△", "lch": "◈"}.get(self._current_module, "◉")
+            name = {"hsv": "◉", "vhsv": "◩", "hls": "△", "rgb": "■", "lch": "◈"}.get(self._current_module, "◉")
             self.btn_module.setText(name)
             self.btn_module.setToolTip(f"模块: {_MODULE_NAMES.get(self._current_module, 'HSV')} (点击切换)")
 
@@ -426,7 +426,11 @@ class PickerActionsMixin:
         return ordered
 
     def zoom_ui(self, factor):
-        self.resize(int(320 * factor), int(710 * factor))
+        w = int(320 * factor)
+        h = int(710 * factor)
+        self._user_logical_width = w
+        self._user_manual_height = h
+        self.resize(w, h)
         self._adjust_content_height()
 
     def show_window_at_cursor(self):

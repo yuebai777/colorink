@@ -205,6 +205,10 @@ class TestRadiusIndependentPerMode:
         half_hsv = int(rh / 1.414) - 2
         assert 2 * half_hsv >= min(available_w, available_h) - 4
 
+        w.set_wheel_mode("vhsv-square")
+        rv = w.get_slice_geometry().radius
+        assert rv == rh
+
         w.set_wheel_mode("hls-triangle")
         rt = w.get_slice_geometry().radius
         assert rt >= min(available_w / 1.5, available_h / 1.732) - 1.0

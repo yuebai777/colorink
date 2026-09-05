@@ -152,7 +152,7 @@ class ColorWheelGeometryMixin:
 
         active_mode = mode or self.wheel_mode
         match active_mode:
-            case "hsv-square" | "hsl-square":
+            case "hsv-square" | "hsl-square" | "vhsv-square":
                 # Largest square: side = min(available_w, available_h)
                 # half = int(r / 1.414) - 2  →  square_side = 2 * half
                 side = min(available_w, available_h)
@@ -302,7 +302,7 @@ class ColorWheelGeometryMixin:
         must never start dragging.
         """
         match self.wheel_mode:
-            case "hsv-square" | "hsl-square":
+            case "hsv-square" | "hsl-square" | "vhsv-square":
                 half = int(r / 1.414) - 2
                 return abs(px - cx) <= half and abs(py - cy) <= half
             case "triangle" | "hls-triangle":

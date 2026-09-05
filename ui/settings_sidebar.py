@@ -28,6 +28,7 @@ from ui.settings.settings_helpers import SettingsHelpersMixin
 from ui.settings.sync_panel import SyncPanelMixin
 from ui.settings.tooltips import apply_settings_tooltips
 from ui.settings.update_panel import UpdatePanelMixin
+from ui.window.module_defs import ALL_SLIDERS
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -367,7 +368,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cb_show_title_bar.blockSignals(False)
             
         # 3. Sliders — load only existing groups, respect module visibility
-        for key in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh"]:
+        for key in ["RGB", "HSV", "VHSV", "HSL", "LAB", "OKLab", "OKLCh"]:
             cb, _row = self.slider_rows[key]
             cb.blockSignals(True)
             cb.setChecked(self.cfg.get(f"showSliders{key}", True))
@@ -388,7 +389,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.combo_history_rows.setCurrentText(str(self.cfg.get("historyRows", 2)))
         self.combo_history_rows.blockSignals(False)
             
-        module_map = {"hsv": "HSV", "hls": "HLS", "rgb": "RGB", "lch": "LCH"}
+        module_map = {"hsv": "HSV", "vhsv": "VHSV", "hls": "HLS", "rgb": "RGB", "lch": "LCH"}
         self.combo_module.blockSignals(True)
         self.combo_module.setCurrentText(module_map.get(self.cfg.get("colorSpaceModule", "hsv"), "HSV"))
         self.combo_module.blockSignals(False)
@@ -590,7 +591,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cfg["noFocusMode"] = self.cb_no_focus.isChecked()
         
         # Sliders (all groups stored, but only current-module groups shown in UI)
-        for key in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh"]:
+        for key in ["RGB", "HSV", "VHSV", "HSL", "LAB", "OKLab", "OKLCh"]:
             self.cfg[f"showSliders{key}"] = self.slider_rows[key][0].isChecked()
         self.cfg["showSlidersHistory"] = self.cb_history.isChecked()
 
@@ -606,7 +607,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         # historySwatchSize is intentionally NOT stored here — the swatch
         # size auto-fits the parent width via ColorHistoryWidget._relayout.
             
-        module_val_map = {"HSV": "hsv", "HLS": "hls", "RGB": "rgb", "LCH": "lch"}
+        module_val_map = {"HSV": "hsv", "VHSV": "vhsv", "HLS": "hls", "RGB": "rgb", "LCH": "lch"}
         self.cfg["colorSpaceModule"] = module_val_map.get(self.combo_module.currentText(), "hsv")
         self.cfg["showModuleSwitchButton"] = self.cb_show_module_btn.isChecked()
         self.cfg["showLabToggleButton"] = self.cb_show_lab_toggle.isChecked()
@@ -698,7 +699,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         changes are picked up by :meth:`notify_module_changed` instead.
         """
         module = self.cfg.get("colorSpaceModule", "hsv")
-        allowed = set(self._MODULE_SLIDER_MAP.get(module, ["HSV", "RGB", "LAB"]))
+        allowed = set(self._MODULE_SLIDER_MAP.get(module, ALL_SLIDERS))
         for key, (cb, row_layout) in self.slider_rows.items():
             visible = key in allowed
             for i in range(row_layout.count()):
@@ -711,7 +712,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         """Slider keys the ordering controls act on: the active module's rows
         plus History (always shown), in global display order."""
         module = self.cfg.get("colorSpaceModule", "hsv")
-        allowed = set(self._MODULE_SLIDER_MAP.get(module, ["HSV", "RGB", "LAB"]))
+        allowed = set(self._MODULE_SLIDER_MAP.get(module, ALL_SLIDERS))
         return [k for k in config.sorted_slider_groups(self.cfg)
                 if k == "History" or k in allowed]
 

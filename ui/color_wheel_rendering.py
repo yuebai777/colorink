@@ -178,6 +178,8 @@ class ColorWheelRenderingMixin:
             self.draw_triangle(painter, slice_cx, slice_cy, slice_r)
         elif self.wheel_mode == "hsv-square":
             self.draw_hsv_square(painter, slice_cx, slice_cy, slice_r)
+        elif self.wheel_mode == "vhsv-square":
+            self.draw_vhsv_square(painter, slice_cx, slice_cy, slice_r)
         elif self.wheel_mode == "hls-triangle":
             self.draw_hls_triangle(painter, slice_cx, slice_cy, slice_r)
         elif self.wheel_mode == "rgb-slice":
@@ -192,6 +194,8 @@ class ColorWheelRenderingMixin:
             self.draw_sv_indicator(painter, slice_cx, slice_cy, slice_r)
         elif self.wheel_mode == "hsv-square":
             self.draw_hsv_square_indicator(painter, slice_cx, slice_cy, slice_r)
+        elif self.wheel_mode == "vhsv-square":
+            self.draw_vhsv_square_indicator(painter, slice_cx, slice_cy, slice_r)
         elif self.wheel_mode == "hls-triangle":
             self.draw_hls_indicator(painter, slice_cx, slice_cy, slice_r)
         elif self.wheel_mode == "rgb-slice":
@@ -308,6 +312,47 @@ class ColorWheelRenderingMixin:
         painter.drawRect(int(cx - half), int(cy - half), width, height)
         painter.restore()
 
+    def draw_vhsv_square(self, painter, cx, cy, r):
+        half = int(r / 1.414) - 2
+        width = half * 2
+        height = half * 2
+        if width <= 0 or height <= 0:
+            return
+            
+        # Check cache
+        cache_key = (int(self.h), width, height, "vhsv-square")
+        prewarmed = self._prewarmed_slices.get("vhsv-square")
+        if prewarmed is not None and prewarmed.get("key") == cache_key:
+            painter.drawImage(int(cx - half), int(cy - half), prewarmed["image"])
+            painter.save()
+            painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(int(cx - half), int(cy - half), width, height)
+            painter.restore()
+            return
+        if self._cached_img_key == cache_key and self._cached_img is not None:
+            painter.drawImage(int(cx - half), int(cy - half), self._cached_img)
+            painter.save()
+            painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(int(cx - half), int(cy - half), width, height)
+            painter.restore()
+            return
+
+        subsample = self._slice_subsample()
+        _, img = self._render_slice_timed(
+            "vhsv-square", self.h, cx, cy, r, subsample=subsample)
+
+        self._cached_img = img
+        self._cached_img_key = cache_key
+
+        painter.drawImage(int(cx - half), int(cy - half), img)
+        painter.save()
+        painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(int(cx - half), int(cy - half), width, height)
+        painter.restore()
+
     def _oklch_hue_for_ring(self) -> float:
         """OKLCh hue currently represented on screen, in degrees.
 
@@ -412,6 +457,15 @@ class ColorWheelRenderingMixin:
         pos_x = cx - half + (self.s / 100.0) * (half * 2)
         pos_y = cy - half + (1.0 - self.v / 100.0) * (half * 2)
         
+        pos = QPointF(pos_x, pos_y)
+        self.draw_indicator_ring(painter, pos)
+
+    def draw_vhsv_square_indicator(self, painter, cx, cy, r):
+        half = int(r / 1.414) - 2
+        s_val = getattr(self, "_vhsv_s", 100.0)
+        v_val = getattr(self, "_vhsv_v", 100.0)
+        pos_x = cx - half + (s_val / 100.0) * (half * 2)
+        pos_y = cy - half + (1.0 - v_val / 100.0) * (half * 2)
         pos = QPointF(pos_x, pos_y)
         self.draw_indicator_ring(painter, pos)
 

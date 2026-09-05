@@ -29,7 +29,7 @@ from dataclasses import dataclass
 
 from ui import color_conversions as cc
 
-SPACES = ("rgb", "hsv", "hls", "lab", "oklab", "oklch")
+SPACES = ("rgb", "hsv", "vhsv", "hls", "lab", "oklab", "oklch")
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -39,13 +39,16 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 def _gamut_map(space: str, values: tuple[float, ...]) -> tuple[float, ...]:
     """Map source-space coordinates into the sRGB gamut.
 
-    This is the single authority for "every Color is in-gamut".  RGB/HSV/HSL
+    This is the single authority for "every Color is in-gamut".  RGB/HSV/HSL/VHSV
     are defined on the sRGB cube so they only clamp; Lab/OKLab/OKLCh use
     CSS Color 4 style chroma reduction (preserve L and hue).
     """
     if space == "rgb":
         return cc.clamp_rgb(*values)
     if space == "hsv":
+        h, s, v = values
+        return (h % 360.0, _clamp(s, 0.0, 100.0), _clamp(v, 0.0, 100.0))
+    if space == "vhsv":
         h, s, v = values
         return (h % 360.0, _clamp(s, 0.0, 100.0), _clamp(v, 0.0, 100.0))
     if space == "hls":
@@ -65,6 +68,8 @@ def _space_to_rgb(space: str, values: tuple[float, ...]) -> tuple[float, float, 
         return values
     if space == "hsv":
         return cc.hsv_to_rgb(*values)
+    if space == "vhsv":
+        return cc.vhsv_to_rgb(*values)
     if space == "hls":
         return cc.hsl_to_rgb(*values)
     if space == "lab":
@@ -84,6 +89,7 @@ class Color:
 
     * rgb    - (r, g, b) ints 0-255
     * hsv    - (h 0-360, s 0-100, v 0-100)
+    * vhsv   - (h 0-360, s 0-100, v 0-100)
     * hls    - (h 0-360, l 0-100, s 0-100)
     * lab    - (L 0-100, a, b)
     * oklab  - (L 0-1, a, b)
@@ -93,6 +99,7 @@ class Color:
     rgb: tuple[int, int, int]
     rgb_float: tuple[float, float, float]
     hsv: tuple[float, float, float]
+    vhsv: tuple[float, float, float]
     hls: tuple[float, float, float]
     lab: tuple[float, float, float]
     oklab: tuple[float, float, float]
@@ -131,6 +138,7 @@ class Color:
         r8, g8, b8 = (int(round(x)) for x in rgb_f)
 
         hsv = cc.rgb_to_hsv(*rgb_f)
+        vhsv = cc.rgb_to_vhsv(*rgb_f)
         hls = cc.rgb_to_hsl(*rgb_f)
         lab = cc.rgb_to_lab(*rgb_f)
         oklab = cc.rgb_to_oklab(*rgb_f)
@@ -140,6 +148,14 @@ class Color:
         #    user edited, not an RGB-derived re-computation.
         if space == "hsv":
             hsv = mapped
+            vhsv = cc.hsv_to_vhsv(*mapped)
+            if vhsv[1] < 0.5:
+                vhsv = (mapped[0], vhsv[1], vhsv[2])
+        elif space == "vhsv":
+            vhsv = mapped
+            hsv = cc.vhsv_to_hsv(*mapped)
+            if hsv[1] < 0.5:
+                hsv = (mapped[0], hsv[1], hsv[2])
         elif space == "hls":
             hls = mapped
         elif space == "lab":
@@ -151,13 +167,14 @@ class Color:
 
         # 3) Hue memory: when achromatic, inject the remembered hue so the
         #    colour stays on the hue ray it came from (cross-space grays).
-        if hsv[1] < 0.5 and hue_hsv is not None:
+        if (hsv[1] < 0.5 or vhsv[1] < 0.5) and hue_hsv is not None:
             hsv = (hue_hsv, hsv[1], hsv[2])
+            vhsv = (hue_hsv, vhsv[1], vhsv[2])
             hls = (hue_hsv, hls[1], hls[2])
         if oklch[1] < 0.002 and hue_oklch is not None:
             oklch = (oklch[0], 0.0, hue_oklch)
 
-        return cls((r8, g8, b8), rgb_f, hsv, hls, lab, oklab, oklch, space, values)
+        return cls((r8, g8, b8), rgb_f, hsv, vhsv, hls, lab, oklab, oklch, space, values)
 
     # -- accessors --------------------------------------------------------
 
@@ -216,7 +233,10 @@ class ColorState:
         return color
 
     def _remember(self, color: Color) -> None:
-        if color.hsv[1] >= 0.5:
+        if color.source_space == "vhsv":
+            if color.vhsv[1] >= 0.5:
+                self._hue_hsv = color.vhsv[0]
+        elif color.hsv[1] >= 0.5 or color.vhsv[1] >= 0.5:
             self._hue_hsv = color.hsv[0]
         if color.oklch[1] >= 0.002:
             self._hue_oklch = color.oklch[2]

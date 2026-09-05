@@ -17,7 +17,7 @@ HISTORY = "history"
 SLIDER_PREFIX = "sliders."
 
 # Slider groups keep the config casing used by core.config.SLIDER_GROUPS.
-SLIDER_GROUPS = ("RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh")
+SLIDER_GROUPS = ("RGB", "HSV", "VHSV", "HSL", "LAB", "OKLab", "OKLCh")
 
 
 def slider_panel_id(group: str) -> str:

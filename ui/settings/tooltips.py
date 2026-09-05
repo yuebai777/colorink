@@ -34,7 +34,7 @@ _SETTINGS_TOOLTIPS: dict[str, str] = {
     "btn_zoom_dec": "减小取色放大镜倍率",
     "btn_zoom_inc": "增大取色放大镜倍率",
     "combo_pos": "选择前景/背景色块在窗口中的显示位置",
-    "combo_module": "切换色轮使用的色彩空间模块（HSV / HLS / RGB / LCH）",
+    "combo_module": "切换色轮使用的色彩空间模块（HSV / VHSV / HLS / RGB / LCH）",
     "cb_history": "显示/隐藏颜色历史区域",
     "combo_history_cols": "颜色历史网格的列数",
     "combo_history_rows": "颜色历史网格的行数",
@@ -69,6 +69,7 @@ _SETTINGS_TOOLTIPS: dict[str, str] = {
 SLIDER_SHOW_TIPS: dict[str, str] = {
     "RGB": "显示/隐藏 RGB 滑块",
     "HSV": "显示/隐藏 HSV 滑块",
+    "VHSV": "显示/隐藏 VHSV 滑块",
     "HSL": "显示/隐藏 HLS 滑块",
     "LAB": "显示/隐藏 LAB 滑块",
     "OKLab": "显示/隐藏 OKLab 滑块",

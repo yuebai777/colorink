@@ -53,6 +53,13 @@ class ContentHeightPolicyTests(unittest.TestCase):
         target, manual = MainWindow._resolve_content_height(900, 500, 640, True)
         self.assertEqual((target, manual), (500, False))
 
+    def test_minor_dpi_jitter_preserves_user_expanded_height(self):
+        # 跨屏 DPI 差异导致的微小抖动（如 1~3px），不能冲掉用户手动拉伸的高度
+        target, manual = MainWindow._resolve_content_height(900, 642, 640, True)
+        self.assertEqual((target, manual), (900, True))
+        target, manual = MainWindow._resolve_content_height(900, 638, 640, True)
+        self.assertEqual((target, manual), (900, True))
+
     def test_content_shrink_does_not_infer_manual_height_from_current_size(self):
         target, manual = MainWindow._resolve_content_height(900, 500, 640, False)
         self.assertEqual((target, manual), (500, False))

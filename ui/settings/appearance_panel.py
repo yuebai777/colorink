@@ -37,6 +37,7 @@ from ui.settings.settings_helpers import (
 from ui.settings.tooltips import SLIDER_SHOW_TIPS
 from ui.slider_themes import list_slider_theme_names
 from ui.theme_contrast import DARK_INK, muted_ink, readable_ink
+from ui.window.module_defs import ALL_SLIDERS
 
 
 class AppearancePanelMixin:
@@ -813,13 +814,14 @@ class AppearancePanelMixin:
         card_sl_order, cl_sl_order = self._begin_card(page_panels, i18n.tr("色彩滑块"))
 
         self._MODULE_SLIDER_MAP = {
-            "hsv":  ["HSV", "RGB", "LAB", "OKLab", "OKLCh"],
-            "hls":  ["HSL", "RGB", "LAB", "OKLab", "OKLCh"],
-            "rgb":  ["RGB", "HSV", "LAB", "OKLab", "OKLCh"],
-            "lch":  ["OKLCh", "OKLab", "RGB"],
+            "hsv":  ALL_SLIDERS,
+            "vhsv": ALL_SLIDERS,
+            "hls":  ALL_SLIDERS,
+            "rgb":  ALL_SLIDERS,
+            "lch":  ALL_SLIDERS,
         }
         self.slider_rows = {}
-        for key, name in [("RGB", "RGB 滑块"), ("HSV", "HSV 滑块"), ("HSL", "HLS 滑块"),
+        for key, name in [("RGB", "RGB 滑块"), ("HSV", "HSV 滑块"), ("VHSV", "VHSV 滑块"), ("HSL", "HLS 滑块"),
                           ("LAB", "LAB 滑块"), ("OKLab", "OKLab 滑块"), ("OKLCh", "OKLCh 滑块")]:
             row_layout = QHBoxLayout()
             row_layout.setSpacing(6)
@@ -1249,7 +1251,7 @@ class AppearancePanelMixin:
 
         grid_wheel.addWidget(QLabel(i18n.tr("色环模块")), 0, 0)
         self.combo_module = NonScrollComboBox()
-        self.combo_module.addItems(["HSV", "HLS", "RGB", "LCH"])
+        self.combo_module.addItems(["HSV", "VHSV", "HLS", "RGB", "LCH"])
         self.combo_module.currentTextChanged.connect(self.save_settings)
         grid_wheel.addWidget(self.combo_module, 0, 1)
         cl_wheel.addLayout(grid_wheel)

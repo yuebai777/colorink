@@ -72,8 +72,8 @@ class SlicePrewarmTask(QRunnable):
 
 def render_slice(request: SlicePrewarmRequest) -> SlicePrewarmResult:
     mode = request.mode
-    if mode in {"hsv-square", "hsl-square"}:
-        return _render_square(request, mode == "hsv-square")
+    if mode in {"hsv-square", "hsl-square", "vhsv-square"}:
+        return _render_square(request, mode)
     if mode == "hls-triangle":
         return _render_hls_triangle(request)
     if mode == "rgb-slice":
@@ -126,6 +126,30 @@ def _hsv_to_rgb(h: float, saturation: np.ndarray, value: np.ndarray) -> tuple[np
     )
     return choices[sector]
 
+_SAI_VHSV_TABLE = (
+    0, 0, -1, 1, -1, 0, -1, 0,
+    0, -1, 0, 0, 0, 0, -1, 1,
+    -1, 0, -1, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+)
+
+
+def _vhsv_to_rgb(h: float, saturation: np.ndarray, value: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    h6 = (h % 360.0) / 60.0
+    ecx = int(np.floor(h6))
+    if ecx > 5:
+        ecx = 5
+    elif ecx < 0:
+        ecx = 0
+    f = h6 - ecx
+    adj_s = saturation + (value - 1.0) * 0.5 * (saturation ** 2)
+    term = f * adj_s
+    base = (5 - ecx) * 2
+    red = np.clip(value + _SAI_VHSV_TABLE[base] * adj_s + _SAI_VHSV_TABLE[base + 1] * term, 0.0, 1.0)
+    green = np.clip(value + _SAI_VHSV_TABLE[base + 4] * adj_s + _SAI_VHSV_TABLE[base + 5] * term, 0.0, 1.0)
+    blue = np.clip(value + _SAI_VHSV_TABLE[base + 8] * adj_s + _SAI_VHSV_TABLE[base + 9] * term, 0.0, 1.0)
+    return red, green, blue
+
 
 def _hls_to_rgb(h: float, lightness: np.ndarray, saturation: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     chroma = (1.0 - np.abs(2.0 * lightness - 1.0)) * saturation
@@ -145,7 +169,7 @@ def _hls_to_rgb(h: float, lightness: np.ndarray, saturation: np.ndarray) -> tupl
     return red + match, green + match, blue + match
 
 
-def _render_square(request: SlicePrewarmRequest, hsv: bool) -> SlicePrewarmResult:
+def _render_square(request: SlicePrewarmRequest, mode: str) -> SlicePrewarmResult:
     half = int(request.radius / 1.414) - 2
     width = max(1, half * 2)
     height = width
@@ -156,7 +180,9 @@ def _render_square(request: SlicePrewarmRequest, hsv: bool) -> SlicePrewarmResul
     x = np.linspace(0.0, 1.0, image_width, dtype=np.float32)
     y = np.linspace(1.0, 0.0, image_height, dtype=np.float32)
     xx, yy = np.meshgrid(x, y)
-    if hsv:
+    if mode == "vhsv-square":
+        red, green, blue = _vhsv_to_rgb(request.hue, xx, yy)
+    elif mode == "hsv-square":
         red, green, blue = _hsv_to_rgb(request.hue, xx, yy)
     else:
         red, green, blue = _hls_to_rgb(request.hue, yy, xx)

@@ -56,7 +56,7 @@ class LayoutMixin:
         if current_height < required_height:
             return required_height, False
         if (manual_override and last_auto_height is not None
-                and required_height == int(last_auto_height)):
+                and abs(required_height - int(last_auto_height)) <= 40):
             return current_height, True
         return required_height, False
 
@@ -603,60 +603,42 @@ class LayoutMixin:
         _QTimer.singleShot(0, self._adjust_content_height)
 
     def resizeEvent(self, event):
-        """Handle resize, preventing DPI-induced size drift when dragged between monitors.
+        """Handle resize, preserving logical size when moved between monitors.
 
-        When a frameless window is dragged between screens with different DPI scaling,
-        Qt may fire resize events as it recalculates device-independent pixels. Without
-        intervention, the title-bar height change in apply_theme() + layout recalculation
-        creates a feedback loop that causes progressive size drift with each cross-screen drag.
+        In Qt 6, coordinates are in device-independent pixels (DIPs). When a window
+        is moved between screens with different DPI scaling (e.g. 100% vs 150%),
+        WM_DPICHANGED adapts the native rect directly. We ensure any DPI transition
+        suppresses width-driven settle re-adjustments so user sizing is kept.
         """
         current_screen = self.screen()
         if current_screen is not None:
             current_dpr = current_screen.devicePixelRatio()
         else:
             current_dpr = 1.0
-        
+
         # Detect DPI change (screen switch with different scaling)
         dpi_changed = (self._last_dpr is not None and 
                        current_dpr is not None and 
                        abs(current_dpr - self._last_dpr) > 0.01)
-        
-        if dpi_changed and self._dpi_locked_size is None:
-            # First resize event after DPI change: lock the intended logical size.
-            # We use oldSize (the size BEFORE Qt's DPI adjustment) to compute the
-            # correct logical size for the new DPR.
-            old_size = event.oldSize()
-            if old_size.isValid() and old_size.width() > 100 and old_size.height() > 100:
-                old_dpr = self._last_dpr
-                new_dpr = current_dpr
-                # Preserve physical pixel dimensions: convert old logical → physical → new logical
-                phys_w = old_size.width() * old_dpr
-                phys_h = old_size.height() * old_dpr
-                target_w = max(200, min(1200, int(phys_w / new_dpr)))
-                target_h = max(300, min(1600, int(phys_h / new_dpr)))
-                
-                new_size = event.size()
-                if abs(target_w - new_size.width()) > 3 or abs(target_h - new_size.height()) > 3:
-                    # Qt adjusted the size; override to maintain physical consistency
-                    self._dpi_locked_size = (target_w, target_h)
-                    self.resize(target_w, target_h)
-                    self._last_dpr = current_dpr
-                    return  # self.resize() will fire another resizeEvent
-        
-        # Clear DPI lock after the stabilizing resize
-        if self._dpi_locked_size is not None:
-            locked_w, locked_h = self._dpi_locked_size
-            new_size = event.size()
-            if abs(locked_w - new_size.width()) <= 3 and abs(locked_h - new_size.height()) <= 3:
-                self._dpi_locked_size = None
-        
+
+        is_dpi_transition = getattr(self, "_dpi_transition", False) or dpi_changed
+        self._dpi_transition = False
         self._last_dpr = current_dpr
-        
+
         super().resizeEvent(event)
         self.update_geometries()
+
+        # Invariant protection: If Qt temporarily scales logical width during DPI transition,
+        # restore the exact user logical width immediately.
+        user_w = getattr(self, "_user_logical_width", None)
+        if is_dpi_transition and user_w is not None and self.width() != user_w:
+            self.resize(user_w, self.height())
+
         old = event.oldSize()
-        self._schedule_settle(
-            width_changed=old.isValid() and event.size().width() != old.width())
+        width_changed = (not is_dpi_transition and
+                         old.isValid() and event.size().width() != old.width())
+        self._schedule_settle(width_changed=width_changed)
+
 
     def moveEvent(self, event):
         """Block window movement when lockWindowPosition is enabled."""
@@ -756,6 +738,8 @@ class LayoutMixin:
             new_h = int(self.height() * factor)
             new_w = max(180, min(1200, new_w))
             new_h = max(240, min(1600, new_h))
+            self._user_logical_width = new_w
+            self._user_manual_height = new_h
             self.resize(new_w, new_h)
             event.accept()
         else:
@@ -866,12 +850,15 @@ class LayoutMixin:
             cfg["width"] = self.width()
             cfg["height"] = self.height()
             config.save_window_config(cfg)
+            self._user_logical_width = self.width()
             if resize_dir and "bottom" in resize_dir:
                 self._manual_height_override = True
+                self._user_manual_height = self.height()
                 self._last_auto_height = getattr(self, "_last_required_height",
                                                  self.height())
             else:
                 self._manual_height_override = False
+                self._user_manual_height = None
         
         super().mouseReleaseEvent(event)
 

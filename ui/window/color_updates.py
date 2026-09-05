@@ -19,6 +19,8 @@ from ui.color_conversions import (
     rgb_to_lab,
     rgb_to_oklab,
     rgb_to_oklch,
+    rgb_to_vhsv,
+    vhsv_to_rgb,
 )
 from ui.color_history import ColorHistoryWidget
 from ui.color_model import Color
@@ -50,6 +52,14 @@ class ColorUpdatesMixin:
         hsv_lay.setSpacing(same_space_base)
         self.create_group_sliders("HSV", ["H_hsv", "S_hsv", "V_hsv"], hsv_lay)
         self.sliders_layout.addWidget(self.slider_containers["HSV"])
+        
+        # VHSV
+        self.slider_containers["VHSV"] = QWidget()
+        vhsv_lay = QVBoxLayout(self.slider_containers["VHSV"])
+        vhsv_lay.setContentsMargins(0, 0, 0, 0)
+        vhsv_lay.setSpacing(same_space_base)
+        self.create_group_sliders("VHSV", ["H_vhsv", "S_vhsv", "V_vhsv"], vhsv_lay)
+        self.sliders_layout.addWidget(self.slider_containers["VHSV"])
         
         # 3. HSL
         self.slider_containers["HSL"] = QWidget()
@@ -105,7 +115,7 @@ class ColorUpdatesMixin:
         self._color_source_store = {}  # hex_key → {"rgb":..., "s":..., "v":...}
         self._SOURCE_CHANNELS = {
             "rgb": ("r", "g", "b"), "cmyk": ("c", "m", "y", "k"),
-            "hsv": ("h", "s", "v"), "hls": ("h", "l", "s"),
+            "hsv": ("h", "s", "v"), "vhsv": ("h", "s", "v"), "hls": ("h", "l", "s"),
             "lab": ("l", "a", "b"), "oklab": ("L", "a", "b"), "oklch": ("L", "C", "h"),
         }
         if persisted:
@@ -148,7 +158,7 @@ class ColorUpdatesMixin:
             slider = GradientSlider(Qt.Orientation.Horizontal)
             if "H" in chan:
                 slider.setRange(0, 360)
-            elif chan in ("S_hsv", "V_hsv", "L_hsl", "S_hsl", "L_lab"):
+            elif chan in ("S_hsv", "V_hsv", "S_vhsv", "V_vhsv", "L_hsl", "S_hsl", "L_lab"):
                 slider.setRange(0, 100)
             elif chan in ("a_lab", "b_lab"):
                 slider.setRange(-128, 127)
@@ -188,6 +198,8 @@ class ColorUpdatesMixin:
                 slider.valueChanged.connect(self.on_rgb_slider_changed)
             elif group == "HSV":
                 slider.valueChanged.connect(self.on_hsv_slider_changed)
+            elif group == "VHSV":
+                slider.valueChanged.connect(self.on_vhsv_slider_changed)
             elif group == "HSL":
                 slider.valueChanged.connect(self.on_hsl_slider_changed)
             elif group == "LAB":
@@ -222,6 +234,13 @@ class ColorUpdatesMixin:
         v = self.slider_widgets["V_hsv"][0].value()
         color = self.color_state.set_from("hsv", (h, s, v))
         self._project_color(color, source="sliders_hsv")
+
+    def on_vhsv_slider_changed(self):
+        h = self.slider_widgets["H_vhsv"][0].value()
+        s = self.slider_widgets["S_vhsv"][0].value()
+        v = self.slider_widgets["V_vhsv"][0].value()
+        color = self.color_state.set_from("vhsv", (h, s, v))
+        self._project_color(color, source="sliders_vhsv")
 
     def on_hsl_slider_changed(self):
         h = self.slider_widgets["H_hsl"][0].value()
@@ -563,6 +582,28 @@ class ColorUpdatesMixin:
             (1.0, QColor(int(rv1), int(gv1), int(bv1)))
         ])
         
+        # 6b) VHSV Sliders
+        if "H_vhsv" in self.slider_widgets:
+            self.slider_widgets["H_vhsv"][0].set_gradient(hue_stops)
+        if "S_vhsv" in self.slider_widgets or "V_vhsv" in self.slider_widgets:
+            h_vhsv, s_vhsv, v_vhsv = rgb_to_vhsv(r, g, b)
+            if "S_vhsv" in self.slider_widgets:
+                rs0, gs0, bs0 = vhsv_to_rgb(h_vhsv, 0.0, v_vhsv)
+                rs1, gs1, bs1 = vhsv_to_rgb(h_vhsv, 100.0, v_vhsv)
+                self.slider_widgets["S_vhsv"][0].set_gradient([
+                    (0.0, QColor(int(max(0, min(255, round(rs0)))), int(max(0, min(255, round(gs0)))), int(max(0, min(255, round(bs0)))))),
+                    (1.0, QColor(int(max(0, min(255, round(rs1)))), int(max(0, min(255, round(gs1)))), int(max(0, min(255, round(bs1)))))),
+                ])
+            if "V_vhsv" in self.slider_widgets:
+                rv0, gv0, bv0 = vhsv_to_rgb(h_vhsv, s_vhsv, 0.0)
+                rv05, gv05, bv05 = vhsv_to_rgb(h_vhsv, s_vhsv, 50.0)
+                rv1, gv1, bv1 = vhsv_to_rgb(h_vhsv, s_vhsv, 100.0)
+                self.slider_widgets["V_vhsv"][0].set_gradient([
+                    (0.0, QColor(int(max(0, min(255, round(rv0)))), int(max(0, min(255, round(gv0)))), int(max(0, min(255, round(bv0)))))),
+                    (0.5, QColor(int(max(0, min(255, round(rv05)))), int(max(0, min(255, round(gv05)))), int(max(0, min(255, round(bv05)))))),
+                    (1.0, QColor(int(max(0, min(255, round(rv1)))), int(max(0, min(255, round(gv1)))), int(max(0, min(255, round(bv1)))))),
+                ])
+        
         # 7) H_hsl Slider
         self.slider_widgets["H_hsl"][0].set_gradient(hue_stops)
         
@@ -803,7 +844,8 @@ class ColorUpdatesMixin:
                                   hsv=color.hsv if hsv is None else hsv,
                                   oklch=color.oklch, oklab=color.oklab,
                                   rgb_float=color.rgb_float,
-                                  lab=color.lab)
+                                  lab=color.lab,
+                                  vhsv=color.vhsv)
         except TypeError:
             self.update_ui_colors(color.r, color.g, color.b, source=source,
                                   hsv=color.hsv if hsv is None else hsv,
@@ -832,7 +874,7 @@ class ColorUpdatesMixin:
                 pass
         return Color.from_rgb(*fallback_rgb)
 
-    def update_ui_colors(self, r, g, b, source="", hsv=None, oklch=None, oklab=None, rgb_float=None, lab=None):
+    def update_ui_colors(self, r, g, b, source="", hsv=None, oklch=None, oklab=None, rgb_float=None, lab=None, vhsv=None):
         self._last_update_source = source
         r_i, g_i, b_i = int(round(r)), int(round(g)), int(round(b))
         self.current_rgb = (r_i, g_i, b_i)
@@ -873,7 +915,14 @@ class ColorUpdatesMixin:
 
         # 2) Sync Color Wheel (Only if visible or during init)
         if source == "init" or (source != "wheel" and self.color_wheel.isVisible()):
-            if hsv is not None:
+            if self.color_wheel.wheel_mode == "vhsv-square":
+                if vhsv is not None:
+                    self.color_wheel.set_vhsv(vhsv[0], vhsv[1], vhsv[2])
+                elif hsv is not None:
+                    self.color_wheel.set_hsv(hsv[0], hsv[1], hsv[2])
+                else:
+                    self.color_wheel.set_color(r_i, g_i, b_i, block_signals=True)
+            elif hsv is not None:
                 self.color_wheel.set_hsv(hsv[0], hsv[1], hsv[2])
             else:
                 self.color_wheel.set_color(r_i, g_i, b_i, block_signals=True)
@@ -898,7 +947,7 @@ class ColorUpdatesMixin:
 
         # 4) Sync Sliders
         # Block signals for all sliders during sync
-        all_chans = ["R", "G", "B", "H_hsv", "S_hsv", "V_hsv", "H_hsl", "L_hsl", "S_hsl", "L_lab", "a_lab", "b_lab", "L_oklab", "a_oklab", "b_oklab", "L_oklch", "C_oklch", "h_oklch"]
+        all_chans = ["R", "G", "B", "H_hsv", "S_hsv", "V_hsv", "H_vhsv", "S_vhsv", "V_vhsv", "H_hsl", "L_hsl", "S_hsl", "L_lab", "a_lab", "b_lab", "L_oklab", "a_oklab", "b_oklab", "L_oklch", "C_oklch", "h_oklch"]
         for chan in all_chans:
             if chan in self.slider_widgets:
                 self.slider_widgets[chan][0].blockSignals(True)
@@ -911,7 +960,7 @@ class ColorUpdatesMixin:
         
         # HSV Values
         if source != "sliders_hsv":
-            if source == "wheel":
+            if source == "wheel" and self.color_wheel.wheel_mode not in ("vhsv-square",):
                 h_hsv = self.color_wheel.h
                 s_hsv = self.color_wheel.s
                 v_hsv = self.color_wheel.v
@@ -921,12 +970,30 @@ class ColorUpdatesMixin:
                 h_hsv, s_hsv, v_hsv = rgb_to_hsv(rf, gf, bf)
             self.slider_widgets["S_hsv"][0].setValue(round(s_hsv))
             self.slider_widgets["V_hsv"][0].setValue(round(v_hsv))
-            if s_hsv >= 0.5:
+            if s_hsv >= 0.5 or hsv is not None:
                 self.slider_widgets["H_hsv"][0].setValue(round(h_hsv))
+        
+        # VHSV Values
+        if source != "sliders_vhsv":
+            if source == "wheel" and self.color_wheel.wheel_mode == "vhsv-square":
+                h_vhsv = self.color_wheel.h
+                s_vhsv = self.color_wheel._vhsv_s
+                v_vhsv = self.color_wheel._vhsv_v
+            elif vhsv is not None:
+                h_vhsv, s_vhsv, v_vhsv = vhsv
+            else:
+                h_vhsv, s_vhsv, v_vhsv = rgb_to_vhsv(rf, gf, bf)
+            if "S_vhsv" in self.slider_widgets:
+                self.slider_widgets["S_vhsv"][0].setValue(round(s_vhsv))
+            if "V_vhsv" in self.slider_widgets:
+                self.slider_widgets["V_vhsv"][0].setValue(round(v_vhsv))
+            if "H_vhsv" in self.slider_widgets:
+                if s_vhsv >= 0.5 or vhsv is not None or source == "wheel":
+                    self.slider_widgets["H_vhsv"][0].setValue(round(h_vhsv))
         
         # HSL Values
         if source != "sliders_hsl":
-            if source == "wheel":
+            if source == "wheel" and self.color_wheel.wheel_mode not in ("vhsv-square",):
                 h_hsl, l_hsl, s_hsl = hsv_to_hls_floats(self.color_wheel.h, self.color_wheel.s, self.color_wheel.v)
                 self.slider_widgets["H_hsl"][0].setValue(round(h_hsl * 360.0))
             else:
@@ -938,7 +1005,7 @@ class ColorUpdatesMixin:
         
         # LAB Values
         if source != "sliders_lab":
-            if source == "wheel":
+            if source == "wheel" and self.color_wheel.wheel_mode not in ("vhsv-square",):
                 h_hsv = self.color_wheel.h
                 s_hsv = self.color_wheel.s
                 v_hsv = self.color_wheel.v
