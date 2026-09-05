@@ -376,8 +376,8 @@ class TestRuntimeFlags:
         # state read-back checks string output
         assert "typeof result === 'string'" in html
         assert "result.indexOf('|') !== -1" in html
-        # STATE_EVERY is 5 ticks (0.5 s)
-        assert "var STATE_EVERY = 5;" in html
+        # STATE_EVERY is 1 tick (0.1 s)
+        assert "var STATE_EVERY = 1;" in html
         # Fallback panel_version matches PANEL_VERSION
         assert f"pv.write('{PANEL_VERSION}')" in html
 
