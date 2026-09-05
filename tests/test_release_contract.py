@@ -53,6 +53,7 @@ def test_first_run_defaults_are_compact_and_discoverable():
     assert config["colorSpaceModule"] == "hsv"
     assert config["showModuleSwitchButton"] is True
     assert config["showSlidersHSV"] is True
+    assert config["showSlidersVHSV"] is False
     assert config["showSlidersRGB"] is False
     assert config["showSlidersLAB"] is False
     assert config["historyColumns"] == 8
@@ -61,7 +62,7 @@ def test_first_run_defaults_are_compact_and_discoverable():
     assert config["openAtLogin"] is False
     assert config["hideHueRing"] is False
     assert config["ringlessControlsSide"] == "right"
-    assert config["orderSlidersHistory"] == 7
+    assert config["orderSlidersHistory"] == 8
     assert "injectionKey" not in config
     assert "colorPickingEnabled" not in config
     assert "cspAutoClick" not in config
@@ -96,10 +97,11 @@ def test_slider_orders_are_normalized_on_load(tmp_path):
         json.dumps({
             "orderSlidersRGB": 1,
             "orderSlidersHSV": 2,
-            "orderSlidersHSL": 3,
-            "orderSlidersLAB": 4,
-            "orderSlidersOKLab": 5,
-            "orderSlidersOKLCh": 6,
+            "orderSlidersVHSV": 3,
+            "orderSlidersHSL": 4,
+            "orderSlidersLAB": 5,
+            "orderSlidersOKLab": 6,
+            "orderSlidersOKLCh": 7,
             "orderSlidersHistory": 1,
         }),
         encoding="utf-8",
@@ -111,13 +113,14 @@ def test_slider_orders_are_normalized_on_load(tmp_path):
     order_keys = [
         "orderSlidersRGB",
         "orderSlidersHSV",
+        "orderSlidersVHSV",
         "orderSlidersHSL",
         "orderSlidersLAB",
         "orderSlidersOKLab",
         "orderSlidersOKLCh",
         "orderSlidersHistory",
     ]
-    assert sorted(config[k] for k in order_keys) == [1, 2, 3, 4, 5, 6, 7]
+    assert sorted(config[k] for k in order_keys) == [1, 2, 3, 4, 5, 6, 7, 8]
 
 
 def test_existing_config_values_survive_missing_key_merge(tmp_path):
