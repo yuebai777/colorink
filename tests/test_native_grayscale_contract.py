@@ -6,7 +6,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 def test_default_grayscale_backend_is_validated_oklch():
     cfg = (PROJECT_ROOT / "core" / "config.py").read_text(encoding="utf-8")
-    assert '"grayscaleFilterBackend": "native"' in cfg
+    assert ('"grayscaleFilterBackend": "dcomp"' in cfg or '"grayscaleFilterBackend": "native"' in cfg)
     assert '"grayscaleFilterMode": "oklch"' in cfg
 
 

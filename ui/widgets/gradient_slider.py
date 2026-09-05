@@ -4,10 +4,69 @@ import math
 from typing import cast
 
 from PyQt6.QtCore import QPointF, QRect, QRectF, Qt
-from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPen, QPolygonF
+from PyQt6.QtGui import QColor, QLinearGradient, QMouseEvent, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QSlider, QStyle, QStyleOptionSlider
 
 from ui.slider_themes import get_slider_theme
+
+
+def handle_slider_jump_press(slider: QSlider, event: QMouseEvent) -> bool:
+    """Handle mouse press on a QSlider so that left-clicking anywhere on the track
+    immediately jumps to that position and engages dragging, even on platforms
+    like Windows 10 (windowsvista / Fusion style) where QSlider defaults to
+    page-stepping on left-click.
+
+    Returns True if jump was handled (caller should return without calling super()),
+    or False if default handling should proceed.
+    """
+    if event.button() == Qt.MouseButton.LeftButton:
+        opt = QStyleOptionSlider()
+        slider.initStyleOption(opt)
+        hr = slider.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider, opt,
+            QStyle.SubControl.SC_SliderHandle, slider
+        )
+        pos = event.position().toPoint()
+        if not hr.contains(pos):
+            if slider.orientation() == Qt.Orientation.Horizontal:
+                handle_w = hr.width()
+                span = max(1, slider.width() - handle_w)
+                pos_x = max(0, min(slider.width() - 1, pos.x()))
+                val = QStyle.sliderValueFromPosition(
+                    slider.minimum(), slider.maximum(),
+                    int(pos_x - handle_w / 2),
+                    span,
+                    slider.invertedAppearance()
+                )
+            else:
+                handle_h = hr.height()
+                span = max(1, slider.height() - handle_h)
+                pos_y = max(0, min(slider.height() - 1, pos.y()))
+                val = QStyle.sliderValueFromPosition(
+                    slider.minimum(), slider.maximum(),
+                    int(pos_y - handle_h / 2),
+                    span,
+                    not slider.invertedAppearance()
+                )
+            slider.setValue(val)
+            slider.initStyleOption(opt)
+            new_hr = slider.style().subControlRect(
+                QStyle.ComplexControl.CC_Slider, opt,
+                QStyle.SubControl.SC_SliderHandle, slider
+            )
+            clamped_pt = QPointF(new_hr.center().x(), new_hr.center().y())
+            global_pos = event.globalPosition() if hasattr(event, "globalPosition") else clamped_pt
+            synth_event = QMouseEvent(
+                event.type(),
+                clamped_pt,
+                global_pos,
+                event.button(),
+                event.buttons(),
+                event.modifiers()
+            )
+            QSlider.mousePressEvent(slider, synth_event)
+            return True
+    return False
 
 
 class GradientSlider(QSlider):
@@ -65,6 +124,11 @@ class GradientSlider(QSlider):
             # 提交动作（记录历史 + 同步画图软件）与拖动/键盘路径一致。
             self.sliderReleased.emit()
         event.accept()
+
+    def mousePressEvent(self, event):
+        if handle_slider_jump_press(self, event):
+            return
+        super().mousePressEvent(event)
 
     def _triangle_extent(self, scale=None):
         """Vertical space the triangle indicator needs below the groove."""

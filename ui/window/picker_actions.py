@@ -593,17 +593,21 @@ class PickerActionsMixin:
         if hasattr(self, "tray_title_action"):
             self.tray_title_action.setChecked(self.cfg.get("showTitleBar", True))
 
-        # Update grayscale controller and migrate all removed backends to
-        # native. Mag remains the system-wide Luma fallback.
-        new_backend = self.cfg.get("grayscaleFilterBackend", "native")
-        new_backend = "mag" if new_backend == "mag" else "native"
+        # Update grayscale controller
+        new_backend = self.cfg.get("grayscaleFilterBackend", "dcomp")
+        if new_backend not in ("dcomp", "native", "mag"):
+            new_backend = "dcomp"
         new_mode = self.cfg.get("grayscaleFilterMode", "oklch")
         if new_mode not in ("oklch", "luma"):
             new_mode = "oklch"
-        current_backend = (
-            "mag" if type(self.grayscale_overlay).__name__ == "MagFilterController"
-            else "native"
-        )
+        cls_name = type(self.grayscale_overlay).__name__
+        if cls_name == "DCompGrayscaleController":
+            current_backend = "dcomp"
+        elif cls_name == "MagFilterController":
+            current_backend = "mag"
+        else:
+            current_backend = "native"
+
         if new_backend != current_backend:
             self.grayscale_overlay.set_active(False)
             close_fn = getattr(self.grayscale_overlay, "close", None)
@@ -612,9 +616,17 @@ class PickerActionsMixin:
             if new_backend == "mag":
                 from core.mag_grayscale import MagFilterController
                 self.grayscale_overlay = MagFilterController(mode="luma")
-            else:
+            elif new_backend == "native":
                 from core.native_grayscale import NativeGrayscaleController
                 self.grayscale_overlay = NativeGrayscaleController(mode=new_mode)
+            else:  # dcomp
+                from core.dcomp_grayscale import DCompGrayscaleController
+                dcomp_ctrl = DCompGrayscaleController(mode=new_mode)
+                if dcomp_ctrl.is_available and dcomp_ctrl.is_healthy:
+                    self.grayscale_overlay = dcomp_ctrl
+                else:
+                    from core.native_grayscale import NativeGrayscaleController
+                    self.grayscale_overlay = NativeGrayscaleController(mode=new_mode)
         screen_target = self.cfg.get("grayscaleFilterScreen", "all")
         self.grayscale_overlay.set_target(screen_target)
         self.grayscale_overlay.set_mode(
