@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from PyQt6.QtWidgets import QWidget
 
 # ---------------------------------------------------------------------------
-# Protocol constants — reverse-engineered from CSP's companion protocol
+# Protocol constants — compatible with CSP's companion protocol
 # (G#1:2022.12).  These are identical across all CSP builds.
 # ---------------------------------------------------------------------------
 

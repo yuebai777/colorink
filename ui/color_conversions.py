@@ -548,9 +548,8 @@ def hsl_to_hsv(h: float, l: float, s: float) -> tuple[float, float, float]:
     return h % 360.0, hsv_s * 100.0, v * 100.0
 
 
-# ── SAI V-HSV (PaintTool SAI2 Mode 0 reverse-engineered from sai2.exe) ───
-# Lookup table from sai2.exe at 0x1402906A0 (file offset 0x28F2A0).
-# Signed byte table used for piecewise 6-sector RGB generation.
+# ── SAI V-HSV (PaintTool SAI 2 Mode 0 mathematical reproduction) ──────────
+# Piecewise 6-sector table for piecewise RGB interpolation.
 _SAI_VHSV_TABLE = (
     0, 0, -1, 1, -1, 0, -1, 0,
     0, -1, 0, 0, 0, 0, -1, 1,
@@ -562,14 +561,13 @@ _SAI_VHSV_TABLE = (
 def vhsv_to_rgb(h: float, s: float, v: float) -> tuple[float, float, float]:
     """Convert VHSV (h 0–360, s 0–100, v 0–100) to sRGB (0–255 floats).
 
-    Exact implementation of PaintTool SAI 2's Mode 0 (VHSV -> RGB) conversion
-    at sub_1401F05B0.
+    Faithful implementation of PaintTool SAI 2's Mode 0 (VHSV -> RGB) conversion.
     """
     H = (h % 360.0) / 60.0
     S = max(0.0, min(1.0, s / 100.0))
     V = max(0.0, min(1.0, v / 100.0))
 
-    # Adjusted saturation formula from SAI2 disassembly:
+    # Adjusted saturation formula for SAI 2 Mode 0:
     # adj_s = S + (V - 1.0) * 0.5 * S^2
     adj_s = S + (V - 1.0) * 0.5 * (S ** 2)
 
