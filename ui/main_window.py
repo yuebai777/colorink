@@ -190,36 +190,48 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self._user_manual_height = None
         self._dpi_transition = False
 
-        # Fullscreen grayscale: native capture supports OKLCh/Luma and
-        # per-screen targets; Mag is the system-wide Luma fallback.
+        # Fullscreen grayscale:
+        # dcomp: DirectComposition 显存直通零拷贝 (支持 OKLCh/Luma，延迟 <1ms)
+        # native: DXGI Desktop Duplication + OpenGL 兼容模式
+        # mag: Windows 系统级别 Luma 灰度
         mode = self.cfg.get("grayscaleFilterMode", "oklch")
-        backend = self.cfg.get("grayscaleFilterBackend", "native")
+        backend = self.cfg.get("grayscaleFilterBackend", "dcomp")
+        if mode not in ("oklch", "luma"):
+            mode = "oklch"
+
         if backend == "mag":
             from core.mag_grayscale import MagFilterController
             self.grayscale_overlay = MagFilterController(mode="luma")
-        else:
+        elif backend == "native":
             from core.native_grayscale import NativeGrayscaleController
-            if mode not in ("oklch", "luma"):
-                mode = "oklch"
             self.grayscale_overlay = NativeGrayscaleController(mode=mode)
             if not self.grayscale_overlay.is_available:
-                # 原生运行时缺失 / 字节码版本不匹配：自动回退到系统 Mag
-                # 后端（仅 Luma、作用于全部屏幕），保证默认配置下灰度
-                # 滤镜仍然可用；Mag 也不可用时保留 native 以便报错。
                 from core.mag_grayscale import MagFilterController as _Mag
                 fallback = _Mag(mode="luma")
                 if fallback.is_available:
                     print("[Grayscale] Native backend unavailable — falling back to Mag (Luma)")
                     self.grayscale_overlay = fallback
+        else:  # dcomp (默认优先推荐)
+            from core.dcomp_grayscale import DCompGrayscaleController
+            self.grayscale_overlay = DCompGrayscaleController(mode=mode)
+            if not self.grayscale_overlay.is_available or not self.grayscale_overlay.is_healthy:
+                print("[Grayscale] DComp backend unavailable — falling back to Native (OpenGL)")
+                from core.native_grayscale import NativeGrayscaleController
+                fallback = NativeGrayscaleController(mode=mode)
+                if fallback.is_available:
+                    self.grayscale_overlay = fallback
+                else:
+                    from core.mag_grayscale import MagFilterController as _Mag
+                    mag_fb = _Mag(mode="luma")
+                    if mag_fb.is_available:
+                        self.grayscale_overlay = mag_fb
+
         screen_target = self.cfg.get("grayscaleFilterScreen", "all")
         self.grayscale_overlay.set_target(screen_target)
-        # Warm the OKLCh capture/OpenGL/PBO chain off-screen so Ctrl+Alt+D only
-        # reveals a prepared frame instead of paying initialization latency.
         if backend != "mag":
             prepare = getattr(self.grayscale_overlay, "prepare", None)
             if callable(prepare):
                 # grayscale_overlay.prepare runs once the window is up:
-                # it warms the native GL overlay off-screen (light preheat).
                 QTimer.singleShot(800, prepare)
             # Pre-import dxcam off the GUI thread so the first Ctrl+Alt+D does not
             # pay the one-time ~0.4s module/D3D11/comtypes import cost.

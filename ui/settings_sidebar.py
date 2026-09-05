@@ -265,14 +265,16 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.btn_title_bar.val = _title_bar
         
         self.combo_grayscale_mode.blockSignals(True)
-        backend = self.cfg.get("grayscaleFilterBackend", "native")
-        backend = "mag" if backend == "mag" else "native"
+        backend = self.cfg.get("grayscaleFilterBackend", "dcomp")
+        if backend not in ("dcomp", "native", "mag"):
+            backend = "dcomp"
         self._update_grayscale_screen_options(backend)
         self._update_grayscale_mode_options(backend)
         self.combo_grayscale_mode.blockSignals(False)
 
         self.combo_grayscale_backend.blockSignals(True)
-        self.combo_grayscale_backend.setCurrentIndex(1 if backend == "mag" else 0)
+        _idx = self.combo_grayscale_backend.findData(backend)
+        self.combo_grayscale_backend.setCurrentIndex(_idx if _idx >= 0 else 0)
         self.combo_grayscale_backend.blockSignals(False)
         
         self.cb_follow_mouse.blockSignals(True)
@@ -539,7 +541,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
     def _grayscale_filter_config(self) -> dict:
         """Map the grayscale controls to persisted config values."""
         screen_text = self.combo_grayscale_screen.currentText()
-        backend = self.combo_grayscale_backend.currentData() or "native"
+        backend = self.combo_grayscale_backend.currentData() or "dcomp"
         mode = self.combo_grayscale_mode.currentData() or "oklch"
         use_mag = backend == "mag"
         return {
@@ -550,7 +552,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
                       if ":" in screen_text else screen_text)
             ),
             "grayscaleFilterMode": "luma" if (mode == "luma" or use_mag) else "oklch",
-            "grayscaleFilterBackend": "mag" if use_mag else "native",
+            "grayscaleFilterBackend": backend,
         }
 
     def save_settings(self):

@@ -75,6 +75,12 @@ class NonScrollSlider(QSlider):
     def wheelEvent(self, event):
         event.ignore()
 
+    def mousePressEvent(self, event):
+        from ui.widgets.gradient_slider import handle_slider_jump_press
+        if handle_slider_jump_press(self, event):
+            return
+        super().mousePressEvent(event)
+
 
 class SettingsHelpersMixin:
     @staticmethod

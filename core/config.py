@@ -95,9 +95,10 @@ def default_hotkey_config():
         "showTitleBar": True,             # 显示/隐藏标题栏（隐藏后顶部边框与四周一致）
         "grayscaleFilterScreen": "all",
         "grayscaleFilterMode": "oklch",
-        # native = DXGI Desktop Duplication + OpenGL，支持 OKLCh / Luma 与按屏目标；
+        # dcomp = DirectComposition 显存直通（零拷贝零延迟，推荐）；
+        # native = DXGI Desktop Duplication + OpenGL 兼容层；
         # mag = Windows 系统颜色矩阵（仅 Luma，作用于全部屏幕）
-        "grayscaleFilterBackend": "native",
+        "grayscaleFilterBackend": "dcomp",
         "showTaskbarIcon": False,
         "lockWindowSize": False,
         "lockWindowPosition": False,

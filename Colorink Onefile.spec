@@ -1,4 +1,4 @@
-﻿# -*- mode: python ; coding: utf-8 -*-
+# -*- mode: python ; coding: utf-8 -*-
 # Onefile spec — single EXE, no external folder needed
 import os
 import sys
@@ -92,6 +92,7 @@ _add_if_exists('icons/arrow_down_accent.png', 'icons', _datas, 'arrow down accen
 _add_if_exists('core/picker_hook.dll', 'core', _datas, 'picker hook DLL')
 _add_if_exists('mag_overlay/build/mag_filter.exe', 'mag_overlay/build', _datas, 'Mag filter')
 _add_if_exists('native_grayscale/runtime/grayscale_overlay.pyc', 'native_grayscale/runtime', _datas, 'Native grayscale base runtime')
+_add_if_exists('native_dcomp/dcomp_filter.dll', 'native_dcomp', _datas, 'DComp grayscale filter DLL')
 
 a = Analysis(
     ['main.py'],

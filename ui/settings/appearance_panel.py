@@ -142,7 +142,9 @@ class AppearancePanelMixin:
         return items
 
     def _on_grayscale_backend_changed(self, text):
-        backend = "mag" if "Mag" in text else "native"
+        backend = self.combo_grayscale_backend.currentData()
+        if not backend:
+            backend = "mag" if "Mag" in text else "dcomp"
         self._update_grayscale_mode_options(backend)
         self._update_grayscale_screen_options(backend)
         self.save_settings()
@@ -1190,12 +1192,13 @@ class AppearancePanelMixin:
 
         grid_gray.addWidget(QLabel(i18n.tr("渲染方式")), 2, 0)
         self.combo_grayscale_backend = NonScrollComboBox()
+        self.combo_grayscale_backend.addItem(i18n.tr("OKLCh (DComp 显存直通)"), "dcomp")
         self.combo_grayscale_backend.addItem(i18n.tr("OKLCh (GPU兼容)"), "native")
         self.combo_grayscale_backend.addItem(i18n.tr("系统 Luma (Mag)"), "mag")
         self.combo_grayscale_backend.setToolTip(
-            i18n.tr("OKLCh (GPU兼容)：感知均匀的全屏灰度，覆盖 Colorink；"
-            "系统 Luma (Mag)：延迟最低、仅作用于全部屏幕的备用模式；"
-            "需要按屏目标时请在 Native 后端选择 Luma。"))
+            i18n.tr("OKLCh (DComp 显存直通)：DirectComposition 零拷贝直通，延迟 <1ms 极致流畅（推荐）；\n"
+            "OKLCh (GPU兼容)：基于 OpenGL 的兼容覆盖层；\n"
+            "系统 Luma (Mag)：Windows 硬件颜色矩阵，仅支持 BT.709 亮度。"))
         self.combo_grayscale_backend.currentTextChanged.connect(self._on_grayscale_backend_changed)
         grid_gray.addWidget(self.combo_grayscale_backend, 2, 1)
 
