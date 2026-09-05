@@ -42,7 +42,7 @@ class ColorWheel(
     interactionFinished = pyqtSignal()
 
     _PREWARM_MODES = (
-        "hsv-square", "hls-triangle", "rgb-slice", "oklch-slice",
+        "hsv-square", "vhsv-square", "hls-triangle", "rgb-slice", "oklch-slice",
     )
 
     def __init__(self, parent=None):
@@ -56,6 +56,10 @@ class ColorWheel(
         self.s = 100.0
         self.v = 100.0
         self._last_hue = 0.0
+
+        # Direct VHSV state — kept in sync with S/V
+        self._vhsv_s = 100.0
+        self._vhsv_v = 100.0
 
         # Direct OKLCh state — set by external callers so the indicator
         # doesn't have to round-trip through HSV→RGB→OKLCh.

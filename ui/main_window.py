@@ -186,7 +186,9 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         
         # DPI-aware screen tracking to prevent size drift when dragging across monitors
         self._last_dpr = None       # Previous screen devicePixelRatio
-        self._dpi_locked_size = None  # (w, h) logical size frozen during DPI transition
+        self._user_logical_width = None
+        self._user_manual_height = None
+        self._dpi_transition = False
 
         # Fullscreen grayscale: native capture supports OKLCh/Luma and
         # per-screen targets; Mag is the system-wide Luma fallback.
@@ -264,23 +266,14 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.update_window_flags()
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
-        # Load window dimensions, adjusting for DPI differences since last save
+        # Load window dimensions (persisted in logical pixels)
         win_cfg = config.load_window_config()
         scale = self.cfg.get("uiScale", 100) / 100.0
-        saved_dpr = win_cfg.get("dpr", None)
-        current_dpr = self.devicePixelRatio() if hasattr(self, "devicePixelRatio") else 1.0
-        if current_dpr < 0.1:
-            current_dpr = 1.0
         
         w = win_cfg.get("width", int(320 * scale))
         h = win_cfg.get("height", int(710 * scale))
-        
-        # If saved on a different DPI screen, adjust to current screen's logical pixels
-        if saved_dpr is not None and abs(current_dpr - saved_dpr) > 0.01:
-            phys_w = w * saved_dpr
-            phys_h = h * saved_dpr
-            w = int(phys_w / current_dpr)
-            h = int(phys_h / current_dpr)
+        self._user_logical_width = w
+        self._user_manual_height = h
         
         self.resize(w, h)
         if "x" in win_cfg and "y" in win_cfg:
@@ -468,3 +461,54 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self._sync_ringless_mode()
         self.color_wheel.schedule_slice_prewarm(350)
         self._schedule_lab_prerender(100)
+
+    def nativeEvent(self, eventType, message):
+        """Intercept native OS messages to prevent DPI-induced geometry distortion.
+
+        When moving between monitors with different DPI scalings on Windows,
+        Windows sends WM_GETDPISCALEDSIZE and WM_DPICHANGED.
+        1. WM_GETDPISCALEDSIZE (0x02E4): Windows asks for the exact desired physical
+           dimensions before moving across monitors. Returning TRUE with the exact
+           scaled physical dimensions ensures Windows allocates the correct size.
+        2. WM_DPICHANGED (0x02E0): Windows provides a suggested pixel rect. By adapting
+           the suggested rect in-place to exactly match intended logical dimensions
+           scaled by the new DPR, Qt seamlessly adapts its backing store and screen
+           tracking without modifying the window's logical size.
+        """
+        if sys.platform == "win32" and eventType == b"windows_generic_MSG":
+            try:
+                import ctypes
+                import ctypes.wintypes
+                msg = ctypes.wintypes.MSG.from_address(int(message))
+                if msg.message == 0x02E4:  # WM_GETDPISCALEDSIZE
+                    class _SIZE(ctypes.Structure):
+                        _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
+
+                    new_dpi = msg.wParam & 0xFFFF
+                    new_dpr = new_dpi / 96.0
+                    intended_w = getattr(self, "_user_logical_width", self.width())
+                    intended_h = (getattr(self, "_user_manual_height", self.height())
+                                  if getattr(self, "_manual_height_override", False)
+                                  else getattr(self, "_last_required_height", self.height()))
+                    p_size = _SIZE.from_address(msg.lParam)
+                    p_size.cx = int(round(intended_w * new_dpr))
+                    p_size.cy = int(round(intended_h * new_dpr))
+                    return True, 1
+                elif msg.message == 0x02E0:  # WM_DPICHANGED
+                    new_dpi = msg.wParam & 0xFFFF
+                    new_dpr = new_dpi / 96.0
+                    rect = ctypes.wintypes.RECT.from_address(msg.lParam)
+                    intended_w = getattr(self, "_user_logical_width", self.width())
+                    intended_h = (getattr(self, "_user_manual_height", self.height())
+                                  if getattr(self, "_manual_height_override", False)
+                                  else getattr(self, "_last_required_height", self.height()))
+                    target_phys_w = int(round(intended_w * new_dpr))
+                    target_phys_h = int(round(intended_h * new_dpr))
+                    rect.right = rect.left + target_phys_w
+                    rect.bottom = rect.top + target_phys_h
+                    self._dpi_transition = True
+                    return False, 0
+            except Exception:
+                pass
+        return False, 0
+

@@ -318,3 +318,82 @@ def test_cross_validate_lab_grid():
         r, g, b = rng.randint(0, 255), rng.randint(0, 255), rng.randint(0, 255)
         oracle = tuple(coloraide.Color("srgb", [r / 255, g / 255, b / 255]).convert("lab").coords())
         assert _close(cc.rgb_to_lab(r, g, b), oracle, 0.1)
+
+
+# ── VHSV (Value-compensated HSV) tests ───────────────────────────────────
+
+
+def test_vhsv_boundary_conditions():
+    for s, v in [(0.0, 0.0), (0.0, 100.0), (100.0, 100.0)]:
+        _, sv, vv = cc.hsv_to_vhsv(45.0, s, v)
+        assert abs(sv - s) < 1e-10
+        assert abs(vv - v) < 1e-10
+        _, s_back, v_back = cc.vhsv_to_hsv(45.0, sv, vv)
+        assert abs(s_back - s) < 1e-10
+        assert abs(v_back - v) < 1e-10
+
+
+def test_vhsv_hsv_roundtrip_grid():
+    for s_int in range(0, 101, 5):
+        for v_int in range(1, 101, 5):
+            s, v = float(s_int), float(v_int)
+            _, sv, vv = cc.hsv_to_vhsv(120.0, s, v)
+            assert 0.0 <= sv <= 100.0
+            assert 0.0 <= vv <= 100.0
+            _, sb, vb = cc.vhsv_to_hsv(120.0, sv, vv)
+            assert abs(sb - s) < 1e-10
+            assert abs(vb - v) < 1e-10
+
+
+def test_vhsv_strict_monotonicity():
+    for v in [20.0, 50.0, 80.0, 100.0]:
+        prev_s = -1.0
+        for s in np.linspace(0.0, 100.0, 51):
+            _, sv, _ = cc.hsv_to_vhsv(0.0, s, v)
+            assert sv >= prev_s
+            prev_s = sv
+
+    for s in [20.0, 50.0, 80.0, 100.0]:
+        prev_v = -1.0
+        for v in np.linspace(1.0, 100.0, 51):
+            _, _, vv = cc.hsv_to_vhsv(0.0, s, v)
+            assert vv > prev_v
+            prev_v = vv
+
+
+def test_vhsv_rgb_roundtrip():
+    assert cc.vhsv_to_rgb(0.0, 100.0, 100.0) == (255.0, 0.0, 0.0)
+    assert cc.vhsv_to_rgb(120.0, 100.0, 100.0) == (0.0, 255.0, 0.0)
+    assert cc.vhsv_to_rgb(240.0, 100.0, 100.0) == (0.0, 0.0, 255.0)
+    assert cc.vhsv_to_rgb(0.0, 0.0, 0.0) == (0.0, 0.0, 0.0)
+    assert cc.vhsv_to_rgb(0.0, 0.0, 100.0) == (255.0, 255.0, 255.0)
+
+    rng = random.Random(42)
+    for _ in range(100):
+        r, g, b = float(rng.randint(0, 255)), float(rng.randint(0, 255)), float(rng.randint(0, 255))
+        h, s, v = cc.rgb_to_vhsv(r, g, b)
+        r2, g2, b2 = cc.vhsv_to_rgb(h, s, v)
+        assert abs(r2 - r) < 1e-4 and abs(g2 - g) < 1e-4 and abs(b2 - b) < 1e-4
+
+
+def test_sai2_vhsv_ground_truth():
+    """Verify exact empirical measurements reported from PaintTool SAI2 vs CSP."""
+    # User's test case: in SAI2, H=103, S=100 with V varying in [80, 50, 30, 15]
+    # Under standard HSV (CSP):
+    # V=80 -> H=108, S=100, V=80
+    # V=50 -> H=120, S=100, V=50
+    # V=30 -> H=120, S=100, V=30
+    # V=15 -> H=120, S=100, V=15
+    test_cases = [
+        (80.0, 108.0, 100.0, 80.0),
+        (50.0, 120.0, 100.0, 50.0),
+        (30.0, 120.0, 100.0, 30.0),
+        (15.0, 120.0, 100.0, 15.0),
+    ]
+    for v_in, exp_h, exp_s, exp_v in test_cases:
+        r, g, b = cc.vhsv_to_rgb(103.0, 100.0, v_in)
+        h_hsv, s_hsv, v_hsv = cc.rgb_to_hsv(r, g, b)
+        assert round(h_hsv) == pytest.approx(exp_h, abs=1.0)
+        assert round(s_hsv) == pytest.approx(exp_s, abs=0.5)
+        assert round(v_hsv) == pytest.approx(exp_v, abs=0.5)
+

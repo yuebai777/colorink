@@ -194,11 +194,15 @@ class TrayMixin:
         dpr = self.devicePixelRatio() if hasattr(self, "devicePixelRatio") else 1.0
         if dpr < 0.1:
             dpr = 1.0
+        saved_w = getattr(self, "_user_logical_width", self.width())
+        saved_h = (getattr(self, "_user_manual_height", self.height())
+                   if getattr(self, "_manual_height_override", False)
+                   else self.height())
         cfg = {
             "x": self.x(),
             "y": self.y(),
-            "width": self.width(),
-            "height": self.height(),
+            "width": saved_w,
+            "height": saved_h,
             "dpr": dpr,  # Store DPR so we can restore correctly
             "zoom": 0  # Default placeholder
         }

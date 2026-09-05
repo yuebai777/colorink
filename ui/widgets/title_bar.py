@@ -233,6 +233,22 @@ class TitleBar(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             if not self._parent.cfg.get("lockWindowPosition", False):
+                import sys
+                if sys.platform == "win32":
+                    import ctypes
+                    user32 = ctypes.windll.user32
+                    hwnd = int(self._parent.winId())
+                    user32.ReleaseCapture()
+                    user32.SendMessageW(hwnd, 0x0112, 0xF012, 0)  # WM_SYSCOMMAND, SC_MOVE + HTCAPTION
+                    event.accept()
+                    cfg = config.load_window_config()
+                    cfg["x"] = self._parent.x()
+                    cfg["y"] = self._parent.y()
+                    config.save_window_config(cfg)
+                    schedule_settle = getattr(self._parent, "_schedule_settle", None)
+                    if callable(schedule_settle):
+                        schedule_settle(width_changed=False)
+                    return
                 self.drag_position = event.globalPosition().toPoint() - self._parent.frameGeometry().topLeft()
             event.accept()
 
@@ -244,3 +260,5 @@ class TitleBar(QWidget):
 
     def mouseReleaseEvent(self, event):
         self.drag_position = None
+        event.accept()
+

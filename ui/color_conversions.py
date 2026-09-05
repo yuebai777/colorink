@@ -546,3 +546,96 @@ def hsl_to_hsv(h: float, l: float, s: float) -> tuple[float, float, float]:
     if v > 0.0001:
         hsv_s = 2.0 * (1.0 - l_f / v)
     return h % 360.0, hsv_s * 100.0, v * 100.0
+
+
+# ── SAI V-HSV (PaintTool SAI2 Mode 0 reverse-engineered from sai2.exe) ───
+# Lookup table from sai2.exe at 0x1402906A0 (file offset 0x28F2A0).
+# Signed byte table used for piecewise 6-sector RGB generation.
+_SAI_VHSV_TABLE = (
+    0, 0, -1, 1, -1, 0, -1, 0,
+    0, -1, 0, 0, 0, 0, -1, 1,
+    -1, 0, -1, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+)
+
+
+def vhsv_to_rgb(h: float, s: float, v: float) -> tuple[float, float, float]:
+    """Convert VHSV (h 0–360, s 0–100, v 0–100) to sRGB (0–255 floats).
+
+    Exact implementation of PaintTool SAI 2's Mode 0 (VHSV -> RGB) conversion
+    at sub_1401F05B0.
+    """
+    H = (h % 360.0) / 60.0
+    S = max(0.0, min(1.0, s / 100.0))
+    V = max(0.0, min(1.0, v / 100.0))
+
+    # Adjusted saturation formula from SAI2 disassembly:
+    # adj_s = S + (V - 1.0) * 0.5 * S^2
+    adj_s = S + (V - 1.0) * 0.5 * (S ** 2)
+
+    ecx = int(math.floor(H))
+    if ecx > 5:
+        ecx = 5
+    elif ecx < 0:
+        ecx = 0
+    h_frac = H - ecx
+    term = h_frac * adj_s
+
+    base = (5 - ecx) * 2
+    # SAI2 stores B at [rdx], G at [rdx+4], R at [rdx+8] (BGR order)
+    # xmm6 corresponds to table[base], xmm7 to table[base+4], xmm8 to table[base+8]
+    r = max(0.0, min(1.0, V + _SAI_VHSV_TABLE[base] * adj_s + _SAI_VHSV_TABLE[base + 1] * term))
+    g = max(0.0, min(1.0, V + _SAI_VHSV_TABLE[base + 4] * adj_s + _SAI_VHSV_TABLE[base + 5] * term))
+    b = max(0.0, min(1.0, V + _SAI_VHSV_TABLE[base + 8] * adj_s + _SAI_VHSV_TABLE[base + 9] * term))
+
+    return r * 255.0, g * 255.0, b * 255.0
+
+
+def rgb_to_vhsv(r: float, g: float, b: float) -> tuple[float, float, float]:
+    """Convert sRGB (0–255) to VHSV (h 0–360, s 0–100, v 0–100).
+
+    Exact implementation of PaintTool SAI 2's Mode 0 (RGB -> VHSV) conversion
+    at sub_1401F0780.
+    """
+    rf = max(0.0, min(1.0, r / 255.0))
+    gf = max(0.0, min(1.0, g / 255.0))
+    bf = max(0.0, min(1.0, b / 255.0))
+
+    mx = max(rf, gf, bf)
+    mn = min(rf, gf, bf)
+    delta = mx - mn
+    v = mx
+
+    if delta <= 1e-6:
+        return 0.0, 0.0, v * 100.0
+
+    if mx == rf:
+        h = ((gf - bf) / delta) % 6.0
+    elif mx == gf:
+        h = ((bf - rf) / delta) + 2.0
+    else:
+        h = ((rf - gf) / delta) + 4.0
+    h = (h * 60.0) % 360.0
+
+    k = 0.5 * (v - 1.0)
+    if abs(k) < 1e-9:
+        s = delta
+    else:
+        disc = max(0.0, 0.25 + k * delta)
+        s = (math.sqrt(disc) - 0.5) / k
+    s = max(0.0, min(1.0, s))
+
+    return h, s * 100.0, v * 100.0
+
+
+def vhsv_to_hsv(h: float, s: float, v: float) -> tuple[float, float, float]:
+    """Convert VHSV (h 0–360, s 0–100, v 0–100) to standard HSV."""
+    r, g, b = vhsv_to_rgb(h, s, v)
+    return rgb_to_hsv(r, g, b)
+
+
+def hsv_to_vhsv(h: float, s: float, v: float) -> tuple[float, float, float]:
+    """Convert standard HSV (h 0–360, s 0–100, v 0–100) to VHSV."""
+    r, g, b = hsv_to_rgb(h, s, v)
+    return rgb_to_vhsv(r, g, b)
+

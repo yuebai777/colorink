@@ -52,6 +52,7 @@ def test_color_is_always_in_gamut():
         ("lab", (50.0, 150.0, 150.0)),
         ("oklab", (0.5, 0.5, 0.5)),
         ("hsv", (999.0, 150.0, -10.0)),
+        ("vhsv", (999.0, 150.0, -10.0)),
         ("hls", (999.0, 150.0, -10.0)),
     ]
     for space, vals in cases:
@@ -96,3 +97,24 @@ def test_hue_normalized_to_range():
     c = Color.from_space("hsv", (400.0, 100.0, 100.0))
     assert 0.0 <= c.hsv[0] < 360.0
     assert c.hsv[0] == pytest.approx(40.0)
+
+
+def test_vhsv_color_model():
+    c = Color.from_space("vhsv", (150.0, 60.0, 80.0))
+    assert c.source_space == "vhsv"
+    assert c.vhsv == (150.0, 60.0, 80.0)
+    assert c.to("vhsv") == (150.0, 60.0, 80.0)
+
+    # Achromatic gray retains hue
+    gray = Color.from_space("vhsv", (210.0, 0.0, 50.0))
+    assert gray.vhsv[0] == 210.0
+    assert gray.vhsv[1] == 0.0
+    assert gray.hsv[0] == 210.0
+
+    # ColorState retains HSV/VHSV hue through gray
+    st = ColorState()
+    st.set_from("vhsv", (120.0, 50.0, 50.0))
+    assert st._hue_hsv == pytest.approx(120.0)
+    gray2 = st.set_from("rgb", (64, 64, 64))
+    assert gray2.vhsv[0] == pytest.approx(120.0)
+    assert gray2.vhsv[1] == pytest.approx(0.0)

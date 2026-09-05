@@ -100,12 +100,14 @@ def test_the_seed_says_which_switch_built_the_arrangement(host):
     assert host.arrangement_seed() == "tabs"
 
 
-def test_tab_mode_excludes_hidden_and_out_of_module_groups(host):
+def test_tab_mode_excludes_hidden_and_out_of_module_groups(host, monkeypatch):
     """回归：分页叠放不能把用户没开启/当前模块不提供的滑块组也开成页签——
     那会在设置里明明关着、界面上却跑出一个空页签。"""
+    from ui.window import picker_actions
+    monkeypatch.setitem(picker_actions._MODULE_DEFS, "hsv", {"wheel": "hsv-square", "sliders": ["RGB", "HSV", "LAB"]})
     host.cfg["slidersTabs"] = True
     host.cfg["showSlidersHistory"] = False
-    host.cfg["showSlidersHSL"] = True  # HSL 在 hsv 模块的允许集之外
+    host.cfg["showSlidersHSL"] = True  # HSL 在受限模块允许集之外
     groups = host._slider_groups_in_layout_order()
     tree = host._slider_column_tree_for(groups)
     ids = set(tree.panels())

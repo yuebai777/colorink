@@ -13,11 +13,14 @@ from ui.color_conversions import (
     find_max_lab_c,
     find_max_oklch_c,
     hsv_to_hsl,
+    hsv_to_vhsv,
     lab_to_rgb,
     oklch_to_rgb,
     rgb_to_hsv,
     rgb_to_lab,
     rgb_to_oklch,
+    rgb_to_vhsv,
+    vhsv_to_rgb,
 )
 from ui.color_wheel_geometry import hls_to_hsv_floats, hsv_to_rgb, project_point_to_triangle
 
@@ -58,6 +61,9 @@ class ColorWheelInteractionMixin:
         old_hue = self.h
         self._clear_drag_anchor()  # external color change, reset indicator mode
         h, s, v = rgb_to_hsv(r, g, b)
+        _, s_v, v_v = rgb_to_vhsv(r, g, b)
+        self._vhsv_s = s_v
+        self._vhsv_v = v_v
         if s > 0.5: self._last_hue = h
         else: h = self._last_hue
         self.h = h; self.s = s; self.v = v
@@ -77,16 +83,39 @@ class ColorWheelInteractionMixin:
         if s > 0.5: self._last_hue = h
         else: h = self._last_hue
         self.h = h; self.s = s; self.v = v
+        _, s_v, v_v = hsv_to_vhsv(h, s, v)
+        self._vhsv_s = s_v
+        self._vhsv_v = v_v
+        if abs(h - old_hue) > 0.01:
+            self._invalidate_slice_caches()
+        if update_widget:
+            self.update()
+
+    def set_vhsv(self, h, s, v, update_widget=True):
+        old_hue = self.h
+        self._clear_drag_anchor()
+        if s > 0.5: self._last_hue = h
+        else: h = self._last_hue
+        self.h = h
+        self._vhsv_s = s
+        self._vhsv_v = v
+        r, g, b = vhsv_to_rgb(h, s, v)
+        _, s_std, v_std = rgb_to_hsv(r, g, b)
+        self.s = s_std
+        self.v = v_std
         if abs(h - old_hue) > 0.01:
             self._invalidate_slice_caches()
         if update_widget:
             self.update()
 
     def get_color(self):
+        if self.wheel_mode == "vhsv-square":
+            r, g, b = vhsv_to_rgb(self.h, getattr(self, "_vhsv_s", self.s), getattr(self, "_vhsv_v", self.v))
+            return round(r), round(g), round(b)
         return hsv_to_rgb(self.h, self.s, self.v)
 
     def set_wheel_mode(self, mode):
-        # "triangle" | "hsl-square" | "hsv-square" | "hls-triangle" | "rgb-slice"
+        # "triangle" | "hsl-square" | "hsv-square" | "vhsv-square" | "hls-triangle" | "rgb-slice"
         self.wheel_mode = mode
         self.update()
 
@@ -118,6 +147,10 @@ class ColorWheelInteractionMixin:
             L = self._oklch_L if self._oklch_L is not None else 0.5
             C = self._oklch_C if self._oklch_C is not None else 0.0
             return "oklch", (L, C, self._oklch_h)
+        if wm == "vhsv-square":
+            s_v = getattr(self, "_vhsv_s", self.s)
+            v_v = getattr(self, "_vhsv_v", self.v)
+            return "vhsv", (self.h, s_v, v_v)
         if wm == "hls-triangle":
             h, l, s = hsv_to_hsl(self.h, self.s, self.v)
             return "hls", (h, l, s)
@@ -154,7 +187,10 @@ class ColorWheelInteractionMixin:
                     self.handle_oklch_slice_drag(px, py, sg.center_x, sg.center_y, sg.radius)
                 else:
                     half = int(sg.radius / 1.414) - 2
-                    if self.wheel_mode == "hsv-square":
+                    if self.wheel_mode == "vhsv-square":
+                        self.dragging = "vhsv-square"
+                        self.handle_vhsv_square_drag(px, py, sg.center_x, sg.center_y, half)
+                    elif self.wheel_mode == "hsv-square":
                         self.dragging = "hsv-square"
                         self.handle_hsv_square_drag(px, py, sg.center_x, sg.center_y, half)
                     else:
@@ -190,7 +226,10 @@ class ColorWheelInteractionMixin:
                     self.handle_oklch_slice_drag(pos.x(), pos.y(), cx, cy, triangle_radius)
                 else:
                     half = int(triangle_radius / 1.414) - 2
-                    if self.wheel_mode == "hsv-square":
+                    if self.wheel_mode == "vhsv-square":
+                        self.dragging = "vhsv-square"
+                        self.handle_vhsv_square_drag(pos.x(), pos.y(), cx, cy, half)
+                    elif self.wheel_mode == "hsv-square":
                         self.dragging = "hsv-square"
                         self.handle_hsv_square_drag(pos.x(), pos.y(), cx, cy, half)
                     else:
@@ -230,6 +269,9 @@ class ColorWheelInteractionMixin:
             elif self.dragging == "hsv-square":
                 half = int(r / 1.414) - 2
                 self.handle_hsv_square_drag(px, py, cx, cy, half)
+            elif self.dragging == "vhsv-square":
+                half = int(r / 1.414) - 2
+                self.handle_vhsv_square_drag(px, py, cx, cy, half)
 
     def mouseReleaseEvent(self, event):
         self.end_drag()
@@ -442,6 +484,24 @@ class ColorWheelInteractionMixin:
         self.update()
         r, g, b = self.get_color()
         self.colorChanged.emit(r, g, b)
+
+    def handle_vhsv_square_drag(self, px, py, cx, cy, half):
+        rel_x = px - (cx - half)
+        rel_y = py - (cy - half)
+        
+        s_val = max(0.0, min(1.0, rel_x / float(half * 2)))
+        v_val = max(0.0, min(1.0, 1.0 - rel_y / float(half * 2)))
+        
+        self._vhsv_s = max(0.0, min(100.0, s_val * 100.0))
+        self._vhsv_v = max(0.0, min(100.0, v_val * 100.0))
+
+        r, g, b = vhsv_to_rgb(self.h, self._vhsv_s, self._vhsv_v)
+        _, s_std, v_std = rgb_to_hsv(r, g, b)
+        self.s = max(0.0, min(100.0, s_std))
+        self.v = max(0.0, min(100.0, v_std))
+        self.update()
+        ri, gi, bi = round(r), round(g), round(b)
+        self.colorChanged.emit(ri, gi, bi)
 
     def handle_oklch_slice_drag(self, px, py, cx, cy, r):
         hy = r * 0.866

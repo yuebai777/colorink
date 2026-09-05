@@ -9,14 +9,17 @@ projection), so they live in their own tiny module to avoid circular imports.
 # Each module bundles a default wheel mode + slider subset (user can
 # still toggle individual slider groups in settings via the "module
 # default + adjustable" policy).
+ALL_SLIDERS = ["RGB", "HSV", "VHSV", "HSL", "LAB", "OKLab", "OKLCh"]
+
 _MODULE_DEFS = {
-    "hsv":  {"wheel": "hsv-square",   "sliders": ["HSV", "RGB", "LAB", "OKLab", "OKLCh"]},
-    "hls":  {"wheel": "hls-triangle",  "sliders": ["HSL", "RGB", "LAB", "OKLab", "OKLCh"]},
-    "rgb":  {"wheel": "rgb-slice",     "sliders": ["RGB", "HSV", "LAB", "OKLab", "OKLCh"]},
-    "lch":  {"wheel": "oklch-slice",   "sliders": ["OKLCh", "OKLab", "RGB"]},
+    "hsv":   {"wheel": "hsv-square",    "sliders": ALL_SLIDERS},
+    "vhsv":  {"wheel": "vhsv-square",   "sliders": ALL_SLIDERS},
+    "hls":   {"wheel": "hls-triangle",  "sliders": ALL_SLIDERS},
+    "rgb":   {"wheel": "rgb-slice",     "sliders": ALL_SLIDERS},
+    "lch":   {"wheel": "oklch-slice",   "sliders": ALL_SLIDERS},
 }
-_MODULE_NAMES = {"hsv": "HSV", "hls": "HLS", "rgb": "RGB", "lch": "LCH"}
-_MODULE_ORDER = ["hsv", "hls", "rgb", "lch"]
+_MODULE_NAMES = {"hsv": "HSV", "vhsv": "VHSV", "hls": "HLS", "rgb": "RGB", "lch": "LCH"}
+_MODULE_ORDER = ["hsv", "vhsv", "hls", "rgb", "lch"]
 
 # ── Normalized chroma scale for the C_oklch slider ────────────────────────
 # The C slider keeps its handle stable while L/H changes by representing a
