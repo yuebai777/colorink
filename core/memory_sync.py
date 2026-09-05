@@ -462,7 +462,10 @@ class MemorySyncThread(QThread):
                                 if fg_pid.value == ps_pid:
                                     # VK_LBUTTON = 0x01
                                     if ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000:
-                                        is_painting = True
+                                        # VK_MENU = 0x12 (Alt key: Photoshop temporary eyedropper)
+                                        is_alt = bool(ctypes.windll.user32.GetAsyncKeyState(0x12) & 0x8000)
+                                        if not is_alt:
+                                            is_painting = True
                     except Exception:
                         pass
                     if hasattr(self.ps_sync, "set_drawing"):

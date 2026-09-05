@@ -55,7 +55,7 @@ DRAWING_FILENAME: Final = "drawing.txt"
 # panel with an older protocol keeps writing the old value (or nothing),
 # so Colorink can tell "deployed file is new" from "running panel is
 # new" — only the latter clears the "restart Photoshop" hint.
-PANEL_VERSION: Final = 12
+PANEL_VERSION: Final = 14
 
 EXTENSION_ID: Final = "com.colorink.bridge"
 EXTENSION_DIR_NAME: Final = "ColorinkBridge"
@@ -191,7 +191,7 @@ try {
         myPid = String(env.appPid).trim();
     }
 } catch (e) {}
-evalScript("try{var pv=$.pid;pv!==undefined&&pv!==null?String(pv):''}catch(e){''}", function (result) {
+evalScript("(function(){try{var pv=$.pid;return(pv!==undefined&&pv!==null)?String(pv):'';}catch(e){return '';}})()", function (result) {
     if (myPid === "" && result && typeof result === 'string') {
         var v = String(result).trim();
         if (v !== "" && v !== "undefined" && v.indexOf("EvalScript error") === -1) { myPid = v; }
@@ -223,8 +223,8 @@ function claimStaleCmd() {
             }
             claimed = true;
         } else {
-            var s = "var f=new File('" + d0 + "/cmd.txt');" +
-                "if(f.exists){var t=f.modified?f.modified.getTime():0;if(t>0&&t<" + panelStart + "){f.remove();}}true;";
+            var s = "(function(){try{var f=new File('" + d0 + "/cmd.txt');" +
+                "if(f.exists){var t=f.modified?f.modified.getTime():0;if(t>0&&t<" + panelStart + "){f.remove();}}return true;}catch(e){return false;}})()";
             evalScript(s, function (result) { claimed = true; });
         }
     } catch (e) { claimed = true; }
@@ -238,13 +238,13 @@ claimStaleCmd();
         if (useNodeFs) {
             fs.writeFileSync(d0 + '/nodefs.txt', '1');
         } else {
-            evalScript("var f=new File('" + d0 + "/nodefs.txt');f.open('w');f.write('0');f.close();", function () {});
+            evalScript("(function(){try{var f=new File('" + d0 + "/nodefs.txt');f.open('w');f.write('0');f.close();}catch(e){}})()", function () {});
         }
     } catch (e) {}
 })();
 var tick = 0;
 var FAST_MS = 100;     // command mailbox check interval
-var STATE_EVERY = 5;   // state read-back every 5 ticks (0.5 s)
+var STATE_EVERY = 1;   // state read-back every tick (100 ms) for instant color pick sync
 var BEAT_EVERY = 40;   // heartbeat + panel_version every 40 ticks (4 s)
 var cmdMtime = 0;
 var lastToken = "";
@@ -252,27 +252,28 @@ var lastStateStr = "";
 
 function stateScript(d) {
     var suff = pidSuffix();
-    return "var d='" + d + "';" +
+    return "(function(){try{var d='" + d + "';" +
         "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
         "var s=new File(d+'/state" + suff + ".txt');s.open('w');" +
         "s.write(Math.round(fg.rgb.red)+'|'+Math.round(fg.rgb.green)+'|'+Math.round(fg.rgb.blue)+'|'+Math.round(bg.rgb.red)+'|'+Math.round(bg.rgb.green)+'|'+Math.round(bg.rgb.blue));" +
-        "s.close();";
+        "s.close();}catch(e){}})()";
 }
 function beatScript(d) {
     // Keep PANEL_VERSION in sync with PANEL_VERSION_FILENAME below
     var suff = pidSuffix();
-    return "var d='" + d + "';" +
+    return "(function(){try{var d='" + d + "';" +
         "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
-        "pv.write('12');pv.close();" +
+        "pv.write('14');pv.close();" +
         "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
-        "h.write(String(new Date().getTime()));h.close();";
+        "h.write(String(new Date().getTime()));h.close();}catch(e){}})()";
 }
 function applyScript(d, parts) {
     // parts: <token>|<pid>|<index>|<r>|<g>|<b>  or  <token>|<pid>|swap  or  <token>|<pid>|both|<fg_r>|<fg_g>|<fg_b>|<bg_r>|<bg_g>|<bg_b>
     // Mutate the existing SolidColor objects in place: constructing
     // `new SolidColor()` fails with "EvalScript error" on this green
     // build, while reading/mutating app.foregroundColor works.
-    var s = "var d='" + d + "';";
+    var suff = pidSuffix();
+    var s = "(function(){try{var d='" + d + "';";
     if (parts[2] === 'swap') {
         s += "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
             "var fr=fg.rgb.red;var fg2=fg.rgb.green;var fb=fg.rgb.blue;" +
@@ -295,10 +296,17 @@ function applyScript(d, parts) {
             "c.rgb.blue=" + parseInt(parts[5], 10) + ";";
     }
     // Apply writes the state back immediately.
-    return s + stateScript(d);
+    s += "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
+        "var st=new File(d+'/state" + suff + ".txt');st.open('w');" +
+        "st.write(Math.round(fg.rgb.red)+'|'+Math.round(fg.rgb.green)+'|'+Math.round(fg.rgb.blue)+'|'+Math.round(bg.rgb.red)+'|'+Math.round(bg.rgb.green)+'|'+Math.round(bg.rgb.blue));" +
+        "st.close();}catch(e){}})()";
+    return s;
 }
 function poll() {
     try {
+        // Startup grace period: do not touch ExtendScript during the first 2.5s
+        // after launch so Photoshop and other plugins finish initializing cleanly.
+        if (Date.now() - panelStart < 2500) { return; }
         tick++;
         var d = String(dir).replace(/\\/g, "/");
         var doState = (tick % STATE_EVERY === 0);
@@ -307,7 +315,7 @@ function poll() {
         if (useNodeFs) {
             if (doBeat) {
                 try {
-                    fs.writeFileSync(d + '/panel_version' + suff + '.txt', '12');
+                    fs.writeFileSync(d + '/panel_version' + suff + '.txt', '14');
                     fs.writeFileSync(d + '/heartbeat' + suff + '.txt', String(Date.now()));
                 } catch (eBeat) {}
             }
@@ -360,23 +368,25 @@ function poll() {
                     }
                 } catch (eCa) {}
 
-                // Check if the user is painting in Photoshop: drawing.txt touched within 1.5s
-                // indicates active stylus/mouse drag on canvas — skip ExtendScript so
-                // Photoshop's UI thread is never interrupted during brush strokes!
+                // Check if the user is painting in Photoshop: drawing.txt containing '1'
+                // indicates active stylus/mouse drag on canvas without Alt.
                 var isDrawing = false;
                 try {
                     var drPath = d + '/drawing.txt';
                     if (fs.existsSync(drPath)) {
-                        var stDr = fs.statSync(drPath);
-                        var drMtime = stDr ? (stDr.mtimeMs !== undefined ? stDr.mtimeMs : stDr.mtime.getTime()) : 0;
-                        if (Date.now() - drMtime < 1500) {
-                            isDrawing = true;
+                        var drVal = String(fs.readFileSync(drPath, 'utf8')).trim();
+                        if (drVal === '1') {
+                            var stDr = fs.statSync(drPath);
+                            var drMtime = stDr ? (stDr.mtimeMs !== undefined ? stDr.mtimeMs : stDr.mtime.getTime()) : 0;
+                            if (Date.now() - drMtime < 800) {
+                                isDrawing = true;
+                            }
                         }
                     }
                 } catch (eDr) {}
 
                 if (isClientAlive && !isDrawing) {
-                    evalScript("try{var fg=app.foregroundColor.rgb,bg=app.backgroundColor.rgb;Math.round(fg.red)+'|'+Math.round(fg.green)+'|'+Math.round(fg.blue)+'|'+Math.round(bg.red)+'|'+Math.round(bg.green)+'|'+Math.round(bg.blue);}catch(e){''}", function (result) {
+                    evalScript("(function(){try{var fg=app.foregroundColor.rgb,bg=app.backgroundColor.rgb;return Math.round(fg.red)+'|'+Math.round(fg.green)+'|'+Math.round(fg.blue)+'|'+Math.round(bg.red)+'|'+Math.round(bg.green)+'|'+Math.round(bg.blue);}catch(e){return '';}})()", function (result) {
                         if (result && typeof result === 'string' && result.indexOf('|') !== -1) {
                             if (result !== lastStateStr) {
                                 lastStateStr = result;
@@ -396,7 +406,12 @@ function poll() {
             // while idle. State/heartbeat are throttled.
             var suff = pidSuffix();
             var script =
+                "(function(){try{" +
                 "var d='" + d + "';var my='" + myPid + "';" +
+                "var ca=new File(d+'/client_alive.txt');" +
+                "if(!ca.exists){return;}" +
+                "var caT=ca.modified?ca.modified.getTime():0;" +
+                "if(new Date().getTime()-caT>4000){return;}" +
                 "var ap=new File(d+'/applied" + suff + ".txt');var last='';" +
                 "if(ap.exists){ap.open('r');last=ap.read();ap.close();}" +
                 "var line='';var cf=new File(d+'/cmd.txt');" +
@@ -410,15 +425,16 @@ function poll() {
                 "var br=bg.rgb.red;var bg3=bg.rgb.green;var bb=bg.rgb.blue;" +
                 "fg.rgb.red=br;fg.rgb.green=bg3;fg.rgb.blue=bb;" +
                 "bg.rgb.red=fr;bg.rgb.green=fg2;bg.rgb.blue=fb;" +
+                "applied=true;" +
                 "}else if(parts.length>=6){" +
                 "var c=(parseInt(parts[2],10)==1)?app.backgroundColor:app.foregroundColor;" +
                 "c.rgb.red=parseInt(parts[3],10);" +
                 "c.rgb.green=parseInt(parts[4],10);" +
                 "c.rgb.blue=parseInt(parts[5],10);" +
+                "applied=true;" +
                 "}" +
                 "var a=new File(d+'/applied" + suff + ".txt');a.open('w');" +
                 "a.write(parts[0]);a.close();" +
-                "applied=true;" +
                 "}" +
                 (doState ? "if(applied||true){" : "if(applied){") +
                 "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
@@ -428,9 +444,10 @@ function poll() {
                 "}" +
                 (doBeat ?
                 "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
-                "pv.write('12');pv.close();" +
+                "pv.write('14');pv.close();" +
                 "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
-                "h.write(String(new Date().getTime()));h.close();" : "");
+                "h.write(String(new Date().getTime()));h.close();" : "") +
+                "}catch(e){}})()";
             evalScript(script, function () {});
             return;
         }
@@ -655,9 +672,14 @@ class PhotoshopScriptBridge:
             path = os.path.join(self.dir, DRAWING_FILENAME)
             if is_drawing:
                 with open(path, "w", encoding="ascii") as f:
-                    f.write(str(int(time.time() * 1000)))
+                    f.write("1\n")
             else:
                 if os.path.isfile(path):
+                    try:
+                        with open(path, "w", encoding="ascii") as f:
+                            f.write("0\n")
+                    except OSError:
+                        pass
                     try:
                         os.remove(path)
                     except OSError:
