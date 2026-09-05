@@ -60,7 +60,8 @@ _slotback.py
 _state_*.json
 _v7_panel.js
 qrcode_*.jpg
-docs/superpowers/plans/tourbox-conflict-repro-message.md
+# Local-only planning and design docs
+docs/
 
 # PyInstaller
 *.manifest
