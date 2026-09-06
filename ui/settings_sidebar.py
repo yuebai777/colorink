@@ -353,16 +353,16 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.lbl_opacity.setText(f"{opacity_val}%")
         
         # Checkboxes
-        for cb, key in [
-            (self.cb_taskbar_icon, "showTaskbarIcon"),
-            (self.cb_lock_size, "lockWindowSize"),
-            (self.cb_lock_position, "lockWindowPosition"),
-            (self.cb_autostart, "openAtLogin"),
-            (self.cb_only_drawing, "onlyShowInCsp"),
-            (self.cb_no_focus, "noFocusMode")
+        for cb, key, default in [
+            (self.cb_taskbar_icon, "showTaskbarIcon", False),
+            (self.cb_lock_size, "lockWindowSize", False),
+            (self.cb_lock_position, "lockWindowPosition", False),
+            (self.cb_autostart, "openAtLogin", False),
+            (self.cb_only_drawing, "onlyShowInCsp", True),
+            (self.cb_no_focus, "noFocusMode", True)
         ]:
             cb.blockSignals(True)
-            cb.setChecked(self.cfg.get(key, False))
+            cb.setChecked(self.cfg.get(key, default))
             cb.blockSignals(False)
 
         self.cb_show_title_bar.blockSignals(True)

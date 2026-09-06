@@ -66,7 +66,7 @@ class TitleBar(QWidget):
         act_no_focus = menu.addAction(i18n.tr("无焦点取色模式"))
         if act_no_focus is not None:
             act_no_focus.setCheckable(True)
-            act_no_focus.setChecked(cast(bool, p.cfg.get("noFocusMode", False)))
+            act_no_focus.setChecked(cast(bool, p.cfg.get("noFocusMode", True)))
             act_no_focus.triggered.connect(lambda checked: self._toggle_no_focus(checked))
 
         menu.addSeparator()

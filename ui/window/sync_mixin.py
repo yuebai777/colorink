@@ -21,6 +21,7 @@ class SyncMixin:
         self.sync_thread.signals.error_changed.connect(self.on_sync_error_changed)
         self._sync_error = None
         self._ps_perm_prompted = False
+        self._csp_companion_prompted = False
 
         # Set active software mode
         mode = self.cfg.get("syncSoftware", "auto")
@@ -39,8 +40,20 @@ class SyncMixin:
                 has_companion_session=has_session_val,
             ) or "csp"
             self.sync_thread.set_software_mode(initial_mode)
+            if (running == "csp" or initial_mode in ("csp", "companion")) and not has_session_val:
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(1000, self.maybe_prompt_companion_connection)
         else:
             self.sync_thread.set_software_mode(mode)
+            if mode in ("csp", "companion"):
+                c_sync = getattr(self.sync_thread, "companion_sync", None)
+                has_session = (
+                    getattr(c_sync, "has_session", None) or getattr(c_sync, "_has_session", None)
+                )
+                has_session_val = bool(has_session()) if callable(has_session) else False
+                if not has_session_val:
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(1000, self.maybe_prompt_companion_connection)
 
         self.sync_thread.csp_version = self.cfg.get("cspVersion", "auto")
         self.sync_thread.sai2_version = self.cfg.get("sai2Version", "auto")
@@ -238,9 +251,38 @@ class SyncMixin:
         if ok:
             c = self.sync_thread.companion_sync
             c._load_session()
-            self.title_bar.title_label.setText("Colorink (手机 — 连接中...)")
+            switch_fn = getattr(self, "switch_sync_software_mode", None)
+            if callable(switch_fn):
+                switch_fn("companion")
+            else:
+                self.sync_thread.set_software_mode("companion")
+            if hasattr(self, 'title_bar') and hasattr(self.title_bar, 'title_label'):
+                self.title_bar.title_label.setText("Colorink (手机 — 连接中...)")
         if hasattr(self, 'settings_sidebar'):
             self.settings_sidebar._refresh_companion_status()
+            self.settings_sidebar._refresh_sync_status()
+
+    def maybe_prompt_companion_connection(self):
+        """Automatically prompt the user to connect CSP companion once per session
+        when CSP is active/detected and no saved companion session exists."""
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return
+        if getattr(self, "_csp_companion_prompted", False):
+            return
+        sync_thread = getattr(self, "sync_thread", None)
+        if sync_thread is None:
+            return
+        c = getattr(sync_thread, "companion_sync", None)
+        if c is None:
+            return
+        has_session = getattr(c, "has_session", None) or getattr(c, "_has_session", None)
+        has_session_val = bool(has_session()) if callable(has_session) else False
+        connected = bool(getattr(c, "_connected", False))
+        if connected or has_session_val:
+            return
+        self._csp_companion_prompted = True
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(400, self._setup_companion_connection)
 
     def _resolve_sync_source(self):
         """Return (space_name, values) for CSP memory-mode sync.

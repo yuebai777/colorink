@@ -59,7 +59,7 @@ class SyncPanelMixin:
             if sync_thread is not None:
                 active_mode = getattr(sync_thread, "software_mode", "csp")
 
-        show_companion = (selected == "companion") or (selected == "auto" and active_mode == "companion")
+        show_companion = (selected in ("companion", "csp")) or (selected == "auto" and active_mode in ("companion", "csp"))
         self.row_csp_widget.setVisible(selected == "csp")
         self.row_csp_hint_widget.setVisible(selected == "csp")
         self.row_sai_widget.setVisible(selected == "sai")
@@ -113,7 +113,7 @@ class SyncPanelMixin:
             "sai": "SAI2",
             "udm": "UDM",
             "ps": "Photoshop",
-            "companion": i18n.tr("手机"),
+            "companion": i18n.tr("CSP（手机模式）"),
         }
 
         # In auto mode, inspect the currently active backend on the sync thread
@@ -332,9 +332,15 @@ class SyncPanelMixin:
         self._refresh_ps_bridge_status()
 
     def _on_software_changed(self, text):
-        """When the user picks Photoshop, offer the restart fix once."""
+        """When the user picks Photoshop, offer the restart fix once; when picking CSP, offer companion setup."""
         if text == "Photoshop":
             QTimer.singleShot(400, self._maybe_prompt_ps_bridge)
+        elif text in ("CSP Companion（手机）", "CLIP Studio Paint"):
+            parent = self._parent
+            if parent is not None:
+                maybe_prompt = getattr(parent, "maybe_prompt_companion_connection", None)
+                if callable(maybe_prompt):
+                    QTimer.singleShot(400, maybe_prompt)
 
     def _maybe_prompt_ps_bridge(self):
         """One-time dialog: bridge deployed but Photoshop not restarted yet."""

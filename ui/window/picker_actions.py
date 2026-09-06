@@ -552,6 +552,11 @@ class PickerActionsMixin:
                     else:
                         sync_thread.set_software_mode(target_mode)
 
+                if detected_app == "csp" and not has_session_val:
+                    maybe_prompt = getattr(self, "maybe_prompt_companion_connection", None)
+                    if callable(maybe_prompt):
+                        maybe_prompt()
+
         if only_show_in_csp:
             should_be_visible = is_drawing_active or is_our_focused
 
@@ -675,12 +680,23 @@ class PickerActionsMixin:
                 check_fg()
 
         
-        # Companion mode: show setup dialog if no saved session
-        if mode == "companion":
-            c = self.sync_thread.companion_sync
-            if not c._connected and not c._has_session():
-                from PyQt6.QtCore import QTimer as _Qt
-                _Qt.singleShot(300, lambda: self._setup_companion_connection())
+        # Companion mode / CSP: show setup dialog if no saved session
+        is_csp = (mode in ("companion", "csp"))
+        if mode == "auto":
+            active_m = getattr(self.sync_thread, "software_mode", None)
+            if active_m in ("companion", "csp"):
+                is_csp = True
+        if is_csp:
+            c = getattr(self.sync_thread, "companion_sync", None)
+            has_session = (getattr(c, "has_session", None) or getattr(c, "_has_session", None)) if c else None
+            has_session_val = bool(has_session()) if callable(has_session) else False
+            if c is not None and not getattr(c, "_connected", False) and not has_session_val:
+                maybe_prompt = getattr(self, "maybe_prompt_companion_connection", None)
+                if callable(maybe_prompt):
+                    maybe_prompt()
+                else:
+                    from PyQt6.QtCore import QTimer as _Qt
+                    _Qt.singleShot(300, lambda: self._setup_companion_connection())
 
         # Update settings dialog variables in thread
         self.sync_thread.csp_version = self.cfg.get("cspVersion", "auto")

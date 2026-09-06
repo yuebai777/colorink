@@ -102,7 +102,7 @@ def default_hotkey_config():
         "showTaskbarIcon": False,
         "lockWindowSize": False,
         "lockWindowPosition": False,
-        "onlyShowInCsp": False,
+        "onlyShowInCsp": True,
         "openAtLogin": False,
         "checkUpdatesOnStartup": True,
         # Latest release tag the user chose to skip, so the startup tray
@@ -155,7 +155,7 @@ def default_hotkey_config():
         # 其余取值见 ui/border_themes.py 的 BORDER_THEMES。
         "borderStyle": "auto",
         "followMouseEnabled": False,
-        "noFocusMode": False,
+        "noFocusMode": True,
         "showLabLightnessSlider": False,
         "slidersTabs": False,                # 滑块组分页签叠放（B-4）
         "panelDrag": False,                  # 面板抓手：拖拽重排（B-4）

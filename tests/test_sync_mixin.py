@@ -115,3 +115,60 @@ def test_switch_sync_software_mode_pushes_initial_palette(qapp):
     assert pal["active_slot"] == 0
     assert pal[0]["rgb"] == (255, 0, 0)
     assert pal[1]["rgb"] == (0, 0, 255)
+
+
+def test_maybe_prompt_companion_connection_prompts_when_unconnected(monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    class FakeCompanion:
+        _connected = False
+        def has_session(self): return False
+
+    class FakeSyncThread:
+        companion_sync = FakeCompanion()
+
+    scheduled = []
+    class FakeWindow(SyncMixin):
+        def __init__(self):
+            self.sync_thread = FakeSyncThread()
+            self._csp_companion_prompted = False
+        def _setup_companion_connection(self):
+            scheduled.append(True)
+
+    win = FakeWindow()
+    # Mock QTimer.singleShot to call immediately for verification
+    from PyQt6.QtCore import QTimer
+    monkeypatch.setattr(QTimer, "singleShot", lambda ms, fn: fn())
+
+    win.maybe_prompt_companion_connection()
+    assert win._csp_companion_prompted is True
+    assert scheduled == [True]
+
+    # Calling a second time should not re-prompt
+    win.maybe_prompt_companion_connection()
+    assert scheduled == [True]
+
+
+def test_maybe_prompt_companion_connection_skips_when_session_exists(monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    class FakeCompanion:
+        _connected = False
+        def has_session(self): return True
+
+    class FakeSyncThread:
+        companion_sync = FakeCompanion()
+
+    scheduled = []
+    class FakeWindow(SyncMixin):
+        def __init__(self):
+            self.sync_thread = FakeSyncThread()
+            self._csp_companion_prompted = False
+        def _setup_companion_connection(self):
+            scheduled.append(True)
+
+    win = FakeWindow()
+    win.maybe_prompt_companion_connection()
+    assert win._csp_companion_prompted is False
+    assert scheduled == []
+

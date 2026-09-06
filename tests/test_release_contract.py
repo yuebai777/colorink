@@ -63,6 +63,9 @@ def test_first_run_defaults_are_compact_and_discoverable():
     assert config["hideHueRing"] is False
     assert config["ringlessControlsSide"] == "right"
     assert config["orderSlidersHistory"] == 8
+    assert config["onlyShowInCsp"] is True
+    assert config["noFocusMode"] is True
+    assert config["slidersTabs"] is False
     assert "injectionKey" not in config
     assert "colorPickingEnabled" not in config
     assert "cspAutoClick" not in config
