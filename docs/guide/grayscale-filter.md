@@ -33,13 +33,15 @@ Colorink 内置了硬件级一键全局灰度滤镜，无需画师在绘画软�
 
 ---
 
-## 4. 三大底层渲染后端说明
+## 4. 底层渲染后端说明
 
-Colorink 在 Windows 底层提供了 3 种渲染技术，可在 **设置 → 灰度 → 运行模式** 中选择：
+可在 **设置 → 灰度 → 运行模式** 中选择后端：
 
-- **DComp (DirectComposition，默认推荐 ⭐⭐⭐⭐⭐)**：采用现代 Windows 显存直通零拷贝架构，延迟低于 1ms，性能损耗几乎为零，支持 OKLCh 与多显示器指定；
-- **Native (DXGI + OpenGL)**：采用 DXGI 桌面捕捉与 OpenGL 硬件加速，启动时后台预热，适合旧版 Windows 10 系统；
-- **Mag (Windows 系统放大镜模式)**：利用 Windows 操作系统内核级颜色矩阵变换。完全不依赖独立显卡与 OpenGL，适合老旧集成显卡或虚拟机环境（仅支持 Luma 全屏）。
+- **DComp (DirectComposition，默认推荐 ⭐⭐⭐⭐⭐)**：采用现代 Windows 显存直通零拷贝架构，延迟低于 1ms，性能损耗几乎为零，**完美支持 OKLCh 感知灰度** 与多显示器独立指定；
+- **Native (DXGI + OpenGL，优质备选 ⭐⭐⭐⭐)**：采用 DXGI 桌面捕捉与 OpenGL 硬件加速，**同样完整支持 OKLCh 感知灰度** 与单显示器指定。当 DComp 模式在特殊多显卡环境或显卡驱动下未正常激活时，建议优先切换为 Native 模式；
+- **Mag (Windows 系统放大镜)**：系统级内核颜色矩阵变换。
+  > [!WARNING] 注意：Mag 模式无法开启 OKLCh
+  > Mag 模式受限于 Windows 系统的底层 API，**无法支持 OKLCh 感知灰度（仅支持传统的线性 Luma），且无法指定单个屏幕**。因此若想使用科学的 OKLCh 感知明度检查素描关系，请务必保持使用 **DComp** 或 **Native** 模式。
 
 ---
 
