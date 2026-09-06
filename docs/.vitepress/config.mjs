@@ -40,7 +40,7 @@ export default defineConfig({
             { text: '同步概览与原理', link: '/sync/overview' },
             { text: 'CLIP STUDIO PAINT (CSP)', link: '/sync/csp' },
             { text: 'Adobe Photoshop (PS)', link: '/sync/photoshop' },
-            { text: 'PaintTool SAI2 / UDM', link: '/sync/sai2' }
+            { text: 'SAI2 / 优动漫 PAINT (UDM)', link: '/sync/sai2' }
           ]
         },
         {
@@ -57,7 +57,7 @@ export default defineConfig({
             { text: '同步概览与原理', link: '/sync/overview' },
             { text: 'CLIP STUDIO PAINT (CSP)', link: '/sync/csp' },
             { text: 'Adobe Photoshop (PS)', link: '/sync/photoshop' },
-            { text: 'PaintTool SAI2 / UDM', link: '/sync/sai2' }
+            { text: 'SAI2 / 优动漫 PAINT (UDM)', link: '/sync/sai2' }
           ]
         },
         {
