@@ -1,11 +1,17 @@
 # Colorink
 
+[![Documentation](https://img.shields.io/badge/官方文档-在线使用手册-3eaf7c?style=for-the-badge&logo=gitbook&logoColor=white)](https://yuebai777.github.io/colorink/)
+[![Latest Release](https://img.shields.io/github/v/release/yuebai777/colorink?style=for-the-badge&color=orange)](https://github.com/yuebai777/colorink/releases/latest)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](LICENSE)
+
+> 📖 **官方在线文档 & 完整使用教程**：**[https://yuebai777.github.io/colorink/](https://yuebai777.github.io/colorink/)**  
+> 专为画师与设计师打造，包含新手 3 分钟快速上手、取色视窗手势（Alt冻结/滚轮缩放/Shift轴锁定）、LAB 和弦调色、CSP 手机扫码配对、Photoshop / SAI2 同步与常见问题 FAQ。
+
 基于 PyQt6 的 Windows 桌面取色器 / 调色工具，为绘画与设计工作流设计：全局取色、多色空间精确调色、绘画软件颜色同步，以及系统级灰度滤镜。
 
 当前版本：**v1.8.6**
 
-> 📖 **官方在线文档 & 教程手册**：**[https://yuebai777.github.io/colorink/](https://yuebai777.github.io/colorink/)**  
-> 包含画师 3 分钟快速上手、全屏取色放大镜、LAB 和弦调色、CSP 手机模式扫码连接、Photoshop CEP 扩展同步、SAI2 内存同步与常见问题 FAQ。
+[📖 在线文档](https://yuebai777.github.io/colorink/) · [⬇️ 软件下载](https://github.com/yuebai777/colorink/releases/latest) · [💬 QQ 交流群](#交流群) · [✨ 功能特性](#功能特性) · [⌨️ 快捷键速查](#快捷键可在设置中修改)
 
 ## 交流群
 
