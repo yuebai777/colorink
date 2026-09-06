@@ -158,7 +158,8 @@ python build_pyqt.py
 如果 Colorink 帮到了你，欢迎支持作者！可扫码请我喝杯咖啡 ☕，或前往 **爱发电** 赞助：
 
 > 🏆 **[爱发电 · Colorink](https://afdian.com/a/touyimoyuebai)** —— 前往 https://afdian.com/a/touyimoyuebai
-> 在爱发电赞助可获得最新版本优先体验、专属配色方案等创作者奖励，感谢支持！
+> 软件维护不易，如果您感觉该软件对你有帮助，欢迎通过爱发电赞助，您的支持将成为
+> 软件长期维护的助力，谢谢~
 
 <img src="screenshots/buy-me-a-coffee.jpg" width="260" alt="请我喝杯咖啡" />
 
