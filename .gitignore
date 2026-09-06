@@ -61,7 +61,12 @@ _state_*.json
 _v7_panel.js
 qrcode_*.jpg
 # Local-only planning and design docs
-docs/
+docs/superpowers/
+
+# Node & VitePress docs build artifacts
+node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
 
 # PyInstaller
 *.manifest

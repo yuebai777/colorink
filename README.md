@@ -4,6 +4,9 @@
 
 当前版本：**v1.8.5**
 
+> 📖 **官方在线文档 & 教程手册**：**[https://yuebai777.github.io/colorink/](https://yuebai777.github.io/colorink/)**  
+> 包含画师 3 分钟快速上手、全屏取色放大镜、LAB 和弦调色、CSP 手机模式扫码连接、Photoshop CEP 扩展同步、SAI2 内存同步与常见问题 FAQ。
+
 ## 交流群
 
 遇到问题、想要反馈建议，或想跟其他用户交流使用心得？欢迎扫码加入 QQ 交流群：
