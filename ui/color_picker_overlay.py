@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import QApplication, QWidget
 _ZOOM=6; _RADIUS=7; _PREVIEW=32; _PAD=6; _BR=8
 # Fixed magnifier display area in px (at default zoom × radius)
 _GRID_PX = (2*_RADIUS+1) * _ZOOM  # 90
+_PANEL_W = _GRID_PX + _PAD * 2
+_PANEL_H = _PAD + _GRID_PX + _PAD + _PREVIEW + _PAD + 10 + 11 + _PAD
 
 def _nearest_odd(v):
     v = max(3, int(v)); return v if v%2 else v+1
@@ -32,10 +34,12 @@ def _zoom_geometry(zoom):
     """
     zoom = max(1, int(zoom))
     cap_size = _nearest_odd(_GRID_PX / zoom)
+    if cap_size * zoom < _GRID_PX:
+        cap_size += 2
     radius = (cap_size - 1) // 2
     grid_disp = cap_size * zoom
-    panel_w = grid_disp + _PAD * 2
-    panel_h = _PAD + grid_disp + _PAD + _PREVIEW + _PAD + 10 + 11 + _PAD
+    panel_w = _PANEL_W
+    panel_h = _PANEL_H
     return cap_size, radius, grid_disp, panel_w, panel_h
 
 # Load native mouse hook DLL
@@ -125,8 +129,9 @@ class ColorPickerOverlay(QWidget):
         self._shift_axis = None
         self._hide_reticle = False
         self._active_sample_pos = None
-        self._panel_w = _GRID_PX + _PAD * 2
-        self._panel_h = _PAD + _GRID_PX + _PAD + _PREVIEW + _PAD + 10 + 11 + _PAD
+        self._panel_w = _PANEL_W
+        self._panel_h = _PANEL_H
+        self._wheel_accumulator = 0
         self.setFixedSize(self._panel_w, self._panel_h)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -246,7 +251,10 @@ class ColorPickerOverlay(QWidget):
             self.set_zoom(new_zoom)
             (self._cap_size, self._radius, _grid_disp,
              self._panel_w, self._panel_h) = _zoom_geometry(self._zoom)
-            self.setFixedSize(self._panel_w, self._panel_h)
+            if self.size().width() != self._panel_w or self.size().height() != self._panel_h:
+                self.setFixedSize(self._panel_w, self._panel_h)
+            if self._active:
+                self.update()
             self.zoomChanged.emit(new_zoom)
         return self._zoom
 
@@ -267,6 +275,7 @@ class ColorPickerOverlay(QWidget):
 
     def start(self):
         self._active = True
+        self._wheel_accumulator = 0
         self._frozen = False
         self._freeze_pos = None
         self._shift_origin = None
@@ -303,6 +312,7 @@ class ColorPickerOverlay(QWidget):
 
     def stop(self):
         self._active = False
+        self._wheel_accumulator = 0
         self._timer.stop()
         if _hook_dll:
             _hook_dll.uninstall()
@@ -320,6 +330,7 @@ class ColorPickerOverlay(QWidget):
 
     def closeEvent(self, ev):
         self._active = False
+        self._wheel_accumulator = 0
         self._timer.stop()
         self._dot.close()
         self._show_cursor()          # ensure the cursor never gets stuck hidden if the widget is closed mid-pick
@@ -367,10 +378,11 @@ class ColorPickerOverlay(QWidget):
             try:
                 wheel_raw = _hook_dll.get_wheel_delta()
                 if wheel_raw != 0:
-                    steps = wheel_raw // 120
-                    if steps == 0:
-                        steps = 1 if wheel_raw > 0 else -1
-                    self.adjust_zoom(steps)
+                    self._wheel_accumulator += wheel_raw
+                    steps = int(self._wheel_accumulator / 120)
+                    if steps != 0:
+                        self._wheel_accumulator -= steps * 120
+                        self.adjust_zoom(steps)
             except Exception:
                 pass
 
@@ -510,19 +522,33 @@ class ColorPickerOverlay(QWidget):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(0, 0, w - 1, h - 1, _BR, _BR)
 
+            # Viewport for the magnified grid is fixed to _GRID_PX × _GRID_PX
             cell = self._zoom
-            gd = self._cap_size * self._zoom
-            mr = QRect(_PAD, _PAD, gd, gd)
-            p.setPen(Qt.PenStyle.NoPen)
-            for ri, row in enumerate(self._pixel_grid):
-                for ci, (r_, g_, b_) in enumerate(row):
-                    p.setBrush(QBrush(QColor(r_, g_, b_)))
-                    p.drawRect(mr.x() + ci * cell, mr.y() + ri * cell, cell, cell)
+            mr = QRect(_PAD, _PAD, _GRID_PX, _GRID_PX)
+            cx_ = mr.x() + _GRID_PX // 2
+            cy_ = mr.y() + _GRID_PX // 2
 
-            # Crosshair (hidden if Space is held)
+            p.save()
+            p.setClipRect(mr)
+            p.setPen(Qt.PenStyle.NoPen)
+            half = len(self._pixel_grid) // 2
+            center_left = cx_ - cell // 2
+            center_top = cy_ - cell // 2
+            for ri, row in enumerate(self._pixel_grid):
+                dy = ri - half
+                for ci, (r_, g_, b_) in enumerate(row):
+                    dx = ci - half
+                    p.setBrush(QBrush(QColor(r_, g_, b_)))
+                    p.drawRect(center_left + dx * cell, center_top + dy * cell, cell, cell)
+            p.restore()
+
+            # Viewport subtle inner border
+            p.setPen(QPen(QColor(90, 90, 90, 60), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRect(mr)
+
+            # Crosshair (hidden if Space is held) — perfectly stable at center (cx_, cy_)
             if not self._hide_reticle:
-                cx_ = mr.x() + self._radius * cell + cell // 2
-                cy_ = mr.y() + self._radius * cell + cell // 2
                 cl = 6
                 for co, pw in [(QColor(0, 0, 0, 140), 3), (QColor(255, 255, 255, 220), 1)]:
                     p.setPen(QPen(co, pw))
@@ -589,8 +615,11 @@ class ColorPickerOverlay(QWidget):
     def wheelEvent(self, ev):
         delta = ev.angleDelta().y()
         if delta != 0:
-            step = 1 if delta > 0 else -1
-            self.adjust_zoom(step)
+            self._wheel_accumulator += delta
+            steps = int(self._wheel_accumulator / 120)
+            if steps != 0:
+                self._wheel_accumulator -= steps * 120
+                self.adjust_zoom(steps)
         ev.accept()
 
     def keyPressEvent(self, ev):

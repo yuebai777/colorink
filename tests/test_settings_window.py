@@ -522,3 +522,26 @@ def test_lab_checkerboard_setting_round_trip(sidebar):
     sidebar.save_settings()
     assert sidebar.cfg["showLabCheckerboard"] is True
 
+
+def test_settings_show_hide_tolerate_a_deleted_main_window(sidebar, stub_main_window):
+    """设置窗口在退出/主窗口已销毁后收尾时不得再调用已删除的主窗口。
+
+    复现：全部滑块拖出后打开/关闭设置，进程退出时 SettingsSidebar 的
+    hideEvent 会先于 MainWindow 销毁执行（或主窗口已被拖拽竞态销毁），
+    任何对 update_window_flags 的调用都抛
+    RuntimeError: wrapped C/C++ object of type MainWindow has been deleted。
+    """
+    from PyQt6.QtGui import QHideEvent, QShowEvent
+    from PyQt6.QtWidgets import QApplication
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("wrapped C/C++ object of type MainWindow has been deleted")
+
+    stub_main_window.update_window_flags = boom
+    stub_main_window.update_no_focus_policies = boom
+
+    # 修复前这里把异常抛进 Qt 事件循环（闪退）。
+    sidebar.hideEvent(QHideEvent())
+    sidebar.showEvent(QShowEvent())
+
+

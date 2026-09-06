@@ -72,6 +72,8 @@ class FloatingState:
 
     rect: tuple
     on_top: bool = True
+    tree: dock.Node | None = None
+    group_id: str | None = None
 
 
 def _parse_rect(value):
@@ -81,6 +83,8 @@ def _parse_rect(value):
            for item in value):
         return None
     if value[2] <= 0 or value[3] <= 0:
+        return None
+    if not (-10000 <= value[0] <= 50000 and -10000 <= value[1] <= 50000):
         return None
     return tuple(int(item) for item in value)
 
@@ -101,13 +105,28 @@ def load_floating_from(config) -> dict:
         if not isinstance(panel_id, str) or registry.panel(panel_id) is None:
             continue
         on_top = True
+        tree = None
+        group = None
         if isinstance(record, dict):
             on_top = record.get("onTop", True)
+            tree_data = record.get("tree")
+            if tree_data is not None:
+                tree = dock.from_json(tree_data)
+            group = record.get("group")
             record = record.get("rect")
         rect = _parse_rect(record)
         if rect is None:
             continue
-        floating[panel_id] = FloatingState(rect, bool(on_top))
+        floating[panel_id] = FloatingState(rect, bool(on_top), tree, group)
+
+    # Reconcile tree for grouped panels if group leader carried the tree
+    for panel_id, state in list(floating.items()):
+        if state.tree is None and state.group_id and state.group_id in floating:
+            leader = floating[state.group_id]
+            if leader.tree is not None:
+                floating[panel_id] = FloatingState(
+                    state.rect, state.on_top, leader.tree, state.group_id)
+
     return floating
 
 
@@ -118,9 +137,15 @@ def save_floating_into(config, floating) -> None:
     if not floating:
         config.pop(FLOATING_KEY, None)
         return
-    config[FLOATING_KEY] = {
-        panel_id: {"rect": list(state.rect), "onTop": bool(state.on_top)}
-        for panel_id, state in floating.items()}
+    saved = {}
+    for panel_id, state in floating.items():
+        entry = {"rect": list(state.rect), "onTop": bool(state.on_top)}
+        if state.tree is not None:
+            entry["tree"] = state.tree.to_json()
+        if state.group_id is not None and state.group_id != panel_id:
+            entry["group"] = state.group_id
+        saved[panel_id] = entry
+    config[FLOATING_KEY] = saved
 
 
 def clear(config) -> None:

@@ -28,14 +28,48 @@ class FloatingPanelsMixin:
             self._floating_windows_map = windows
         return windows
 
+    def _retire_floating_window(self, window) -> None:
+        """Park a floating window instead of deleteLater-ing it.
+
+        A QDrag (or a deferred drop-finish) can still hold a reference to a
+        window that is being torn down; deleting the C++ object and letting
+        PyQt recycle the wrapper turns live-looking pointers into freed ones
+        in ``drop_target_at`` — the access violation the user hits after the
+        third panel lands in one floating window. Retired windows are hidden
+        and never shown again; they are a small bounded set (one per panel
+        group) and only keep the C++ side alive.
+        """
+        window.hide()
+        retired = getattr(self, "_retired_floating_windows", None)
+        if retired is None:
+            retired = self._retired_floating_windows = []
+        if window not in retired:
+            retired.append(window)
+
+    @staticmethod
+    def _floating_window_dead(window) -> bool:
+        """True when *window*'s C++ object has been destroyed."""
+        try:
+            from PyQt6 import sip
+            return bool(sip.isdeleted(window))
+        except Exception:
+            return False
+
     # ── out ──────────────────────────────────────────────────────────────
 
-    def float_panel(self, panel_id: str, position=None, persist: bool = True) -> bool:
+    def float_panel(self, panel_id: str, position=None, persist: bool = True,
+                    refresh: bool = True) -> bool:
         """Tear *panel_id* out into its own window. True when it moved."""
         windows = self.floating_windows()
         if panel_id in windows:
-            return False
-        widget = self.panel_widget(panel_id)
+            old_win = windows[panel_id]
+            if len(old_win.panel_ids) > 1:
+                widget = old_win.take_panel(panel_id)
+                windows.pop(panel_id, None)
+            else:
+                return False
+        else:
+            widget = self.panel_widget(panel_id)
         host = getattr(self, "panel_host", None)
         if widget is None or host is None:
             return False
@@ -59,6 +93,11 @@ class FloatingPanelsMixin:
         window.dropped_at.connect(self._floating_dropped)
         window.moving_at.connect(self._floating_moving)
         window.menu_requested.connect(self.show_panel_menu)
+        window.panel_float_requested.connect(self._on_floating_panel_float_requested)
+        window.panel_dropped_here.connect(
+            lambda pid, tgt, w=window: self._on_panel_dropped_into_floating(pid, tgt, w))
+        window.set_allow_tab_drops(bool(getattr(self, "cfg", {}).get("slidersTabs", False)))
+        window.set_drag_enabled(bool(getattr(self, "cfg", {}).get("panelDrag", False)))
         chrome = getattr(self, "_floating_chrome", None)
         if chrome is not None:
             window.apply_chrome(chrome)
@@ -99,7 +138,11 @@ class FloatingPanelsMixin:
             # Self-correct rather than trust the arithmetic: the promise is
             # "the panel keeps its size", and chrome adds up to a few pixels
             # that are easy to get wrong. Measure the result and fix it up.
-            QApplication.processEvents()
+            layout = window.layout()
+            if layout is not None:
+                layout.activate()
+            if hasattr(window, "body") and window.body and window.body.layout():
+                window.body.layout().activate()
             panel = window.panel()
             if panel is not None:
                 fix_w = original.width() - panel.width()
@@ -113,6 +156,10 @@ class FloatingPanelsMixin:
         window.geometry_changed.connect(lambda _pid: self._save_floating_state())
         if persist:
             self._save_floating_state()
+        if refresh:
+            fn = getattr(self, "refresh_slider_visibility_and_order", None)
+            if callable(fn):
+                fn()
         return True
 
     def _floating_geometry(self, panel_id, size, position):
@@ -124,31 +171,42 @@ class FloatingPanelsMixin:
         """
         saved = store.load_floating_from(getattr(self, "cfg", None))
         if panel_id in saved:
-            return saved[panel_id].rect
-        chrome = getattr(self, "_floating_chrome", None)
-        border = chrome.border_width if chrome is not None else BORDER
-        bar = (max(12, int(round(PanelTitleBar.FLOATING_HEIGHT * chrome.scale)))
-               if chrome is not None else PanelTitleBar.FLOATING_HEIGHT)
-        pad = (chrome.content_margins if chrome is not None else (4, 6, 4, 6))
-        width = (max(MIN_FLOATING_SIZE[0], size.width())
-                 + border * 2 + int(pad[0]) + int(pad[2]))
-        gap = chrome.grip_gap if chrome is not None else 4
-        height = (max(MIN_FLOATING_SIZE[1], size.height())
-                  + bar + border + int(pad[1]) + int(gap) + int(pad[3]))
-        point = position if position is not None else QCursor.pos()
-        return (point.x() - 24, point.y() - 8, width, height)
+            rect = saved[panel_id].rect
+        else:
+            chrome = getattr(self, "_floating_chrome", None)
+            border = chrome.border_width if chrome is not None else BORDER
+            bar = (max(12, int(round(PanelTitleBar.FLOATING_HEIGHT * chrome.scale)))
+                   if chrome is not None else PanelTitleBar.FLOATING_HEIGHT)
+            pad = (chrome.content_margins if chrome is not None else (4, 6, 4, 6))
+            width = (max(MIN_FLOATING_SIZE[0], size.width())
+                     + border * 2 + int(pad[0]) + int(pad[2]))
+            gap = chrome.grip_gap if chrome is not None else 4
+            height = (max(MIN_FLOATING_SIZE[1], size.height())
+                      + bar + border + int(pad[1]) + int(gap) + int(pad[3]))
+            point = position if position is not None else QCursor.pos()
+            rect = (point.x() - 24, point.y() - 8, width, height)
+        screens = QApplication.screens()
+        if screens:
+            target_rect = QRect(*rect)
+            if not any(s.geometry().intersects(target_rect) for s in screens):
+                prim = QApplication.primaryScreen()
+                if prim:
+                    pg = prim.availableGeometry()
+                    rect = (pg.x() + 50, pg.y() + 50, rect[2], rect[3])
+        return rect
 
     # ── back ─────────────────────────────────────────────────────────────
 
-    def dock_panel(self, panel_id: str) -> bool:
+    def dock_panel(self, panel_id: str, refresh: bool = True) -> bool:
         """Put a torn-off panel back into the arrangement. True when it moved."""
         windows = self.floating_windows()
         window = windows.pop(panel_id, None)
         if window is None:
             return False
-        widget = window.take_panel()
-        window.hide()
-        window.deleteLater()
+        widget = window.take_panel(panel_id)
+        has_remaining = any(w is window for w in windows.values())
+        if not has_remaining:
+            self._retire_floating_window(window)
         attach = getattr(self, "attach_floating_panel", None)
         claimed = bool(widget is not None and callable(attach)
                        and attach(panel_id, widget))
@@ -162,16 +220,136 @@ class FloatingPanelsMixin:
             # keep it out of limbo rather than leaking a parentless widget.
             widget.hide()
         self._save_floating_state()
+        if refresh:
+            fn = getattr(self, "refresh_slider_visibility_and_order", None)
+            if callable(fn):
+                fn()
+            cfg = getattr(self, "cfg", None)
+            if cfg is not None:
+                from core import config
+                config.save_hotkey_config(cfg)
         return True
 
     def restore_floating_panels(self) -> None:
         """Re-open the windows that were torn off when the app last closed."""
-        # One config write at the end, not one per window: this runs while
-        # the window is still being built.
-        for panel_id in store.load_floating_from(getattr(self, "cfg", None)):
-            self.float_panel(panel_id, persist=False)
+        saved = store.load_floating_from(getattr(self, "cfg", None))
+        if not saved:
+            return
+
+        groups: list[list[str]] = []
+        assigned = set()
+
+        for panel_id, state in saved.items():
+            if panel_id in assigned:
+                continue
+            if state.tree is not None and len(state.tree.panels()) > 1:
+                member_pids = [p for p in state.tree.panels() if p in saved]
+                if member_pids:
+                    groups.append(member_pids)
+                    assigned.update(member_pids)
+
+        for panel_id, state in saved.items():
+            if panel_id in assigned:
+                continue
+            if state.group_id and state.group_id in saved:
+                leader = state.group_id
+                cluster = [leader] + [p for p, s in saved.items()
+                                      if s.group_id == leader and p != leader]
+                groups.append([p for p in cluster if p in saved])
+                assigned.update(cluster)
+
+        for panel_id in saved:
+            if panel_id not in assigned:
+                groups.append([panel_id])
+                assigned.add(panel_id)
+
+        windows = self.floating_windows()
+        host = getattr(self, "panel_host", None)
+        chrome = getattr(self, "_floating_chrome", None)
+        no_focus = bool(getattr(self, "cfg", {}).get("noFocusMode", False))
+
+        for pids in groups:
+            if not pids:
+                continue
+            if len(pids) == 1:
+                self.float_panel(pids[0], persist=False)
+                continue
+
+            leader_id = pids[0]
+            leader_state = saved.get(leader_id)
+            if leader_state is None:
+                continue
+
+            widgets = {}
+            for pid in pids:
+                w = self.panel_widget(pid)
+                if w is not None:
+                    widgets[pid] = w
+
+            if not widgets:
+                continue
+
+            spec = registry.panel(leader_id)
+            title = spec.title if spec else leader_id
+            window = FloatingPanelWindow(
+                leader_id, title, self, no_focus=no_focus)
+            window.dock_requested.connect(self.dock_panel)
+            window.dropped_at.connect(self._floating_dropped)
+            window.moving_at.connect(self._floating_moving)
+            window.menu_requested.connect(self.show_panel_menu)
+            window.panel_float_requested.connect(self._on_floating_panel_float_requested)
+            window.panel_dropped_here.connect(
+                lambda pid, tgt, w=window: self._on_panel_dropped_into_floating(pid, tgt, w))
+            window.set_allow_tab_drops(bool(getattr(self, "cfg", {}).get("slidersTabs", False)))
+            window.set_drag_enabled(bool(getattr(self, "cfg", {}).get("panelDrag", False)))
+            if chrome is not None:
+                window.apply_chrome(chrome)
+
+            for pid, widget in widgets.items():
+                windows[pid] = window
+                window._panels[pid] = widget
+                widget.removeEventFilter(window)
+                widget.installEventFilter(window)
+                detach = getattr(self, "detach_floating_panel", None)
+                if callable(detach):
+                    detach(pid, widget)
+
+            tree = leader_state.tree
+            if tree is None:
+                from ui.panels.tree import VERTICAL, Leaf, Split
+                tree = Split(VERTICAL, tuple(Leaf(pid) for pid in widgets))
+            window.set_tree(tree)
+
+            rect = leader_state.rect
+            window.setGeometry(*rect)
+            # Saved geometry may predate a panel leaving the window: hug the
+            # content so startup does not show a blank band under the panels.
+            window.adjust_size_for_content(shrink=True)
+            if not leader_state.on_top:
+                window.set_always_on_top(False)
+            window.show_without_stealing_focus()
+            window.geometry_changed.connect(lambda _pid: self._save_floating_state())
+
+        if host is not None:
+            host.set_floating_panels(set(windows))
+        # The host just re-mounted everything it still holds, which forces
+        # every panel visible; re-apply the showSliders policy (and the
+        # content height that follows from it) or disabled groups appear
+        # right after startup.
+        fn = getattr(self, "refresh_slider_visibility_and_order", None)
+        if callable(fn):
+            fn()
 
     # ── bookkeeping ──────────────────────────────────────────────────────
+
+    def _is_over_main_window(self, global_pos) -> bool:
+        """True when global_pos falls inside the visible main window."""
+        if not hasattr(self, "mapToGlobal") or not hasattr(self, "size"):
+            return False
+        if not self.isVisible() or self.isHidden():
+            return False
+        rect = QRect(self.mapToGlobal(QPoint(0, 0)), self.size())
+        return rect.contains(global_pos)
 
     def _host_point(self, global_pos):
         """Where a global point falls inside the panel host, or None."""
@@ -186,43 +364,127 @@ class FloatingPanelsMixin:
         return host.mapFromGlobal(global_pos)
 
     def _floating_moving(self, panel_id: str, global_pos) -> None:
-        """Dragging a floating window over the column previews the landing."""
+        """Dragging a floating window over the column or another floating window previews the landing."""
+        windows = self.floating_windows()
+        source_window = windows.get(panel_id)
+        target_win = None
+        target_pos = None
+
+        for win in set(windows.values()):
+            if self._floating_window_dead(win):
+                continue
+            if win is source_window or not win.isVisible() or win.isHidden():
+                continue
+            hp = win.host_point_from_global(global_pos)
+            if hp is not None:
+                target_win = win
+                target_pos = win.mapFromGlobal(global_pos)
+                break
+
         host = getattr(self, "panel_host", None)
-        if host is None:
-            return
-        point = self._host_point(global_pos)
-        if point is None:
-            host.clear_drop_hint()
-        else:
-            host.show_drop_hint(point)
+        main_point = self._host_point(global_pos) if target_win is None else None
+
+        for win in set(windows.values()):
+            if self._floating_window_dead(win):
+                continue
+            if win is target_win and target_pos is not None:
+                win.show_drop_hint(target_pos)
+            else:
+                win.clear_drop_hint()
+
+        if host is not None:
+            if target_win is None and main_point is not None:
+                host.show_drop_hint(main_point)
+            else:
+                host.clear_drop_hint()
 
     def _floating_dropped(self, panel_id: str, global_pos) -> None:
-        """A floating window was dragged and released.
+        """A floating window was dragged and released."""
+        from ui.panels import rearrange
 
-        Released over the column it docks back, and lands *where it was
-        dropped* — same four-borders-and-a-middle rule as dragging a panel
-        around inside the window, so there is only one thing to learn.
-        Anywhere else it simply stays where the user put it.
-        """
-        # A panel the host never mounts (the LAB view lives in the picker
-        # stack) has no drop target in the column — its owner says where it
-        # can land instead.
+        windows = self.floating_windows()
+        source_window = windows.get(panel_id)
+        if source_window is None:
+            return
+
+        for win in set(windows.values()):
+            if self._floating_window_dead(win):
+                continue
+            win.clear_drop_hint()
+        host = getattr(self, "panel_host", None)
+        if host is not None:
+            host.clear_drop_hint()
+
         owner_target = getattr(self, "dock_target_at", None)
         if callable(owner_target):
             owner_spot = owner_target(panel_id, global_pos)
             if owner_spot:
                 self.dock_panel(panel_id)
                 return
-        host = getattr(self, "panel_host", None)
+
+        # 1. Dropped on another floating window?
+        for target_win in set(windows.values()):
+            if (self._floating_window_dead(target_win)
+                    or target_win is source_window
+                    or not target_win.isVisible() or target_win.isHidden()):
+                continue
+            hp = target_win.host_point_from_global(global_pos)
+            if hp is not None:
+                drop_target = target_win.drop_target_at(target_win.mapFromGlobal(global_pos))
+                if drop_target is not None:
+                    target_pid, zone = drop_target
+                    source_pids = list(source_window.panel_ids)
+                    for i, pid in enumerate(source_pids):
+                        widget = source_window.take_panel(pid)
+                        curr_zone = zone if i == 0 else (rearrange.MERGE_PAGE if zone == rearrange.CENTER else rearrange.BOTTOM)
+                        target_win.add_panel(pid, widget, target_panel_id=target_pid, zone=curr_zone)
+                        windows[pid] = target_win
+                        target_pid = pid
+                    source_window.hide()
+                    self._retire_floating_window(source_window)
+                    self._save_floating_state()
+                    return
+
+        # 2. Dropped on main window?
         point = self._host_point(global_pos)
-        if point is None:
-            self._save_floating_state()
+        is_over_main = (point is not None) or self._is_over_main_window(global_pos)
+        if is_over_main:
+            target = host.drop_target_at(point) if (host is not None and point is not None) else None
+            source_pids = list(source_window.panel_ids)
+            for pid in source_pids:
+                self.dock_panel(pid)
+            if target is not None:
+                curr_target = target
+                for pid in source_pids:
+                    if curr_target[0] != pid:
+                        self._dock_at(pid, curr_target)
+                        curr_target = (pid, rearrange.BOTTOM if target[1] != rearrange.MERGE_PAGE else rearrange.MERGE_PAGE)
             return
-        target = host.drop_target_at(point) if host is not None else None
-        host.clear_drop_hint()
-        self.dock_panel(panel_id)
-        if target is not None and target[0] != panel_id:
-            self._dock_at(panel_id, target)
+
+        # 3. Dropped in empty space
+        self._save_floating_state()
+
+    def refresh_floating_panels_settings(self) -> None:
+        """Sync drag_enabled, allow_tab_drops, and theme chrome across all floating windows."""
+        cfg = getattr(self, "cfg", {}) or {}
+        drag_enabled = bool(cfg.get("panelDrag", False))
+        allow_tab_drops = bool(cfg.get("slidersTabs", False))
+        chrome = getattr(self, "_floating_chrome", None)
+        for window in set(self.floating_windows().values()):
+            try:
+                window.set_drag_enabled(drag_enabled)
+                window.set_allow_tab_drops(allow_tab_drops)
+                if chrome is not None:
+                    window.apply_chrome(chrome)
+                # Settings can change what is on screen (tabs on/off, grips on/off):
+                # follow the content down so toggling stacking never leaves a
+                # ghost band under the panels.
+                window.adjust_size_for_content(shrink=True)
+            except (RuntimeError, AttributeError):
+                # A window torn down between the snapshot and the sync
+                # (drop/dock during a settings change) is gone from the map
+                # next call; nothing left to sync to.
+                continue
 
     def _dock_at(self, panel_id: str, target) -> None:
         """Move a just-docked panel to where it was dropped."""
@@ -246,15 +508,121 @@ class FloatingPanelsMixin:
         if callable(record):
             record(moved)
         self._save_floating_state()
+        # set_tree mounts every panel it holds with setVisible(True) — the
+        # showSliders visibility policy must run again or groups the user
+        # turned off in settings pop back on the screen.
+        fn = getattr(self, "refresh_slider_visibility_and_order", None)
+        if callable(fn):
+            fn()
+
+    def _on_floating_panel_float_requested(self, panel_id: str, source_window: FloatingPanelWindow) -> None:
+        """A panel inside a multi-panel floating window was dragged out or double-clicked."""
+        if len(source_window.panel_ids) <= 1:
+            return
+        widget = source_window.take_panel(panel_id)
+        if widget is None:
+            return
+        windows = self.floating_windows()
+        windows.pop(panel_id, None)
+        pos = QCursor.pos()
+        self.float_panel(panel_id, position=pos)
+
+    def _on_panel_dropped_into_floating(self, panel_id: str, target: tuple,
+                                        target_window: FloatingPanelWindow) -> None:
+        """A panel from main window or another floating window was dropped via QDrag into target_window.
+
+        The widget surgery is deferred until after the QDrag loop returns:
+        dropping the third panel into one floating window used to delete /
+        re-parent the *source* frame synchronously inside ``dropEvent``,
+        while QDrag still considered it the drag source — the process then
+        died with a native access violation ("拖 3 个就闪退").
+        """
+        from PyQt6.QtCore import QTimer
+
+        windows = self.floating_windows()
+        old_win = windows.get(panel_id)
+        if old_win is target_window:
+            return
+        # Bookkeeping first so a second drop of the same panel cannot pass
+        # through; all destructive widget work runs after the drag finishes.
+        windows[panel_id] = target_window
+        QTimer.singleShot(
+            0, lambda: self._finish_panel_drop_into_floating(
+                panel_id, target, target_window, old_win))
+
+    def _finish_panel_drop_into_floating(self, panel_id: str, target: tuple,
+                                         target_window: FloatingPanelWindow,
+                                         old_win: FloatingPanelWindow | None) -> None:
+        windows = self.floating_windows()
+        try:
+            if old_win is not None:
+                widget = old_win.take_panel(panel_id)
+                if not any(w is old_win for w in windows.values()
+                           if w is not old_win):
+                    self._retire_floating_window(old_win)
+            else:
+                widget = self.panel_widget(panel_id)
+                detach = getattr(self, "detach_floating_panel", None)
+                if callable(detach):
+                    detach(panel_id, widget)
+        except RuntimeError:
+            # old_win was torn down before the deferred finish ran; the panel
+            # is already remapped, so fall through to the main-host remount.
+            widget = None
+
+        if widget is None:
+            # Nothing to move (panel vanished meanwhile): undo the remap.
+            if windows.get(panel_id) is target_window:
+                windows.pop(panel_id, None)
+            return
+
+        host = getattr(self, "panel_host", None)
+        if host is not None:
+            host.set_floating_panels(set(windows))
+
+        target_window.add_panel(panel_id, widget, target_panel_id=target[0], zone=target[1])
+        # The main host may have just re-mounted its remaining panels; re-apply
+        # visibility so a hidden group cannot reappear after a drop.
+        fn = getattr(self, "refresh_slider_visibility_and_order", None)
+        if callable(fn):
+            fn()
+        self._save_floating_state()
 
     def _save_floating_state(self) -> None:
         from core import config
 
         cfg = getattr(self, "cfg", None)
-        store.save_floating_into(
-            cfg, {panel_id: store.FloatingState(window.geometry_record(),
-                                                window.always_on_top())
-                  for panel_id, window in self.floating_windows().items()})
+        windows = self.floating_windows()
+        seen_windows = set()
+        floating_records = {}
+
+        for pid, win in windows.items():
+            if win in seen_windows:
+                continue
+            seen_windows.add(win)
+            try:
+                pids = list(win.panel_ids)
+                if not pids:
+                    pids = [pid]
+                if len(pids) == 1:
+                    floating_records[pids[0]] = store.FloatingState(
+                        win.geometry_record(), win.always_on_top())
+                else:
+                    leader = pids[0]
+                    tree = win.tree()
+                    for i, p in enumerate(pids):
+                        floating_records[p] = store.FloatingState(
+                            win.geometry_record(),
+                            win.always_on_top(),
+                            tree=tree if i == 0 else None,
+                            group_id=leader if i > 0 else None)
+            except (RuntimeError, AttributeError):
+                # The window was torn down while this state snapshot was
+                # being written (a dock/drop race); skip it — the map no
+                # longer holds it and a later save will be exact.
+                continue
+
+        store.save_floating_into(cfg, floating_records)
         if cfg is not None:
             config.save_hotkey_config(cfg)
 
@@ -324,19 +692,27 @@ class FloatingPanelsMixin:
         it is hidden because its owner is, so without the Win32 call the
         screen keeps showing the panel).
         """
-        for window in list(self.floating_windows().values()):
+        for window in list(set(self.floating_windows().values())):
             try:
                 window.set_foreground_hidden(not visible)
                 if visible:
-                    panel = window.panel()
-                    if panel is None or not panel.testAttribute(
-                            Qt.WidgetAttribute.WA_WState_Hidden):
+                    # getattr/None defaults: a window whose C++ object was
+                    # recycled by PyQt can surface a wrapper without its
+                    # Python state (same class of teardown race the
+                    # eventFilter guard covers). Nothing to mirror then.
+                    panels = list(getattr(window, "_panels", {}).values())
+                    window_panel = getattr(window, "_panel", None)
+                    if window_panel is not None and window_panel not in panels:
+                        panels.append(window_panel)
+                    any_visible = any(not p.testAttribute(
+                        Qt.WidgetAttribute.WA_WState_Hidden) for p in panels) if panels else True
+                    if any_visible:
                         window.show_without_stealing_focus()
                         window.force_native_visible(True)
                 else:
                     window.hide()
                     window.force_native_visible(False)
-            except RuntimeError:
+            except (RuntimeError, AttributeError):
                 # The window was docked away/deleteLater'd while an event was
                 # being delivered (teardown); it is no longer in the map on
                 # the next call anyway.
@@ -357,5 +733,5 @@ class FloatingPanelsMixin:
     def refresh_floating_focus(self) -> None:
         """Re-apply the no-focus setting to windows that are already out."""
         enabled = bool(getattr(self, "cfg", {}).get("noFocusMode", False))
-        for window in self.floating_windows().values():
+        for window in set(self.floating_windows().values()):
             window.set_no_focus(enabled)

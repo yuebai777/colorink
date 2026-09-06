@@ -305,6 +305,14 @@ def test_leaving_drag_mode_puts_the_widget_back(host):
     assert host.frame_for(RGB) is None
     assert host.widget_for(RGB) is widget, "面板控件不能因为开关抓手被重建"
     assert widget.parent() is not None
+    # 被抓杆必须停车（隐藏、脱父）而不是 deleteLater：拖动循环还没结束
+    # 时删除 C++ 对象会变成 drop_target_at 里的访问违例。
+    from PyQt6 import sip
+    assert host._parked_frames, "旧的抓杆应被停车保留，而不是删除"
+    parked = host._parked_frames[0]
+    assert sip.isdeleted(parked) is False
+    assert parked.isHidden() is True
+    assert parked.parent() is None
 
 
 def test_hiding_a_panel_hides_its_grip(host):

@@ -592,3 +592,109 @@ def test_restoring_brings_back_the_pin_state(qapp, monkeypatch):
     assert win.floating_windows()[HSV].geometry_record() == (10, 10, 260, 140)
     assert store.load_floating_from(win.cfg)[HSV].rect == (10, 10, 260, 140)
     win.dock_panel(HSV)
+
+
+def test_floating_panel_pruned_from_tab_titles(window):
+    """浮出的面板不应残留在宿主标签页的标题里，收回后又能正常还原。"""
+    tree = dock.Tabs(pages=((RGB, HSV), (HSL,)))
+    window.panel_host.set_drag_enabled(True)
+    window.panel_host.set_tree(tree)
+
+    # 初始状态：Tab 0 为 RGB/HSV, Tab 1 为 HSL
+    assert window.panel_host._tabs[0][0].tabText(0) == "RGB/HSV"
+    assert window.panel_host._tabs[0][0].tabText(1) == "HSL"
+
+    # 浮出 HSV
+    window.float_panel(HSV)
+    assert HSV in window.floating_windows()
+    # 宿主标签页重新挂载后，Tab 0 应当只显示 RGB，不应显示 RGB/HSV
+    assert window.panel_host._tabs[0][0].tabText(0) == "RGB"
+    assert window.panel_host._tabs[0][0].tabText(1) == "HSL"
+
+    # 收回 HSV
+    window.dock_panel(HSV)
+    assert HSV not in window.floating_windows()
+    assert window.panel_host._tabs[0][0].tabText(0) == "RGB/HSV"
+
+
+def test_empty_frame_cannot_be_dragged_or_clicked(window):
+    """被抽走组件的空 Frame 自动隐藏，且禁止点击、双击与拖拽。"""
+    from ui.panels.drag import PanelFrame
+    frame = PanelFrame(RGB, "RGB", window)
+    label = QLabel("RGB", frame)
+    frame.set_panel(label)
+    frame.show()
+    assert frame.isHidden() is False
+
+    # 抽走组件
+    taken = frame.take_panel()
+    assert taken is label
+    assert frame.panel() is None
+    assert frame.isHidden() is True, "抽走组件后 frame 应当自动隐藏"
+
+    # 测试点击
+    toggled = []
+    frame.title_bar.toggled.connect(lambda pid: toggled.append(pid))
+    floated = []
+    frame.title_bar.float_requested.connect(lambda pid: floated.append(pid))
+
+    from PyQt6.QtGui import QMouseEvent
+    from PyQt6.QtCore import QPointF
+    ev = QMouseEvent(QMouseEvent.Type.MouseButtonPress, QPointF(5, 5), QPointF(5, 5),
+                     Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    frame.title_bar.mousePressEvent(ev)
+    assert frame.title_bar._press is None, "空 frame 标题栏不应记录按下状态"
+
+    # 测试双击
+    dbev = QMouseEvent(QMouseEvent.Type.MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5),
+                       Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    frame.title_bar.mouseDoubleClickEvent(dbev)
+    assert not toggled, "空 frame 双击不应触发 toggled 信号"
+
+    # 测试 finish drag
+    frame.title_bar._finish_reorder_drag(Qt.DropAction.IgnoreAction)
+    assert not floated, "空 frame 结束拖拽不应触发 float_requested 信号"
+
+
+def test_floating_all_panels_in_tab_page_cleanly(window):
+    """当某一标签页下的所有面板全部浮出时，宿主干净切退，不留幽灵空白页，也不崩溃。"""
+    tree = dock.Tabs(pages=((RGB, HSV), (HSL,)))
+    window.panel_host.set_drag_enabled(True)
+    window.panel_host.set_tree(tree)
+
+    window.float_panel(RGB)
+    window.float_panel(HSV)
+    assert RGB in window.floating_windows()
+    assert HSV in window.floating_windows()
+
+    # 第一页全部浮出后，宿主中应该只剩单页 HSL，退化为单页控件并不崩溃
+    assert window.panel_host.mounted_panels() == (HSL,)
+
+    # 收回后全量恢复
+    window.dock_panel(RGB)
+    window.dock_panel(HSV)
+    assert window.panel_host.mounted_panels() == (RGB, HSV, HSL)
+
+
+def test_deferred_drag_finish_survives_a_deleted_grip(qapp):
+    """拖拽落定后的 0ms 回调不能因为抓杆已被删除而崩溃。
+
+    拖到另一个宿主/浮窗时，源 PanelFrame/标题栏可能在延时回调之前被
+    deleteLater（重挂清理、浮窗合并等路径）。_finish_reorder_drag 必须
+    容忍 "wrapped C/C++ object of type PanelTitleBar has been deleted"，
+    而不是把异常抛进 Qt 的事件循环。
+    """
+    from PyQt6 import sip
+    from PyQt6.QtCore import Qt
+    from ui.panels.drag import PanelFrame
+
+    frame = PanelFrame(RGB, "RGB")
+    bar = frame.title_bar
+    frame.show()
+    # 立即销毁 C++ 对象（不 post 全局 DeferredDelete，避免影响其它测试）
+    sip.delete(frame)
+
+    # 修复前这里抛 RuntimeError（C++ 对象已被删除）
+    bar._finish_reorder_drag(Qt.DropAction.IgnoreAction)
+    bar._finish_reorder_drag(Qt.DropAction.MoveAction)
+

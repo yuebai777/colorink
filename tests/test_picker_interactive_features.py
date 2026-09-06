@@ -171,3 +171,85 @@ def test_picker_stop_resets_all_interactive_states(qapp):
         assert overlay._active_sample_pos is None
     finally:
         overlay.close()
+
+
+def test_picker_panel_size_stable_across_all_zooms(qapp):
+    """Panel dimensions must remain constant across all zoom levels 2x to 20x to avoid twitching."""
+    from ui.color_picker_overlay import _PANEL_W, _PANEL_H, _zoom_geometry
+
+    overlay = ColorPickerOverlay(None)
+    try:
+        init_w, init_h = overlay.width(), overlay.height()
+        assert (init_w, init_h) == (_PANEL_W, _PANEL_H)
+
+        for z in range(2, 21):
+            cap, rad, disp, pw, ph = _zoom_geometry(z)
+            assert (pw, ph) == (_PANEL_W, _PANEL_H), f"panel size must be constant at zoom {z}"
+            assert disp >= 90, f"sampled grid must cover the viewport at zoom {z}"
+
+            overlay.adjust_zoom(1)
+            assert (overlay.width(), overlay.height()) == (_PANEL_W, _PANEL_H)
+    finally:
+        overlay.close()
+
+
+def test_picker_wheel_accumulator_fractional_deltas(qapp):
+    """Wheel accumulator must accumulate partial deltas without stuttering or premature stepping."""
+    overlay = ColorPickerOverlay(None)
+    try:
+        overlay.set_zoom(6)
+        overlay._wheel_accumulator = 0
+
+        # Simulate 3 partial wheel ticks (+40 each)
+        for _ in range(2):
+            overlay._wheel_accumulator += 40
+            steps = int(overlay._wheel_accumulator / 120)
+            if steps != 0:
+                overlay._wheel_accumulator -= steps * 120
+                overlay.adjust_zoom(steps)
+        # Should not have stepped yet
+        assert overlay._zoom == 6
+        assert overlay._wheel_accumulator == 80
+
+        # 3rd tick reaches 120 -> 1 step
+        overlay._wheel_accumulator += 40
+        steps = int(overlay._wheel_accumulator / 120)
+        assert steps == 1
+        overlay._wheel_accumulator -= steps * 120
+        overlay.adjust_zoom(steps)
+        assert overlay._zoom == 7
+        assert overlay._wheel_accumulator == 0
+    finally:
+        overlay.close()
+
+
+def test_picker_zoom_hotkey_mixin_debounced_save(qapp, monkeypatch):
+    """HotkeyMixin._on_picker_zoom_changed updates memory/UI and debounces config save without crash."""
+    from ui.window.hotkey_mixin import HotkeyMixin
+    from PyQt6.QtWidgets import QWidget
+
+    class Host(QWidget, HotkeyMixin):
+        def __init__(self):
+            super().__init__()
+            self.cfg = {"pickerZoom": 6}
+
+    host = Host()
+    saved = []
+    monkeypatch.setattr("core.config.save_hotkey_config", lambda cfg: saved.append(dict(cfg)))
+
+    try:
+        # Calling zoom changed should not raise AttributeError
+        host._on_picker_zoom_changed(10)
+        assert host.cfg["pickerZoom"] == 10
+        assert getattr(host, "_save_zoom_timer", None) is not None
+        assert host._save_zoom_timer.isActive()
+        # Not saved synchronously (debounced)
+        assert len(saved) == 0
+
+        # Deactivated flushes the save immediately
+        host._on_picker_deactivated()
+        assert not host._save_zoom_timer.isActive()
+        assert len(saved) == 1
+        assert saved[0]["pickerZoom"] == 10
+    finally:
+        host.close()

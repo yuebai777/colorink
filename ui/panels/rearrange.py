@@ -174,6 +174,12 @@ def _insert(node, panel_id: str, target: str, zone: str):
         return _insert_into_tabs(node, panel_id, target, zone)
     if not isinstance(node, Split):
         return node
+    if zone == CENTER and not node.resizable and node.orientation == VERTICAL:
+        col_panels = []
+        for child in node.children:
+            col_panels.extend(child.panels())
+        if target in col_panels:
+            return Tabs((), 1, (tuple(col_panels), (panel_id,)))
     if _ORIENTATION_OF.get(zone) == node.orientation:
         for index, child in enumerate(node.children):
             if isinstance(child, Leaf) and child.panel == target:
@@ -191,7 +197,9 @@ def _wrap(leaf: Leaf, panel_id: str, zone: str):
         return Tabs((), 1, ((leaf.panel,), (panel_id,)))
     order = ((Leaf(panel_id), leaf) if zone in _BEFORE
              else (leaf, Leaf(panel_id)))
-    return Split(_ORIENTATION_OF[zone], order, (0.5, 0.5), True)
+    orientation = _ORIENTATION_OF[zone]
+    resizable = (orientation == HORIZONTAL)
+    return Split(orientation, order, (0.5, 0.5) if resizable else (), resizable)
 
 
 def _insert_sibling(node: Split, index: int, panel_id: str, zone: str):
@@ -281,29 +289,54 @@ def merge_panel_into_page(node: Tabs, panel_id: str, target: str):
     except StopIteration:
         return node
 
-    src = next(i for i, page in enumerate(pages) if panel_id in page)
-    if src == dst:
-        pages[dst].remove(panel_id)
+    if panel_id in node.panels():
+        src = next(i for i, page in enumerate(pages) if panel_id in page)
+        if src == dst:
+            pages[dst].remove(panel_id)
+            target_idx = pages[dst].index(target)
+            pages[dst].insert(target_idx + 1, panel_id)
+            return Tabs((), node.current, tuple(tuple(p) for p in pages))
+        pages[src].remove(panel_id)
         target_idx = pages[dst].index(target)
         pages[dst].insert(target_idx + 1, panel_id)
-        return Tabs((), node.current, tuple(tuple(p) for p in pages))
-    pages[src].remove(panel_id)
-    target_idx = pages[dst].index(target)
-    pages[dst].insert(target_idx + 1, panel_id)
-    current = node.current
-    if not pages[src]:
-        del pages[src]
-        if current == src:
-            current = dst if dst < src else dst - 1
-        elif src < current:
-            current -= 1
-    elif current == src:
+        current = node.current
+        if not pages[src]:
+            del pages[src]
+            if current == src:
+                current = dst if dst < src else dst - 1
+            elif src < current:
+                current -= 1
+        elif current == src:
+            current = dst
+    else:
+        target_idx = pages[dst].index(target)
+        pages[dst].insert(target_idx + 1, panel_id)
         current = dst
 
     if len(pages) == 1:
         return _page_node(tuple(pages[0]))
     current = max(0, min(current, len(pages) - 1))
     return Tabs((), current, tuple(tuple(page) for page in pages))
+
+
+def normalize_tabs_in_split(node: Node) -> Node:
+    """If a vertical stack mixes a Tabs and Leafs, merge the Leafs into the Tabs pages."""
+    if not isinstance(node, Split) or node.orientation != VERTICAL or node.resizable:
+        return node
+    tab_idx = next((i for i, c in enumerate(node.children) if isinstance(c, Tabs)), None)
+    if tab_idx is None:
+        return node
+    tab_child = node.children[tab_idx]
+    leafs = [c.panel for c in node.children if isinstance(c, Leaf)]
+    if not leafs:
+        return node
+    pages = [list(p) for p in tab_child.pages]
+    curr = max(0, min(tab_child.current, len(pages) - 1))
+    for pid in leafs:
+        if pid not in pages[curr]:
+            pages[curr].append(pid)
+    return Tabs((), curr, tuple(tuple(p) for p in pages))
+
 
 
 # ── the whole move ───────────────────────────────────────────────────────

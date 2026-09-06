@@ -65,9 +65,16 @@ class SlicePrewarmTask(QRunnable):
 
     def run(self) -> None:
         try:
-            self.signals.finished.emit(render_slice(self.request))
+            result = render_slice(self.request)
+            try:
+                self.signals.finished.emit(result)
+            except RuntimeError:
+                pass
         except Exception as exc:  # pragma: no cover - defensive worker boundary
-            self.signals.failed.emit((self.request, repr(exc)))
+            try:
+                self.signals.failed.emit((self.request, repr(exc)))
+            except RuntimeError:
+                pass
 
 
 def render_slice(request: SlicePrewarmRequest) -> SlicePrewarmResult:

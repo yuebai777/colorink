@@ -81,6 +81,11 @@ class PanelHost(QWidget):
         self._stacks: list[tuple[QWidget, Split]] = []
         self._mounted: dict[str, QWidget] = {}
         self._frames: dict[str, PanelFrame] = {}
+        #: Retired grip frames kept alive (hidden, parentless) instead of
+        #: deleteLater'd: a drag can still be in flight when a frame is taken
+        #: off the tree, and deleting the C++ object under Qt's modal drag
+        #: loop (or letting PyQt recycle its wrapper) crashes the process.
+        self._parked_frames: list[PanelFrame] = []
         self._floating: set[str] = set()
         self._chrome = None
         self._drag_enabled = False
@@ -122,6 +127,9 @@ class PanelHost(QWidget):
                     prev_active_page = tabs._panel_pages[idx]
                 break
         self._prev_active_page = prev_active_page
+        old_containers = ({c for c, _ in self._stacks}
+                          | {sp for sp, _ in self._splitters}
+                          | {t for t, _ in self._tabs})
         self._detach_mounted()
         self._splitters.clear()
         self._tabs.clear()
@@ -129,12 +137,10 @@ class PanelHost(QWidget):
         self._mounted.clear()
         if self._root is not None:
             self._layout.removeWidget(self._root)
-            self._root.setParent(None)
-            # Hide it on the way out: between detaching and the deferred
-            # delete it is a top-level widget, and anything that shows it in
-            # that window flashes an empty stray window at the user.
-            self._root.hide()
-            self._root.deleteLater()
+            if self._root in old_containers:
+                self._root.setParent(None)
+                self._root.hide()
+                self._root.deleteLater()
             self._root = None
         self._tree = node
         built = self._build(node)
@@ -155,6 +161,11 @@ class PanelHost(QWidget):
         # it now — after the widget is actually mounted — or the first painted
         # frame shows every page at once.
         self._sync_tab_visibility()
+        # A remount can drop panels from the tree (a panel torn off or moved
+        # to another host). Their old frames were parked by _detach_mounted
+        # but still sit in _frames: drop them for good so nothing can ever
+        # re-show an empty grip as a blank slot.
+        self._drop_stale_frames()
         self._prev_active_page = None
         if set(self._mounted) != was_mounted:
             # Which panels are on screen decides the content height; the
@@ -196,6 +207,7 @@ class PanelHost(QWidget):
         widget = self._provider(panel_id)
         if widget is None:
             return None
+        widget.setVisible(True)
         self._mounted[panel_id] = widget
         if not self._drag_enabled:
             return widget
@@ -220,19 +232,23 @@ class PanelHost(QWidget):
         built = []
         page_entries = []
         for page in node.pages:
-            first_id = page[0]
+            page_active = tuple(pid for pid in page
+                                if pid not in self._floating and self._provider(pid) is not None)
+            if not page_active:
+                continue
+            first_id = page_active[0]
             spec = registry.panel(first_id)
-            if len(page) == 1:
+            if len(page_active) == 1:
                 widget = self._mount(first_id)
                 self._top_align_panel(widget)
                 names = [spec.title if spec else first_id]
             else:
                 col = Split(VERTICAL,
-                            tuple(Leaf(pid) for pid in page), (), False,
+                            tuple(Leaf(pid) for pid in page_active), (), False,
                             self._stack_spacing)
                 widget = self._build(col)
-                names = [registry.panel(pid).title for pid in page
-                         if registry.panel(pid)]
+                names = [(registry.panel(pid).title if registry.panel(pid) else pid)
+                         for pid in page_active]
             if widget is None:
                 continue
             built.append(widget)
@@ -373,6 +389,8 @@ class PanelHost(QWidget):
             total = sum(node.sizes) or 1.0
             splitter.setSizes([max(1, int(1000 * size / total)) for size in node.sizes])
         self._splitters.append((splitter, node))
+        if self._chrome is not None:
+            self._style_splitter(splitter)
         return splitter
 
     def _build_stack(self, node: Split, children: list[QWidget]) -> QWidget:
@@ -388,9 +406,11 @@ class PanelHost(QWidget):
             box = QVBoxLayout(container)
         left, top, right, bottom = (int(m) for m in node.margins)
         box.setContentsMargins(left, top, right, bottom)
-        box.setSpacing(int(node.spacing))
+        gap = int(node.spacing) if node.spacing > 0 else (self._stack_spacing or 0)
+        box.setSpacing(gap)
         for child in children:
             box.addWidget(child)
+            child.setVisible(True)
         # Park the leftover height at the bottom. Without this Qt spreads it
         # *between* the blocks, so every gap in the column shifts whenever
         # any one block changes height — which is what "touch one thing and
@@ -476,10 +496,32 @@ class PanelHost(QWidget):
     def apply_chrome(self, chrome) -> None:
         """Push the window theme down to every grip strip."""
         self._chrome = chrome
+        diff_space = getattr(chrome, "diff_space", None)
+        if diff_space is not None:
+            self.set_stack_spacing(diff_space)
         for frame in self._frames.values():
             frame.title_bar.apply_chrome(chrome)
         for tabs, _node in self._tabs:
             self._style_tabs(tabs)
+        for splitter, _node in self._splitters:
+            self._style_splitter(splitter)
+
+    def _style_splitter(self, splitter: QSplitter) -> None:
+        """Style QSplitter handles with transparent background and theme spacing."""
+        chrome = self._chrome
+        if chrome is None:
+            return
+        diff_space = max(2, int(getattr(chrome, "diff_space", 8) or 8))
+        splitter.setHandleWidth(diff_space)
+        splitter.setStyleSheet("""
+            QSplitter {
+                background: transparent;
+                border: none;
+            }
+            QSplitter::handle {
+                background: transparent;
+            }
+        """)
 
     def _style_tabs(self, tabs: QTabWidget) -> None:
         """Paint the tab strip with the same chrome as the grips/window.
@@ -577,16 +619,37 @@ class PanelHost(QWidget):
         """
         self._allow_tab_drops = bool(enabled)
 
+    def _park_frame(self, frame: PanelFrame) -> None:
+        """Retire a grip frame without deleting it.
+
+        The panel is handed back and the frame becomes a hidden, parentless
+        widget that is never added to a layout again. Keeping the C++ object
+        alive (only the Python list reference is dropped later, when the host
+        is torn down) is deliberate: under Qt's modal QDrag loop a
+        ``deleteLater`` frame can still be visited by ``drop_target_at``, and
+        PyQt wrapper recycling then turns a live-looking pointer into a freed
+        one — the access violation seen while dragging the third panel.
+        """
+        frame.take_panel()
+        frame.setParent(None)
+        frame.hide()
+        self._parked_frames.append(frame)
+
     def set_floating_panels(self, panel_ids) -> None:
         """Panels torn off into their own windows: mounted by someone else.
 
         The tree is left alone — it is what lets a floated panel dock back
-        into the slot it came from.
+        into the slot it came from. The source frame is parked, never deleted
+        (see :meth:`_park_frame`).
         """
         wanted = set(panel_ids or ())
         if wanted == self._floating:
             return
         self._floating = wanted
+        for pid in self._floating:
+            frame = self._frames.pop(pid, None)
+            if frame is not None:
+                self._park_frame(frame)
         self.set_tree(self._tree)
 
     def floating_panels(self) -> tuple[str, ...]:
@@ -596,12 +659,27 @@ class PanelHost(QWidget):
         return self._frames.get(panel_id)
 
     def _release_frames(self) -> None:
-        """Hand every panel back and drop the frames."""
-        for frame in self._frames.values():
-            frame.take_panel()
-            frame.setParent(None)
-            frame.deleteLater()
+        """Hand every panel back and park the frames (never delete them)."""
+        for frame in list(self._frames.values()):
+            self._park_frame(frame)
         self._frames.clear()
+
+    def _drop_stale_frames(self) -> None:
+        """Park frames whose panel is no longer in the mounted tree.
+
+        A remount that dropped panels (tear-off, move to another host) leaves
+        the old frame in ``_frames`` — hidden and parentless, so it is
+        invisible, and ``_panel_box`` only uses a frame that actually holds a
+        panel. Keeping the C++ object alive (instead of deleteLater) avoids
+        PyQt wrapper recycling turning a live-looking frame into a freed
+        pointer mid-drag.
+        """
+        for pid in list(self._frames):
+            if pid in self._mounted:
+                continue
+            frame = self._frames.pop(pid, None)
+            if frame is not None:
+                self._park_frame(frame)
 
     def _panel_box(self, panel_id: str) -> QWidget | None:
         """What occupies the arrangement slot: the frame, or the panel."""
@@ -668,7 +746,7 @@ class PanelHost(QWidget):
     def check_tab_hover(self, pos: QPoint) -> None:
         """Switch tab if pos hovers over a different tab header during drag."""
         for tabs, _node in self._tabs:
-            if not tabs.isVisibleTo(self):
+            if self._is_deleted(tabs) or not tabs.isVisibleTo(self):
                 continue
             bar = tabs.tabBar()
             if bar is None or bar.isHidden():
@@ -679,18 +757,38 @@ class PanelHost(QWidget):
                 if 0 <= index < tabs.count() and index != tabs.currentIndex():
                     tabs.setCurrentIndex(index)
 
+    @staticmethod
+    def _is_deleted(obj) -> bool:
+        """True when the C++ object behind *obj* is gone.
+
+        Used as a defensive net around drag-time geometry walks: a race can
+        leave a stale widget in ``_mounted``/``_frames`` (another drop's
+        deferred surgery, a window torn down mid-drag) whose wrapper still
+        exists. Calling a method on such an object is what turned into an
+        access violation in ``drop_target_at``.
+        """
+        try:
+            from PyQt6 import sip
+            return bool(sip.isdeleted(obj))
+        except Exception:
+            return False
+
     def drop_target_at(self, pos: QPoint):
         """(panel_id, zone) under a host-local point, or None.
 
         Ties go to the smaller panel: a drop is meant for the thing you can
         see under the cursor, and panels never overlap except by nesting.
         """
+        if self._is_deleted(self):
+            return None
         # A point on a page's tab header means "merge the dragged panel into
         # that page" — more direct than switching to the page first and
         # aiming at its edge.
         for tabs, node in self._tabs:
+            if self._is_deleted(tabs):
+                continue
             bar = tabs.tabBar()
-            if bar is None or bar.isHidden():
+            if bar is None or bar.isHidden() or self._is_deleted(bar):
                 continue
             bar_rect = QRect(bar.mapTo(self, QPoint(0, 0)), bar.size())
             if not bar_rect.contains(pos):
@@ -720,7 +818,8 @@ class PanelHost(QWidget):
             # get stuffed into a page the user cannot even see. isVisibleTo()
             # walks the explicit hidden flags up to this host and is correct
             # even for a host that is not shown yet.
-            if box is None or not box.isVisibleTo(self) or box.parent() is None:
+            if (box is None or self._is_deleted(box)
+                    or not box.isVisibleTo(self) or box.parent() is None):
                 continue
             rect = box.rect()
             tl = box.mapTo(self, rect.topLeft())
@@ -755,30 +854,47 @@ class PanelHost(QWidget):
 
         # Check if cursor is in the empty space of an active tab page (e.g. stretch below panels)
         for tabs, node in self._tabs:
-            if not tabs.isVisibleTo(self):
+            if self._is_deleted(tabs) or not tabs.isVisibleTo(self):
                 continue
             bar = tabs.tabBar()
-            bar_bottom = bar.mapTo(self, QPoint(0, bar.height())).y() if bar is not None else 0
+            if bar is None or self._is_deleted(bar):
+                continue
+            bar_bottom = bar.mapTo(self, QPoint(0, bar.height())).y()
             tabs_rect = QRect(tabs.mapTo(self, QPoint(0, 0)), tabs.size())
             if tabs_rect.contains(pos) and pos.y() >= bar_bottom:
                 curr_idx = tabs.currentIndex()
                 pages = getattr(tabs, "_panel_pages", None) or (node.pages if isinstance(node, Tabs) else ())
                 if 0 <= curr_idx < len(pages):
-                    page_pids = [pid for pid in pages[curr_idx]
-                                 if pid in self._mounted and self._panel_box(pid) is not None
-                                 and self._panel_box(pid).isVisibleTo(self)]
+                    page_pids = []
+                    for pid in pages[curr_idx]:
+                        if pid not in self._mounted:
+                            continue
+                        b = self._panel_box(pid)
+                        if b is None or self._is_deleted(b):
+                            continue
+                        if b.isVisibleTo(self):
+                            page_pids.append(pid)
                     if page_pids:
                         last_box = self._panel_box(page_pids[-1])
+                        if last_box is None or self._is_deleted(last_box):
+                            continue
                         last_bottom = last_box.mapTo(self, QPoint(0, last_box.height())).y()
                         if pos.y() >= last_bottom:
                             return (page_pids[-1], rearrange.BOTTOM)
                         first_box = self._panel_box(page_pids[0])
+                        if first_box is None or self._is_deleted(first_box):
+                            continue
                         first_top = first_box.mapTo(self, QPoint(0, 0)).y()
                         if pos.y() <= first_top:
                             return (page_pids[0], rearrange.TOP)
                         for i in range(len(page_pids) - 1):
-                            b_bottom = self._panel_box(page_pids[i]).mapTo(self, QPoint(0, self._panel_box(page_pids[i]).height())).y()
-                            b_next_top = self._panel_box(page_pids[i+1]).mapTo(self, QPoint(0, 0)).y()
+                            bi = self._panel_box(page_pids[i])
+                            bj = self._panel_box(page_pids[i + 1])
+                            if (bi is None or bj is None
+                                    or self._is_deleted(bi) or self._is_deleted(bj)):
+                                continue
+                            b_bottom = bi.mapTo(self, QPoint(0, bi.height())).y()
+                            b_next_top = bj.mapTo(self, QPoint(0, 0)).y()
                             if b_bottom <= pos.y() <= b_next_top:
                                 return (page_pids[i], rearrange.BOTTOM)
 
@@ -792,7 +908,7 @@ class PanelHost(QWidget):
             self.clear_drop_hint()
             return None
         box = self._panel_box(target[0])
-        if box is None:
+        if box is None or self._is_deleted(box):
             self.clear_drop_hint()
             return None
         zone = target[1]
@@ -865,12 +981,18 @@ class PanelHost(QWidget):
         return bytes(data.data(PANEL_MIME)).decode("utf-8", "ignore") or None
 
     def dragEnterEvent(self, event):
+        if self._is_deleted(self):
+            event.ignore()
+            return
         if self._drag_enabled and self._dragged_panel(event):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event):
+        if self._is_deleted(self):
+            event.ignore()
+            return
         panel_id = self._dragged_panel(event)
         if not self._drag_enabled or panel_id is None:
             event.ignore()
@@ -884,6 +1006,9 @@ class PanelHost(QWidget):
         self.clear_drop_hint()
 
     def dropEvent(self, event):
+        if self._is_deleted(self):
+            event.ignore()
+            return
         panel_id = self._dragged_panel(event)
         if panel_id is None or not self.apply_drop(
                 panel_id, event.position().toPoint()):

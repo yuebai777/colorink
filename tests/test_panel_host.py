@@ -201,3 +201,28 @@ def test_panel_tab_widget_size_hint_includes_top_gap(panels):
     min_hint = tab_widgets[0].minimumSizeHint()
     assert hint.height() >= 20
     assert min_hint.height() >= 20
+
+
+def test_deleted_host_survives_drag_geometry_walks(qapp):
+    """已删除的宿主不能把拖拽几何遍历变成原生崩溃。
+
+    faulthandler 实测：拖拽移动中 drop_target_at 对已删除/回收的宿主
+    调用 mapTo 触发 access violation。这里是同一场景的最小复现——
+    宿主 C++ 对象已被删除后，drop_target_at / show_drop_hint 必须安全
+    返回 None，而不是继续访问内存。
+    """
+    from PyQt6 import sip
+    from PyQt6.QtCore import QPoint
+
+    def provider2(panel_id):
+        return QLabel(panel_id)
+
+    host = PanelHost(provider2)
+    host.set_tree(dock.Split(dock.VERTICAL, (
+        dock.Leaf(registry.slider_panel_id("RGB")),
+        dock.Leaf(registry.slider_panel_id("HSV")),
+    ), (), False))
+    sip.delete(host)
+
+    assert host.drop_target_at(QPoint(5, 5)) is None
+    assert host.show_drop_hint(QPoint(5, 5)) is None

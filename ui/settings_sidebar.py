@@ -841,14 +841,29 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         # below and keeps every show/hide path (close button, hamburger,
         # eyedropper theme-pick re-show) in sync with the picker window.
         mv = self._parent
-        if mv is not None and callable(getattr(mv, "update_window_flags", None)):
-            mv.update_window_flags()
-            mv.update_no_focus_policies()
+        if mv is None:
+            return
+        try:
+            if callable(getattr(mv, "update_window_flags", None)):
+                mv.update_window_flags()
+                mv.update_no_focus_policies()
+        except RuntimeError:
+            # The main window was already torn down (app quit / a drag-drop
+            # race deleted it) while this hide/show event was delivered.
+            # Nothing to sync to.
+            pass
 
     def hideEvent(self, event):
         super().hideEvent(event)
         # Settings are closed: re-apply the no-focus window state if enabled.
         mv = self._parent
-        if mv is not None and callable(getattr(mv, "update_window_flags", None)):
-            mv.update_window_flags()
-            mv.update_no_focus_policies()
+        if mv is None:
+            return
+        try:
+            if callable(getattr(mv, "update_window_flags", None)):
+                mv.update_window_flags()
+                mv.update_no_focus_policies()
+        except RuntimeError:
+            # See showEvent: teardown ordering can destroy the main window
+            # before the settings window closes.
+            pass

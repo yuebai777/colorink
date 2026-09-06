@@ -107,6 +107,10 @@ class HotkeyMixin:
         st = getattr(self, "sync_thread", None)
         if st is not None:
             st.paused = False
+        timer = getattr(self, "_save_zoom_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
+            config.save_hotkey_config(self.cfg)
 
     def _on_picker_color_picked(self, r, g, b):
         """Handle color picked from the global magnifier overlay."""
@@ -123,10 +127,18 @@ class HotkeyMixin:
     def _on_picker_zoom_changed(self, new_zoom: int):
         """Handle zoom dynamically adjusted via mouse wheel during global color picking."""
         self.cfg["pickerZoom"] = new_zoom
-        config.save_config(self.cfg)
         sidebar = getattr(self, "settings_sidebar", None)
         if sidebar is not None and hasattr(sidebar, "lbl_picker_zoom"):
             sidebar.lbl_picker_zoom.setText(f"{new_zoom}×")
         sw = getattr(self, "settings_window", None)
         if sw is not None and hasattr(sw, "lbl_picker_zoom"):
             sw.lbl_picker_zoom.setText(f"{new_zoom}×")
+        # Debounce disk write so rapid wheel scrolling does not stall the UI thread with disk I/O
+        timer = getattr(self, "_save_zoom_timer", None)
+        if timer is None:
+            from PyQt6.QtCore import QTimer
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda: config.save_hotkey_config(self.cfg))
+            self._save_zoom_timer = timer
+        timer.start(500)

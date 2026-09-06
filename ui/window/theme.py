@@ -444,7 +444,8 @@ class ThemeMixin:
             grip_gap=max(2, int(4 * scale)),
             content_margins=(int(4 * scale), int(6 * scale),
                              int(4 * scale), int(6 * scale)),
-            top_gap=max(0, int(self.cfg.get("panelTopGap", 6) * scale)))
+            top_gap=max(0, int(self.cfg.get("panelTopGap", 6) * scale)),
+            diff_space=max(0, int(self.cfg.get("sliderDiffSpace", 8) * scale)))
         host = getattr(self, "panel_host", None)
         if host is not None:
             host.apply_chrome(self._floating_chrome)

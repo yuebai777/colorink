@@ -349,6 +349,10 @@ class PickerActionsMixin:
         if callable(record):
             record(mounted)
 
+        refresh_floating = getattr(self, "refresh_floating_panels_settings", None)
+        if callable(refresh_floating):
+            refresh_floating()
+
         # Recalculate layout geometries since height changed
         self.update_geometries()
         self._adjust_content_height()
@@ -757,6 +761,9 @@ class PickerActionsMixin:
         refresh_focus = getattr(self, "refresh_floating_focus", None)
         if callable(refresh_focus):
             refresh_focus()
+        refresh_floating = getattr(self, "refresh_floating_panels_settings", None)
+        if callable(refresh_floating):
+            refresh_floating()
         # Reset manual override on settings save so spacing/gap adjustments
         # immediately resize the window to match the new configuration.
         self._manual_height_override = False

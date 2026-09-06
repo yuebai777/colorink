@@ -26,6 +26,33 @@ SINGLE_INSTANCE_KEY = "ColorinkPaletteLitePyQt_SingleInstance_v1"
 if not getattr(sys, "frozen", False):
     SINGLE_INSTANCE_KEY += "_dev"
 
+#: Keep the faulthandler file objects alive for the whole process.
+_FAULTHANDLER_FILES = []
+
+
+def _install_faulthandler_log():
+    """Dump Python thread stacks to the user data dir on a hard crash.
+
+    ``sys.excepthook`` only sees Python exceptions; a Windows access
+    violation inside a Qt/COM/native thread kills the process silently
+    ("闪退"). faulthandler's native handler runs on fatal faults and
+    writes the stacks that were live at that moment, so the next crash
+    leaves evidence in %APPDATA%\\Colorink\\faulthandler.log instead of
+    vanishing.
+    """
+    try:
+        from core import config as _config
+        path = os.path.join(_config.get_user_data_dir(), "faulthandler.log")
+        fh = open(path, "a", encoding="utf-8", errors="replace")
+    except Exception:
+        return
+    try:
+        import faulthandler
+        faulthandler.enable(file=fh, all_threads=True)
+        _FAULTHANDLER_FILES.append(fh)
+    except Exception:
+        pass
+
 def _is_process_running(pid: int) -> bool:
     """Check if a Windows process with the given PID is still running."""
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -157,6 +184,9 @@ def _prompt_previous_crash(crash):
 def main():
     # Install global exception hook early
     sys.excepthook = _log_exception
+    # Hard crashes (native access violation, Qt teardown) bypass the
+    # excepthook: also enable faulthandler so they leave a thread-stack log.
+    _install_faulthandler_log()
 
     # Set explicit AppUserModelID on Windows for proper taskbar grouping
     if sys.platform == 'win32':

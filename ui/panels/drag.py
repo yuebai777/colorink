@@ -151,6 +151,9 @@ class PanelTitleBar(QWidget):
                 or point.y() < self.EDGE_SLACK)
 
     def mousePressEvent(self, event):
+        parent = self.parentWidget()
+        if isinstance(parent, PanelHolder) and parent.panel() is None:
+            return
         if event.button() != Qt.MouseButton.LeftButton:
             return
         point = event.position().toPoint()
@@ -173,6 +176,10 @@ class PanelTitleBar(QWidget):
                                    - window.frameGeometry().topLeft())
 
     def mouseMoveEvent(self, event):
+        parent = self.parentWidget()
+        if isinstance(parent, PanelHolder) and parent.panel() is None:
+            self._press = None
+            return
         if self._press is None:
             return
         if self.moves_window:
@@ -187,7 +194,9 @@ class PanelTitleBar(QWidget):
         self._press = None
         drag = QDrag(self)
         drag.setMimeData(self.mime_data())
-        self._finish_reorder_drag(drag.exec(Qt.DropAction.MoveAction))
+        action = drag.exec(Qt.DropAction.MoveAction)
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, lambda a=action: self._finish_reorder_drag(a))
 
     def mouseReleaseEvent(self, event):
         was_moving = self._press is not None and self.moves_window
@@ -205,6 +214,9 @@ class PanelTitleBar(QWidget):
         Dragging a panel clear of every window is not a gesture anyone
         guesses; this is the discoverable way to say the same thing.
         """
+        parent = self.parentWidget()
+        if isinstance(parent, PanelHolder) and parent.panel() is None:
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             point = event.position().toPoint()
             if not (self.close_rect().contains(point)
@@ -213,8 +225,18 @@ class PanelTitleBar(QWidget):
 
     def _finish_reorder_drag(self, action) -> None:
         """A drag that ended: nobody took it means "float it here"."""
-        if action == Qt.DropAction.IgnoreAction:
-            self.float_requested.emit(self.panel_id)
+        try:
+            parent = self.parentWidget()
+            if isinstance(parent, PanelHolder) and parent.panel() is None:
+                return
+            if action == Qt.DropAction.IgnoreAction:
+                self.float_requested.emit(self.panel_id)
+        except RuntimeError:
+            # The drop moved the panel to another host (or merged the window),
+            # and this grip/frame was torn down before the 0ms deferred finish
+            # ran. There is nothing left to finish — re-emitting float here
+            # would also be wrong, since the drop was already accepted.
+            return
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -344,6 +366,7 @@ class PanelHolder:
             self._panel_layout().removeWidget(widget)
             widget.setParent(None)
             self._panel = None
+        self.setVisible(False)
         return widget
 
     def _tab_page_widget(self):

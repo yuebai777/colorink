@@ -201,10 +201,16 @@ class LayoutMixin:
                 # Ask the dock tree for its column height. QWidget.sizeHint()
                 # includes all child widgets (even those hidden behind another
                 # tab!), so when tabs are in use sizeHint sums every page and
-                # refuses to shrink the last band under the picker.
+                # refuses to shrink the last band under the picker. It is also
+                # stale before the first real layout pass: it still counts
+                # panels the user turned off, which is what left a saved tall
+                # window full of blank space on startup. column_hint walks the
+                # mounted tree (and is what the policy is supposed to read), so
+                # it wins; Qt's hint is only a fallback when nothing is
+                # mounted to walk.
                 hint = host.column_hint()
-                if hint > 0:
-                    hint = max(hint, host.sizeHint().height(),
+                if hint <= 0:
+                    hint = max(host.sizeHint().height(),
                                host.minimumSizeHint().height())
             else:
                 hint = self.sliders_container.sizeHint().height()
