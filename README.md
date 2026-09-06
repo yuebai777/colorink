@@ -2,7 +2,7 @@
 
 基于 PyQt6 的 Windows 桌面取色器 / 调色工具，为绘画与设计工作流设计：全局取色、多色空间精确调色、绘画软件颜色同步，以及系统级灰度滤镜。
 
-当前版本：**v1.8.5**
+当前版本：**v1.8.6**
 
 > 📖 **官方在线文档 & 教程手册**：**[https://yuebai777.github.io/colorink/](https://yuebai777.github.io/colorink/)**  
 > 包含画师 3 分钟快速上手、全屏取色放大镜、LAB 和弦调色、CSP 手机模式扫码连接、Photoshop CEP 扩展同步、SAI2 内存同步与常见问题 FAQ。
