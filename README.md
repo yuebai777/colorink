@@ -11,7 +11,7 @@
 
 当前版本：**v1.8.6**
 
-[📖 在线文档](https://yuebai777.github.io/colorink/) · [⬇️ 软件下载](https://github.com/yuebai777/colorink/releases/latest) · [💬 QQ 交流群](#交流群) · [✨ 功能特性](#功能特性) · [⌨️ 快捷键速查](#快捷键可在设置中修改)
+[📖 在线文档](https://yuebai777.github.io/colorink/) · [⬇️ 软件下载](https://github.com/yuebai777/colorink/releases/latest) · [💬 QQ 交流群](#交流群) · [✨ 功能特性](#功能特性) · [⌨️ 快捷键速查](#快捷键可在设置中修改) · [🏆 爱发电赞助](#支持作者)
 
 ## 交流群
 
@@ -155,7 +155,10 @@ python build_pyqt.py
 
 ## 支持作者
 
-如果 Colorink 帮到了你，欢迎请我喝杯咖啡 ☕ —— 扫码即可，感谢支持！
+如果 Colorink 帮到了你，欢迎支持作者！可扫码请我喝杯咖啡 ☕，或前往 **爱发电** 赞助：
+
+> 🏆 **[爱发电 · Colorink](https://afdian.com/a/touyimoyuebai)** —— 前往 https://afdian.com/a/touyimoyuebai
+> 在爱发电赞助可获得最新版本优先体验、专属配色方案等创作者奖励，感谢支持！
 
 <img src="screenshots/buy-me-a-coffee.jpg" width="260" alt="请我喝杯咖啡" />
 
