@@ -18,7 +18,7 @@
 遇到问题、想要反馈建议，或想跟其他用户交流使用心得？欢迎扫码加入 QQ 交流群：
 
 <p align="center">
-    <img src="community-qrcode.jpg" alt="Colorink QQ 交流群" width="220" title="扫描加入 Colorink QQ 交流群">
+    <img src="docs/public/community-qrcode.jpg" alt="Colorink QQ 交流群" width="220" title="扫描加入 Colorink QQ 交流群">
 </p>
 
 群号：**1108560464**
@@ -92,7 +92,7 @@
 
 ## 截图
 
-![Colorink 截图](screenshots/screenshot.png)
+![Colorink 截图](docs/public/screenshot.png)
 
 ## 从源码运行（给开发者 / 想改代码的人）
 
@@ -161,7 +161,7 @@ python build_pyqt.py
 > 软件维护不易，如果您感觉该软件对你有帮助，欢迎通过爱发电赞助，您的支持将成为
 > 软件长期维护的助力，谢谢~
 
-<img src="screenshots/buy-me-a-coffee.jpg" width="260" alt="请我喝杯咖啡" />
+<img src="docs/public/buy-me-a-coffee.jpg" width="260" alt="请我喝杯咖啡" />
 
 ## License
 
