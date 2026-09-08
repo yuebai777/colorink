@@ -17,13 +17,18 @@ live SAI Ver.2 (Preview.2024.08.14) build:
   sample stroke, which is why the click is posted to that control. The same
   click also advances the preview's own background through a three-state
   cycle, so a full cycle (:data:`CLICK_CYCLE`) is posted at once and the
-  background lands back on the style it started from. Because this half is
-  still synthetic input into another process, it stays opt-in
-  (``MODE_FULL``).
+  background lands back on the style it started from.
 
 The colour panel's wheel, slider knobs and numeric labels are driven by
 SAI's own picker state (a separate structure), so no repaint can move them;
 they are intentionally left alone.
+
+**There is exactly one refresh mode — :data:`MODE_FULL`.** The app never
+offers another: a repaint-only session silently lets the preview's cached
+bitmap drift away from the colour slot, and the preview then cannot be
+re-identified until SAI itself happens to re-render it. (``MODE_REPAINT`` /
+``MODE_OFF`` remain in the code as internal seams for tooling and tests, but
+no app configuration selects them.)
 
 Safety rules, because this injects input into another process:
 
@@ -58,15 +63,16 @@ from typing import Callable, Protocol, Sequence
 MODE_OFF = "off"          # never touch SAI's UI (pre-1.6.12 behaviour)
 MODE_REPAINT = "repaint"  # invalidate only: swatch + slider gradients
 MODE_FULL = "full"        # repaint + click the stroke preview
-# Repaint is the default: it is purely a redraw request. The click that the
-# stroke preview needs is real input as far as SAI is concerned, and SAI
-# remembers the button-down point — the next real stroke can then start with a
-# wedge sweeping from it. That trade-off is the user's to opt into.
-DEFAULT_MODE = MODE_REPAINT
+# Full is the app's only mode: repaint-only sessions let the stroke preview's
+# cached bitmap drift away from the colour slot forever (that drift is what
+# this module's discovery re-runs exist to heal). The click is bounded: it
+# only ever lands on a control observed rendering a colour we know, is
+# verified by its next render, and is abandoned after two failed verifies.
+DEFAULT_MODE = MODE_FULL
 
 _MODE_ALIASES = {
-    "": MODE_REPAINT,
-    "auto": MODE_REPAINT,
+    "": MODE_FULL,
+    "auto": MODE_FULL,
     "on": MODE_FULL,
     "true": MODE_FULL,
     "1": MODE_FULL,
@@ -113,8 +119,10 @@ SWATCH_MIN_FILL = 0.15        # fraction of the control painted in the colour
 
 # Identification renders candidates offscreen, and each render is a synchronous
 # send into SAI (~50 ms on the measured build), so discovery walks candidates
-# best-first and stops early under a hard probe budget.
-MAX_PROBES = 6
+# best-first and stops early under a hard probe budget. The budget covers a
+# full colour sweep across every strip-shaped candidate (see pick_preview), so
+# a matching colour deep in the evidence list is still reached.
+MAX_PROBES = 12
 
 PREVIEW_MIN_HEIGHT_RATIO = 0.70   # relative to the swatch side
 PREVIEW_MAX_HEIGHT_RATIO = 1.45   # measured 50/49; a mismatched yardstick fails
@@ -216,12 +224,20 @@ def pick_preview(
 
     Shape alone cannot identify the stroke preview: on the measured build the
     tool row next to it is 195x52 against the preview's 191x50 — same height
-    class, aspect 3.71 vs 3.78. Clicking the tool row switches the user's
+    class, aspect 3.71 vs 3.78 — and on a 150%-DPI screen the tool row is
+    even *larger* than the preview. Clicking the tool row switches the user's
     brush tool, so geometry only narrows the field and the decision is made
     on rendered content: the preview holds a sample stroke in the colour SAI
     last drew it with, and *references* are the colours we know about (the
-    slot colour before the write, plus colours written earlier this session).
-    A candidate showing none of them is never clicked.
+    slot colour before the write, plus colours written or observed this
+    session).
+
+    Probing is colour-major: each reference colour sweeps across ALL strips
+    before the next colour is tried, and a sweep is never truncated
+    mid-way. A strip-major order would spend the whole render budget on the
+    (larger, empty) tool-row decoys and the true preview would only ever be
+    probed with the first reference or two — a matching colour later in the
+    evidence list would never be reached.
     """
     strips = sorted(
         (c for c in candidates if is_preview_strip(c, swatch_side)),
@@ -231,11 +247,12 @@ def pick_preview(
         return None
 
     probes = 0
-    for cand in strips:
-        for ref in references:
-            if probes >= max_probes:
-                _log(f"preview probe budget exhausted after {probes} renders")
-                return None
+    sweep_cost = len(strips)
+    for ref in references:
+        if probes + sweep_cost > max_probes:
+            _log(f"preview probe budget exhausted after {probes} renders")
+            return None
+        for cand in strips:
             probes += 1
             if fill_ratio(cand.hwnd, ref) >= min_fill:
                 return cand.hwnd
@@ -404,34 +421,29 @@ class Win32Backend:
             out.append(cand)
         return out
 
-    def fill_ratio(self, hwnd: int, rgb: tuple[int, int, int], tolerance: int = 6) -> float:
-        """Fraction of the control's own rendering painted in *rgb*.
-
-        Renders offscreen with ``PrintWindow``, so it reports what SAI would
-        paint right now — independent of what is currently on screen and of
-        whether the window is covered by another one.
-        """
+    def _render_bgra(self, hwnd: int) -> tuple[int, int, bytes] | None:
+        """Render a control offscreen; returns (width, height, BGRA bytes)."""
         rect = wintypes.RECT()
         if not self._user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-            return 0.0
+            return None
         width = rect.right - rect.left
         height = rect.bottom - rect.top
         if width <= 0 or height <= 0 or width * height > self.MAX_CANDIDATE_AREA:
-            return 0.0
+            return None
 
         hdc_screen = self._user32.GetDC(0)
         if not hdc_screen:
-            return 0.0
+            return None
         hdc_mem = hbmp = None
         old_bmp = None
         try:
             hdc_mem = self._gdi32.CreateCompatibleDC(hdc_screen)
             hbmp = self._gdi32.CreateCompatibleBitmap(hdc_screen, width, height)
             if not hdc_mem or not hbmp:
-                return 0.0
+                return None
             old_bmp = self._gdi32.SelectObject(hdc_mem, hbmp)
             if not self._user32.PrintWindow(hwnd, hdc_mem, self.PW_RENDERFULLCONTENT):
-                return 0.0
+                return None
 
             header = self._BITMAPINFOHEADER()
             header.biSize = ctypes.sizeof(self._BITMAPINFOHEADER)
@@ -445,8 +457,8 @@ class Win32Backend:
                 hdc_mem, hbmp, 0, height, buf, ctypes.byref(header), 0,
             )
             if not copied:
-                return 0.0
-            return _count_matches(buf.raw, rgb, tolerance) / float(width * height)
+                return None
+            return width, height, buf.raw
         finally:
             # DeleteObject refuses to free a bitmap that is still selected into
             # a DC, and DeleteDC does not free it either — so the bitmap has to
@@ -461,6 +473,32 @@ class Win32Backend:
             if hdc_mem:
                 self._gdi32.DeleteDC(hdc_mem)
             self._user32.ReleaseDC(0, hdc_screen)
+
+    def fill_ratio(self, hwnd: int, rgb: tuple[int, int, int], tolerance: int = 6) -> float:
+        """Fraction of the control's own rendering painted in *rgb*.
+
+        Renders offscreen with ``PrintWindow``, so it reports what SAI would
+        paint right now — independent of what is currently on screen and of
+        whether the window is covered by another one.
+        """
+        rendered = self._render_bgra(hwnd)
+        if rendered is None:
+            return 0.0
+        width, height, raw = rendered
+        return _count_matches(raw, rgb, tolerance) / float(width * height)
+
+    def content_probe(self, hwnd: int) -> bool:
+        """True when the control's own rendering looks like the preview.
+
+        Content signature only, no colour evidence needed — the last-resort
+        identification for a preview cache that drifted before any evidence
+        existed (see :func:`is_preview_band`).
+        """
+        rendered = self._render_bgra(hwnd)
+        if rendered is None:
+            return False
+        width, height, raw = rendered
+        return is_preview_band(width, height, raw)
 
     def input_busy(self, hwnd: int) -> bool:
         """True while the user is mid-interaction inside SAI.
@@ -528,6 +566,139 @@ def _count_matches(raw: bytes, rgb: tuple[int, int, int], tolerance: int) -> int
     return hits
 
 
+# ── Stroke-preview content classifier ─────────────────────────────────────
+# Colour evidence is the primary way the stroke preview is identified (see
+# pick_preview). When the preview's cached colour predates every piece of
+# evidence — a drift left behind by older builds — a *content* signature is
+# used as a last resort: the preview is a background panel holding one wide
+# horizontal sample-stroke band, while every measured look-alike (brush-tool
+# row, material/text rows) renders many small separate glyphs. Thresholds
+# calibrated on a live SAI Ver.2 (Preview.2024.08.14) at 150% DPI.
+#
+# A control picked this way still has to survive the normal click
+# verification (its render after the click must show the colour just
+# written); a mis-detection is dropped after two failures and never probed
+# again in the same SAI epoch.
+
+INK_DISTANCE = 60                # channel-sum distance from the background
+CLUSTER_MIN_SHARE = 0.004        # band pixels as a fraction of the control
+CLUSTER_MAX_SHARE = 0.55
+CLUSTER_MIN_DOMINANCE = 0.60     # share of all ink pixels
+CLUSTER_MAX_COUNT = 10           # look-alikes render many separate glyphs
+BAND_MAX_HEIGHT_FRACTION = 0.70  # a sample band never fills the strip height
+BAND_MIN_WIDTH_FRACTION = 0.22
+BAND_MIN_ASPECT = 2.0
+BAND_MIN_CHROMA = 60             # saturated ink, or dark ink (black samples)
+BAND_MAX_LUMINANCE = 120
+
+
+def _band_stats(bgra: bytes, width: int, height: int):
+    """Return (bg_rgb, [(px, bbox_w, bbox_h, avg_rgb)], ink_total).
+
+    Ink = pixels far enough from the most common (background) colour;
+    bands are 4-connected ink components, largest first.
+    """
+    if not bgra or width <= 0 or height <= 0:
+        return (0, 0, 0), [], 0
+    bg_counts: dict[tuple[int, int, int], int] = {}
+    for offset in range(0, len(bgra) - 3, 4):
+        key = (bgra[offset + 2], bgra[offset + 1], bgra[offset])
+        bg_counts[key] = bg_counts.get(key, 0) + 1
+    if not bg_counts:
+        return (0, 0, 0), [], 0
+    bg = max(bg_counts, key=bg_counts.get)
+    bg_r, bg_g, bg_b = bg
+
+    ink = bytearray(width * height)
+    index = 0
+    for offset in range(0, len(bgra) - 3, 4):
+        b = bgra[offset]
+        g = bgra[offset + 1]
+        r = bgra[offset + 2]
+        if abs(r - bg_r) + abs(g - bg_g) + abs(b - bg_b) > INK_DISTANCE:
+            ink[index] = 1
+        index += 1
+
+    bands: list[list] = []
+    seen = bytearray(width * height)
+    queue: deque[int] = deque()
+    for start in range(width * height):
+        if not ink[start] or seen[start]:
+            continue
+        seen[start] = 1
+        queue.append(start)
+        count = 0
+        min_x = max_x = start % width
+        min_y = max_y = start // width
+        sum_r = sum_g = sum_b = 0
+        while queue:
+            pos = queue.popleft()
+            x = pos % width
+            y = pos // width
+            count += 1
+            px = pos * 4
+            sum_b += bgra[px]
+            sum_g += bgra[px + 1]
+            sum_r += bgra[px + 2]
+            if x < min_x:
+                min_x = x
+            elif x > max_x:
+                max_x = x
+            if y < min_y:
+                min_y = y
+            elif y > max_y:
+                max_y = y
+            if x > 0 and ink[pos - 1] and not seen[pos - 1]:
+                seen[pos - 1] = 1
+                queue.append(pos - 1)
+            if x + 1 < width and ink[pos + 1] and not seen[pos + 1]:
+                seen[pos + 1] = 1
+                queue.append(pos + 1)
+            if y > 0 and ink[pos - width] and not seen[pos - width]:
+                seen[pos - width] = 1
+                queue.append(pos - width)
+            if y + 1 < height and ink[pos + width] and not seen[pos + width]:
+                seen[pos + width] = 1
+                queue.append(pos + width)
+        bands.append([count, max_x - min_x + 1, max_y - min_y + 1,
+                      (sum_r // count, sum_g // count, sum_b // count)])
+    bands.sort(key=lambda b: -b[0])
+    ink_total = sum(b[0] for b in bands)
+    return bg, bands, ink_total
+
+
+def is_preview_band(width: int, height: int, bgra: bytes) -> bool:
+    """True when *bgra* looks like SAI's stroke preview (sample band).
+
+    Pure pixel signature, deliberately conservative: everything uncertain
+    returns False (the caller then simply does not click anything).
+    """
+    total = width * height
+    if total <= 0:
+        return False
+    _bg, bands, ink_total = _band_stats(bgra, width, height)
+    if not bands or ink_total <= 0:
+        return False
+    if len(bands) > CLUSTER_MAX_COUNT:
+        return False
+    count, band_w, band_h, avg = bands[0]
+    if count / ink_total < CLUSTER_MIN_DOMINANCE:
+        return False
+    share = count / total
+    if not (CLUSTER_MIN_SHARE <= share <= CLUSTER_MAX_SHARE):
+        return False
+    if band_h > BAND_MAX_HEIGHT_FRACTION * height:
+        return False
+    if band_w < BAND_MIN_WIDTH_FRACTION * width:
+        return False
+    if band_w / max(1, band_h) < BAND_MIN_ASPECT:
+        return False
+    red, green, blue = avg
+    chroma = max(red, green, blue) - min(red, green, blue)
+    luma = (red + green + blue) // 3
+    return chroma >= BAND_MIN_CHROMA or luma <= BAND_MAX_LUMINANCE
+
+
 # ── Refresher ────────────────────────────────────────────────────────────
 
 # Clicking the stroke preview does double duty in SAI: it re-renders the sample
@@ -547,8 +718,23 @@ MAX_CLICK_FAILURES = 2         # give up clicking a target that never takes effe
 # A failed discovery pass costs up to MAX_PROBES renders on the sync thread,
 # which also polls SAI's colour every 100 ms — so retry slowly.
 RESOLVE_RETRY_INTERVAL = 8.0
-RECENT_COLOURS = 8             # how many written colours stay usable as evidence
+# A swatch-only resolution (click target missing) is re-checked on the poll
+# tick: the colour evidence grows with every write, and SAI itself re-renders
+# the preview cache whenever its colour changes inside SAI, so a later pass
+# can succeed where the first one had no matching evidence. Rediscovery of a
+# target that was *dropped* after repeated verification failures would just
+# re-click the same mis-detected control, so it backs off — escalating with
+# each consecutive drop.
+PREVIEW_GIVE_UP_INITIAL = 300.0
+PREVIEW_GIVE_UP_MAX = 3600.0
+RECENT_COLOURS = 16            # written + poll-observed colours kept as evidence
 MAX_REFERENCES = 4             # colours probed per discovery pass (each = a render)
+# When no colour evidence ever matches (a preview cache that drifted before
+# any evidence existed), fall back to the content classifier — but only after
+# the colour passes have had a fair chance, and never more often than the
+# scan interval. Picks still must survive click verification.
+CONTENT_PROBE_DELAY = 4.0     # minimum degraded time before content probing
+CONTENT_SCAN_INTERVAL = 8.0   # between content scans while still degraded
 
 # _click_preview outcomes
 CLICK_SENT = "sent"
@@ -598,9 +784,29 @@ class SAIUiRefresher:
         self._last_resolve_attempt = 0.0
         self._dirty_rgb: tuple[int, int, int] | None = None
         self._dirty_previous: tuple[int, int, int] | None = None
-        # Colours this session wrote, newest first: the stroke preview's
-        # cached bitmap shows one of them, which is how it gets identified.
+        # Pre-write colour of the most recent write: the poll tick re-uses it
+        # when re-running preview discovery on a swatch-only resolution.
+        self._last_previous: tuple[int, int, int] | None = None
+        # Re-discovery backoff after a click target was dropped.
+        self._preview_give_up_until = 0.0
+        self._preview_drops = 0
+        # Degraded state: swatch known, preview missing, and every colour
+        # pass has failed. Once this has lasted CONTENT_PROBE_DELAY seconds,
+        # the content classifier is allowed to identify the preview.
+        self._degraded_since: float | None = None
+        self._last_content_probe = 0.0
+        self._content_probed: set[int] = set()
+        # Colours this session wrote OR the poll observed in SAI's slot,
+        # newest first: the stroke preview's cached bitmap shows one of them,
+        # which is how it gets identified. Writes alone are not enough — the
+        # cache is re-rendered by SAI itself when SAI's colour changes inside
+        # SAI, so the poll's read-backs are evidence too.
         self._recent: deque[tuple[int, int, int]] = deque(maxlen=RECENT_COLOURS)
+        # Which slice of the evidence deque the next discovery pass probes:
+        # every pass takes the pre-write colour plus a 3-colour window of the
+        # deque, and the window rotates so a cache colour buried under newer
+        # picks is still reached within a few passes.
+        self._ref_rot = 0
 
     # -- configuration ---------------------------------------------------
     def set_mode(self, mode: object) -> bool:
@@ -625,6 +831,11 @@ class SAIUiRefresher:
         self._last_resolve_attempt = 0.0
         self._dirty_rgb = None
         self._dirty_previous = None
+        self._preview_give_up_until = 0.0
+        self._preview_drops = 0
+        self._degraded_since = None
+        self._last_content_probe = 0.0
+        self._content_probed.clear()
 
     # -- internals -------------------------------------------------------
     def _get_backend(self) -> RefreshBackend | None:
@@ -647,19 +858,69 @@ class SAIUiRefresher:
         resolved = self._resolved
         return resolved is None or not resolved.click_verified
 
+    def _note(self, rgb: tuple[int, int, int]) -> None:
+        """Record a colour as discovery evidence (consecutive repeats merge)."""
+        rgb = tuple(rgb)
+        if not self._recent or self._recent[0] != rgb:
+            self._recent.appendleft(rgb)
+
+    def note_colour(self, rgb: tuple[int, int, int]) -> None:
+        """Record a colour the sai-mode poll observed in SAI's slot.
+
+        The stroke preview's cached bitmap is re-rendered by SAI itself
+        whenever SAI's colour changes inside SAI (picker / eyedropper). That
+        colour is a slot colour the poll reads, so feeding the reads back as
+        evidence lets discovery find a preview whose cache colour was never
+        written by Colorink.
+        """
+        self._note(rgb)
+
+    def on_external_colour(self, rgb: tuple[int, int, int]) -> None:
+        """SAI's slot colour changed *inside SAI* (not our write echo).
+
+        SAI has just re-rendered its preview cache in this colour, so it is
+        the strongest possible evidence — record it and arm an immediate
+        rediscovery on the next poll tick instead of waiting out the 8 s
+        backoff (later Colorink writes would push the colour out of the
+        evidence window). Harmless when no preview target is missing.
+        """
+        rgb = tuple(rgb)
+        self._note(rgb)
+        self._last_previous = rgb
+        # A fresh SAI render justifies one attempt even during a give-up
+        # pause; consecutive mis-detections still escalate the pause.
+        self._preview_give_up_until = 0.0
+        self._last_resolve_attempt = float("-inf")
+
     def _references(
-        self, previous: tuple[int, int, int] | None,
+        self, previous: tuple[int, int, int] | None, offset: int = 0,
     ) -> list[tuple[int, int, int]]:
-        """Colours the stroke preview could plausibly be showing right now."""
+        """Colours the stroke preview could plausibly be showing right now.
+
+        The pre-write colour always comes first (it matches the cache in a
+        healthy session); the rest is a window over the evidence deque,
+        rotated between discovery passes by *offset* so buried colours are
+        reached eventually.
+        """
         refs: list[tuple[int, int, int]] = []
         if previous is not None:
             refs.append(tuple(previous))  # type: ignore[arg-type]
-        for rgb in self._recent:
-            if len(refs) >= MAX_REFERENCES:
-                break
-            if rgb not in refs:
-                refs.append(rgb)
+        n = len(self._recent)
+        if n:
+            base = list(self._recent)
+            for index in range(offset, offset + n):
+                if len(refs) >= MAX_REFERENCES:
+                    break
+                rgb = base[index % n]
+                if rgb not in refs:
+                    refs.append(rgb)
         return refs
+
+    def _advance_ref_rotation(self) -> None:
+        """Slide the evidence window on for the next discovery pass."""
+        n = len(self._recent)
+        if n:
+            self._ref_rot = (self._ref_rot + (MAX_REFERENCES - 1)) % n
 
     def _resolve(
         self,
@@ -709,8 +970,10 @@ class SAIUiRefresher:
         preview = None
         if side and self.mode == MODE_FULL:
             preview = pick_preview(
-                candidates, side, backend.fill_ratio, self._references(previous),
+                candidates, side, backend.fill_ratio,
+                self._references(previous, self._ref_rot),
             )
+            self._advance_ref_rotation()
         if swatch is None and preview is None:
             _log(f"no refreshable control found among {len(candidates)} candidates")
             self._resolved = None
@@ -725,6 +988,10 @@ class SAIUiRefresher:
             f"preview={'0x%X' % preview if preview else None} "
             f"({len(candidates)} candidates)"
         )
+        if preview is not None:
+            self._degraded_since = None
+        elif swatch is not None and self.mode == MODE_FULL and self._degraded_since is None:
+            self._degraded_since = now
         self._resolved = resolved
         return resolved
 
@@ -750,6 +1017,10 @@ class SAIUiRefresher:
                 resolved.click_verified = True
                 resolved.click_failures = 0
                 resolved.probe_rgb = None
+                # A verified target is healthy: give-up state belongs to
+                # dropped targets only.
+                self._preview_drops = 0
+                self._preview_give_up_until = 0.0
                 _log("preview click verified")
                 return
 
@@ -762,6 +1033,14 @@ class SAIUiRefresher:
         if resolved.click_failures >= MAX_CLICK_FAILURES:
             _log("dropping the preview target; repaint-only from now on")
             resolved.preview = None
+            # Re-discovery would re-find the same mis-detected control and
+            # re-click it. Back off, escalating with every consecutive drop.
+            self._preview_drops += 1
+            pause = min(
+                PREVIEW_GIVE_UP_INITIAL * self._preview_drops, PREVIEW_GIVE_UP_MAX,
+            )
+            self._preview_give_up_until = self._clock() + pause
+            _log(f"preview re-discovery paused for {pause:.0f}s")
 
     def _click_preview(
         self, resolved: _Resolved, rgb: tuple[int, int, int], probe: bool = False,
@@ -818,6 +1097,7 @@ class SAIUiRefresher:
             return False
 
         rgb = tuple(rgb)  # type: ignore[assignment]
+        self._last_previous = previous
         now = self._clock()
         if not force and (now - self._last_refresh) < self.min_interval:
             # Coalesce bursts (dragging the wheel writes ~10x/s) but keep the
@@ -875,8 +1155,7 @@ class SAIUiRefresher:
                 # Only real colour writes count as activity; the tick's own
                 # replay must not keep pushing the settle window out.
                 self._last_write = now
-            if rgb not in self._recent:
-                self._recent.appendleft(rgb)
+            self._note(rgb)
             if outcome == CLICK_DEFERRED or resolved.needs_probe:
                 # Pending work: a deferred click, or a click awaiting the
                 # verification render that only the tick path performs.
@@ -891,23 +1170,126 @@ class SAIUiRefresher:
             self.reset()
             return False
 
+    def _rediscover_preview(self, pid: int) -> None:
+        """Re-run stroke-preview discovery on a swatch-only resolution.
+
+        The first discovery pass can resolve the swatch but miss the preview
+        when the preview's cached bitmap shows a colour that is not in the
+        evidence set yet. The evidence grows with every colour write, and SAI
+        itself re-renders the preview cache whenever its colour changes
+        inside SAI, so a later pass — driven by :meth:`tick` — succeeds where
+        the first one had nothing to match. Never clicks anything itself: the
+        normal write path handles clicks once the handle is known.
+        """
+        backend = self._get_backend()
+        resolved = self._resolved
+        if backend is None or resolved is None or resolved.pid != pid:
+            return
+        if (resolved.swatch is None or resolved.preview is not None
+                or self.mode != MODE_FULL):
+            return
+        if not backend.is_window(resolved.main) or not backend.is_window(resolved.swatch):
+            # Stale handles are the write path's job (it resets on a failed
+            # invalidate); don't render against a dead window here.
+            return
+        if backend.is_hung(resolved.main):
+            _log("SAI window is hung; skipping preview rediscovery")
+            return
+
+        preview = pick_preview(
+            backend.candidates(pid), resolved.swatch_side,
+            backend.fill_ratio,
+            self._references(self._last_previous, self._ref_rot),
+        )
+        self._advance_ref_rotation()
+        if preview is not None:
+            resolved.preview = preview
+            resolved.click_failures = 0
+            resolved.click_verified = False
+            resolved.probe_rgb = None
+            self._degraded_since = None
+            _log(f"preview rediscovered: 0x{preview:X}")
+        else:
+            if self._degraded_since is None:
+                self._degraded_since = self._clock()
+            _log("preview rediscovery found no matching target yet")
+
+    def _content_probe_candidates(self, pid: int) -> None:
+        """Last-resort preview identification by pixel content.
+
+        Colour evidence has failed for a while; ask the backend which
+        strip-shaped control actually *looks* like the stroke preview (a
+        background holding one wide horizontal sample band). The pick still
+        has to survive the normal click verification — a mis-detection is
+        dropped after two failures, and the same control is never content-
+        probed again in this SAI epoch.
+        """
+        self._last_content_probe = self._clock()
+        backend = self._get_backend()
+        resolved = self._resolved
+        probe = getattr(backend, "content_probe", None) if backend else None
+        if (probe is None or resolved is None or resolved.pid != pid
+                or resolved.swatch is None or resolved.preview is not None):
+            return
+        strips = sorted(
+            (c for c in backend.candidates(pid)
+             if is_preview_strip(c, resolved.swatch_side)),
+            key=lambda c: (-c.area, c.hwnd),
+        )
+        for cand in strips:
+            if cand.hwnd in self._content_probed:
+                continue
+            if not probe(cand.hwnd):
+                continue
+            resolved.preview = cand.hwnd
+            resolved.click_failures = 0
+            resolved.click_verified = False
+            resolved.probe_rgb = None
+            self._content_probed.add(cand.hwnd)
+            self._degraded_since = None
+            _log(f"preview identified by content probe: 0x{cand.hwnd:X}")
+            return
+        _log("content probe found no preview-like strip")
+
     def tick(self, pid: int) -> bool:
         """Deliver refreshes the write path skipped, and do the slow work.
 
         Called from the sync poll loop, which is not latency critical: this is
         where control discovery and click verification run, plus the trailing
         refresh for the last colour of a drag and anything deferred while the
-        user was mid-interaction.
+        user was mid-interaction. When only the swatch is known in full mode,
+        this is also where preview discovery re-runs periodically, so a
+        session that started with drifted evidence heals on its own; if the
+        drift predates all evidence, the content classifier is the last
+        resort (see :meth:`_content_probe_candidates`).
         """
-        if not self.enabled or self._dirty_rgb is None:
+        if not self.enabled or not pid:
             return False
         now = self._clock()
-        if (now - self._last_refresh) < self.min_interval:
-            return False
-        return self.refresh(
-            pid, self._dirty_rgb, force=True,
-            previous=self._dirty_previous, probe=True,
-        )
+        delivered = False
+        if (self._dirty_rgb is not None
+                and (now - self._last_refresh) >= self.min_interval):
+            delivered = self.refresh(
+                pid, self._dirty_rgb, force=True,
+                previous=self._dirty_previous, probe=True,
+            )
+
+        resolved = self._resolved
+        if (self.mode == MODE_FULL and resolved is not None
+                and resolved.pid == pid and resolved.swatch is not None
+                and resolved.preview is None and now >= self._preview_give_up_until
+                and (now - self._last_resolve_attempt) >= RESOLVE_RETRY_INTERVAL):
+            self._last_resolve_attempt = now
+            self._rediscover_preview(pid)
+        if (self.mode == MODE_FULL and resolved is not None
+                and resolved.pid == pid and resolved.swatch is not None
+                and resolved.preview is None
+                and self._degraded_since is not None
+                and (now - self._degraded_since) >= CONTENT_PROBE_DELAY
+                and (now - self._last_content_probe) >= CONTENT_SCAN_INTERVAL
+                and now >= self._preview_give_up_until):
+            self._content_probe_candidates(pid)
+        return delivered
 
     def status(self) -> dict[str, object]:
         resolved = self._resolved

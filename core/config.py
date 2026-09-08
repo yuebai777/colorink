@@ -10,7 +10,7 @@ HOTKEY_CFG_NAME = "hotkey-config.json"
 # when the shape of the config changes and register a migration below; old
 # configs are migrated forward on load instead of relying on ad-hoc key pops.
 CONFIG_SCHEMA_KEY = "schemaVersion"
-CONFIG_SCHEMA_VERSION = 4
+CONFIG_SCHEMA_VERSION = 5
 
 # Envelope marker for the settings backup/restore JSON export.
 SETTINGS_EXPORT_FORMAT = "colorink-settings"
@@ -111,12 +111,8 @@ def default_hotkey_config():
         "previewBoxPosition": "top-left",
         "cspVersion": "auto",
         "sai2Version": "auto",
-        # SAI 内存写入后，把 SAI 自己的画笔色块也刷新一次：
-        # "repaint"（默认）= 只重绘色块，纯重绘、不注入任何输入；
-        # "full" = 额外给笔刷预览发一次点击（SAI 会记住这次按下点，
-        #          下一笔可能出现楔形起笔，需要自行权衡）；
-        # "off" = 完全不动 SAI 界面（旧行为）
-        "saiUiRefresh": "repaint",
+        # SAI 界面刷新只有一种模式（full：重绘色块 + 点击刷新笔刷预览条），
+        # 由代码恒定启用、不再提供用户选项，因此配置里没有对应键。
         "udmVersion": "auto",
         "ui-theme": "auto",
         "language": "auto",
@@ -210,17 +206,16 @@ def _migrate_0_to_1(cfg: dict) -> dict:
 
 
 def _migrate_1_to_2(cfg: dict) -> dict:
-    """Take SAI UI refresh off the click-injecting mode.
+    """Drop the obsolete ``saiUiRefresh`` mode knob.
 
-    ``saiUiRefresh`` briefly defaulted to ``"full"``, which posts a mouse click
-    to SAI's brush preview so it re-renders. SAI treats that click as real
-    input and remembers its button-down point, so the next canvas stroke can
-    start with a wedge sweeping from it. Nobody chose that deliberately — it
-    was the default — so the stored value is moved to the input-free mode.
-    Anyone who wants the preview refresh can opt in again in the settings.
+    The key briefly defaulted to ``"full"``, was demoted to ``"repaint"`` to
+    stop injecting input by default, and is now gone entirely: SAI UI refresh
+    is a single always-on full mode (swatch repaint + verified preview click)
+    with no user-facing choice. Old values are removed rather than mapped, so
+    a stale "off"/"repaint" can never silently resurrect a partial-refresh
+    session.
     """
-    if str(cfg.get("saiUiRefresh", "")).strip().lower() == "full":
-        cfg["saiUiRefresh"] = "repaint"
+    cfg.pop("saiUiRefresh", None)
     return cfg
 
 
@@ -243,12 +238,24 @@ def _migrate_3_to_4(cfg: dict) -> dict:
     return cfg
 
 
+def _migrate_4_to_5(cfg: dict) -> dict:
+    """Drop the retired ``saiUiRefresh`` mode knob from current-schema files.
+
+    The single-mode change removed the selector, but configs saved by the
+    three-mode era at schema 4 still carry the key. No code reads it any
+    more; this just keeps saved files honest.
+    """
+    cfg.pop("saiUiRefresh", None)
+    return cfg
+
+
 # Registered migrations, keyed by the target schema version they produce.
 _CONFIG_MIGRATIONS: dict[int, Callable[[dict], dict]] = {
     1: _migrate_0_to_1,
     2: _migrate_1_to_2,
     3: _migrate_2_to_3,
     4: _migrate_3_to_4,
+    5: _migrate_4_to_5,
 }
 
 

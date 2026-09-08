@@ -265,9 +265,11 @@ class SAI2Sync:
         self._base: int | None = None
         self._size: int | None = None
         # Writing the slot changes what SAI paints with, but SAI never learns
-        # its own widgets went stale — the refresher nudges them.
+        # its own widgets went stale — the refresher nudges them. There is a
+        # single refresh mode (full); no env escape hatch, so a stale
+        # environment cannot silently disable the UI refresh.
         self.ui_refresher = sai2_ui_refresh.SAIUiRefresher(
-            mode=os.environ.get("SAI2_UI_REFRESH", sai2_ui_refresh.DEFAULT_MODE),
+            mode=sai2_ui_refresh.DEFAULT_MODE,
         )
 
     def set_ui_refresh(self, mode: object) -> bool:
@@ -279,6 +281,28 @@ class SAI2Sync:
         if self._pid is None:
             return False
         return self.ui_refresher.tick(self._pid)
+
+    def note_colour(self, rgb) -> None:
+        """Feed a polled slot colour to the refresher as discovery evidence."""
+        refresher = getattr(self, "ui_refresher", None)
+        if refresher is not None:
+            try:
+                refresher.note_colour(rgb)
+            except Exception:  # noqa: BLE001 - observation must never break the poll
+                pass
+
+    def on_external_colour(self, rgb) -> None:
+        """SAI changed its own colour (not the echo of our write).
+
+        SAI re-renders its stroke-preview cache in that colour, so the
+        refresher records it and retries the preview discovery immediately.
+        """
+        refresher = getattr(self, "ui_refresher", None)
+        if refresher is not None:
+            try:
+                refresher.on_external_colour(rgb)
+            except Exception:  # noqa: BLE001 - see note_colour
+                pass
 
     def set_version(self, version: str) -> bool:
         """Switch SAI2 signature mode. Returns True if the version changed."""

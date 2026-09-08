@@ -52,6 +52,12 @@ class RecordingRefresher:
         self.mode = mode
         return True
 
+    def note_colour(self, rgb):
+        self.calls.append(("note", tuple(rgb)))
+
+    def on_external_colour(self, rgb):
+        self.calls.append(("external", tuple(rgb)))
+
 
 @pytest.fixture
 def sync(monkeypatch):
@@ -149,3 +155,12 @@ def test_tick_ui_refresh_needs_a_pid(sync):
     s.ui_refresher = RecordingRefresher()
     s._pid = None
     assert s.tick_ui_refresh() is False
+
+
+def test_poll_observation_forwards_to_the_refresher(sync):
+    s, _state = sync
+    s.ui_refresher = RecordingRefresher()
+    s.note_colour((1, 2, 3))
+    s.on_external_colour((4, 5, 6))
+    assert ("note", (1, 2, 3)) in s.ui_refresher.calls
+    assert ("external", (4, 5, 6)) in s.ui_refresher.calls

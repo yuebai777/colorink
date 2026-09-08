@@ -496,13 +496,6 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.combo_sai.setCurrentText(self.cfg.get("sai2Version", "auto"))
         self.combo_sai.blockSignals(False)
 
-        _sai_refresh_idx = self.combo_sai_refresh.findData(
-            str(self.cfg.get("saiUiRefresh", "full") or "full"))
-        self.combo_sai_refresh.blockSignals(True)
-        self.combo_sai_refresh.setCurrentIndex(
-            _sai_refresh_idx if _sai_refresh_idx >= 0 else 0)
-        self.combo_sai_refresh.blockSignals(False)
-        
         udm_display_map = {"auto": "auto", "udm4.0": "udm4.0pro", "udm4.0-ex": "udm4.0ex"}
         self.combo_udm.blockSignals(True)
         self.combo_udm.setCurrentText(udm_display_map.get(self.cfg.get("udmVersion", "auto"), "auto"))
@@ -640,8 +633,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         
         self.cfg["cspVersion"] = self.combo_csp.currentData() or "auto"
         self.cfg["sai2Version"] = self.combo_sai.currentText()
-        self.cfg["saiUiRefresh"] = self.combo_sai_refresh.currentData() or "full"
-        
+
         udm_val_map = {"auto": "auto", "udm4.0pro": "udm4.0", "udm4.0ex": "udm4.0-ex"}
         self.cfg["udmVersion"] = udm_val_map.get(self.combo_udm.currentText(), "auto")
         self.cfg["psVersion"] = self.combo_ps.currentText()

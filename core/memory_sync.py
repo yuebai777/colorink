@@ -62,8 +62,9 @@ class MemorySyncThread(QThread):
         self.csp_version = "auto"
         self.sai2_version = "auto"
         self.udm_version = "auto"
-        # How hard to nudge SAI into repainting its own colour widgets after a
-        # memory write: "off" | "repaint" | "full" (see core.sai2_ui_refresh).
+        # SAI UI refresh is a single always-on mode (swatch repaint + verified
+        # stroke-preview click, see core.sai2_ui_refresh). Kept as an
+        # attribute only because update_versions() pushes it to the backend.
         self.sai_ui_refresh = "full"
         
         # Cache to prevent loops
@@ -162,6 +163,38 @@ class MemorySyncThread(QThread):
         if hasattr(self, "_wake_event"):
             self._wake_event.set()
         
+    def _note_sai_observation(self, color: Mapping[str, Any]) -> None:
+        """Feed a sai-mode poll read-back to the SAI UI refresher.
+
+        The stroke preview's cached bitmap is re-rendered by SAI itself only
+        when SAI's colour changes inside SAI — at which moment the cache
+        colour equals the slot colour the poll just read. Every read is
+        therefore noted as discovery evidence, and a change that is not the
+        echo of our own write arms an immediate rediscovery (SAI has just
+        re-rendered its preview cache in that colour).
+        """
+        r, g, b = color.get("r"), color.get("g"), color.get("b")
+        if r is None or g is None or b is None:
+            return
+        rgb = (int(r), int(g), int(b))
+        sai = getattr(self, "sai2_sync", None)
+        if sai is None:
+            return
+        try:
+            sai.note_colour(rgb)
+            prev = self._last_synced_color.get(0)
+            old = self._last_write_old_color.get(0)
+            # Any read that is not the echo of our own write is an SAI-side
+            # colour event — including the first read after attach, when SAI's
+            # cache still shows exactly this colour (startup case). Arm the
+            # refresher so the preview is found (and verified) immediately
+            # instead of waiting for a coincidental colour match.
+            is_change = prev is None or not _rgb_close(rgb, prev)
+            if is_change and (old is None or not _rgb_close(rgb, old)):
+                sai.on_external_colour(rgb)
+        except Exception:  # noqa: BLE001 - an observation must never break the poll
+            pass
+
     def set_sync_enabled(self, enabled):
         self.sync_enabled = enabled
         if not enabled:
@@ -432,6 +465,7 @@ class MemorySyncThread(QThread):
                     color = self.sai2_sync.get_color()
                     if color is not None:
                         colors = [color]
+                        self._note_sai_observation(color)
                     status = self.sai2_sync.status()
                     connected = status.get('connected', False)
                     # Land a UI refresh that the write path had to throttle or

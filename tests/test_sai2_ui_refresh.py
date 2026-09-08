@@ -25,6 +25,7 @@ from core.sai2_ui_refresh import (
     RESOLVE_RETRY_INTERVAL,
     Candidate,
     SAIUiRefresher,
+    is_preview_band,
     is_preview_strip,
     is_square_control,
     normalize_mode,
@@ -71,10 +72,13 @@ def test_normalize_mode_falls_back_to_default_for_junk():
     assert normalize_mode("banana") == DEFAULT_MODE
 
 
-def test_default_mode_injects_no_input():
-    # Clicking is real input to SAI and can leave a wedge on the next stroke,
-    # so it must never be what an untouched install does.
-    assert DEFAULT_MODE == MODE_REPAINT
+def test_default_mode_is_the_single_full_refresh_mode():
+    # The app ships exactly one mode: full (swatch repaint + stroke-preview
+    # click). It used to default to repaint (repaint-only), which silently
+    # let the cached stroke-preview bitmap drift away from the colour slot;
+    # the user-facing selector was removed, so this default is the only
+    # configuration the app produces.
+    assert DEFAULT_MODE == MODE_FULL
 
 
 # ── geometry classification ──────────────────────────────────────────────
@@ -654,6 +658,356 @@ def test_reset_forgets_resolved_controls():
     assert refresher.status()["swatch"] is not None
     refresher.reset()
     assert refresher.status()["swatch"] is None
+
+
+# ── preview re-discovery after a swatch-only resolution ──────────────────
+#
+# Regression: discovery can resolve the swatch but miss the stroke preview
+# when the preview's cached bitmap shows a colour that is not in the current
+# evidence set (typical after the preview drifted while the app was in a
+# repaint-only state). The refresher cached that partial result forever, so
+# even switching to full never re-ran preview discovery: the preview stayed
+# frozen for the whole session. Discovery must re-run periodically, because
+# the evidence set grows with every write and SAI itself re-renders the
+# preview cache whenever its colour changes inside SAI.
+
+
+def _re_render_on_click(fills):
+    """SAI whose preview re-renders the slot colour when clicked (measured)."""
+
+    class ReRenderBackend(FakeBackend):
+        def __init__(self, **kwargs):
+            super().__init__(fills=fills, **kwargs)
+            self.slot = None
+
+        def click(self, hwnd, times=1):
+            ok = super().click(hwnd, times)
+            if ok and hwnd == PREVIEW.hwnd and self.slot is not None:
+                self._fills[PREVIEW.hwnd] = {tuple(self.slot): 0.05}
+            return ok
+
+    return ReRenderBackend()
+
+
+def test_swatch_only_resolution_rediscovers_the_preview_once_evidence_fits():
+    frozen = (7, 7, 7)                      # the strip cache's drifted colour
+    backend = _re_render_on_click(
+        fills={SWATCH.hwnd: 0.57, PREVIEW.hwnd: {frozen: 0.05}})
+    clock = FakeClock()
+    refresher = make_refresher(backend, clock=clock)
+    pid = 4321
+
+    # Cold phase: writes whose evidence never includes the frozen colour —
+    # every discovery resolves only the swatch and caches that partial state.
+    previous = (200, 200, 200)
+    for index in range(3):
+        rgb = (index + 10, 100, 100)
+        backend.slot = rgb
+        refresher.refresh(pid, rgb, previous=previous)
+        clock.advance(0.2)
+        refresher.tick(pid)
+        clock.advance(RESOLVE_RETRY_INTERVAL + 0.2)
+        refresher.tick(pid)
+        previous = rgb
+    assert refresher.status()["preview"] is None
+
+    # Heal phase: SAI-side colour activity moves the slot to the frozen
+    # colour, so the next write's previous colour matches the strip cache.
+    # The periodic re-discovery must pick the strip up from here on.
+    heal = (30, 200, 200)
+    backend.slot = heal
+    refresher.refresh(pid, heal, previous=frozen)
+    clock.advance(RESOLVE_RETRY_INTERVAL + 0.2)
+    refresher.tick(pid)
+    assert refresher.status()["preview"] == f"0x{PREVIEW.hwnd:X}"
+
+    # From here the normal full-mode flow resumes: the write path never
+    # clicks an unverified target, the tick probes once, and the click is
+    # verified on the following colour change.
+    rgb2 = (40, 210, 210)
+    backend.slot = rgb2
+    clock.advance(0.2)
+    refresher.refresh(pid, rgb2, previous=heal)
+    assert backend.clicked == []
+    clock.advance(CLICK_SETTLE * 2)
+    refresher.tick(pid)
+    assert backend.clicked[-1] == PREVIEW.hwnd
+
+    rgb3 = (50, 50, 50)
+    backend.slot = rgb3
+    clock.advance(0.2)
+    refresher.refresh(pid, rgb3, previous=rgb2)
+    clock.advance(0.2)
+    refresher.tick(pid)
+    assert refresher.status()["clickVerified"] is True
+
+
+def test_dropped_preview_target_backs_off_rediscovery():
+    # A target that never re-renders (mis-detection) is dropped after
+    # MAX_CLICK_FAILURES; the periodic re-discovery must then respect the
+    # give-up backoff instead of re-clicking the same dead target forever.
+    backend = FakeBackend(
+        fills={SWATCH.hwnd: 0.57, PREVIEW.hwnd: {OLD: 0.05}})
+    clock = FakeClock()
+    refresher = make_refresher(backend, clock=clock)
+    pid = 4321
+    for _ in range(MAX_CLICK_FAILURES + 4):
+        clock.advance(0.2)
+        refresher.refresh(pid, (10, 80, 220), previous=OLD)
+        clock.advance(0.2)
+        refresher.tick(pid)
+    assert refresher.status()["preview"] is None
+    clicks_after_drop = len(backend.clicked)
+
+    for _ in range(4):                     # ~32s of poll ticks
+        clock.advance(RESOLVE_RETRY_INTERVAL + 0.1)
+        refresher.tick(pid)
+    assert len(backend.clicked) == clicks_after_drop
+    assert refresher.status()["preview"] is None
+
+
+# ── poll observations as discovery evidence ──────────────────────────────
+#
+# The stroke preview's cached bitmap is re-rendered by SAI itself whenever
+# SAI's colour changes inside SAI (picker / eyedropper), and by our click
+# afterwards. In both cases the cache colour equals a colour the slot has
+# *held*, which the sai-mode poll reads every 100 ms. Feeding those reads
+# back as evidence makes discovery independent of the user re-picking an
+# arbitrary old colour by chance.
+
+
+def test_note_colour_deduplicates_consecutive_poll_reads():
+    refresher = make_refresher(FakeBackend(), mode=MODE_FULL)
+    refresher.note_colour((9, 9, 9))
+    refresher.note_colour((9, 9, 9))       # the poll repeats the same colour
+    refresher.note_colour((1, 2, 3))
+    assert refresher.status()["knownColours"] == 2
+
+
+def test_external_colour_change_arms_immediate_preview_rediscovery():
+    # When SAI's own colour changes, its preview cache is re-rendered in that
+    # exact colour. The poll spots the slot change and hands it over; the
+    # rediscovery must run on the very next tick — waiting out the 8 s
+    # backoff would let later Colorink writes push the matching colour out of
+    # the evidence window.
+    external = (90, 7, 7)
+    backend = FakeBackend(
+        fills={SWATCH.hwnd: 0.57, PREVIEW.hwnd: {external: 0.05}})
+    clock = FakeClock()
+    refresher = make_refresher(backend, clock=clock)
+    pid = 4321
+    for index in range(3):                 # cold writes: preview unfindable
+        refresher.refresh(pid, (index + 10, 200, 200), previous=(9, 9, 9))
+        clock.advance(0.2)
+        refresher.tick(pid)
+        clock.advance(RESOLVE_RETRY_INTERVAL + 0.2)
+        refresher.tick(pid)
+    assert refresher.status()["preview"] is None
+
+    refresher.on_external_colour(external)  # poll spotted an SAI-side change
+    clock.advance(0.1)
+    refresher.tick(pid)                     # no backoff wait this time
+    assert refresher.status()["preview"] == f"0x{PREVIEW.hwnd:X}"
+
+
+# ── probe ordering: colours sweep every strip before the budget runs out ──
+#
+# On the live build the brush-tool row is LARGER than the stroke preview
+# (293x79 vs 287x76 at 150% DPI), so a strip-major probe order spends the
+# whole render budget on the tool row and the preview only ever sees the
+# first one or two reference colours — a matching colour later in the list
+# is never reached. Colours must sweep across all strips first.
+
+
+def test_preview_probing_sweeps_each_colour_across_all_strips():
+    # Live build: the brush-tool row is LARGER than the stroke preview
+    # (293x79 vs 287x76 at 150% DPI), so strip-major probing burns the whole
+    # render budget on the empty decoys and the preview only ever sees the
+    # first one or two reference colours. Colours must sweep across every
+    # strip. (Swatch and strips are all at the 150%-DPI scale.)
+    TOOL_ROW_150 = Candidate(0x555001, 293, 79)   # biggest decoy, shows nothing
+    OTHER_150 = Candidate(0x555002, 262, 73)      # second decoy, shows nothing
+    PREVIEW_150 = Candidate(0x555003, 287, 76)
+    cache_colour = (70, 190, 30)                  # shown only by the preview
+    candidates = [SWATCH_150, TOOL_ROW_150, OTHER_150, PREVIEW_150]
+    fills = {
+        SWATCH_150.hwnd: 0.57,
+        TOOL_ROW_150.hwnd: {},
+        OTHER_150.hwnd: {},
+        PREVIEW_150.hwnd: {cache_colour: 0.05},
+    }
+    backend = FakeBackend(candidates=candidates, fills=fills)
+    clock = FakeClock()
+    refresher = make_refresher(backend, clock=clock)
+    pid = 4321
+
+    # Cold writes: the cache colour is not in evidence yet -> swatch only.
+    refresher.refresh(pid, (10, 80, 220), previous=(1, 1, 1))
+    clock.advance(0.2)
+    refresher.tick(pid)
+    assert refresher.status()["preview"] is None
+
+    # Evidence accumulates so the cache colour sits DEEP (behind a window):
+    # note the cache colour first, then two newer ones, then write a fresh
+    # colour. Rotating discovery windows reach it within a few passes.
+    refresher.note_colour(cache_colour)
+    refresher.note_colour((31, 31, 31))
+    refresher.note_colour((32, 32, 32))
+    clock.advance(0.2)
+    refresher.refresh(pid, (99, 99, 99), previous=(1, 1, 1))
+    clock.advance(RESOLVE_RETRY_INTERVAL + 0.2)
+    refresher.tick(pid)
+    # The first rotated window still misses the buried colour...
+    assert refresher.status()["preview"] is None
+    # ...but the next window reaches it, and a colour-major sweep then finds
+    # the preview on the very strip that shows it.
+    clock.advance(RESOLVE_RETRY_INTERVAL + 0.2)
+    refresher.tick(pid)
+    assert refresher.status()["preview"] == f"0x{PREVIEW_150.hwnd:X}"
+
+
+def _bgra_pixels(width, height, paint):
+    """Build a BGRA byte buffer; paint(x, y) -> (r, g, b)."""
+    buf = bytearray(width * height * 4)
+    for y in range(height):
+        for x in range(width):
+            red, green, blue = paint(x, y)
+            i = (y * width + x) * 4
+            buf[i] = blue
+            buf[i + 1] = green
+            buf[i + 2] = red
+            buf[i + 3] = 255
+    return bytes(buf)
+
+
+def _flat(rgb):
+    return lambda x, y: rgb
+
+
+# ── content classifier (last-resort preview identification) ──────────────
+def test_classifier_accepts_a_sample_band_on_a_plain_background():
+    w, h = 287, 76
+    def paint(x, y):
+        if 30 <= x <= 260 and 20 <= y <= 36:      # one wide horizontal band
+            return (200, 40, 60)
+        return (243, 243, 243)                    # light background
+    assert is_preview_band(w, h, _bgra_pixels(w, h, paint))
+
+
+def test_classifier_rejects_many_small_glyphs_like_the_tool_row():
+    w, h = 293, 79
+    def paint(x, y):
+        for gx in range(0, 6):                    # six scattered 15x15 icons
+            x0, y0 = 20 + gx * 48, 12
+            if x0 <= x < x0 + 15 and y0 <= y < y0 + 15:
+                return (30, 30, 30)
+        return (248, 248, 248)
+    assert not is_preview_band(w, h, _bgra_pixels(w, h, paint))
+
+
+def test_classifier_rejects_full_height_flat_strips():
+    # A flat light fill spanning the strip height (material / preview rows)
+    # must never qualify: no band shape, no saturation.
+    w, h = 262, 73
+    def paint(x, y):
+        if 10 <= x <= 250 and 10 <= y <= 68:
+            return (219, 219, 255)
+        return (255, 255, 255)
+    assert not is_preview_band(w, h, _bgra_pixels(w, h, paint))
+
+
+def test_classifier_is_conservative_on_plain_and_empty_controls():
+    w, h = 200, 60
+    assert not is_preview_band(w, h, _bgra_pixels(w, h, _flat((243, 243, 243))))
+    assert not is_preview_band(0, 0, b"")
+
+
+# ── refresher content fallback ───────────────────────────────────────────
+def test_content_probe_recovers_a_preview_that_no_colour_evidence_matches():
+    class ContentBackend(FakeBackend):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.content_calls = []
+            self.slot = None
+
+        def content_probe(self, hwnd):
+            self.content_calls.append(hwnd)
+            return hwnd == PREVIEW.hwnd
+
+        def click(self, hwnd, times=1):
+            ok = super().click(hwnd, times)
+            # SAI re-renders the sample from the slot when clicked.
+            if ok and hwnd == PREVIEW.hwnd and self.slot is not None:
+                self._fills[PREVIEW.hwnd] = {tuple(self.slot): 0.05}
+            return ok
+
+    backend = ContentBackend(
+        candidates=[SWATCH, PREVIEW],
+        fills={SWATCH.hwnd: 0.57, PREVIEW.hwnd: {}},   # no colour ever matches
+    )
+    clock = FakeClock()
+    refresher = make_refresher(backend, clock=clock)
+    pid = 4321
+
+    refresher.refresh(pid, (10, 80, 220), previous=(9, 9, 9))
+    clock.advance(0.2)
+    refresher.tick(pid)                       # swatch-only resolution
+    assert refresher.status()["preview"] is None
+
+    # Colour passes keep failing for a while; after the content delay the
+    # classifier must identify the preview and the normal click+verify flow
+    # must then confirm it (colour evidence appears once the click re-renders).
+    for index in range(60):
+        rgb = (20 + index, 80, 220)
+        backend.slot = rgb
+        refresher.refresh(pid, rgb, previous=(9, 9, 9))
+        clock.advance(0.3)                    # the poll tick comes later
+        refresher.tick(pid)
+        clock.advance(1.7)
+        if refresher.status()["clickVerified"] is True:
+            break
+
+    assert PREVIEW.hwnd in backend.content_calls
+    assert refresher.status()["preview"] == f"0x{PREVIEW.hwnd:X}"
+    assert refresher.status()["clickVerified"] is True
+
+
+def test_a_misidentified_content_target_is_dropped_and_not_reprobed():
+    # A content probe can land on the wrong strip; verification drops it and
+    # the same control must not be content-probed again in this epoch.
+    WRONG_STRIP = Candidate(0x777001, 195, 52)   # strip-shaped look-alike
+
+    class WrongContentBackend(FakeBackend):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.content_calls = []
+
+        def content_probe(self, hwnd):
+            self.content_calls.append(hwnd)
+            return hwnd == WRONG_STRIP.hwnd      # the classifier is wrong here
+
+    backend = WrongContentBackend(
+        candidates=[SWATCH, WRONG_STRIP, PREVIEW],
+        fills={SWATCH.hwnd: 0.57, WRONG_STRIP.hwnd: {}, PREVIEW.hwnd: {}},
+    )
+    clock = FakeClock()
+    refresher = make_refresher(backend, clock=clock)
+    pid = 4321
+    refresher.refresh(pid, (10, 80, 220), previous=(9, 9, 9))
+    clock.advance(0.2)
+    refresher.tick(pid)
+    for index in range(60):
+        refresher.refresh(pid, (20 + index, 80, 220), previous=(9, 9, 9))
+        clock.advance(0.3)                    # the poll tick comes later
+        refresher.tick(pid)
+        clock.advance(1.7)
+
+    # Dropped after verification failures: never click-verified, no preview.
+    assert refresher.status()["preview"] is None
+    assert refresher.status()["clickVerified"] is False
+    # The wrong control was content-probed exactly once (never repeated).
+    assert backend.content_calls.count(WRONG_STRIP.hwnd) == 1
+    assert len(backend.clicked) <= MAX_CLICK_FAILURES
 
 
 if __name__ == "__main__":  # pragma: no cover

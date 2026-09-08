@@ -705,7 +705,8 @@ class PickerActionsMixin:
         # Update settings dialog variables in thread
         self.sync_thread.csp_version = self.cfg.get("cspVersion", "auto")
         self.sync_thread.sai2_version = self.cfg.get("sai2Version", "auto")
-        self.sync_thread.sai_ui_refresh = self.cfg.get("saiUiRefresh", "full")
+        # SAI UI refresh is a single always-on full mode (core.sai2_ui_refresh
+        # defaults to it); there is no config knob and nothing here overrides it.
         self.sync_thread.udm_version = self.cfg.get("udmVersion", "auto")
         setattr(self.sync_thread, "ps_version", self.cfg.get("psVersion", "auto"))
         self.sync_thread.update_versions()

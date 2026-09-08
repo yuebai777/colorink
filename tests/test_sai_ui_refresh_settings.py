@@ -1,9 +1,10 @@
-"""Settings-UI coverage for the SAI UI-refresh option.
+"""Settings coverage for the single SAI UI-refresh mode.
 
-The refresher itself is unit-tested in ``test_sai2_ui_refresh``; here the
-concern is plumbing: the row exists, it only shows in SAI mode, the config
-value round-trips through the sidebar, and the value actually reaches the
-SAI backend instead of stopping at the config dict.
+The app used to expose a three-way choice (repaint / full / off) whose
+default silently degraded to repaint-only and let SAI's cached stroke-preview
+bitmap drift away from the colour slot forever. There is now exactly one mode
+— full — with no user-facing selector: this file pins that contract (config,
+migration, sidebar UI and the sync-thread wiring).
 """
 
 import os
@@ -11,8 +12,14 @@ import os
 import pytest
 
 from core import i18n
-from core.config import default_hotkey_config, load_hotkey_config
-from core.sai2_ui_refresh import MODE_FULL, MODE_OFF, MODE_REPAINT
+from core.config import (
+    CONFIG_SCHEMA_KEY,
+    CONFIG_SCHEMA_VERSION,
+    default_hotkey_config,
+    load_hotkey_config,
+    migrate_config,
+)
+from core.sai2_ui_refresh import MODE_FULL
 
 
 @pytest.fixture(scope="module")
@@ -77,133 +84,112 @@ def sidebar(qapp, tmp_path, monkeypatch):
     return s
 
 
-def test_default_config_ships_the_input_free_mode():
-    # Out of the box nothing may be injected into SAI: the preview click is an
-    # explicit opt-in because SAI keeps its button-down point.
-    assert default_hotkey_config()["saiUiRefresh"] == MODE_REPAINT
+def test_config_ships_no_mode_selector_key():
+    # There is no stored knob to choose a refresh mode any more: the app
+    # always runs the full refresh.
+    assert "saiUiRefresh" not in default_hotkey_config()
 
 
-def test_row_offers_the_three_modes_safest_first(sidebar):
-    values = [
-        sidebar.combo_sai_refresh.itemData(i)
-        for i in range(sidebar.combo_sai_refresh.count())
-    ]
-    assert values == [MODE_REPAINT, MODE_FULL, MODE_OFF]
+def test_schema_one_migration_drops_the_legacy_knob():
+    # Old configs may still carry a value from the three-mode era. Upgrading
+    # must remove the knob, not preserve a mode the app no longer honours.
+    for legacy in ("full", "repaint", "off", "banana"):
+        migrated = migrate_config({CONFIG_SCHEMA_KEY: 1, "saiUiRefresh": legacy})
+        assert "saiUiRefresh" not in migrated
+        assert migrated[CONFIG_SCHEMA_KEY] == CONFIG_SCHEMA_VERSION
 
 
-def test_every_mode_has_a_hover_explanation(sidebar):
-    from PyQt6.QtCore import Qt
-
-    for i in range(sidebar.combo_sai_refresh.count()):
-        tip = sidebar.combo_sai_refresh.itemData(i, Qt.ItemDataRole.ToolTipRole)
-        assert tip
-
-
-def test_row_is_visible_only_in_sai_mode(sidebar):
-    index = sidebar.combo_software.findData("sai")
-    sidebar.combo_software.setCurrentIndex(index)
-    sidebar.update_version_visibility()
-    assert not sidebar.row_sai_refresh_widget.isHidden()
-    # tracks the existing SAI version row exactly
-    assert sidebar.row_sai_widget.isHidden() == sidebar.row_sai_refresh_widget.isHidden()
-
-    sidebar.combo_software.setCurrentIndex(sidebar.combo_software.findData("csp"))
-    sidebar.update_version_visibility()
-    assert sidebar.row_sai_refresh_widget.isHidden()
-
-
-def test_selection_is_saved_to_config(sidebar):
-    index = sidebar.combo_sai_refresh.findData(MODE_REPAINT)
-    sidebar.combo_sai_refresh.setCurrentIndex(index)
-    sidebar.save_settings()
-    assert sidebar.cfg["saiUiRefresh"] == MODE_REPAINT
-
-
-def _persist(sidebar, value):
-    """Store a value the way the app does, then reload the row from disk."""
-    from core import config
-
-    sidebar.cfg["saiUiRefresh"] = value
-    config.save_hotkey_config(sidebar.cfg)
-    sidebar.refresh_ui()
-
-
-def test_saved_value_is_restored_into_the_row(sidebar):
-    _persist(sidebar, MODE_OFF)
-    assert sidebar.combo_sai_refresh.currentData() == MODE_OFF
-
-
-def test_unknown_stored_value_falls_back_to_the_first_entry(sidebar):
-    # A hand-edited or downgraded config must not leave the row blank, and the
-    # fallback must be the mode that injects nothing.
-    _persist(sidebar, "banana")
-    assert sidebar.combo_sai_refresh.currentData() == MODE_REPAINT
-
-
-def test_round_trip_through_save_and_reload(sidebar):
-    sidebar.combo_sai_refresh.setCurrentIndex(
-        sidebar.combo_sai_refresh.findData(MODE_REPAINT))
-    sidebar.save_settings()
-    sidebar.refresh_ui()
-    assert sidebar.combo_sai_refresh.currentData() == MODE_REPAINT
-
-
-def test_mode_reaches_the_sai_backend():
-    """update_versions must push the setting down to SAI2Sync."""
-    from core import memory_sync
-
-    class StubBackend:
-        def __init__(self):
-            self.version = None
-            self.ui_refresh = None
-
-        def set_version(self, value):
-            self.version = value
-
-        def set_ui_refresh(self, value):
-            self.ui_refresh = value
-
-    class StubThread:
-        """Attribute bag standing in for MemorySyncThread (a QThread)."""
-
-        csp_version = "auto"
-        sai2_version = "auto"
-        udm_version = "auto"
-        ps_version = "auto"
-        sai_ui_refresh = MODE_REPAINT
-
-        def __init__(self):
-            self.csp_sync = StubBackend()
-            self.sai2_sync = StubBackend()
-            self.udm_sync = StubBackend()
-            self.ps_sync = StubBackend()
-
-    stub = StubThread()
-    memory_sync.MemorySyncThread.update_versions(stub)
-    assert stub.sai2_sync.ui_refresh == MODE_REPAINT
-    # the existing version plumbing must keep working alongside it
-    assert stub.sai2_sync.version == "auto"
-
-
-def test_stored_click_mode_is_migrated_off_by_schema_bump():
-    """The click-injecting default must not survive an upgrade.
-
-    It was never a deliberate choice, and it leaves SAI with a stale
-    button-down point that shows up as a wedge on the next stroke.
-    """
-    from core.config import CONFIG_SCHEMA_KEY, CONFIG_SCHEMA_VERSION, migrate_config
-
-    migrated = migrate_config({CONFIG_SCHEMA_KEY: 1, "saiUiRefresh": "full"})
-    assert migrated["saiUiRefresh"] == MODE_REPAINT
+def test_current_schema_migration_drops_a_leftover_knob():
+    # Files saved by three-mode-era builds at the then-current schema also
+    # carry the key; loading them must drop it too.
+    migrated = migrate_config({CONFIG_SCHEMA_KEY: 4, "saiUiRefresh": "off"})
+    assert "saiUiRefresh" not in migrated
     assert migrated[CONFIG_SCHEMA_KEY] == CONFIG_SCHEMA_VERSION
 
 
-def test_migration_leaves_a_deliberate_choice_alone():
-    from core.config import CONFIG_SCHEMA_KEY, migrate_config
+def test_sai_section_has_no_ui_refresh_selector(sidebar):
+    # The version row stays; the refresh-mode row is gone.
+    assert hasattr(sidebar, "combo_sai")
+    assert not hasattr(sidebar, "combo_sai_refresh")
+    assert not hasattr(sidebar, "row_sai_refresh_widget")
 
-    # Already on the current schema: the user's own pick is respected.
-    kept = migrate_config({CONFIG_SCHEMA_KEY: 2, "saiUiRefresh": "full"})
-    assert kept["saiUiRefresh"] == MODE_FULL
 
-    off = migrate_config({CONFIG_SCHEMA_KEY: 1, "saiUiRefresh": "off"})
-    assert off["saiUiRefresh"] == MODE_OFF
+def test_saving_settings_writes_no_mode_key(sidebar):
+    # Saving from the UI must not resurrect a mode key.
+    assert "saiUiRefresh" not in sidebar.cfg
+    sidebar.save_settings()
+    assert "saiUiRefresh" not in sidebar.cfg
+
+
+def test_thread_always_runs_the_full_refresh():
+    """The sync thread must start on — and never leave — the full mode.
+
+    Nothing reads a stored mode any more; the thread's own default is full,
+    so stale config values from the three-mode era can never resurrect a
+    repaint-only session.
+    """
+    from core.memory_sync import MemorySyncThread
+
+    thread = MemorySyncThread()
+    try:
+        assert thread.sai_ui_refresh == MODE_FULL
+        assert thread.sai2_sync.ui_refresher.mode == MODE_FULL
+    finally:
+        thread.running = False  # never started; nothing to tear down
+        thread.sai2_sync._reset_cache(close_handle=True)
+
+
+def test_sai_poll_reads_feed_the_refresher_and_spot_external_changes():
+    """Every sai-mode poll read must reach the refresher as evidence; a slot
+    change that is not our own write echo must arm an immediate rediscovery
+    (SAI re-rendered its preview cache in that colour)."""
+    import time
+
+    from core.memory_sync import MemorySyncThread
+
+    thread = MemorySyncThread()
+    thread.running = False
+    calls = []
+
+    class StubSAI:
+        def note_colour(self, rgb):
+            calls.append(("note", tuple(rgb)))
+
+        def on_external_colour(self, rgb):
+            calls.append(("ext", tuple(rgb)))
+
+    thread.sai2_sync = StubSAI()
+    try:
+        # 0. the first read after attach: SAI's cache still shows exactly
+        #    this colour (startup), so it must be noted AND armed
+        thread._last_synced_color = {}
+        thread._last_write_ts = {}
+        thread._note_sai_observation({"r": 10, "g": 10, "b": 10})
+        assert ("note", (10, 10, 10)) in calls
+        assert ("ext", (10, 10, 10)) in calls
+
+        # 1. a genuine SAI-side change (differs from last known colour, no
+        #    write in flight) -> noted AND armed
+        thread._last_synced_color = {0: (10, 10, 10)}
+        thread._last_write_ts = {}
+        thread._note_sai_observation({"r": 40, "g": 20, "b": 20})
+        assert ("note", (40, 20, 20)) in calls
+        assert calls.count(("ext", (40, 20, 20))) == 1
+
+        # 2. the poll repeating the same colour -> not external again (in the
+        #    real loop the first read already updated _last_synced_color via
+        #    the emit path; mirror that here)
+        thread._last_synced_color = {0: (40, 20, 20)}
+        thread._note_sai_observation({"r": 40, "g": 20, "b": 20})
+        assert calls.count(("ext", (40, 20, 20))) == 1
+
+        # 3. a stale echo of the pre-write colour within the write window ->
+        #    not external
+        thread._last_synced_color = {0: (60, 60, 60)}
+        thread._last_write_old_color = {0: (40, 20, 20)}
+        thread._last_write_ts = {0: time.time()}
+        thread._note_sai_observation({"r": 40, "g": 20, "b": 20})
+        assert calls.count(("ext", (40, 20, 20))) == 1
+        assert calls.count(("ext", (60, 60, 60))) == 0
+    finally:
+        thread.sai2_sync = StubSAI()  # nothing to tear down further
