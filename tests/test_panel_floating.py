@@ -380,6 +380,51 @@ def test_restore_reopens_the_windows_where_they_were(qapp, monkeypatch):
     win.dock_panel(HSV)
 
 
+def test_restore_keeps_group_panels_parented_in_their_window(qapp, monkeypatch):
+    """恢复多面板浮窗时，控件必须真的住进浮窗，不能被主宿主拆走。
+
+    踩过（tools/diag_drag_crash.py 场景 B 实测复现）：恢复先让浮窗收养
+    控件，之后 host.set_floating_panels 的重建才把仍记在主宿主 _mounted
+    里的控件 setParent(None) 撕走 —— 三个容器全部变成 parentless 的"游魂"
+    窗口，浮窗端着的却是空框；账目（_mounted / frame._panel）与真实控件
+    树从此对不上，每次重启都进入损坏态，拖拽几何遍历开始踩崩溃的雷。
+    """
+    monkeypatch.setattr(core_config, "save_hotkey_config", lambda cfg: None)
+    tree = dock.Split(dock.VERTICAL, (dock.Leaf(RGB), dock.Leaf(HSV),
+                                      dock.Leaf(HSL)), (), False)
+    cfg = {}
+    store.save_floating_into(cfg, {
+        RGB: store.FloatingState((10, 20, 200, 320), tree=tree),
+        HSV: store.FloatingState((10, 20, 200, 320), group_id=RGB),
+        HSL: store.FloatingState((10, 20, 200, 320), group_id=RGB),
+    })
+    win = _Window(cfg)
+    win.panel_host.set_drag_enabled(True)
+    win.restore_floating_panels()
+
+    windows = win.floating_windows()
+    assert sorted(windows) == sorted((RGB, HSV, HSL))
+    fl = windows[RGB]
+    for pid in (RGB, HSV, HSL):
+        widget = win.panel_widget(pid)
+        assert widget.parent() is not None, "恢复后控件被拆成 parentless"
+        assert fl.panel_host.widget_for(pid) is widget
+        assert win.panel_host.widget_for(pid) is None
+        node = widget
+        in_floater = False
+        while node is not None:
+            if node is fl:
+                in_floater = True
+                break
+            node = node.parentWidget()
+        assert in_floater, "控件不在浮窗的控件树里"
+        frame = fl.panel_host.frame_for(pid)
+        assert frame is None or frame.panel() is widget, "空框声称端着控件"
+    win.dock_panel(RGB)
+    win.dock_panel(HSV)
+    win.dock_panel(HSL)
+
+
 def test_dragging_a_floating_window_over_the_host_shows_where_it_would_land(window):
     """拖回来的时候要看得见落点，否则只能盲猜它会去哪。"""
     window.panel_host.setGeometry(0, 0, 200, 300)

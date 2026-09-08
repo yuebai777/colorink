@@ -441,7 +441,11 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         target = self.drop_target_at(local_pos)
         if target is not None:
             box = self.panel_host._panel_box(target[0])
-            if box is not None:
+            # Same rule as PanelHost.drop_target_at: only a live descendant
+            # of the host may be mapped — mapTo() on anything else walks
+            # Qt's parent chain to NULL and crashes natively.
+            if (box is not None and not self.panel_host._is_deleted(box)
+                    and self.panel_host._box_is_mine(box)):
                 from ui.panels import rearrange
                 from ui.panels.host import DropIndicator
                 zone = target[1]

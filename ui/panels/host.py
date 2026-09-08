@@ -746,10 +746,10 @@ class PanelHost(QWidget):
     def check_tab_hover(self, pos: QPoint) -> None:
         """Switch tab if pos hovers over a different tab header during drag."""
         for tabs, _node in self._tabs:
-            if self._is_deleted(tabs) or not tabs.isVisibleTo(self):
+            if not self._box_is_mine(tabs) or not tabs.isVisibleTo(self):
                 continue
             bar = tabs.tabBar()
-            if bar is None or bar.isHidden():
+            if bar is None or bar.isHidden() or not self._box_is_mine(bar):
                 continue
             pos_in_bar = bar.mapFrom(self, pos)
             if bar.rect().contains(pos_in_bar):
@@ -773,6 +773,36 @@ class PanelHost(QWidget):
         except Exception:
             return False
 
+    def _box_is_mine(self, widget) -> bool:
+        """True when *widget* is alive AND still a descendant of this host.
+
+        Alive is not enough. QWidget::mapTo / mapFrom walk the
+        ``parentWidget()`` chain until they reach the target widget and
+        dereference the NULL they get instead when the chain never does —
+        so a live panel that was handed to a floating window while this
+        host still listed it turned a geometry read into a native access
+        violation (three identical crashes in faulthandler.log, all in
+        drop_target_at; sip.isdeleted() is helpless there because the
+        widget is alive, it just lives somewhere else now). The paths that
+        hand panels between windows are deferred and rebuilt on purpose;
+        this check is the hard floor that makes any window between those
+        steps safe instead of fatal, and lets a genuinely stale bookkeeping
+        entry degrade to "no drop target" rather than a crash.
+        """
+        if widget is None:
+            return False
+        try:
+            if self._is_deleted(widget) or self._is_deleted(self):
+                return False
+            node = widget
+            while node is not None:
+                if node is self:
+                    return True
+                node = node.parentWidget()
+        except RuntimeError:
+            return False
+        return False
+
     def drop_target_at(self, pos: QPoint):
         """(panel_id, zone) under a host-local point, or None.
 
@@ -785,10 +815,10 @@ class PanelHost(QWidget):
         # that page" — more direct than switching to the page first and
         # aiming at its edge.
         for tabs, node in self._tabs:
-            if self._is_deleted(tabs):
+            if not self._box_is_mine(tabs):
                 continue
             bar = tabs.tabBar()
-            if bar is None or bar.isHidden() or self._is_deleted(bar):
+            if bar is None or bar.isHidden() or not self._box_is_mine(bar):
                 continue
             bar_rect = QRect(bar.mapTo(self, QPoint(0, 0)), bar.size())
             if not bar_rect.contains(pos):
@@ -818,8 +848,11 @@ class PanelHost(QWidget):
             # get stuffed into a page the user cannot even see. isVisibleTo()
             # walks the explicit hidden flags up to this host and is correct
             # even for a host that is not shown yet.
-            if (box is None or self._is_deleted(box)
-                    or not box.isVisibleTo(self) or box.parent() is None):
+            # _box_is_mine covers the rest: deleted, parentless, or a panel
+            # already adopted by a floating window — mapTo() on any of those
+            # is the native crash this loop must never reach.
+            if (box is None or not self._box_is_mine(box)
+                    or not box.isVisibleTo(self)):
                 continue
             rect = box.rect()
             tl = box.mapTo(self, rect.topLeft())
@@ -854,10 +887,10 @@ class PanelHost(QWidget):
 
         # Check if cursor is in the empty space of an active tab page (e.g. stretch below panels)
         for tabs, node in self._tabs:
-            if self._is_deleted(tabs) or not tabs.isVisibleTo(self):
+            if not self._box_is_mine(tabs) or not tabs.isVisibleTo(self):
                 continue
             bar = tabs.tabBar()
-            if bar is None or self._is_deleted(bar):
+            if bar is None or not self._box_is_mine(bar):
                 continue
             bar_bottom = bar.mapTo(self, QPoint(0, bar.height())).y()
             tabs_rect = QRect(tabs.mapTo(self, QPoint(0, 0)), tabs.size())
@@ -870,19 +903,19 @@ class PanelHost(QWidget):
                         if pid not in self._mounted:
                             continue
                         b = self._panel_box(pid)
-                        if b is None or self._is_deleted(b):
+                        if not self._box_is_mine(b):
                             continue
                         if b.isVisibleTo(self):
                             page_pids.append(pid)
                     if page_pids:
                         last_box = self._panel_box(page_pids[-1])
-                        if last_box is None or self._is_deleted(last_box):
+                        if not self._box_is_mine(last_box):
                             continue
                         last_bottom = last_box.mapTo(self, QPoint(0, last_box.height())).y()
                         if pos.y() >= last_bottom:
                             return (page_pids[-1], rearrange.BOTTOM)
                         first_box = self._panel_box(page_pids[0])
-                        if first_box is None or self._is_deleted(first_box):
+                        if not self._box_is_mine(first_box):
                             continue
                         first_top = first_box.mapTo(self, QPoint(0, 0)).y()
                         if pos.y() <= first_top:
@@ -890,8 +923,8 @@ class PanelHost(QWidget):
                         for i in range(len(page_pids) - 1):
                             bi = self._panel_box(page_pids[i])
                             bj = self._panel_box(page_pids[i + 1])
-                            if (bi is None or bj is None
-                                    or self._is_deleted(bi) or self._is_deleted(bj)):
+                            if not (self._box_is_mine(bi)
+                                    and self._box_is_mine(bj)):
                                 continue
                             b_bottom = bi.mapTo(self, QPoint(0, bi.height())).y()
                             b_next_top = bj.mapTo(self, QPoint(0, 0)).y()
@@ -908,7 +941,7 @@ class PanelHost(QWidget):
             self.clear_drop_hint()
             return None
         box = self._panel_box(target[0])
-        if box is None or self._is_deleted(box):
+        if not self._box_is_mine(box):
             self.clear_drop_hint()
             return None
         zone = target[1]
@@ -950,8 +983,11 @@ class PanelHost(QWidget):
             target_panel = target[0]
             if target_panel == panel_id:
                 for tabs, node in self._tabs:
+                    if not self._box_is_mine(tabs):
+                        continue
                     bar = tabs.tabBar()
-                    if bar is not None and not bar.isHidden():
+                    if (bar is not None and not bar.isHidden()
+                            and self._box_is_mine(bar)):
                         pos_in_bar = bar.mapFrom(self, pos)
                         if bar.rect().contains(pos_in_bar):
                             idx = bar.tabAt(pos_in_bar)

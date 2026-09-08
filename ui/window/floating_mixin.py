@@ -268,6 +268,20 @@ class FloatingPanelsMixin:
         chrome = getattr(self, "_floating_chrome", None)
         no_focus = bool(getattr(self, "cfg", {}).get("noFocusMode", False))
 
+        # Tell the MAIN host first — same rule as float_panel(): the floating
+        # window adopts the panel widgets *after* this, and doing it the other
+        # way round used to leave the panels listed in the main host's
+        # _mounted while already living in the floating window. The host's
+        # next _detach_mounted then called widget.setParent(None) on widgets
+        # it no longer parented, tearing them out of the restored floating
+        # window: three parentless "stray" containers whose frames still
+        # claimed them (probe: restore with a 3-panel group left every
+        # container parentless — tools/diag_drag_crash.py, scenario B). The
+        # floating window then showed empty grips and every drag around it
+        # walked corrupted bookkeeping.
+        if host is not None and saved:
+            host.set_floating_panels(set(saved))
+
         for pids in groups:
             if not pids:
                 continue
@@ -557,8 +571,12 @@ class FloatingPanelsMixin:
         try:
             if old_win is not None:
                 widget = old_win.take_panel(panel_id)
-                if not any(w is old_win for w in windows.values()
-                           if w is not old_win):
+                # Retire only when NO other panel still maps to this window.
+                # The old `if w is not old_win` filter excluded the very
+                # window the any() was searching for, so it was always
+                # False — a window that still held other panels got hidden
+                # underneath them.
+                if not any(w is old_win for w in windows.values()):
                     self._retire_floating_window(old_win)
             else:
                 widget = self.panel_widget(panel_id)
