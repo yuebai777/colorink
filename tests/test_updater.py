@@ -152,9 +152,11 @@ def test_build_flavor_defaults_to_onefile(tmp_path):
 
 
 def test_check_for_update_extracts_assets():
+    # 远端 tag 故意用一个永远比 APP_VERSION 大的版本，这样每次发版
+    # 都不用改这个测试（历史上它写死成"下一个 patch"，发到那个版本就红）。
     fake_response = _FakeResponse(json.dumps({
-        "tag_name": "v1.8.7",
-        "html_url": "https://github.com/yuebai777/colorink/releases/tag/v1.8.7",
+        "tag_name": "v99.0.0",
+        "html_url": "https://github.com/yuebai777/colorink/releases/tag/v99.0.0",
         "body": "notes",
         "assets": [
             {"name": "Colorink.exe", "browser_download_url": "https://x/a.exe",

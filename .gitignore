@@ -10,7 +10,8 @@ env/
 
 # Test & tooling artifacts
 .pytest_cache/
-.tmp_panel_drag/
+# Throwaway .tmp_* probe dirs left at repo root by debug/agent sessions
+.tmp_*/
 tools/_tmp_*.py
 _test_log.txt
 err.txt
@@ -25,7 +26,12 @@ screenshots/lab_disc_verify/
 build/
 build_debug*/
 dist/
+build_log.txt
+# Specs are tracked on purpose (they are the packaging contract).
+# The pattern keeps stray auto-generated specs out, the negation keeps
+# Colorink*.spec addable so a renamed spec is never silently ignored.
 *.spec
+!Colorink*.spec
 *.manifest
 *.obj
 # MSVC linker exports from the native picker hook (keep .c source + .dll runtime in tree)

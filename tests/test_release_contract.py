@@ -3,6 +3,8 @@ import re
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from core.config import HOTKEY_CFG_NAME, load_hotkey_config
 from core.csp_companion_sync import _DEBUG
 from core.updater import APP_VERSION, _normalize_version
@@ -298,4 +300,55 @@ def test_spec_declared_binaries_cover_source_references():
     assert not missing, (
         "Binary resources referenced in source but missing from spec datas "
         f"(_add_if_exists): {', '.join(missing)}"
+    )
+
+
+# ── hiddenimports 一致性 ───────────────────────────────────────────────────
+# 资源集合已有测试保护，但 hiddenimports 没有：一个 spec 多写少写一个模块，
+# 只有对应 flavour 的包会在运行期 ImportError，构建日志完全看不出来。
+
+
+def _spec_hiddenimports(spec_name: str) -> list[str]:
+    content = (PROJECT_ROOT / spec_name).read_text(encoding="utf-8")
+    block = re.search(r"hiddenimports=\[(.*?)\n\s*\],", content, re.S)
+    assert block is not None, f"{spec_name}: 找不到 hiddenimports 块"
+    return re.findall(r"'([^']+)'", block.group(1))
+
+
+def test_specs_declare_identical_hiddenimports():
+    """两个 spec 的 hiddenimports 必须逐项一致（顺序可以不同）。"""
+    lists = [_spec_hiddenimports(name) for name in SPEC_FILES]
+    assert lists[0] == lists[1], (
+        "hiddenimports drifted between specs:\n"
+        f"  only in {SPEC_FILES[0]}: {sorted(set(lists[0]) - set(lists[1]))}\n"
+        f"  only in {SPEC_FILES[1]}: {sorted(set(lists[1]) - set(lists[0]))}"
+    )
+
+
+# ── 版本号单一真源 ─────────────────────────────────────────────────────────
+# APP_VERSION 是唯一真源；下面每一条都是历史上真实漂移过的地方
+# （docs / package.json 曾长期停在 1.8.5）。清单与写入脚本共用同一份定义，
+# 避免"脚本改的位置"和"测试检查的位置"各自漂移。修复命令：
+#   python tools/release/bump_version.py <APP_VERSION>
+
+from tools.release.version_sites import VERSION_SITES  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "rel_path,pattern,label,expected",
+    VERSION_SITES,
+    ids=[label for _, _, label, _ in VERSION_SITES],
+)
+def test_hardcoded_version_matches_app_version(rel_path, pattern, label, expected):
+    content = (PROJECT_ROOT / rel_path).read_text(encoding="utf-8")
+    found = [m.group(2) for m in re.finditer(pattern, content, re.M)]
+    assert found, f"{label}: {rel_path} 没找到版本号（模式 {pattern!r}）"
+    assert len(found) == expected, (
+        f"{label}: {rel_path} 期望 {expected} 处版本号，实际 {len(found)} 处 —— "
+        "正则命中范围变了，检查 version_sites.py"
+    )
+    stale = sorted({value for value in found if value != APP_VERSION})
+    assert not stale, (
+        f"{label}: {rel_path} 版本号漂移：{stale}，应为 {APP_VERSION}。"
+        f" 修复：python tools/release/bump_version.py {APP_VERSION}"
     )
