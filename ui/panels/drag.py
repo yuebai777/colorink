@@ -13,7 +13,7 @@ together, and *where a drop would land* is decided by ui/panels/rearrange
 from __future__ import annotations
 
 from PyQt6.QtCore import QEvent, QMimeData, QPoint, QRect, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QDrag, QPainter, QPalette
+from PyQt6.QtGui import QColor, QDrag, QPainter, QPalette, QPixmap
 from PyQt6.QtWidgets import QApplication, QStackedWidget, QVBoxLayout, QWidget
 
 #: Payload of a panel drag: the panel id, UTF-8.
@@ -191,12 +191,47 @@ class PanelTitleBar(QWidget):
         moved = (event.position().toPoint() - self._press).manhattanLength()
         if moved < QApplication.startDragDistance():
             return
+        grab = self._press
         self._press = None
         drag = QDrag(self)
         drag.setMimeData(self.mime_data())
+        self._dress_drag(drag, grab)
         action = drag.exec(Qt.DropAction.MoveAction)
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(0, lambda a=action: self._finish_reorder_drag(a))
+
+    def _dress_drag(self, drag, grab: QPoint) -> None:
+        """Give the drag something to show under the cursor.
+
+        Without a pixmap Qt draws a default drag image and anchors it at its
+        own top-left, so the moment a drag starts the cursor appears to jump
+        away from the grip. A small strip of the bar itself, hotspot on the
+        pixel that was pressed, keeps the gesture visually attached to the
+        panel being moved.
+        """
+        try:
+            scale = 1.0
+            chrome = getattr(self, "_chrome", None)
+            if chrome is not None:
+                scale = float(getattr(chrome, "scale", 1.0) or 1.0)
+            width = max(40, int(self.width() * 0.6))
+            height = max(10, int(round(self.height() * 0.9)))
+            pixmap = self.grab(QRect(0, 0, width, self.height()))
+            if pixmap.isNull():
+                return
+            pixmap = pixmap.scaled(
+                int(width), int(height),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            drag.setPixmap(pixmap)
+            drag.setHotSpot(QPoint(
+                min(max(0, int(grab.x() * 0.6)), pixmap.width() - 1),
+                min(max(0, int(grab.y() * 0.9)), pixmap.height() - 1)))
+        except (RuntimeError, AttributeError, ValueError):
+            # A grip that was torn down or a chrome value that is not a
+            # number: no cursor art is a cosmetic loss, never a reason to
+            # fail the drag.
+            return
 
     def mouseReleaseEvent(self, event):
         was_moving = self._press is not None and self.moves_window
@@ -395,9 +430,31 @@ class PanelHolder:
         stack = page.parentWidget()
         return stack.currentWidget() is not page
 
+    def _host_is_mounting(self) -> bool:
+        """True while the PanelHost this holder belongs to is re-mounting.
+
+        A re-mount detaches every panel and adopts it again, so the panel
+        emits Hide and Show in passing. Mirroring those onto the holder hides
+        a floating window for a state the host is about to settle itself —
+        and because the panel's own flag was never touched, no later Show
+        brings the window back: it stays off screen until the palette is
+        hidden and shown again (the reported "抓手开关一按，浮窗就没了").
+        The host re-applies every holder's visibility when the mount ends.
+        """
+        node = getattr(self, "panel_host", None)
+        if node is None:
+            node = self.parentWidget()
+        while node is not None:
+            if getattr(node, "_mounting", False):
+                return True
+            node = node.parentWidget()
+        return False
+
     def eventFilter(self, obj, event):
         """A hidden panel must not leave its chrome behind."""
         if obj is getattr(self, "_panel", None) and event.type() in _VISIBILITY_EVENTS:
+            if self._host_is_mounting():
+                return super().eventFilter(obj, event)
             # A floating window parked by the foreground tracker ("仅在软件
             # 前台显示") stays parked no matter what the panel does on its
             # own (module switch, ancestor show) — otherwise a hidden palette
@@ -444,6 +501,19 @@ class PanelFrame(PanelHolder, QWidget):
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(4)
         box.addWidget(self.title_bar)
+
+    def follow_content_visibility(self) -> None:
+        """Collapse with the panel: a grip with nothing under it is a ghost.
+
+        The host keeps hidden groups mounted (the user can switch them back
+        on), and the refresh loop re-shows the *panel* — but a frame that was
+        left visible while its content is hidden paints a bare 16px strip
+        that looks like an empty slot under the picker.
+        """
+        panel = self._panel
+        if panel is None:
+            return
+        self.setVisible(not panel.isHidden())
 
     def sizeHint(self) -> QSize:
         """The panel's own hint plus the grip — no layout pass required.

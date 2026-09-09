@@ -69,10 +69,11 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self._panel_mount_pending = False
         # An empty column takes no room at all — otherwise its margins keep
         # a band of nothing under the picker and the window's minimum height
-        # stops hugging it.
+        # stops hugging it. Empty means "nothing the user can see": groups
+        # that are merely mounted but switched off must not hold a band open.
         host = getattr(self, "panel_host", None)
         if host is not None:
-            self.sliders_container.setVisible(bool(host.mounted_panels()))
+            self.sliders_container.setVisible(bool(host.visible_panels()))
         self._adjust_content_height()
 
     def _sync_picker_mode_buttons(self):

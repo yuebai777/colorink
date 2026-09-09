@@ -191,3 +191,35 @@ def test_picker_bounds_is_the_picker_rect():
 def test_picker_size_tracks_the_window_monotonically():
     sizes = [_layout(width=w).picker_size for w in range(240, 600)]
     assert all(b >= a for a, b in zip(sizes, sizes[1:]))
+
+
+def test_a_hidden_sliders_column_does_not_cap_the_picker(qapp):
+    """滑块列藏起来时不能从窗口高度里扣掉它的 sizeHint。
+
+    踩过（用户报告：色环被搞小了）：所有面板浮出后列虽然隐藏了，sizeHint
+    仍报上一次挂载的高度（~100px），window_layout 把这段扣掉，取色区可用
+    高度就少了一截，色环随之缩水、不再跟窗口宽度绑定。
+    """
+    from PyQt6.QtWidgets import QVBoxLayout, QWidget
+    from ui.window.layout import LayoutMixin
+
+    class _Host(LayoutMixin, QWidget):
+        def __init__(self):
+            super().__init__()
+            self.cfg = {"uiScale": 100, "hideHueRing": False}
+            self.main_layout = QVBoxLayout(self)
+            self.main_layout.setContentsMargins(4, 0, 4, 8)
+            self.title_bar = QWidget(self)
+            self.sliders_container = QWidget(self)
+            self.stack = QWidget(self)
+
+    host = _Host()
+    host.resize(360, 700)
+    host.sliders_container.resize(352, 100)
+    host.sliders_container.isVisible = lambda: False
+    hidden_layout = host.window_layout(1.0)
+    host.sliders_container.isVisible = lambda: True
+    shown_layout = host.window_layout(1.0)
+    assert hidden_layout.sliders.height == 0, "隐藏的列不该占高度"
+    assert hidden_layout.picker.height >= shown_layout.picker.height, (
+        "隐藏列后取色区可用高度不该变少")

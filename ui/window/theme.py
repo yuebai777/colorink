@@ -712,10 +712,13 @@ class ThemeMixin:
         # sizeHint(), which can lag a grip-toggle re-mount by a few px (and
         # more at odd DPRs) — a cluster released with a stale hint lands on
         # the tab strip. Once the container has real geometry, never let the
-        # cluster's bottom enter the sliders area.
-        if self.sliders_container.height() > 0:
-            sliders_top = self.sliders_container.mapTo(
-                self, QPoint(0, 0)).y()
+        # cluster's bottom enter the sliders area. A *hidden* container is not
+        # a floor: with every panel floated it maps to y=0 and this would pull
+        # the cluster up over the title bar.
+        container = self.sliders_container
+        if (container.height() > 0 and container.isVisible()
+                and container.mapTo(self, QPoint(0, 0)).y() > 0):
+            sliders_top = container.mapTo(self, QPoint(0, 0)).y()
             bottom = self.preview_box.y() + self.preview_box.height()
             clearance = max(4, int(6 * scale))
             if bottom > sliders_top - clearance:

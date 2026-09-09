@@ -228,20 +228,22 @@ def test_deleted_host_survives_drag_geometry_walks(qapp):
     assert host.show_drop_hint(QPoint(5, 5)) is None
 
 
-def _dummy_chrome():
+def _dummy_chrome(top_gap=0):
     class _DummyChrome:
-        top_gap = 0
-        font_size = 11
-        scale = 1.0
-        bar_bg = ""
-        background = ""
-        text = ""
-        bar_text = ""
-        divider_color = ""
-        divider_width = 1
-        grip_gap = 4
-        diff_space = 8
-    return _DummyChrome()
+        pass
+    chrome = _DummyChrome()
+    chrome.top_gap = top_gap
+    chrome.font_size = 11
+    chrome.scale = 1.0
+    chrome.bar_bg = ""
+    chrome.background = ""
+    chrome.text = ""
+    chrome.bar_text = ""
+    chrome.divider_color = ""
+    chrome.divider_width = 1
+    chrome.grip_gap = 4
+    chrome.diff_space = 8
+    return chrome
 
 
 def test_box_is_mine_rejects_everything_not_below_the_host(panels, qapp):
@@ -343,3 +345,88 @@ def test_stale_tabs_in_bookkeeping_is_ignored_not_crashed(panels, qapp):
             assert host.drop_target_at(point) is None
             assert host.show_drop_hint(point) is None
             host.check_tab_hover(point)
+
+
+# ── 抓手开关往返 / 空列高度（回归：2026-09 用户报告） ──────────────────────
+#
+# 用户报告：堆叠+抓手都开着，把所有模块拖出去后窗口高度不对；关掉抓手再
+# 打开，主窗留下一条空条。两个缺陷各有独立成因，各自钉一条测试。
+
+
+def test_empty_tabbed_column_bills_no_height(panels):
+    """堆叠模式下把所有面板拖出去后，空列不能再向窗口要高度。
+
+    旧实现：_tabs_hint 在没有任何页面、也没有页签条时仍加上 pane 的
+    top_gap，于是窗口在取色区下面留着一条 21px 的空条（实测 21 vs 9）。
+    """
+    provider, _made = panels
+    host = PanelHost(provider)
+    host.apply_chrome(_dummy_chrome(top_gap=6))
+    node = dock.Tabs(pages=((registry.HISTORY,),
+                            (registry.slider_panel_id("RGB"),)), current=0)
+    host.set_tree(node)
+    assert host.column_hint() > 0, "有面板时列当然要占高度"
+
+    host.set_floating_panels(set(node.panels()), remount=True)
+
+    assert host.mounted_panels() == ()
+    assert host.column_hint() == 0, "空列不能把 pane 的 top_gap 算成高度"
+    assert host.sizeHint().height() == 0
+
+
+def test_mount_never_shows_a_panel_while_it_is_parentless(panels, qapp):
+    """挂载不能先把面板显示出来 —— 那一刻它还是无父的顶层窗口。
+
+    旧实现：_mount 先 widget.setVisible(True) 再塞进框。多面板浮窗会把
+    这段瞬态 Show/Hide 镜像到自己身上（浮窗只在重挂时才会走到这条路），
+    于是抓手一关一开，浮窗就整体消失且不再回来。
+    """
+    from PyQt6.QtCore import QEvent, QObject
+
+    provider, _made = panels
+    host = PanelHost(provider)
+    widget = provider(registry.HISTORY)
+    seen_parentless_show = []
+
+    class _Watcher(QObject):
+        def eventFilter(self, obj, event):
+            if (event.type() in (QEvent.Type.Show, QEvent.Type.ShowToParent)
+                    and obj.parent() is None):
+                seen_parentless_show.append(event.type().name)
+            return False
+
+    watcher = _Watcher()
+    widget.installEventFilter(watcher)
+    try:
+        host.set_drag_enabled(True)
+        host.set_tree(dock.Leaf(registry.HISTORY))
+    finally:
+        widget.removeEventFilter(watcher)
+
+    assert seen_parentless_show == [], \
+        f"面板在无父状态下被显示过：{seen_parentless_show}"
+    assert host.frame_for(registry.HISTORY) is not None
+    assert widget.parent() is not None
+
+
+def test_a_rebuild_keeps_hidden_groups_hidden_and_visible_ones_visible(panels):
+    """重挂（抓手开关）不能把关掉的组亮出来，也不能把开着的组藏起来。
+
+    旧实现靠 _build_stack 里的 setVisible(True) 强行把每个子件显示出来，
+    再指望设置循环补一次 Hide —— 组已经关着时不会再有 Hide 事件，于是
+    关掉的组留下一条"死抓手"空条。
+    """
+    provider, made = panels
+    host = PanelHost(provider)
+    host.set_drag_enabled(True)
+    rgb = registry.slider_panel_id("RGB")
+    host.set_tree(dock.Split(dock.VERTICAL, (
+        dock.Leaf(rgb), dock.Leaf(registry.HISTORY)), (), False))
+
+    made[rgb].setVisible(False)          # 用户把这个组关掉
+    host.set_tree(host.tree())           # 一次重挂（抓手开关就是这条路）
+
+    assert host.frame_for(rgb).isHidden() is True, "关掉的组留下了死抓手"
+    assert host.frame_for(registry.HISTORY).isHidden() is False
+    assert host.widget_for(rgb).parent() is not None
+    assert host.visible_panels() == (registry.HISTORY,)

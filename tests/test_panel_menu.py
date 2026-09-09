@@ -35,8 +35,13 @@ class _Window(PanelProviderMixin, FloatingPanelsMixin, QWidget):
             dock.Leaf(RGB), dock.Leaf(HSV)), (), False))
         self.refreshed = 0
 
-    def refresh_slider_visibility_and_order(self):
+    def refresh_slider_visibility_and_order(self, defer: bool = False):
         self.refreshed += 1
+        # 真窗口的那次重排会重挂整列；替身也得重挂，否则"收回来的面板
+        # 真的挂回去了"这条断言测的就不是产品行为了。
+        host = self.panel_host
+        host.set_floating_panels(set(self.floating_windows()), remount=False)
+        host.set_tree(host._tree)
 
 
 @pytest.fixture

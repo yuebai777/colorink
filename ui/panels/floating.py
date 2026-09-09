@@ -97,6 +97,17 @@ def resize_edge_at(width: int, height: int, x: int, y: int,
     return f"{vertical}{horizontal}"
 
 
+def sip_isdeleted(obj) -> bool:
+    """True when the C++ object behind *obj* is already gone."""
+    if obj is None:
+        return True
+    try:
+        from PyQt6 import sip
+        return bool(sip.isdeleted(obj))
+    except Exception:
+        return False
+
+
 def apply_no_activate(widget, enabled: bool) -> None:
     """Force WS_EX_NOACTIVATE on (or off) a native window.
 
@@ -182,6 +193,9 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         self._resize_edge = ""
         self._resize_origin = None
         self._resize_rect = None
+        #: True once the user dragged a border. A hand-sized window follows
+        #: content upwards only (see adjust_size_for_content).
+        self._user_resized = False
         #: True while the whole palette is parked because the drawing app is
         #: not in the foreground. The panel's own show/hide still updates this
         #: window's Qt state, but only the foreground restore may show it.
@@ -215,6 +229,10 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         self.panel_host = PanelHost(self._resolve_panel, self.body)
         self.panel_host.rearranged.connect(self._on_host_rearranged)
         self.panel_host.tab_changed.connect(self._on_host_tab_changed)
+        # A rebuild detaches and re-adopts every panel; the window decides its
+        # own visibility again once that is over, so a transient hide cannot
+        # leave it parked off screen (the reported "抓手开关一按，浮窗就没了").
+        self.panel_host.mount_finished.connect(self._resync_visibility)
         self.panel_host.float_requested.connect(
             lambda pid: self.panel_float_requested.emit(pid, self))
         self.panel_host.menu_requested.connect(self.menu_requested.emit)
@@ -354,7 +372,8 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         self.geometry_changed.emit(self.panel_id)
         return True
 
-    def adjust_size_for_content(self, shrink: bool = False) -> None:
+    def adjust_size_for_content(self, shrink: bool = False,
+                                min_content_h: int = 0) -> None:
         """Fit the window to its content.
 
         With *shrink* the window follows the content down as well as up: a
@@ -363,10 +382,16 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         panel used to be, otherwise the window keeps a ghost of its old size.
         Without *shrink* it only grows — that is the path for adding content,
         where a window the user deliberately enlarged must not snap back.
+
+        *min_content_h* is a floor for the content height, used by the float
+        path: a widget that has just been re-parented reports a hint from
+        before its layout ran, and letting that decide the window height
+        squashes the panel it was supposed to show (a 47px block tore off
+        into a 22px window).
         """
         if self.panel_host is None:
             return
-        hint_h = self.panel_host.column_hint()
+        hint_h = max(int(min_content_h or 0), self.panel_host.column_hint())
         if hint_h <= 0:
             return
         chrome = getattr(self, "_chrome", None)
@@ -380,7 +405,7 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         needed_h = hint_h + bar + border * 2 + int(pad[1]) + int(gap) + top_gap * 2
         min_w = max(160, int(200 * scale))
         self.setMinimumSize(min_w, needed_h)
-        if shrink:
+        if shrink and not getattr(self, "_user_resized", False):
             # Content shrank: follow it down (the window only ever gets wider
             # from a user drag, never smaller than its content).
             if self.width() < min_w or self.height() > needed_h:
@@ -655,6 +680,49 @@ class FloatingPanelWindow(PanelHolder, QWidget):
             self.panel_host.apply_chrome(chrome)
         self.adjust_size_for_content()
 
+    def _mounted_panel_widgets(self) -> list:
+        """The widgets this window's host currently holds, alive ones only."""
+        host = getattr(self, "panel_host", None)
+        if host is None or sip_isdeleted(host):
+            return []
+        out = []
+        for pid in host.mounted_panels():
+            widget = host.widget_for(pid)
+            if widget is not None and not sip_isdeleted(widget):
+                out.append(widget)
+        return out
+
+    def _should_be_visible(self, obj) -> bool:
+        """Whether the window should follow *obj* into visibility.
+
+        Read from the **host**, not from ``_panels``: while a panel is being
+        dragged out, ``_panels`` still lists it (it is removed only by the
+        deferred finish) so it looks like the window has content — and the
+        other way round, a panel that just left makes the dict look empty for
+        a beat and the window hides with panels still inside it. The host's
+        mounted set is the same source of truth the mounting code uses, so
+        window visibility and content can no longer disagree.
+
+        Only a window whose host holds nothing hides. A window whose panels
+        are all explicitly hidden by the user hides too (that is the
+        module-switch case), but a panel that is merely *not visible yet* —
+        freshly adopted, ancestor not shown — must not hide the window.
+        """
+        mounted = self._mounted_panel_widgets()
+        if not mounted:
+            return False
+        # Content, not momentary visibility: a panel that was just re-parented
+        # into this window is briefly not visible yet (its ancestors are being
+        # rebuilt), and reading that as "the window is empty now" hid a window
+        # that still had panels in it — tearing one panel out of a group made
+        # the rest of the group disappear with it.
+        #
+        # The question is asked of the whole content, never of the single panel
+        # whose event just fired: a tab page switch hides the outgoing page's
+        # panels while the incoming page's panels appear, and following the
+        # outgoing one parked the window with visible panels inside it.
+        return any(not widget.isHidden() for widget in mounted)
+
     def eventFilter(self, obj, event):
         """A hidden panel must not leave its chrome behind."""
         from ui.panels.drag import _VISIBILITY_EVENTS
@@ -671,6 +739,13 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         if obj in panels and event.type() in _VISIBILITY_EVENTS:
             if getattr(self, "_updating_visibility", False):
                 return False
+            if self._host_is_mounting():
+                # The host is rebuilding: every panel is detached and adopted
+                # again, so the Hide/Show this event carries is a transient
+                # state. Mirroring it parked the window for good — the
+                # reported "抓手开关一按，浮窗就没了". The window re-decides
+                # when the mount finishes (mount_finished -> _resync_visibility).
+                return False
             if getattr(self, "_foreground_hidden", False):
                 if self.isVisible():
                     self._updating_visibility = True
@@ -683,14 +758,38 @@ class FloatingPanelWindow(PanelHolder, QWidget):
                 return False
             if event.type() == QEvent.Type.Hide and not obj.isHidden():
                 return False
-            any_visible = any(not p.isHidden() for p in panels)
-            if self.isVisible() != any_visible:
+            should_show = self._should_be_visible(obj)
+            if self.isVisible() != should_show:
                 self._updating_visibility = True
                 try:
-                    self.setVisible(any_visible)
+                    self.setVisible(should_show)
                 finally:
                     self._updating_visibility = False
         return QWidget.eventFilter(self, obj, event)
+
+    def _resync_visibility(self) -> None:
+        """Follow the content's visibility, if this window disagrees.
+
+        Called when the host finishes a rebuild: the panels have just been
+        detached and re-adopted, so the only trustworthy moment to decide
+        whether this window should be on screen is after that.
+        """
+        if getattr(self, "_updating_visibility", False):
+            return
+        try:
+            if getattr(self, "_foreground_hidden", False):
+                should_show = False
+            else:
+                should_show = self._should_be_visible(None)
+        except RuntimeError:
+            # The C++ object went away between the signal and this call.
+            return
+        if self.isVisible() != should_show:
+            self._updating_visibility = True
+            try:
+                self.setVisible(should_show)
+            finally:
+                self._updating_visibility = False
 
     def paintEvent(self, event):
         """Let the stylesheet paint a plain QWidget subclass."""
@@ -731,6 +830,11 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         if self._resize_edge:
             self._resize_edge = ""
             self._resize_rect = None
+            # The user chose this size on purpose. Content passes may still
+            # grow the window, but they must not close it back down to the
+            # content's own height — that is what dropped a deliberately
+            # enlarged window to a stub on the next restart.
+            self._user_resized = True
             self.geometry_changed.emit(self.panel_id)
 
     def mousePressEvent(self, event):

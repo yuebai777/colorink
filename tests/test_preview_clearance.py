@@ -130,3 +130,52 @@ def test_clearance_scales_with_the_cluster(qapp):
     small = _box(wheel_size=200)
     big = _box(wheel_size=600)
     assert pc.cluster_clearance(big) > pc.cluster_clearance(small)
+
+
+# ── 夹紧（_clamp_preview_box）：隐藏的滑块列不是地板 ────────────────────────
+
+def _clamp_host(qapp, container_visible):
+    """A minimal owner for LayoutMixin._clamp_preview_box.
+
+    The container's ``isVisible`` is stubbed rather than shown: showing a real
+    window here drags LayoutMixin's resize/event passes in, which need a whole
+    MainWindow. The clamp only asks that one question plus geometry.
+    """
+    from PyQt6.QtWidgets import QWidget
+    from ui.window.layout import LayoutMixin
+
+    class _Host(LayoutMixin, QWidget):
+        def __init__(self):
+            super().__init__()
+            self.cfg = {"hideHueRing": False, "uiScale": 100}
+            self.sliders_container = QWidget(self)
+            self.preview_box = QWidget(self)
+
+    host = _Host()
+    host.resize(360, 700)
+    host.sliders_container.setGeometry(0, 0, 360, 0)
+    host.sliders_container.isVisible = lambda: container_visible
+    host.preview_box.setGeometry(4, 200, 58, 76)
+    return host
+
+
+def test_a_hidden_sliders_column_never_pulls_the_cluster_up(qapp):
+    """滑块列藏起来时 mapTo 报 (0,0)：不能拿它当地板把色块拽到标题栏上。
+
+    踩过（用户截图：透明色块压在标题栏左段）：所有面板都浮出后容器
+    isVisible() 为假、几何读 (0,0)，夹紧逻辑于是把色块一路顶到 y=0，
+    正好盖住标题文字。
+    """
+    host = _clamp_host(qapp, container_visible=False)
+    # Exactly what a hidden container reports: geometry (0,0) -> mapTo y = 0.
+    host.sliders_container.setGeometry(0, 0, 360, 0)
+    host._clamp_preview_box(host.preview_box)
+    assert host.preview_box.y() == 200, "隐藏的容器不该参与夹紧"
+
+
+def test_a_visible_sliders_column_still_clamps(qapp):
+    """看得见的滑块列仍然要挡住色块（这条不能被上面的修复放过）。"""
+    host = _clamp_host(qapp, container_visible=True)
+    host.sliders_container.setGeometry(0, 300, 360, 400)
+    host._clamp_preview_box(host.preview_box)
+    assert host.preview_box.y() + host.preview_box.height() <= 300

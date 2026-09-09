@@ -338,13 +338,22 @@ class LayoutMixin:
         if scale is None:
             scale = self.cfg.get("uiScale", 100) / 100.0
         margins = self.main_layout.contentsMargins()
+        # A hidden slider column takes no room: with every panel floated or
+        # switched off, its sizeHint() still reports the last mounted column
+        # (98px and up), and subtracting that from the picker's available
+        # height capped the picker — the colour ring then shrank to a fraction
+        # of the window width instead of tracking it.
+        container = getattr(self, "sliders_container", None)
+        sliders_height = 0
+        if container is not None and container.isVisible():
+            sliders_height = container.sizeHint().height()
         return window_layout.resolve_window_layout(
             window_width=self.width(),
             window_height=self.height(),
             margins=(margins.left(), margins.top(),
                      margins.right(), margins.bottom()),
             title_height=_visible_title_bar_height(self.title_bar),
-            sliders_height=self.sliders_container.sizeHint().height(),
+            sliders_height=sliders_height,
             spacing=int(4 * scale),
             ui_scale=scale,
             picker_minimum=self.stack.minimumSizeHint().height(),
@@ -463,13 +472,24 @@ class LayoutMixin:
         grip-toggle re-mount (measured 182 vs the real 192), and this method
         is also called again from update_geometries after the themed pass —
         clamp on the container's real geometry whenever it exists.
+
+        A *hidden* container has no place on screen: with every panel floated
+        its geometry reads (0,0,…) and mapTo() then says the sliders start at
+        the very top of the window, which yanked the cluster up into the title
+        bar (the transparent tile painted over the title text). Only a
+        container the user can see is a floor to clamp against.
         """
         if getattr(self, "cfg", {}).get("hideHueRing", False):
             return
         container = getattr(self, "sliders_container", None)
         if container is None or container.height() <= 0:
             return
+        if not container.isVisible():
+            return
         sliders_top = container.mapTo(self, QPoint(0, 0)).y()
+        if sliders_top <= 0:
+            # Defensive: a top edge at 0 is not a floor, it is the title bar.
+            return
         scale = self.cfg.get("uiScale", 100) / 100.0
         clearance = max(4, int(6 * scale))
         if preview.y() + preview.height() > sliders_top - clearance:

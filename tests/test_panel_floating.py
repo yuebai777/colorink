@@ -260,6 +260,17 @@ class _Window(PanelProviderMixin, FloatingPanelsMixin, QWidget):
         self.panel_host.set_tree(column(RGB, HSV, HSL))
         self.panel_host.float_requested.connect(self.float_panel)
 
+    def refresh_slider_visibility_and_order(self, defer: bool = False):
+        """真窗口那次全量重排的最小替身。
+
+        float/dock 路径把"重挂整列"交给这个方法（真实实现里它还会重排、
+        重算高度、落盘）；替身只要重挂，才能验出"浮出的面板从页签标题里
+        被剪掉""收回来又挂回去"这些行为。
+        """
+        host = self.panel_host
+        host.set_floating_panels(set(self.floating_windows()), remount=False)
+        host.set_tree(host._tree)
+
 
 def _lay_out(widget):
     """逐层激活布局：离屏时 setGeometry 只是 post 一个 resize 事件。"""
@@ -743,3 +754,325 @@ def test_deferred_drag_finish_survives_a_deleted_grip(qapp):
     bar._finish_reorder_drag(Qt.DropAction.IgnoreAction)
     bar._finish_reorder_drag(Qt.DropAction.MoveAction)
 
+
+# ── 本轮修掉的四个缺陷（每个都对应探针里的一条失败） ─────────────────────
+
+def pump_events(times=4):
+    from PyQt6.QtWidgets import QApplication
+    for _ in range(times):
+        QApplication.processEvents()
+
+
+def test_a_panel_torn_out_of_a_group_leaves_the_group_visible(qapp, monkeypatch):
+    """从多面板浮窗里拖出一块，剩下的那块必须还看得见。
+
+    踩过（tools/probe_panel_matrix.py 场景 E）：浮窗的显隐镜像读的是
+    ``_panels`` 字典，而拖出路径是"先把控件抽出来、延时再清账"，于是那一
+    瞬间字典看起来空了，窗口把自己 setVisible(False) —— 用户看到的是一
+    整个浮窗凭空消失，剩下的面板再也找不回来。
+    """
+    monkeypatch.setattr(core_config, "save_hotkey_config", lambda cfg: None)
+    win = _Window()
+    win.panel_host.set_drag_enabled(True)
+    win.float_panel(RGB)
+    win.float_panel(HSV, position=QPoint(400, 300))
+    pump_events()
+    target = win.floating_windows()[RGB]
+    # 把 HSV 合进 RGB 的窗口，形成一个两面板浮窗
+    target.add_panel(HSV, win.panel_widget(HSV), target_panel_id=RGB,
+                     zone="bottom")
+    win.floating_windows()[HSV] = target
+    pump_events()
+    assert len(target.panel_ids) == 2
+
+    # 真实路径：浮窗标题栏双击/抓手拖出 → 窗口转成 float_requested
+    target.panel_host.float_requested.emit(HSV)
+    pump_events()
+
+    assert win.floating_windows()[HSV] is not target
+    assert target.panel_ids == (RGB,)
+    assert not target.isHidden(), "剩下的面板还在里面，窗口却藏了"
+    win.dock_panel(RGB)
+    win.dock_panel(HSV)
+
+
+def test_a_torn_out_panel_keeps_its_width(qapp, monkeypatch):
+    """刚被拖进浮窗的面板立刻再拖出来，宽度不能被 Qt 的默认 100px 决定。
+
+    踩过：面板刚 mount 进另一个窗口、布局还没跑，size() 报的是 Qt 默认
+    100x30；浮出时照抄这个宽度，用户拿到的是一条 100px 宽的窄条。
+    """
+    monkeypatch.setattr(core_config, "save_hotkey_config", lambda cfg: None)
+    win = _Window()
+    win.panel_host.set_drag_enabled(True)
+    win.panel_host.setGeometry(0, 0, 360, 300)
+    win.float_panel(RGB)
+    pump_events()
+    target = win.floating_windows()[RGB]
+    target.setGeometry(0, 0, 360, 200)
+    target.add_panel(HSV, win.panel_widget(HSV), target_panel_id=RGB,
+                     zone="bottom")
+    win.floating_windows()[HSV] = target
+    pump_events()
+
+    target.panel_host.float_requested.emit(HSV)
+    pump_events()
+
+    widget = win.panel_widget(HSV)
+    assert widget.width() > 200, f"宽度被压成 {widget.width()}"
+    win.dock_panel(RGB)
+    win.dock_panel(HSV)
+
+
+def test_floating_a_squashed_column_panel_does_not_squash_the_window(
+        qapp, monkeypatch):
+    """逐块浮出时，最后几块不能因为列被压扁而变成几像素高。
+
+    踩过：set_floating_panels 会整列重挂，重挂之后控件报的高度是压缩态；
+    浮出窗口照它定高，于是"全部浮出"得到一串 7~22px 高的窗口。
+    """
+    monkeypatch.setattr(core_config, "save_hotkey_config", lambda cfg: None)
+    win = _Window()
+    win.panel_host.set_drag_enabled(True)
+    win.panel_host.setGeometry(0, 0, 360, 120)  # 故意挤：列装不下三块
+    pump_events()
+    for pid in (RGB, HSV, HSL):
+        win.float_panel(pid)
+        pump_events()
+    for pid in (RGB, HSV, HSL):
+        widget = win.panel_widget(pid)
+        assert widget.height() >= 12, f"{pid} 被压成 {widget.height()}px"
+        assert win.floating_windows()[pid].height() >= 24
+        win.dock_panel(pid)
+
+
+def test_the_host_can_unmount_a_floating_panel_without_remounting(host):
+    """set_floating_panels(remount=False) 也要把面板从挂载账目里摘干净。
+
+    否则下一次重挂的 _detach_mounted 会对一个已经住进浮窗的控件再调
+    setParent(None)，把它从浮窗里撕出来 —— 浮窗于是空着，控件变成游魂。
+    """
+    widget = host.widget_for(RGB)
+    host.set_floating_panels({RGB}, remount=False)
+    assert RGB not in host.mounted_panels()
+    assert host.widget_for(RGB) is None
+    assert widget.parent() is None or widget.parent() is not host
+
+
+def test_a_batch_of_refreshes_is_coalesced(qapp):
+    """一次手势里连着要求重排，只该真的重排一次。
+
+    踩过：整窗丢回主窗时每收一块就全量重排一次，一次拖放重挂了 8 次列、
+    写了 6 次配置 —— 这就是"卡卡的"。
+    """
+    from PyQt6.QtWidgets import QWidget
+    from ui.window.picker_actions import PickerActionsMixin
+
+    class _Owner(PickerActionsMixin, QWidget):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+            self.sliders_layout = QWidget(self).layout()
+            self.cfg = {}
+
+        def _run_panel_refresh(self):
+            self.calls += 1
+
+    owner = _Owner()
+    owner.refresh_slider_visibility_and_order(defer=True)
+    owner.refresh_slider_visibility_and_order(defer=True)
+    owner.refresh_slider_visibility_and_order(defer=True)
+    assert owner.calls == 0, "延后请求不该立刻执行"
+    pump_events()
+    assert owner.calls == 1, f"实际重排了 {owner.calls} 次"
+
+
+def test_the_drag_carries_a_cursor_pixmap(qapp):
+    """起拖时要给 QDrag 一张拖拽图与热点。
+
+    没有 pixmap 时 Qt 用默认拖拽图并把热点钉在它自己的左上角，鼠标一
+    起拖就像跳开了 —— 用户说的"拖出来卡卡的、不跟手"。
+    """
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtGui import QDrag
+    from ui.panels.drag import PanelTitleBar
+
+    bar = PanelTitleBar(RGB, "RGB")
+    bar.resize(200, PanelTitleBar.HEIGHT)
+    bar.show()
+    drag = QDrag(bar)
+    bar._dress_drag(drag, QPoint(60, 4))
+    pixmap = drag.pixmap()
+    assert not pixmap.isNull(), "没有拖拽图"
+    assert pixmap.width() > 0 and pixmap.height() > 0
+    hotspot = drag.hotSpot()
+    assert 0 <= hotspot.x() < pixmap.width()
+    assert 0 <= hotspot.y() < pixmap.height()
+
+
+def test_a_floating_group_is_never_also_mounted_in_the_column(
+        qapp, monkeypatch):
+    """每块面板只有一个家：浮窗端着的，主窗账目里就不能还挂着。
+
+    用户截图报告的重复（浮窗标题写着 历史颜色/OKLab/HSV，主窗底下还留着
+    历史颜色的抓手）就是这条不变式被破坏的样子。这里盯的是账目 + 控件树
+    的一致性，任何一条浮出/收回路径都不许留下"两边都有"的面板。
+    """
+    monkeypatch.setattr(core_config, "save_hotkey_config", lambda cfg: None)
+    win = _Window()
+    win.panel_host.set_drag_enabled(True)
+    win.panel_host.set_tree(column(RGB, HSV, HSL))
+    pump_events()
+
+    def assert_single_home(label):
+        host = win.panel_host
+        for pid, floater in win.floating_windows().items():
+            assert pid not in host.mounted_panels(), (
+                f"{label}: {pid} 既在浮窗又挂在主窗")
+            frame = host.frame_for(pid)
+            assert frame is None or frame.panel() is None, (
+                f"{label}: {pid} 的旧抓手还端着它")
+            widget = win.panel_widget(pid)
+            node, inside = widget, False
+            while node is not None:
+                if node is floater:
+                    inside = True
+                    break
+                node = node.parentWidget()
+            assert inside, f"{label}: {pid} 不在浮窗里"
+        for pid in host.mounted_panels():
+            if pid in win.floating_windows():
+                continue
+            assert host.widget_for(pid) is not None, f"{label}: {pid} 挂空了"
+
+    win.float_panel(RGB)
+    pump_events()
+    assert_single_home("浮出后")
+    win.float_panel(HSV)
+    pump_events()
+    assert_single_home("两块都浮出后")
+    win.dock_panel(RGB)
+    pump_events()
+    assert_single_home("收回一块后")
+    win.dock_panel(HSV)
+    pump_events()
+    assert_single_home("全收回后")
+    assert set(win.panel_host.mounted_panels()) == {RGB, HSV, HSL}
+
+
+def test_an_empty_column_asks_for_no_height(qapp):
+    """所有面板都浮出/关掉后，宿主不能再向窗口要高度。
+
+    踩过（用户报告：最后一块拖出去后主窗留一条空白占位）：QWidget 默认的
+    sizeHint 会把隐藏的子控件也算进去，于是空列仍报出整列高度，窗口的
+    内容高度策略就照着它把窗口撑高 —— 屏幕上留下一条谁也没有的空白带。
+    """
+    host = PanelHost(lambda pid: None)
+    host.set_drag_enabled(True)
+    assert host.sizeHint().height() == 0, "空列不该有高度"
+    assert host.minimumSizeHint().height() == 0
+
+
+def test_the_column_collapses_when_only_hidden_groups_are_left(
+        qapp, monkeypatch):
+    """把看得见的面板都拖出去后，主窗不能还剩一条空灰带（用户截图报告）。
+
+    踩过：面板只是"被关掉"（showSlidersX=False）时仍然挂在宿主里，而
+    column_hint 会把它们的高度算进去 —— 于是所有可见组都浮出后，列还给
+    那几个隐藏组留着 92~104px 的空白，看起来就是取色区下面一条空灰带。
+    现在高度只算"用户看得见的"面板，列空了就整列让位。
+    """
+    monkeypatch.setattr(core_config, "save_hotkey_config", lambda cfg: None)
+    win = _Window()
+    win.panel_host.set_drag_enabled(True)
+    win.panel_host.set_tree(column(RGB, HSV, HSL))
+    pump_events()
+    # HSV/HSL are switched off (showSlidersX=False); only RGB is on screen.
+    win.panel_widget(HSV).setVisible(False)
+    win.panel_widget(HSL).setVisible(False)
+    pump_events()
+    assert win.panel_host.visible_panels() == (RGB,)
+    assert win.panel_host.column_hint() > 0
+
+    win.float_panel(RGB)
+    pump_events()
+    assert win.panel_host.mounted_panels() == (HSV, HSL)
+    # The refresh re-shows every mounted panel, so re-apply the setting the
+    # way refresh_slider_visibility_and_order does in the real window.
+    win.panel_widget(HSV).setVisible(False)
+    win.panel_widget(HSL).setVisible(False)
+    pump_events()
+    assert win.panel_host.visible_panels() == (), "隐藏组不该算作可见"
+    assert win.panel_host.column_hint() == 0, "只剩被关掉的组，列还占着高度"
+    win.dock_panel(RGB)
+    pump_events()
+
+
+def test_a_grip_with_hidden_content_collapses(qapp):
+    """抓手条不能在自己下面没有内容时还占一行（空槽位的来源）。"""
+    from ui.panels.drag import PanelFrame
+
+    frame = PanelFrame(RGB, "RGB")
+    inner = QLabel("RGB", frame)
+    frame.set_panel(inner)
+    frame.show()
+    pump_events()
+    inner.setVisible(False)
+    pump_events()
+    frame.follow_content_visibility()
+    assert frame.isHidden(), "内容藏了，抓手还留着"
+    inner.setVisible(True)
+    pump_events()
+    frame.follow_content_visibility()
+    assert not frame.isHidden(), "内容回来了，抓手没跟着回来"
+    """起拖时要给 QDrag 一张拖拽图与热点。
+
+    没有 pixmap 时 Qt 用默认拖拽图并把热点钉在它自己的左上角，鼠标一
+    起拖就像跳开了 —— 用户说的"拖出来卡卡的、不跟手"。
+    """
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtGui import QDrag
+    from ui.panels.drag import PanelTitleBar
+
+    bar = PanelTitleBar(RGB, "RGB")
+    bar.resize(200, PanelTitleBar.HEIGHT)
+    bar.show()
+    drag = QDrag(bar)
+    bar._dress_drag(drag, QPoint(60, 4))
+    pixmap = drag.pixmap()
+    assert not pixmap.isNull(), "没有拖拽图"
+    assert pixmap.width() > 0 and pixmap.height() > 0
+    hotspot = drag.hotSpot()
+    assert 0 <= hotspot.x() < pixmap.width()
+    assert 0 <= hotspot.y() < pixmap.height()
+
+
+def test_a_hand_sized_window_keeps_its_size_across_a_restart(
+        qapp, monkeypatch):
+    """用户手动拉大过的浮窗，重启后不能被"贴合内容"缩回去。
+
+    踩过（tools/preview_panel_drag.py 实测）：拉高 40px 后重启，窗口回到
+    内容高度（178 → 154）—— 用户的手动尺寸只活在本次会话里。现在"手动
+    拉过"会随记录一起落盘，内容pass 只许把它撑大。
+    """
+    monkeypatch.setattr(core_config, "save_hotkey_config", lambda cfg: None)
+    cfg = {}
+    store.save_floating_into(cfg, {
+        HSV: store.FloatingState((30, 40, 220, 300), user_resized=True)})
+    win = _Window(cfg)
+    win.restore_floating_panels()
+    pump_events()
+    window = win.floating_windows()[HSV]
+    assert window.geometry_record() == (30, 40, 220, 300)
+    assert window._user_resized is True
+    win.dock_panel(HSV)
+
+
+def test_a_hand_sized_flag_round_trips_through_the_config():
+    cfg = {}
+    store.save_floating_into(cfg, {
+        RGB: store.FloatingState((1, 2, 300, 200), user_resized=True),
+        HSV: store.FloatingState((3, 4, 310, 210))})
+    loaded = store.load_floating_from(cfg)
+    assert loaded[RGB].user_resized is True
+    assert loaded[HSV].user_resized is False

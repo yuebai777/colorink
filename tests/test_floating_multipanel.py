@@ -496,6 +496,85 @@ def test_drop_into_floating_defers_widget_surgery_until_after_drag(qapp, test_wi
     assert RGB in fwin.panel_ids
 
 
+def test_the_inner_host_never_adopts_a_panel_it_does_not_own(qapp, test_window):
+    """浮窗里的宿主只认自己那份树：拖进来的面板必须由浮窗层接管。
+
+    踩过：把主窗的抓手拖到浮窗正文上，Qt 把 drop 送给光标下最内层的
+    ``PanelHost``（浮窗自己的宿主），它直接 ``apply_drop`` 把主窗的面板
+    **就地挂进自己的树**。于是同一个面板有两个家：主窗的 ``_frames`` 还
+    端着它（列高照旧计费、抓手留成一条空条），浮窗又把它装了一遍。
+    用户看到的就是"主窗残留 + 高度不对"。
+
+    这里直接投递真实 QDropEvent 到浮窗的内层宿主，验证它不接管外来的
+    面板，而是把事件交还给浮窗（``panel_dropped_here``）走正规路径。
+    """
+    from PyQt6.QtCore import QMimeData, QPointF, Qt
+    from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
+
+    from ui.panels.drag import PANEL_MIME
+
+    test_window.panel_host.set_drag_enabled(True)
+    test_window.panel_host.set_tree(column(RGB, HSV, HSL))
+    test_window.float_panel(RGB)
+    fwin = test_window.floating_windows()[RGB]
+    # A second panel joins the window, so its inner host is a valid drop
+    # target with drag enabled (single-panel windows do not accept drops).
+    fwin.add_panel(HSV, test_window.panel_widget(HSV),
+                   target_panel_id=RGB, zone=BOTTOM)
+    test_window.floating_windows()[HSV] = fwin
+    test_window.panel_host.set_floating_panels({RGB, HSV})
+    fwin.set_drag_enabled(True)
+    fwin.show()
+    fwin.setGeometry(100, 100, 400, 400)
+    _lay_out(fwin)
+    assert fwin.panel_host._drag_enabled is True
+
+    main_before = set(test_window.panel_host.mounted_panels())
+    assert HSL in main_before
+    main_frame = test_window.panel_host.frame_for(HSL)
+    assert main_frame is not None and main_frame.panel() is not None
+
+    mime = QMimeData()
+    mime.setData(PANEL_MIME, HSL.encode("utf-8"))
+    host = fwin.panel_host
+    pos = host.rect().center()
+    for event_type in (QDragEnterEvent, QDragMoveEvent):
+        event = event_type(pos, Qt.DropAction.MoveAction, mime,
+                           Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.NoModifier)
+        qapp.sendEvent(host, event)
+    drop = QDropEvent(QPointF(pos), Qt.DropAction.MoveAction, mime,
+                      Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    qapp.sendEvent(host, drop)
+    qapp.processEvents()
+
+    # 内层宿主没有把 HSL 装进自己的树。
+    assert HSL not in host.tree().panels(), "浮窗内层宿主接管了外来的面板"
+    assert HSL not in host.mounted_panels(), "浮窗内层宿主挂载了外来的面板"
+    # 主窗的账目与抓手都还完好（面板没被偷走）。
+    assert HSL in test_window.panel_host.mounted_panels()
+    assert test_window.panel_host.frame_for(HSL) is main_frame
+    assert main_frame.panel() is not None
+    assert main_frame.isHidden() is False
+    # 内层宿主拒绝之后，事件由浮窗层接下（真实 Qt 会向上派发到这个父窗口），
+    # 走 panel_dropped_here → _on_panel_dropped_into_floating 的正规路径。
+    win_pos = fwin.body.mapTo(fwin, fwin.body.rect().center())
+    assert fwin.drop_target_at(win_pos) is not None
+    for event_type in (QDragEnterEvent, QDragMoveEvent):
+        event = event_type(win_pos, Qt.DropAction.MoveAction, mime,
+                           Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.NoModifier)
+        qapp.sendEvent(fwin, event)
+    drop2 = QDropEvent(QPointF(win_pos), Qt.DropAction.MoveAction,
+                       mime, Qt.MouseButton.LeftButton,
+                       Qt.KeyboardModifier.NoModifier)
+    qapp.sendEvent(fwin, drop2)
+    qapp.processEvents()
+    assert drop2.isAccepted(), "浮窗层没有接下这次拖入"
+    assert HSL in fwin.panel_ids
+    assert HSL not in test_window.panel_host.mounted_panels()
+
+
 # ── 浮窗内容贴合：移出面板后不得留下空白占位 ─────────────────────────────
 
 class _SizedPanel(QWidget):
@@ -606,6 +685,61 @@ def test_restored_multipanel_window_fits_content(qapp, monkeypatch):
     assert fw.width() <= 400
     assert fw.height() < 400, fw.height()
     assert fw.height() < 100, fw.height()
+
+
+def test_toggling_the_grips_keeps_a_multi_panel_window_visible(test_window):
+    """抓手开关会重挂每个宿主；多面板浮窗不能因此被藏掉。
+
+    用户报告：堆叠+抓手都开着，把模块拖出去合并成一个浮窗，关掉抓手再
+    打开，浮窗就没了（主窗也空着）。成因是浮窗重挂时面板短暂无父，浮窗
+    把这段瞬态 Hide 镜像成自己隐藏，而面板自身的标记没变，不会再有 Show
+    把它叫回来。
+    """
+    test_window.float_panel(RGB)
+    fwin = test_window.floating_windows()[RGB]
+    fwin.add_panel(HSV, test_window.panel_widget(HSV),
+                   target_panel_id=RGB, zone=BOTTOM)
+    test_window.floating_windows()[HSV] = fwin
+    fwin.show()
+    _lay_out(fwin)
+    assert fwin.isHidden() is False
+    assert fwin.panel_host.mounted_panels() == (RGB, HSV)
+
+    fwin.set_drag_enabled(False)
+    assert fwin.isHidden() is False, "关掉抓手后浮窗被藏了"
+
+    fwin.set_drag_enabled(True)
+    assert fwin.isHidden() is False, "打开抓手后浮窗没回来"
+
+    # 面板本身也要还在、还看得见（浮窗在 = 内容在）。
+    assert fwin.panel_host.mounted_panels() == (RGB, HSV)
+    assert fwin.panel(RGB).isHidden() is False
+    assert fwin.panel(HSV).isHidden() is False
+
+
+def test_switching_tab_page_does_not_park_the_window(test_window):
+    """切页签把上一页藏起来，不能把整个浮窗一起藏掉。
+
+    窗口可见性必须看整份内容，不能只看刚刚触发事件的那一块面板：切换
+    页签时上一页 Hide、下一页 Show，跟着上一页走会把还有可见面板的浮窗
+    停掉。
+    """
+    from PyQt6.QtWidgets import QTabWidget
+
+    test_window.float_panel(RGB)
+    fwin = test_window.floating_windows()[RGB]
+    fwin.add_panel(HSV, test_window.panel_widget(HSV),
+                   target_panel_id=RGB, zone=CENTER)
+    test_window.floating_windows()[HSV] = fwin
+    fwin.show()
+    _lay_out(fwin)
+
+    tab_widget = fwin.findChildren(QTabWidget)[0]
+    assert tab_widget.count() == 2
+    tab_widget.setCurrentIndex(0)
+    assert fwin.isHidden() is False, "切到有内容的页签后浮窗被藏了"
+    tab_widget.setCurrentIndex(1)
+    assert fwin.isHidden() is False, "切回来浮窗没回来"
 
 
 

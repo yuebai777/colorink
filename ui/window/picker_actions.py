@@ -294,7 +294,41 @@ class PickerActionsMixin:
         next_idx = (idx + 1) % len(_MODULE_ORDER)
         self._apply_module(_MODULE_ORDER[next_idx])
 
-    def refresh_slider_visibility_and_order(self):
+    def refresh_slider_visibility_and_order(self, defer: bool = False):
+        """Re-assemble the slider column: order, visibility, height.
+
+        This is the heaviest routine in the panel system — it re-mounts every
+        panel through the host, re-saves the arrangement and runs the height
+        policy. A gesture that moves several panels (a whole floating window
+        dropped on the column, "float them all") used to call it once per
+        panel, so one drop re-mounted the column eight times and wrote the
+        config six times.
+
+        With *defer* the work is coalesced into one pass on the next event
+        loop turn: callers that are in the middle of a multi-panel gesture say
+        so, and the pass that actually runs sees the final state. The result
+        is identical, only the intermediate ones are skipped.
+        """
+        if defer:
+            self._panel_refresh_pending = True
+            timer = getattr(self, "_panel_refresh_timer", None)
+            if timer is None:
+                from PyQt6.QtCore import QTimer
+                timer = QTimer(self)
+                timer.setSingleShot(True)
+                timer.timeout.connect(self._run_panel_refresh)
+                self._panel_refresh_timer = timer
+            timer.start(0)
+            return
+        self._run_panel_refresh()
+
+    def _flush_panel_refresh(self) -> None:
+        """Run a coalesced pass now, if one is waiting."""
+        if getattr(self, "_panel_refresh_pending", False):
+            self._run_panel_refresh()
+
+    def _run_panel_refresh(self):
+        self._panel_refresh_pending = False
         # Take the blocks out of whatever holds them; the panel host mounts
         # them again below (they were added by hand before the host existed).
         for group in config.SLIDER_GROUPS:
@@ -336,11 +370,15 @@ class PickerActionsMixin:
                 self.sliders_layout.addWidget(self.slider_containers[g])
 
         # An empty column must take no room at all: with every panel torn
-        # off, its margins alone kept ~20px of nothing under the picker, so
-        # the window's minimum height no longer hugged the LAB checkerboard.
+        # off — or with only switched-off groups left in it — its margins and
+        # grips alone kept a band of nothing under the picker. "Empty" means
+        # nothing the user can see, not just nothing mounted: the leftover
+        # grey strip (with a dead 历史颜色 grip) after dragging the visible
+        # groups out into their own window was exactly this.
         container = getattr(self, "sliders_container", None)
         if container is not None and host is not None:
-            container.setVisible(bool(host.mounted_panels()))
+            visible = host.visible_panels()
+            container.setVisible(bool(visible))
 
         # Record what was actually mounted, so a drag-reorder survives a
         # restart. Without a host there is nothing assembled to record, and
@@ -705,6 +743,7 @@ class PickerActionsMixin:
         # Update settings dialog variables in thread
         self.sync_thread.csp_version = self.cfg.get("cspVersion", "auto")
         self.sync_thread.sai2_version = self.cfg.get("sai2Version", "auto")
+        self.sync_thread.sai2_panel_mode = self.cfg.get("sai2PanelMode", "auto")
         # SAI UI refresh is a single always-on full mode (core.sai2_ui_refresh
         # defaults to it); there is no config knob and nothing here overrides it.
         self.sync_thread.udm_version = self.cfg.get("udmVersion", "auto")

@@ -8,7 +8,7 @@ back lands it where it came from instead of at the end of the column.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QPoint, QRect, Qt
+from PyQt6.QtCore import QPoint, QRect, QSize, Qt
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import QApplication
 
@@ -58,8 +58,20 @@ class FloatingPanelsMixin:
     # ── out ──────────────────────────────────────────────────────────────
 
     def float_panel(self, panel_id: str, position=None, persist: bool = True,
-                    refresh: bool = True) -> bool:
-        """Tear *panel_id* out into its own window. True when it moved."""
+                    refresh: bool = True, fallback_size=None,
+                    defer_refresh: bool = False) -> bool:
+        """Tear *panel_id* out into its own window. True when it moved.
+
+        *fallback_size* is the size the panel really had where it came from,
+        for the cases where the widget cannot report it any more (a panel
+        that was just mounted into another window still reports Qt's default
+        100px until that window's layout has run).
+
+        *defer_refresh* lets a caller that is floating several panels in a row
+        coalesce the column re-mount into one pass (and flush it itself). The
+        default is immediate: a single tear-off must be fully mounted by the
+        time this returns, or the caller sees a window that is still empty.
+        """
         windows = self.floating_windows()
         if panel_id in windows:
             old_win = windows[panel_id]
@@ -73,17 +85,48 @@ class FloatingPanelsMixin:
         host = getattr(self, "panel_host", None)
         if widget is None or host is None:
             return False
-        # Measure it before it leaves the column: once the host lets go and
-        # the new window adopts it, it has already been resized to whatever
-        # that window happened to be.
-        original = widget.size()
+        # Measure it before anything detaches it. A panel's live size is only
+        # meaningful while it is laid out in a column: set_floating_panels
+        # re-mounts the whole host (every remaining panel is re-parented and
+        # the column re-lays out) and the widget comes out of that pass with
+        # a collapsed height — floating a tall column panel by panel left
+        # windows 7px tall, with the panel squashed inside them.
+        original = QSize(widget.size())
         reference = getattr(self, "floating_reference_size", None)
         if callable(reference):
             supplied = reference(panel_id, widget)
             if supplied is not None:
-                original = supplied
+                original = QSize(supplied)
+        if fallback_size is not None:
+            fallback = (QSize(*fallback_size) if isinstance(fallback_size, (tuple, list))
+                        else QSize(fallback_size))
+            if original.width() <= 1 or original.height() <= 1:
+                original = QSize(fallback)
+            else:
+                # Only the axis the widget cannot know about is taken: a
+                # panel keeps its own height, but its width is whatever its
+                # container gives it.
+                if original.width() < max(60, int(fallback.width() * 0.6)):
+                    original.setWidth(fallback.width())
+        # Last resort for a widget that never got laid out (never shown, or
+        # just adopted): its own hint, which is what the column sizes it by.
+        hint = widget.sizeHint()
         if original.width() <= 1 or original.height() <= 1:
-            original = widget.sizeHint()
+            original = QSize(hint)
+        # A squashed column must not decide how tall the torn-off window is.
+        # Height is the axis that collapses (width comes from the window), so
+        # only that one is reconciled — a panel the user deliberately made
+        # shorter than its hint keeps its size.
+        if hint.height() > 0 and original.height() < max(
+                12, int(hint.height() * 0.6)):
+            original.setHeight(hint.height())
+        # Same for a width that is clearly not a laid-out width: a panel that
+        # was just mounted into another window reports Qt's default 100px
+        # until that window's layout has run, and tearing it out in that
+        # window-sized 100px moment is what made a torn-off panel 100px wide.
+        if hint.width() > 0 and original.width() < max(
+                60, int(hint.width() * 0.6)):
+            original.setWidth(hint.width())
         spec = registry.panel(panel_id)
         saved = store.load_floating_from(getattr(self, "cfg", None))
         window = FloatingPanelWindow(
@@ -104,8 +147,9 @@ class FloatingPanelsMixin:
         windows[panel_id] = window
         # Unmount first: the host detaches every panel it holds when it
         # re-mounts, and it would pull this one straight back out of the
-        # window we are about to put it in.
-        host.set_floating_panels(set(windows))
+        # window we are about to put it in. No re-mount here — the refresh at
+        # the end of this method is the pass that mounts the column.
+        host.set_floating_panels(set(windows), remount=False)
         # Panels the host never mounted (the LAB view lives in the picker's
         # stack, not in the dock tree) have to be unhooked by whoever owns
         # them — the host's floating set means nothing to them.
@@ -119,7 +163,16 @@ class FloatingPanelsMixin:
         # window does not stick either, hence the second call.
         rect = self._floating_geometry(panel_id, original, position)
         window.setGeometry(*rect)
+        if panel_id in saved and getattr(saved[panel_id], "user_resized", False):
+            # Restoring a window the user sized by hand: mark it before any
+            # content pass runs, so this one does not close it back down.
+            window._user_resized = True
         window.set_panel(widget)
+        # The content hint this window must fit is the size the panel had in
+        # the column — the host has just re-mounted everything, so reading it
+        # back from the widget now would measure the collapsed column instead
+        # (that is how a 47px block became a 22px window).
+        window.adjust_size_for_content(min_content_h=original.height())
         # A panel whose content is driven by the owner's geometry (the LAB
         # squares are sized by the picker pass, not by their own layout)
         # must be told how big it is *after* it lands in the window — its
@@ -129,8 +182,10 @@ class FloatingPanelsMixin:
         if callable(size_owner):
             size_owner(panel_id, widget, rect)
         window.setGeometry(*rect)
-        if panel_id in saved and not saved[panel_id].on_top:
-            window.set_always_on_top(False)
+        if panel_id in saved:
+            state = saved[panel_id]
+            if not state.on_top:
+                window.set_always_on_top(False)
         window.show_without_stealing_focus()
         self_correct = getattr(self, "floating_self_correct", None)
         if panel_id not in saved and (not callable(self_correct)
@@ -159,7 +214,10 @@ class FloatingPanelsMixin:
         if refresh:
             fn = getattr(self, "refresh_slider_visibility_and_order", None)
             if callable(fn):
-                fn()
+                # defer_refresh is for a caller that is floating several
+                # panels in a row: one re-mount of the column at the end
+                # instead of one per panel.
+                fn(defer=bool(defer_refresh))
         return True
 
     def _floating_geometry(self, panel_id, size, position):
@@ -211,9 +269,14 @@ class FloatingPanelsMixin:
         claimed = bool(widget is not None and callable(attach)
                        and attach(panel_id, widget))
         host = getattr(self, "panel_host", None)
+        fn = getattr(self, "refresh_slider_visibility_and_order", None)
         if host is not None:
-            # The tree still holds its slot, so this lands it back home.
-            host.set_floating_panels(set(windows))
+            # The tree still holds its slot, so this lands it back home. Skip
+            # the re-mount when the refresh below is going to do one anyway:
+            # that was the second full column rebuild every dock cost. A host
+            # whose owner has no refresh routine still needs the re-mount.
+            host.set_floating_panels(
+                set(windows), remount=not (refresh and callable(fn)))
         if (not claimed and widget is not None and host is not None
                 and host.widget_for(panel_id) is None):
             # Nothing claimed it (the group is not in the current tree):
@@ -221,7 +284,6 @@ class FloatingPanelsMixin:
             widget.hide()
         self._save_floating_state()
         if refresh:
-            fn = getattr(self, "refresh_slider_visibility_and_order", None)
             if callable(fn):
                 fn()
             cfg = getattr(self, "cfg", None)
@@ -336,8 +398,12 @@ class FloatingPanelsMixin:
 
             rect = leader_state.rect
             window.setGeometry(*rect)
-            # Saved geometry may predate a panel leaving the window: hug the
-            # content so startup does not show a blank band under the panels.
+            # A window the user sized by hand keeps that size (the flag also
+            # travels in the record); only a window that was never resized
+            # hugs its content, so startup does not show a blank band under
+            # the panels.
+            if getattr(leader_state, "user_resized", False):
+                window._user_resized = True
             window.adjust_size_for_content(shrink=True)
             if not leader_state.on_top:
                 window.set_always_on_top(False)
@@ -465,14 +531,20 @@ class FloatingPanelsMixin:
         if is_over_main:
             target = host.drop_target_at(point) if (host is not None and point is not None) else None
             source_pids = list(source_window.panel_ids)
+            # Dock every panel first, then re-arrange, then refresh once: the
+            # refresh re-mounts the whole column, so doing it per panel made a
+            # single drop re-mount the column eight times.
             for pid in source_pids:
-                self.dock_panel(pid)
+                self.dock_panel(pid, refresh=False)
             if target is not None:
                 curr_target = target
                 for pid in source_pids:
                     if curr_target[0] != pid:
-                        self._dock_at(pid, curr_target)
+                        self._dock_at(pid, curr_target, refresh=False)
                         curr_target = (pid, rearrange.BOTTOM if target[1] != rearrange.MERGE_PAGE else rearrange.MERGE_PAGE)
+            fn = getattr(self, "refresh_slider_visibility_and_order", None)
+            if callable(fn):
+                fn()
             return
 
         # 3. Dropped in empty space
@@ -500,8 +572,13 @@ class FloatingPanelsMixin:
                 # next call; nothing left to sync to.
                 continue
 
-    def _dock_at(self, panel_id: str, target) -> None:
-        """Move a just-docked panel to where it was dropped."""
+    def _dock_at(self, panel_id: str, target, refresh: bool = True) -> None:
+        """Move a just-docked panel to where it was dropped.
+
+        With *refresh* off the caller owns the re-assembly: a gesture that
+        lands several panels runs one pass at the end instead of one per
+        panel.
+        """
         from ui.panels import rearrange
 
         host = getattr(self, "panel_host", None)
@@ -522,6 +599,8 @@ class FloatingPanelsMixin:
         if callable(record):
             record(moved)
         self._save_floating_state()
+        if not refresh:
+            return
         # set_tree mounts every panel it holds with setVisible(True) — the
         # showSliders visibility policy must run again or groups the user
         # turned off in settings pop back on the screen.
@@ -533,13 +612,24 @@ class FloatingPanelsMixin:
         """A panel inside a multi-panel floating window was dragged out or double-clicked."""
         if len(source_window.panel_ids) <= 1:
             return
+        # Measure the *window's* content box before the panel leaves: the
+        # widget itself can still be reporting an unlaid-out default width
+        # (it was just mounted into this window), and the width the user sees
+        # is the one the window gave it.
+        source_size = None
+        body = getattr(source_window, "body", None)
+        layout = body.layout() if body is not None else None
+        if layout is not None:
+            margins = layout.contentsMargins()
+            source_size = (max(1, source_window.width() - margins.left()
+                               - margins.right()), 0)
         widget = source_window.take_panel(panel_id)
         if widget is None:
             return
         windows = self.floating_windows()
         windows.pop(panel_id, None)
         pos = QCursor.pos()
-        self.float_panel(panel_id, position=pos)
+        self.float_panel(panel_id, position=pos, fallback_size=source_size)
 
     def _on_panel_dropped_into_floating(self, panel_id: str, target: tuple,
                                         target_window: FloatingPanelWindow) -> None:
@@ -622,9 +712,11 @@ class FloatingPanelsMixin:
                 pids = list(win.panel_ids)
                 if not pids:
                     pids = [pid]
+                hand_sized = bool(getattr(win, "_user_resized", False))
                 if len(pids) == 1:
                     floating_records[pids[0]] = store.FloatingState(
-                        win.geometry_record(), win.always_on_top())
+                        win.geometry_record(), win.always_on_top(),
+                        user_resized=hand_sized)
                 else:
                     leader = pids[0]
                     tree = win.tree()
@@ -633,7 +725,8 @@ class FloatingPanelsMixin:
                             win.geometry_record(),
                             win.always_on_top(),
                             tree=tree if i == 0 else None,
-                            group_id=leader if i > 0 else None)
+                            group_id=leader if i > 0 else None,
+                            user_resized=hand_sized)
             except (RuntimeError, AttributeError):
                 # The window was torn down while this state snapshot was
                 # being written (a dock/drop race); skip it — the map no

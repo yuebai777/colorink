@@ -74,6 +74,10 @@ class FloatingState:
     on_top: bool = True
     tree: dock.Node | None = None
     group_id: str | None = None
+    #: True when the user sized this window by hand. Remembered across
+    #: restarts because a hand-sized window must not be closed back down to
+    #: its content height on the next launch.
+    user_resized: bool = False
 
 
 def _parse_rect(value):
@@ -107,8 +111,10 @@ def load_floating_from(config) -> dict:
         on_top = True
         tree = None
         group = None
+        user_resized = False
         if isinstance(record, dict):
             on_top = record.get("onTop", True)
+            user_resized = bool(record.get("userResized", False))
             tree_data = record.get("tree")
             if tree_data is not None:
                 tree = dock.from_json(tree_data)
@@ -117,7 +123,8 @@ def load_floating_from(config) -> dict:
         rect = _parse_rect(record)
         if rect is None:
             continue
-        floating[panel_id] = FloatingState(rect, bool(on_top), tree, group)
+        floating[panel_id] = FloatingState(rect, bool(on_top), tree, group,
+                                           user_resized)
 
     # Reconcile tree for grouped panels if group leader carried the tree
     for panel_id, state in list(floating.items()):
@@ -125,7 +132,8 @@ def load_floating_from(config) -> dict:
             leader = floating[state.group_id]
             if leader.tree is not None:
                 floating[panel_id] = FloatingState(
-                    state.rect, state.on_top, leader.tree, state.group_id)
+                    state.rect, state.on_top, leader.tree, state.group_id,
+                    state.user_resized)
 
     return floating
 
@@ -140,6 +148,8 @@ def save_floating_into(config, floating) -> None:
     saved = {}
     for panel_id, state in floating.items():
         entry = {"rect": list(state.rect), "onTop": bool(state.on_top)}
+        if getattr(state, "user_resized", False):
+            entry["userResized"] = True
         if state.tree is not None:
             entry["tree"] = state.tree.to_json()
         if state.group_id is not None and state.group_id != panel_id:

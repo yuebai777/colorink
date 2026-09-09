@@ -65,6 +65,11 @@ class PanelHost(QWidget):
     """
 
     mount_changed = pyqtSignal()
+    #: A tree mount finished. Unlike mount_changed this fires on *every*
+    #: rebuild, including one that mounts exactly the same panels — the
+    #: window owning this host uses it to re-decide its own visibility once
+    #: the transient detach/adopt of a rebuild is over.
+    mount_finished = pyqtSignal()
     rearranged = pyqtSignal(object)
     tab_changed = pyqtSignal(int)
     #: A grip was dragged somewhere no host would take it: tear it off.
@@ -89,6 +94,17 @@ class PanelHost(QWidget):
         self._floating: set[str] = set()
         self._chrome = None
         self._drag_enabled = False
+        #: True while set_tree is rebuilding: holders must not mirror the
+        #: transient Hide/Show of a panel that is being detached and adopted.
+        self._mounting = False
+        #: Whether each panel was hidden *on purpose* when this host last
+        #: detached it. setParent(None) marks a widget hidden in passing, and
+        #: Qt cannot tell that apart from the user switching the group off —
+        #: so the host carries the intent itself across its own re-mounts.
+        #: Without it a rebuild either resurrects a group the user hid (a
+        #: column of dead grips) or parks a floating window whose panels all
+        #: read "hidden".
+        self._hidden_intent: dict[str, bool] = {}
         self._indicator: DropIndicator | None = None
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
@@ -116,6 +132,19 @@ class PanelHost(QWidget):
 
     def set_tree(self, node) -> None:
         """Mount *node*. Panels missing from the provider are skipped."""
+        # A re-mount detaches and re-adopts every panel, which fires Hide/Show
+        # on them. Holders mirror a panel's visibility onto their own chrome,
+        # so without this flag a floating window hid itself when its panel
+        # passed through the parentless state and never came back (the panel's
+        # own flag was never touched, so no Show ever followed the Hide).
+        # The host settles every holder's visibility itself, below.
+        self._mounting = True
+        try:
+            self._set_tree(node)
+        finally:
+            self._mounting = False
+
+    def _set_tree(self, node) -> None:
         was_mounted = set(self._mounted)
         # Capture current active tab page before detaching so setting adjustments
         # or module refreshes never flip the user's foreground tab.
@@ -156,6 +185,10 @@ class PanelHost(QWidget):
             # for showEvent anyway).
             if self.isVisible():
                 built.show()
+        # Re-apply the visibility each panel had before this rebuild detached
+        # it (see _hidden_intent). Runs before _sync_tab_visibility so a page
+        # that is not the current one is parked again right after.
+        self._restore_hidden_intent()
         # The tab strips were built before they had a parent/visible stack;
         # the stack applies page visibility only when it is shown, so re-apply
         # it now — after the widget is actually mounted — or the first painted
@@ -166,11 +199,66 @@ class PanelHost(QWidget):
         # but still sit in _frames: drop them for good so nothing can ever
         # re-show an empty grip as a blank slot.
         self._drop_stale_frames()
+        for panel_id in list(self._hidden_intent):
+            if panel_id not in self._mounted:
+                self._hidden_intent.pop(panel_id, None)
         self._prev_active_page = None
         if set(self._mounted) != was_mounted:
             # Which panels are on screen decides the content height; the
             # order they sit in does not, so an ordering change stays quiet.
             self.mount_changed.emit()
+        self.mount_finished.emit()
+
+    def _remember_hidden(self, panel_id: str, widget) -> None:
+        """Record whether *widget* was hidden on purpose before a detach.
+
+        A panel on a tab page that is not the current one is hidden by the
+        stack, not by the user: recording that as an intent would pin the
+        panel hidden for good as soon as the page is switched once.
+        """
+        if self._in_background_page(panel_id):
+            return
+        try:
+            self._hidden_intent[panel_id] = bool(widget.isHidden())
+        except RuntimeError:
+            self._hidden_intent.pop(panel_id, None)
+
+    def _in_background_page(self, panel_id: str) -> bool:
+        """True when the panel sits on a tab page that is not the current one."""
+        node = self._panel_box(panel_id)
+        while node is not None:
+            parent = node.parentWidget()
+            if parent is None:
+                return False
+            if isinstance(parent, QStackedWidget):
+                return parent.currentWidget() is not node
+            node = parent
+        return False
+
+    def _restore_hidden_intent(self) -> None:
+        """Put every mounted panel back the way this host wants it seen.
+
+        Qt keeps the hidden flag ``setParent(None)`` left on a widget —
+        adopting it does not clear that again — so the host has to state the
+        answer itself: the visibility it recorded before detaching the panel,
+        or "visible" for a panel that arrives from somewhere else (docked
+        back, restored into a floating window). ``_sync_tab_visibility()``
+        re-parks non-current pages right after this, and the showSliders
+        policy pass runs after the mount as well.
+        """
+        for panel_id in list(self._mounted):
+            widget = self._mounted.get(panel_id)
+            if widget is None:
+                continue
+            try:
+                widget.setVisible(not self._hidden_intent.get(panel_id, False))
+            except RuntimeError:
+                continue
+            frame = self._frames.get(panel_id)
+            if frame is not None and frame.panel() is widget:
+                # The grip follows its content: a hidden group must not keep a
+                # strip of dead handles above nothing.
+                frame.follow_content_visibility()
 
     def _detach_mounted(self) -> None:
         """Take panel widgets out of the old tree so it can be deleted.
@@ -181,12 +269,24 @@ class PanelHost(QWidget):
         for panel_id, widget in self._mounted.items():
             frame = self._frames.get(panel_id)
             if frame is None:
+                # Only a widget that is still parented carries a meaningful
+                # hidden flag. One that is already parentless was parked by
+                # _release_frames a moment ago (which recorded the real state
+                # before setParent(None) hid it in passing) — reading it now
+                # would record "hidden" for every panel.
+                if widget.parent() is not None:
+                    self._remember_hidden(panel_id, widget)
                 widget.setParent(None)
                 continue
             # Hide the frame as well: a detached widget is a top-level one,
             # and anything that shows it before it is mounted again becomes
             # a stray window. Only frames — a raw panel hidden here would
             # stay hidden, since an explicit hide survives re-parenting.
+            # The frame keeps the panel; its own flag is the user's intent and
+            # survives the detach, so it is recorded here as well — otherwise
+            # the re-mount would read "no intent" and show a group the user
+            # had switched off.
+            self._remember_hidden(panel_id, widget)
             frame.setParent(None)
             frame.hide()
 
@@ -207,9 +307,13 @@ class PanelHost(QWidget):
         widget = self._provider(panel_id)
         if widget is None:
             return None
-        widget.setVisible(True)
         self._mounted[panel_id] = widget
         if not self._drag_enabled:
+            # The caller's layout adopts it right after this returns, and
+            # _build_stack / addTab show it there. Showing it here — while it
+            # is still parentless — made it a stray top-level window for a
+            # moment, and that show/hide pair is what a floating window
+            # mirrored onto itself (see PanelHolder.eventFilter).
             return widget
         frame = self._frames.get(panel_id)
         if frame is None:
@@ -222,7 +326,15 @@ class PanelHost(QWidget):
             frame.title_bar.menu_requested.connect(self.menu_requested.emit)
             frame.title_bar.apply_chrome(self._chrome)
             self._frames[panel_id] = frame
+        # Adopt first: set_panel re-parents the widget into the frame (which
+        # also clears the hidden flag setParent(None) left behind) and only
+        # then decides the frame's visibility from the panel's own flag.
         frame.set_panel(widget)
+        # A grip whose content is switched off collapses with it: the host
+        # keeps hidden groups mounted so they can come back, and a frame left
+        # visible around hidden content is the bare strip that looked like an
+        # empty slot under the picker.
+        frame.follow_content_visibility()
         return frame
 
     def _build_tabs(self, node: Tabs) -> QWidget | None:
@@ -409,8 +521,14 @@ class PanelHost(QWidget):
         gap = int(node.spacing) if node.spacing > 0 else (self._stack_spacing or 0)
         box.setSpacing(gap)
         for child in children:
+            # addWidget adopts the child and shows it only if it is not
+            # explicitly hidden — which is exactly the rule a panel needs:
+            # the transient hide of setParent(None) is cleared, a group the
+            # user switched off stays hidden. Forcing setVisible(True) here
+            # instead re-showed the grip of every hidden group (a strip of
+            # dead handles) and, because the container was already hidden,
+            # nothing later hid it again.
             box.addWidget(child)
-            child.setVisible(True)
         # Park the leftover height at the bottom. Without this Qt spreads it
         # *between* the blocks, so every gap in the column shifts whenever
         # any one block changes height — which is what "touch one thing and
@@ -435,10 +553,64 @@ class PanelHost(QWidget):
         """
         return self._node_hint(self._tree)
 
+    def sizeHint(self) -> QSize:
+        """An empty column asks for no height at all.
+
+        QWidget's default sums *every* child, hidden ones included, so a host
+        whose panels were all floated or switched off still reported a full
+        column height — and the window's content-height policy grew the frame
+        to fit that phantom band instead of closing up (the blank strip the
+        user sees after dragging the last module out).
+        """
+        if self.column_hint() <= 0:
+            return QSize(super().sizeHint().width(), 0)
+        return super().sizeHint()
+
+    def minimumSizeHint(self) -> QSize:
+        if self.column_hint() <= 0:
+            return QSize(super().minimumSizeHint().width(), 0)
+        return super().minimumSizeHint()
+
+    def _panel_hidden(self, panel_id: str) -> bool:
+        """True when this panel is off screen because the *user* turned it off.
+
+        Not the same question as "is it visible": a panel on a background tab
+        page is not visible either, but it still belongs to the column — its
+        page is one of the pages the tab strip has to size, and a drop aimed
+        at that page's empty space must still resolve to it. Reading
+        ``isVisibleTo`` here made the tab host shrink to the current page and
+        left a dead strip below the tabs where drops resolved to nothing.
+
+        So: hidden content only. The group containers the refresh loop drives
+        are exactly that — a hidden container makes its panel's frame
+        collapse with it (PanelFrame.follow_content_visibility).
+        """
+        widget = self._panel_box(panel_id) or self._mounted.get(panel_id)
+        if widget is None:
+            return True
+        try:
+            if widget.isHidden():
+                return True
+            inner = getattr(widget, "panel", None)
+            inner = inner() if callable(inner) else None
+            return inner is not None and inner.isHidden()
+        except RuntimeError:
+            return True
+
+    def visible_panels(self) -> tuple[str, ...]:
+        """Mounted panels the user can actually see right now."""
+        return tuple(pid for pid in self._mounted
+                     if not self._panel_hidden(pid))
+
     def _node_hint(self, node) -> int:
         if isinstance(node, Leaf):
             box = self._panel_box(node.panel)
-            if box is None or box.isHidden() or box.parent() is None:
+            # A group the user switched off must not bill the window for its
+            # height. Qt's own sizeHint() sums hidden children too, so a
+            # column whose every remaining panel was hidden still reported a
+            # full block — that was the grey band left under the picker after
+            # dragging the visible groups out into their own window.
+            if box is None or self._panel_hidden(node.panel):
                 return 0
             return int(box.sizeHint().height())
         if isinstance(node, Tabs):
@@ -472,7 +644,9 @@ class PanelHost(QWidget):
             panel_heights = []
             for pid in page:
                 box = self._panel_box(pid)
-                if box is not None and box.parent() is not None:
+                # Hidden groups do not bill the window here either (same rule
+                # as _node_hint).
+                if box is not None and not self._panel_hidden(pid):
                     h = max(int(box.sizeHint().height()),
                             int(box.minimumSizeHint().height()))
                     panel_heights.append(h)
@@ -491,6 +665,13 @@ class PanelHost(QWidget):
                 bar = max(int(tab_bar.sizeHint().height()),
                           int(tab_bar.height()))
                 break
+        if not pages:
+            # Nothing is mounted on any page. The pane's top gap is chrome for
+            # content that is not there; billing it kept a band of nothing
+            # under the picker after every panel was dragged out (measured
+            # 21px where the window needs 9). A tab strip that is still
+            # mounted is real chrome, so it is still counted.
+            return bar
         return (max(pages) if pages else 0) + bar + top_gap
 
     def apply_chrome(self, chrome) -> None:
@@ -635,12 +816,18 @@ class PanelHost(QWidget):
         frame.hide()
         self._parked_frames.append(frame)
 
-    def set_floating_panels(self, panel_ids) -> None:
+    def set_floating_panels(self, panel_ids, remount: bool = True) -> None:
         """Panels torn off into their own windows: mounted by someone else.
 
         The tree is left alone — it is what lets a floated panel dock back
         into the slot it came from. The source frame is parked, never deleted
         (see :meth:`_park_frame`).
+
+        With *remount* off the caller is going to re-mount the column itself
+        straight after (the float/dock paths all end in a refresh), so this
+        only updates the parked frames and the floating set. Doing the
+        re-mount here as well was one of the two full column rebuilds every
+        single tear-off cost.
         """
         wanted = set(panel_ids or ())
         if wanted == self._floating:
@@ -650,7 +837,15 @@ class PanelHost(QWidget):
             frame = self._frames.pop(pid, None)
             if frame is not None:
                 self._park_frame(frame)
-        self.set_tree(self._tree)
+            # A panel that is now floating must not stay in the mounted
+            # bookkeeping: the next re-mount would detach it again, and that
+            # detach (setParent(None)) tears it straight out of the floating
+            # window that just adopted it.
+            widget = self._mounted.pop(pid, None)
+            if widget is not None and widget.parent() is None:
+                widget.hide()
+        if remount:
+            self.set_tree(self._tree)
 
     def floating_panels(self) -> tuple[str, ...]:
         return tuple(sorted(self._floating))
@@ -659,8 +854,16 @@ class PanelHost(QWidget):
         return self._frames.get(panel_id)
 
     def _release_frames(self) -> None:
-        """Hand every panel back and park the frames (never delete them)."""
-        for frame in list(self._frames.values()):
+        """Hand every panel back and park the frames (never delete them).
+
+        The panel's own visibility is remembered first: take_panel() detaches
+        it with setParent(None), which hides it in passing, and the re-mount
+        that follows has to know whether it was hidden on purpose.
+        """
+        for panel_id, frame in list(self._frames.items()):
+            widget = frame.panel()
+            if widget is not None:
+                self._remember_hidden(panel_id, widget)
             self._park_frame(frame)
         self._frames.clear()
 
@@ -973,8 +1176,31 @@ class PanelHost(QWidget):
             return None
         return self._indicator.geometry()
 
+    def _owns_panel(self, panel_id: str) -> bool:
+        """True when *panel_id* is one of this host's own mounted panels.
+
+        A drop is only a re-arrangement *within* the host that owns the panel.
+        The tree may legitimately name panels this host does not hold — a
+        torn-off slot stays in the tree so the panel can find its way home —
+        and Qt delivers a drop to the innermost widget under the cursor, which
+        for a panel dragged over a floating window is that window's own inner
+        host. Without this check that host ran ``move_panel`` on a panel it
+        never mounted, adopted the widget into its own tree, and left the
+        owning host still listing it: one panel with two homes, a bare grip
+        and a phantom height in the column it left (the reported residue).
+        Cross-window drops belong to the window layer, which routes them
+        through ``panel_dropped_here``.
+        """
+        if panel_id in self._mounted:
+            return True
+        # A panel being dragged within this host is mounted; the tree alone is
+        # not enough (it keeps the slots of floated panels).
+        return False
+
     def apply_drop(self, panel_id: str, pos: QPoint) -> bool:
         """Move *panel_id* to whatever is under *pos*. True when it moved."""
+        if not self._owns_panel(panel_id):
+            return False
         target = self.drop_target_at(pos)
         self.clear_drop_hint()
         if target is None:
