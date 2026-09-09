@@ -111,6 +111,10 @@ def default_hotkey_config():
         "previewBoxPosition": "top-left",
         "cspVersion": "auto",
         "sai2Version": "auto",
+        # SAI2 colour-panel mode for the UI sync (picker-field mirror write):
+        # "auto" detects it from SAI, or pin it to vhsv/hsv/hsl to match the
+        # mode selected inside SAI's colour panel.
+        "sai2PanelMode": "auto",
         # SAI 界面刷新只有一种模式（full：重绘色块 + 点击刷新笔刷预览条），
         # 由代码恒定启用、不再提供用户选项，因此配置里没有对应键。
         "udmVersion": "auto",

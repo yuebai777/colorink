@@ -713,6 +713,12 @@ CLICK_CYCLE = 3
 # far more input than needed, so the swatch follows every write while the
 # preview waits for the colour to settle.
 CLICK_SETTLE = 0.12
+# A single pick (one colour chosen in colorink) has nothing to coalesce, so
+# making it wait CLICK_SETTLE only adds latency — measured 154 ms versus 52 ms
+# for the colour wheel. Only an actual drag, i.e. several writes inside
+# BURST_WINDOW, keeps the debounce; the click rate during a drag is unchanged.
+BURST_WINDOW = 0.5             # seconds of write history considered
+BURST_MIN_WRITES = 3           # this many writes in the window = dragging
 
 MAX_CLICK_FAILURES = 2         # give up clicking a target that never takes effect
 # A failed discovery pass costs up to MAX_PROBES renders on the sync thread,
@@ -781,6 +787,9 @@ class SAIUiRefresher:
         self._resolved: _Resolved | None = None
         self._last_refresh = 0.0
         self._last_write = 0.0
+        # Timestamps of recent colour writes, used to tell a drag (many writes
+        # in a short window) from a single pick (see _write_burst).
+        self._write_times: deque[float] = deque(maxlen=8)
         self._last_resolve_attempt = 0.0
         self._dirty_rgb: tuple[int, int, int] | None = None
         self._dirty_previous: tuple[int, int, int] | None = None
@@ -1042,6 +1051,18 @@ class SAIUiRefresher:
             self._preview_give_up_until = self._clock() + pause
             _log(f"preview re-discovery paused for {pause:.0f}s")
 
+    def _write_burst(self) -> bool:
+        """True while the caller is dragging (several writes in a short window).
+
+        A drag coalesces: the preview click waits for the colour to settle so
+        the background cycle is not run continuously. A single pick has nothing
+        to coalesce, so it clicks straight away instead of paying CLICK_SETTLE
+        (measured: 154 ms -> ~50 ms, matching the colour wheel).
+        """
+        now = self._clock()
+        return sum(1 for t in self._write_times
+                   if now - t <= BURST_WINDOW) >= BURST_MIN_WRITES
+
     def _click_preview(
         self, resolved: _Resolved, rgb: tuple[int, int, int], probe: bool = False,
     ) -> str:
@@ -1059,8 +1080,10 @@ class SAIUiRefresher:
             self._verify_previous_click(resolved, rgb)
             if resolved.preview is None:
                 return CLICK_UNAVAILABLE
-        if (self._clock() - self._last_write) < CLICK_SETTLE:
+        if ((self._clock() - self._last_write) < CLICK_SETTLE
+                and self._write_burst()):
             # Still mid-drag: repaint the swatch now, click once it settles.
+            # A single pick has nothing to coalesce, so it clicks immediately.
             return CLICK_DEFERRED
         if backend.input_busy(resolved.main):
             # The user is dragging / has a menu open: defer, and let the
@@ -1112,6 +1135,7 @@ class SAIUiRefresher:
 
             if not force:
                 self._last_write = now
+                self._write_times.append(now)
 
             resolved = self._resolved
             if resolved is None or resolved.pid != pid:

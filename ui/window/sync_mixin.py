@@ -57,6 +57,7 @@ class SyncMixin:
 
         self.sync_thread.csp_version = self.cfg.get("cspVersion", "auto")
         self.sync_thread.sai2_version = self.cfg.get("sai2Version", "auto")
+        self.sync_thread.sai2_panel_mode = self.cfg.get("sai2PanelMode", "auto")
         # SAI UI refresh is a single always-on full mode (core.sai2_ui_refresh
         # defaults to it); there is no config knob and nothing here overrides it.
         self.sync_thread.udm_version = self.cfg.get("udmVersion", "auto")

@@ -133,6 +133,19 @@ def collect_diagnostics(sync_thread=None, cfg=None, mixin=None,
             f" | UDM: {getattr(sync_thread, 'udm_version', '?')}"
             f" | PS: {getattr(sync_thread, 'ps_version', '?')}")
 
+        # SAI2 连接细节：颜色槽的解析方式与失败原因（core.sai2_brush_link）。
+        # reason 取值: ok / not_running / access_denied / open_failed:N /
+        #              module_info_failed / no_signature / write_verify_failed
+        try:
+            sai2 = getattr(sync_thread, "sai2_sync", None)
+            if sai2 is not None and hasattr(sai2, "status"):
+                s = sai2.status() or {}
+                add(f"SAI2 解析: {s.get('resolvedBy') or '-'}"
+                    f" | 原因: {s.get('reason') or '-'}"
+                    f" | 颜色槽: {s.get('colorAddr') or '-'}")
+        except Exception:
+            pass
+
         # 缓存的连接状态（UI 侧）。
         status = getattr(mixin, "_sync_status", None)
         if status and len(status) == 2:

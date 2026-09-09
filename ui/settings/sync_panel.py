@@ -527,6 +527,25 @@ class SyncPanelMixin:
         row_sai_layout.addWidget(self.combo_sai)
         cl_sync.addWidget(self.row_sai_widget)
 
+        # SAI2 colour-panel mode for the UI sync (picker-field mirror write).
+        # "auto" reads SAI's own slider labels; pin it when auto-detection
+        # cannot run (SAI starts on a grey colour, which hides the hue).
+        self.row_sai_panel_widget = QWidget()
+        row_sai_panel_layout = QHBoxLayout(self.row_sai_panel_widget)
+        row_sai_panel_layout.setContentsMargins(0, 0, 0, 0)
+        row_sai_panel_layout.setSpacing(8)
+        lbl_sai_panel_title = QLabel(i18n.tr("SAI2 面板模式"))
+        lbl_sai_panel_title.setFixedWidth(110)
+        row_sai_panel_layout.addWidget(lbl_sai_panel_title)
+        self.combo_sai_panel = NonScrollComboBox()
+        self.combo_sai_panel.addItems(["auto", "vhsv", "hsv", "hsl"])
+        self.combo_sai_panel.setToolTip(i18n.tr(
+            "SAI2 颜色面板的显示模式，用于让 SAI 的色轮跟着变色；"
+            "auto 会自动识别（推荐），识别不出来时可按 SAI 里实际的模式手动指定"))
+        self.combo_sai_panel.currentTextChanged.connect(self.save_settings)
+        row_sai_panel_layout.addWidget(self.combo_sai_panel)
+        cl_sync.addWidget(self.row_sai_panel_widget)
+
         # UDM Version Container
         self.row_udm_widget = QWidget()
         row_udm_layout = QHBoxLayout(self.row_udm_widget)

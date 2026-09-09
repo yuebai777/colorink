@@ -75,6 +75,11 @@ def _normalize_version(version: str | None) -> str:
     return "pre-2024-sai2"
 
 
+def _is_auto_version(version: object) -> bool:
+    """True when the caller asked for automatic signature detection."""
+    return str(version or "").strip().lower() in ("", "auto")
+
+
 def _clamp8(value: int) -> int:
     return max(0, min(255, int(value)))
 
@@ -257,13 +262,22 @@ class SAI2Sync:
     PROCESS_NAME = "sai2.exe"
 
     def __init__(self, version: str | None = None) -> None:
-        self.version: str = _normalize_version(version or os.environ.get("SAI2_SYNC_VERSION", DEFAULT_VERSION))
+        raw_version = version if version is not None else os.environ.get("SAI2_SYNC_VERSION")
+        # "auto" (the default) means: try every known signature and keep the
+        # first one that resolves to a readable slot. An explicit version pins
+        # a single signature.
+        self._auto_version: bool = _is_auto_version(raw_version)
+        self.version: str = _normalize_version(raw_version or DEFAULT_VERSION)
         self.process_name: str = self.PROCESS_NAME
         self._handle = None
         self._pid: int | None = None
         self._color_addr: int | None = None
         self._base: int | None = None
         self._size: int | None = None
+        # Diagnostics: why the last connection attempt failed and how the
+        # colour slot was found (signature name or offset fallback).
+        self.last_error: str = ""
+        self.resolve_method: str | None = None
         # Writing the slot changes what SAI paints with, but SAI never learns
         # its own widgets went stale — the refresher nudges them. There is a
         # single refresh mode (full); no env escape hatch, so a stale
@@ -271,10 +285,48 @@ class SAI2Sync:
         self.ui_refresher = sai2_ui_refresh.SAIUiRefresher(
             mode=sai2_ui_refresh.DEFAULT_MODE,
         )
+        # Picker-field mirror write (core.sai2_ui_sync): SAI's own colour
+        # panel (wheel, marker, slider thumbs) is driven by a separate picker
+        # state, so writing only the colour slot leaves it stale. "auto"
+        # resolves the panel mode from SAI's own state; the synchroniser is
+        # created lazily and every failure is swallowed.
+        self.panel_mode: str = "auto"
+        self._ui_picker = None
 
     def set_ui_refresh(self, mode: object) -> bool:
         """Configure how aggressively SAI's own widgets get refreshed."""
         return self.ui_refresher.set_mode(mode)
+
+    def ui_picker(self):
+        """Lazily create the picker-field synchroniser (None if unavailable).
+
+        The synchroniser makes SAI's colour panel follow the colour that was
+        just written to the slot (see :mod:`core.sai2_ui_sync`). It is
+        optional: if the module or the panel controls are unavailable this
+        returns ``None`` and colour syncing behaves exactly as before.
+        """
+        if self._ui_picker is None:
+            try:
+                from core import sai2_ui_sync  # noqa: PLC0415 - avoid import cycle
+                self._ui_picker = sai2_ui_sync.SAI2UiSync(self.panel_mode)
+            except Exception:  # noqa: BLE001 - optional feature
+                self._ui_picker = False
+        return self._ui_picker or None
+
+    def set_panel_mode(self, mode: object) -> bool:
+        """Set the SAI colour-panel mode targeted by the picker-field sync.
+
+        Accepts ``auto`` (detect from SAI), ``vhsv``, ``hsv`` or ``hsl``
+        (``hls`` is accepted as colorink's spelling). Returns True when the
+        value changed.
+        """
+        normalized = str(mode or "auto").strip().lower() or "auto"
+        changed = normalized != self.panel_mode
+        self.panel_mode = normalized
+        picker = self.ui_picker()
+        if picker is not None:
+            picker.set_mode(normalized)
+        return changed
 
     def tick_ui_refresh(self) -> bool:
         """Deliver a refresh that was throttled or deferred (poll-loop hook)."""
@@ -305,13 +357,19 @@ class SAI2Sync:
                 pass
 
     def set_version(self, version: str) -> bool:
-        """Switch SAI2 signature mode. Returns True if the version changed."""
+        """Switch SAI2 signature mode. Returns True if the version changed.
+
+        ``auto`` (or an empty value) re-enables automatic signature detection:
+        every known signature is tried and the first readable hit is used.
+        """
+        auto = _is_auto_version(version)
         normalized = _normalize_version(version)
-        changed = normalized != self.version
+        changed = normalized != self.version or auto != self._auto_version
         self.version = normalized
+        self._auto_version = auto
         if changed:
             self._reset_cache(close_handle=True)
-        _log(f"Using signature mode: {normalized}")
+        _log(f"Using signature mode: {'auto' if auto else normalized}")
         return changed
 
     def _reset_cache(self, close_handle: bool = True) -> None:
@@ -330,13 +388,28 @@ class SAI2Sync:
         refresher = getattr(self, "ui_refresher", None)
         if refresher is not None:
             refresher.reset()
+        # SAI restarted (or a signature switch): cached panel controls and the
+        # detected panel mode are stale as well.
+        picker = self._ui_picker
+        if picker:
+            try:
+                picker.reset()
+            except Exception:
+                pass
 
     def _connect(self) -> bool:
-        """Attach to the running SAI2 process and locate the color slot."""
+        """Attach to the running SAI2 process and locate the color slot.
+
+        Every failure records a machine-readable reason in :attr:`last_error`
+        (surfaced through :meth:`status`), so the diagnostics panel can tell
+        "SAI is not running" apart from "running as a different user" or
+        "signature not found in this build".
+        """
         if self._handle and self._color_addr:
             try:
                 color = _read_memory(self._handle, self._color_addr, 3)
                 if color and len(color) == 3:
+                    self.last_error = ""
                     return True
             except Exception:
                 pass
@@ -344,6 +417,7 @@ class SAI2Sync:
 
         pid = _find_process(self.PROCESS_NAME)
         if not pid:
+            self.last_error = "not_running"
             return False
 
         handle = _kernel32.OpenProcess(
@@ -352,49 +426,76 @@ class SAI2Sync:
             pid,
         )
         if not handle:
+            err = ctypes.get_last_error()
+            self.last_error = "access_denied" if err == 5 else f"open_failed:{err}"
             return False
 
         base, size = _get_module_info(pid, self.PROCESS_NAME)
         if not base or size is None:
             _kernel32.CloseHandle(handle)
+            self.last_error = "module_info_failed"
             return False
 
-        signature = SIGNATURES.get(self.version, SIGNATURES[DEFAULT_VERSION])
-        _log(f"Scanning with signature mode: {self.version}")
-
-        # Resolve color address via instruction signature scan
-        pattern_addr = _scan_pattern_masked(handle, base, size, signature["pattern"])
-        if pattern_addr is None:
-            _log(f"Pattern scan failed for {self.version}, using default offset")
-            color_addr = base + KNOWN_OFFSETS["default"]
-        else:
-            rel_addr_pos = pattern_addr + signature["disp_offset"]
-            rel_addr_data = _read_memory(handle, rel_addr_pos, 4)
-            if not rel_addr_data or len(rel_addr_data) != 4:
-                _kernel32.CloseHandle(handle)
-                return False
-            rel_addr = struct.unpack("<i", rel_addr_data)[0]
-            color_addr = pattern_addr + signature["next_rip_offset"] + rel_addr
-
-            _log(
-                f"Pattern matched at 0x{pattern_addr:X}, "
-                f"color address: 0x{color_addr:X}"
-            )
-
-        # Validate the resolved address is readable before caching
-        test = _read_memory(handle, color_addr, 3)
-        if not test or len(test) != 3:
+        resolved = self._resolve_color_address(handle, base, size)
+        if resolved is None:
             _kernel32.CloseHandle(handle)
+            self.last_error = "no_signature"
             return False
+        color_addr, how = resolved
 
         self._handle = handle
         self._pid = pid
         self._color_addr = color_addr
         self._base = base
         self._size = size
+        self.resolve_method = how
+        self.last_error = ""
 
-        _log(f"Connected to SAI2 (PID: {pid}, Version: {self.version}, Color: 0x{color_addr:X})")
+        _log(f"Connected to SAI2 (PID: {pid}, Version: {self.version}, "
+             f"Color: 0x{color_addr:X}, via {how})")
         return True
+
+    def _resolve_color_address(self, handle, base: int, size: int):
+        """Find the colour slot address; returns ``(address, method)`` or None.
+
+        In ``auto`` mode every known signature is tried in turn and the first
+        one that resolves to a *readable* slot wins; an explicitly configured
+        version tries only that signature. Known fixed offsets are used as a
+        last resort, again with a readability check, so a stale offset entry
+        can never beat a live signature hit.
+        """
+        versions = list(SIGNATURES) if self._auto_version else [self.version]
+        seen: set[int] = set()
+        for version in versions:
+            signature = SIGNATURES.get(version)
+            if not signature:
+                continue
+            _log(f"Scanning with signature mode: {version}")
+            pattern_addr = _scan_pattern_masked(handle, base, size, signature["pattern"])
+            if pattern_addr is None:
+                _log(f"Pattern scan failed for {version}")
+                continue
+            rel_addr_data = _read_memory(handle, pattern_addr + signature["disp_offset"], 4)
+            if not rel_addr_data or len(rel_addr_data) != 4:
+                continue
+            rel_addr = struct.unpack("<i", rel_addr_data)[0]
+            color_addr = pattern_addr + signature["next_rip_offset"] + rel_addr
+            if color_addr in seen:
+                continue
+            seen.add(color_addr)
+            _log(f"Pattern matched at 0x{pattern_addr:X}, candidate 0x{color_addr:X}")
+            if _read_memory(handle, color_addr, 3):
+                return color_addr, f"signature:{version}"
+
+        for name, offset in KNOWN_OFFSETS.items():
+            color_addr = base + offset
+            if color_addr in seen:
+                continue
+            seen.add(color_addr)
+            if _read_memory(handle, color_addr, 3):
+                _log(f"Using fixed offset {name} -> 0x{color_addr:X}")
+                return color_addr, f"offset:{name}"
+        return None
 
     def get_color(self) -> dict[str, int] | None:
         if not self._handle or not self._color_addr:
@@ -444,11 +545,38 @@ class SAI2Sync:
         if not handle or not address:
             return False
 
+        # Panel-mode detection must run while SAI's own colour is still in the
+        # slot: after our write the picker fields no longer match the new
+        # colour, so detection would always fail. Observation is cheap (two
+        # small reads) and swallows its own errors.
+        picker = self.ui_picker()
+        if picker is not None:
+            try:
+                picker.observe(self)
+            except Exception:
+                pass
+
         try:
             ok = _write_memory(handle, address, [b, g, r])
         except Exception:
             self._reset_cache(close_handle=True)
             return False
+
+        if ok:
+            # Read-back check: a partial write (page boundary) or SAI itself
+            # overwriting the slot (user dragging its picker) would leave the
+            # wrong colour in memory. One retry, then report the failure —
+            # the caller keeps painting with whatever SAI actually has.
+            if _read_memory(handle, address, 3) != bytes((b, g, r)):
+                _log("write read-back mismatch, retrying once")
+                try:
+                    ok = _write_memory(handle, address, [b, g, r])
+                except Exception:
+                    ok = False
+                if ok and _read_memory(handle, address, 3) != bytes((b, g, r)):
+                    self.last_error = "write_verify_failed"
+                    _log("write read-back still mismatched")
+                    ok = False
 
         if ok and self._pid:
             # Best-effort UI sync: SAI's brush swatch and stroke preview keep
@@ -457,6 +585,16 @@ class SAI2Sync:
             # now — nothing beyond this point may change that outcome.
             try:
                 self.ui_refresher.refresh(self._pid, (r, g, b), previous=previous)
+            except Exception:
+                pass
+            # Picker-field mirror write: SAI's colour panel (wheel, marker,
+            # slider thumbs) is driven by a separate picker state, so the slot
+            # write above leaves it stale. Failures are swallowed — the slot
+            # write is the authoritative brush colour either way.
+            try:
+                picker = self.ui_picker()
+                if picker is not None:
+                    picker.sync(self, (r, g, b))
             except Exception:
                 pass
         return ok
@@ -475,4 +613,9 @@ class SAI2Sync:
             "pid": self._pid if connected else None,
             "colorAddr": f"0x{self._color_addr:X}" if connected and self._color_addr else None,
             "version": self.version,
+            # Machine-readable outcome for the diagnostics panel:
+            # "ok" | not_running | access_denied | open_failed:N |
+            # module_info_failed | no_signature | write_verify_failed
+            "reason": "ok" if connected else (self.last_error or "unknown"),
+            "resolvedBy": self.resolve_method if connected else None,
         }

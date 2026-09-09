@@ -186,6 +186,11 @@ _EN: dict[str, str] = {
     "连接智能手机": "Connect smartphone",
     "CSP 版本": "CSP version",
     "SAI2 版本": "SAI2 version",
+    "SAI2 面板模式": "SAI2 panel mode",
+    "SAI2 颜色面板的显示模式，用于让 SAI 的色轮跟着变色；auto 会自动识别（推荐），识别不出来时可按 SAI 里实际的模式手动指定":
+        "Which colour-panel mode SAI is showing, used to make SAI's own colour "
+        "wheel follow the colour. auto detects it (recommended); pick the mode "
+        "manually when detection is not possible",
     "SAI 界面刷新": "SAI UI refresh",
     "重绘色块（推荐）": "Repaint swatch (recommended)",
     "色块 + 笔刷预览": "Swatch + brush preview",

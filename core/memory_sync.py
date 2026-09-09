@@ -61,6 +61,9 @@ class MemorySyncThread(QThread):
         # Versions for memory syncing
         self.csp_version = "auto"
         self.sai2_version = "auto"
+        # Which SAI colour-panel mode the picker-field UI sync targets:
+        # "auto" (detect from SAI) | "vhsv" | "hsv" | "hsl".
+        self.sai2_panel_mode = "auto"
         self.udm_version = "auto"
         # SAI UI refresh is a single always-on mode (swatch repaint + verified
         # stroke-preview click, see core.sai2_ui_refresh). Kept as an
@@ -110,6 +113,7 @@ class MemorySyncThread(QThread):
         self.csp_sync.set_version(self.csp_version)
         self.sai2_sync.set_version(self.sai2_version)
         self.sai2_sync.set_ui_refresh(self.sai_ui_refresh)
+        self.sai2_sync.set_panel_mode(self.sai2_panel_mode)
         self.udm_sync.set_version(self.udm_version)
         self.ps_sync.set_version(getattr(self, 'ps_version', 'auto'))
         
