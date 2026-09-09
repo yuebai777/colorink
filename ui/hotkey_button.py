@@ -1,6 +1,7 @@
 """Hotkey capture button shared by the settings UI.
 
-Supports keyboard keys and (optionally) mouse buttons as shortcut values.
+Supports keyboard keys and (optionally) mouse buttons as shortcut values, and
+can be unbound ("无") so a default hotkey stops firing — see ``unbind()``.
 Canonical mouse-button names live in ``MOUSE_BUTTON_NAME_BY_QT`` — the
 single source of truth shared by the capture button (ui.settings_sidebar),
 the in-app LAB-toggle shortcut (ui.main_window), and the hotkey-binding
@@ -145,7 +146,8 @@ class HotkeyButton(QPushButton):
             self.waiting_for_key = True
             _set_capture_active(True)
             from core import i18n
-            self.setText(i18n.tr("请按键盘或鼠标键...") if self.allow_mouse else i18n.tr("请按键盘..."))
+            self.setText(i18n.tr("请按键盘或鼠标键...") if self.allow_mouse
+                         else i18n.tr("请按键盘..."))
             self.grabKeyboard()
             self.grabMouse()
         else:
@@ -159,6 +161,12 @@ class HotkeyButton(QPushButton):
         key = event.key()
         if key == Qt.Key.Key_Escape:
             self._cancel_capture()
+            return
+        # Delete / Backspace = "无": the explicit keyboard path to unbinding,
+        # spelled out in the capture hint. Escape still only cancels — it must
+        # never destroy a binding the user was trying to inspect.
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.unbind()
             return
 
         hotkey = parse_key_event(event)
@@ -178,6 +186,26 @@ class HotkeyButton(QPushButton):
         self.releaseKeyboard()
         self.releaseMouse()
         self.hotkeyChanged.emit(hotkey)
+
+    def unbind(self):
+        """Clear the binding ("无") so the action has no global hotkey.
+
+        Empty is a first-class stored value: ``config`` keeps it verbatim,
+        ``global_hotkeys.bind_hotkey`` returns early on it, and every local
+        shortcut comparison fails to match — so the hotkey stays unbound
+        across restarts until the user binds something again. Emits
+        ``hotkeyChanged("")``, which is how the settings row persists it and
+        hides its ✕ control. Escape / an unsupported key still only cancels a
+        capture and never lands here.
+        """
+        if self.waiting_for_key:
+            self._cancel_capture()
+        if not self.val:
+            return
+        self.val = ""
+        from core import i18n
+        self.setText(i18n.tr("未绑定"))
+        self.hotkeyChanged.emit("")
 
     def _cancel_capture(self):
         self.waiting_for_key = False

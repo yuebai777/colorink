@@ -21,7 +21,7 @@ from ui.chrome_opacity import (
     clamp_chrome_opacity,
     resolve_chrome_opacity,
 )
-from ui.hotkey_button import HotkeyButton, display_hotkey
+from ui.hotkey_button import display_hotkey
 from ui.ringless_mode import RinglessConfig
 from ui.settings.appearance_panel import AppearancePanelMixin
 from ui.settings.settings_helpers import SettingsHelpersMixin
@@ -128,48 +128,53 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         grid_hotkeys.setColumnStretch(1, 1)
 
         grid_hotkeys.addWidget(QLabel(i18n.tr("全局取色")), 0, 0)
-        self.btn_pick = HotkeyButton("pickKey", self.cfg.get("pickKey", "Ctrl+Alt+Q"), allow_mouse=True)
-        self.btn_pick.hotkeyChanged.connect(self.save_hotkeys)
-        grid_hotkeys.addWidget(self.btn_pick, 0, 1)
+        row_pick, self.btn_pick, self.btn_pick_none = self._make_hotkey_row(
+            "pickKey", self.cfg.get("pickKey", "Ctrl+Alt+Q"), self.save_hotkeys,
+            allow_mouse=True)
+        grid_hotkeys.addWidget(row_pick, 0, 1)
 
         grid_hotkeys.addWidget(QLabel(i18n.tr("隐藏窗口")), 1, 0)
-        self.btn_hide = HotkeyButton("hideWindowKey", self.cfg.get("hideWindowKey", "Ctrl+Alt+Y"), allow_mouse=True)
-        self.btn_hide.hotkeyChanged.connect(self.save_hotkeys)
-        grid_hotkeys.addWidget(self.btn_hide, 1, 1)
+        row_hide, self.btn_hide, self.btn_hide_none = self._make_hotkey_row(
+            "hideWindowKey", self.cfg.get("hideWindowKey", "Ctrl+Alt+Y"),
+            self.save_hotkeys, allow_mouse=True)
+        grid_hotkeys.addWidget(row_hide, 1, 1)
 
         grid_hotkeys.addWidget(QLabel(i18n.tr("跟随鼠标")), 2, 0)
-        self.btn_follow = HotkeyButton("followMouseKey", self.cfg.get("followMouseKey", "Ctrl+Alt+J"), allow_mouse=True)
-        self.btn_follow.hotkeyChanged.connect(self.save_hotkeys)
+        row_follow_hk, self.btn_follow, self.btn_follow_none = self._make_hotkey_row(
+            "followMouseKey", self.cfg.get("followMouseKey", "Ctrl+Alt+J"),
+            self.save_hotkeys, allow_mouse=True)
         row_follow = QHBoxLayout()
+        row_follow.setContentsMargins(0, 0, 0, 0)
         row_follow.setSpacing(6)
         self.cb_follow_mouse = QCheckBox(i18n.tr("启用"))
         self.cb_follow_mouse.stateChanged.connect(self.save_settings)
-        row_follow.addWidget(self.btn_follow, 1)
+        row_follow.addWidget(row_follow_hk, 1)
         row_follow.addWidget(self.cb_follow_mouse, 0)
         grid_hotkeys.addLayout(row_follow, 2, 1)
 
         grid_hotkeys.addWidget(QLabel(i18n.tr("灰度滤镜")), 3, 0)
-        self.btn_grayscale = HotkeyButton("grayscaleFilterKey", self.cfg.get("grayscaleFilterKey", "Ctrl+Alt+D"), allow_mouse=True)
-        self.btn_grayscale.hotkeyChanged.connect(self.save_hotkeys)
-        grid_hotkeys.addWidget(self.btn_grayscale, 3, 1)
+        row_grayscale, self.btn_grayscale, self.btn_grayscale_none = self._make_hotkey_row(
+            "grayscaleFilterKey", self.cfg.get("grayscaleFilterKey", "Ctrl+Alt+D"),
+            self.save_hotkeys, allow_mouse=True)
+        grid_hotkeys.addWidget(row_grayscale, 3, 1)
 
         grid_hotkeys.addWidget(QLabel(i18n.tr("LAB 切换（色轮悬停）")), 4, 0)
-        self.btn_lab_toggle = HotkeyButton("toggleLabKey", self.cfg.get("toggleLabKey", "Space"), allow_mouse=True)
-        self.btn_lab_toggle.setToolTip(i18n.tr("鼠标悬停在色轮或LAB区域时，按此键/鼠标键切换色轮/LAB视图；支持键盘、鼠标按键或数位板笔按键（建议侧键/中键，左键会与色轮操作冲突）；无需聚焦本窗口，无焦点取色模式下也可用"))
-        self.btn_lab_toggle.hotkeyChanged.connect(self.save_hotkeys)
-        grid_hotkeys.addWidget(self.btn_lab_toggle, 4, 1)
+        row_lab_toggle, self.btn_lab_toggle, self.btn_lab_toggle_none = self._make_hotkey_row(
+            "toggleLabKey", self.cfg.get("toggleLabKey", "Space"),
+            self.save_hotkeys, allow_mouse=True)
+        grid_hotkeys.addWidget(row_lab_toggle, 4, 1)
 
         grid_hotkeys.addWidget(QLabel(i18n.tr("LAB 切换（全局）")), 5, 0)
-        self.btn_lab_global = HotkeyButton("toggleLabGlobalKey", self.cfg.get("toggleLabGlobalKey", "Ctrl+Alt+L"), allow_mouse=True)
-        self.btn_lab_global.setToolTip(i18n.tr("任意位置全局切换色轮/LAB视图，无需聚焦本窗口；支持键盘或鼠标按键（鼠标按键作为全局快捷键时不拦截点击，画画软件仍会收到）"))
-        self.btn_lab_global.hotkeyChanged.connect(self.save_hotkeys)
-        grid_hotkeys.addWidget(self.btn_lab_global, 5, 1)
+        row_lab_global, self.btn_lab_global, self.btn_lab_global_none = self._make_hotkey_row(
+            "toggleLabGlobalKey", self.cfg.get("toggleLabGlobalKey", "Ctrl+Alt+L"),
+            self.save_hotkeys, allow_mouse=True)
+        grid_hotkeys.addWidget(row_lab_global, 5, 1)
 
         grid_hotkeys.addWidget(QLabel(i18n.tr("标题栏显示/隐藏")), 6, 0)
-        self.btn_title_bar = HotkeyButton("toggleTitleBarKey", self.cfg.get("toggleTitleBarKey", "Ctrl+Alt+K"), allow_mouse=True)
-        self.btn_title_bar.setToolTip(i18n.tr("显示或隐藏标题栏（设置/最小化/关闭按钮那一栏）；隐藏后顶部边框与四周一致"))
-        self.btn_title_bar.hotkeyChanged.connect(self.save_hotkeys)
-        grid_hotkeys.addWidget(self.btn_title_bar, 6, 1)
+        row_title_bar, self.btn_title_bar, self.btn_title_bar_none = self._make_hotkey_row(
+            "toggleTitleBarKey", self.cfg.get("toggleTitleBarKey", "Ctrl+Alt+K"),
+            self.save_hotkeys, allow_mouse=True)
+        grid_hotkeys.addWidget(row_title_bar, 6, 1)
 
         cl_hk.addLayout(grid_hotkeys)
         page_hotkeys.addWidget(card_hk)
@@ -263,6 +268,8 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         _title_bar = self.cfg.get("toggleTitleBarKey", "Ctrl+Alt+K")
         self.btn_title_bar.setText(display_hotkey(_title_bar) if _title_bar else i18n.tr("未绑定"))
         self.btn_title_bar.val = _title_bar
+
+        self._sync_hotkey_none_buttons()
         
         self.combo_grayscale_mode.blockSignals(True)
         backend = self.cfg.get("grayscaleFilterBackend", "dcomp")
@@ -524,6 +531,25 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
 
 
 
+    def _sync_hotkey_none_buttons(self):
+        """Show each「无」button only while its hotkey is bound.
+
+        Hidden (not merely disabled) when the row is unbound: there is nothing
+        left to clear, and the freed width goes to the capture button so a long
+        combination such as ``Ctrl+Alt+Shift+F5`` still fits its label. Called
+        from ``refresh_ui`` and ``save_hotkeys`` — both run after the widgets
+        exist, so ``setVisible`` has a parent to take effect against.
+        """
+        for name in ("pick", "hide", "follow", "grayscale", "lab_toggle",
+                     "lab_global", "title_bar"):
+            button = getattr(self, f"btn_{name}", None)
+            none_btn = getattr(self, f"btn_{name}_none", None)
+            if button is None or none_btn is None:
+                continue
+            bound = bool(button.val)
+            none_btn.setEnabled(bound)
+            none_btn.setVisible(bound)
+
     def save_hotkeys(self, new_val=None):
         self.cfg["pickKey"] = self.btn_pick.val
         self.cfg["hideWindowKey"] = self.btn_hide.val
@@ -532,6 +558,9 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cfg["toggleLabKey"] = self.btn_lab_toggle.val
         self.cfg["toggleLabGlobalKey"] = self.btn_lab_global.val
         self.cfg["toggleTitleBarKey"] = self.btn_title_bar.val
+        # Keep the ✕ controls in step with the values just saved (binding a
+        # key enables its ✕, unbinding disables it).
+        self._sync_hotkey_none_buttons()
         self._persist_and_emit()
 
     def _grayscale_filter_config(self) -> dict:

@@ -475,6 +475,35 @@ class AppearancePanelMixin:
             QPushButton#StepButton:disabled {{
                 color: {disabled_color};
             }}
+            /* Hotkey unbind ("无") button — sits beside the capture button so
+               clearing a hotkey is an explicit, always-labelled choice. Hidden
+               (see _sync_hotkey_none_buttons) while the binding is already
+               empty, so its :disabled style is only a fallback. */
+            QPushButton#HotkeyNoneButton {{
+                min-width: 22px;
+                max-width: 22px;
+                min-height: 24px;
+                max-height: 24px;
+                padding: 0;
+                border: 1px solid {borderColor};
+                border-radius: 3px;
+                font-size: {font_size}px;
+                background-color: {bg};
+                color: {text};
+            }}
+            QPushButton#HotkeyNoneButton:hover {{
+                border-color: {accent};
+                background-color: {hover_bg};
+            }}
+            QPushButton#HotkeyNoneButton:pressed {{
+                background-color: {pressed_bg};
+            }}
+            QPushButton#HotkeyNoneButton:focus {{
+                border-color: {accent};
+            }}
+            QPushButton#HotkeyNoneButton:disabled {{
+                color: {disabled_color};
+            }}
             QLabel#StepValueLabel {{
                 border: 1px solid {borderColor};
                 background-color: {bg};

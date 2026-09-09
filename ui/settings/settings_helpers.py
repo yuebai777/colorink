@@ -22,6 +22,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core import i18n
+
 # Resolve resource paths relative to the repo root so packaged builds
 # (PyInstaller) work regardless of the current working directory.
 _ICONS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "icons")
@@ -91,6 +93,41 @@ class SettingsHelpersMixin:
         if tooltip:
             btn.setToolTip(tooltip)
         return btn
+
+    def _make_hotkey_row(self, hotkey_type, initial_val, changed,
+                         allow_mouse=False):
+        """One hotkey row: capture button + an explicit「无」unbind button.
+
+        ``changed`` receives the new value ("" after unbinding). The「无」button
+        is the visible, always-labelled way to clear a binding; it hides while
+        the row is already unbound (nothing left to clear) and the freed width
+        goes to the capture button. The caller stores the returned widgets as
+        ``btn_<name>`` / ``btn_<name>_none`` so ``refresh_ui`` and the tooltip
+        catalog can reach them.
+
+        Returns ``(row_widget, button, none_button)``; the caller adds the row
+        to its grid (instead of the bare button) so the two sit side by side.
+        """
+        from ui.hotkey_button import HotkeyButton
+
+        button = HotkeyButton(hotkey_type, initial_val, allow_mouse=allow_mouse)
+        button.hotkeyChanged.connect(changed)
+
+        none_btn = QPushButton("无")
+        none_btn.setObjectName("HotkeyNoneButton")
+        none_btn.setFixedSize(22, 24)
+        none_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        none_btn.setEnabled(bool(initial_val))
+        none_btn.setToolTip(i18n.tr("解绑此快捷键（设为「无」）"))
+        none_btn.clicked.connect(button.unbind)
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(4)
+        row_layout.addWidget(button, 1)
+        row_layout.addWidget(none_btn, 0)
+        return row, button, none_btn
 
     @staticmethod
     def _set_label_state(lbl, state):
