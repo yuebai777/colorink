@@ -13,7 +13,7 @@ hero:
       text: 快速上手指南 →
       link: /guide/getting-started
     - theme: alt
-      text: 下载最新版 (v1.8.5)
+      text: 下载最新版 (v1.8.7)
       link: https://github.com/yuebai777/colorink/releases/latest
     - theme: alt
       text: 绘画软件同步配置

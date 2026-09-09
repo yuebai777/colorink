@@ -18,7 +18,7 @@ export default defineConfig({
       { text: '绘画软件同步', link: '/sync/overview' },
       { text: '常见问题 (FAQ)', link: '/faq/' },
       {
-        text: 'v1.8.5 下载',
+        text: 'v1.8.7 下载',
         link: 'https://github.com/yuebai777/colorink/releases/latest'
       }
     ],
