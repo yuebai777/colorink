@@ -7,6 +7,7 @@ hook thread → no GIL contention → smooth + click interception.
 
 import ctypes
 import os
+import time
 from typing import Any, cast
 
 import win32api
@@ -44,6 +45,7 @@ def _zoom_geometry(zoom):
 
 # Load native mouse hook DLL
 _hook_dll = None
+_hook_has_drain = False
 try:
     _hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                               "core", "picker_hook.dll")
@@ -52,6 +54,16 @@ try:
     _hook_dll.left_clicked.restype = ctypes.c_int
     _hook_dll.right_clicked.restype = ctypes.c_int
     _hook_dll.get_wheel_delta.restype = ctypes.c_int
+    # Symmetric-swallow drain API (Wintab first-stroke fix).  Probed in its
+    # own try so an older picker_hook.dll still loads and works — it just
+    # keeps the historical "swallow DOWN, let UP through" behaviour.
+    try:
+        _hook_dll.pending.restype = ctypes.c_int
+        _hook_dll.maintenance.restype = ctypes.c_int
+        _hook_dll.uninstall_force.restype = None
+        _hook_has_drain = True
+    except AttributeError:
+        _hook_has_drain = False
 except Exception:
     pass  # DLL missing — clicks won't be intercepted but picker still works
 
@@ -147,6 +159,23 @@ class ColorPickerOverlay(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(16)
         self._timer.timeout.connect(self._tick)
+        # Hard watchdog: while the picker is active its hook DLL swallows
+        # every click system-wide (picker_hook.c returns 1). If the pick flow
+        # is ever interrupted without stop(), that would permanently eat all
+        # clicks — force-stop after 30 s no matter what.
+        self._watchdog = QTimer(self)
+        self._watchdog.setSingleShot(True)
+        self._watchdog.setInterval(30000)
+        self._watchdog.timeout.connect(self._watchdog_stop)
+        # Button-up drain.  picker_hook.c swallows the DOWN that confirms a
+        # pick, so it must also swallow the matching UP (an orphan UP desyncs
+        # Photoshop's stylus state machine → next stroke loses pressure).  The
+        # DLL keeps the hook installed until that UP is eaten; this polls
+        # ``maintenance()`` until it has unhooked so no global hook lingers.
+        self._drain_timer = QTimer(self)
+        self._drain_timer.setInterval(16)
+        self._drain_timer.timeout.connect(self._drain_hook)
+        self._drain_deadline = 0.0
 
     def _capture_all_screens(self):
         """Snapshot every screen once, before any picker UI is shown.
@@ -294,6 +323,9 @@ class ColorPickerOverlay(QWidget):
         self._capture_all_screens()
         if _hook_dll:
             _hook_dll.install()
+        # Re-arming the hook makes a previous drain moot (install() reuses the
+        # live hook and keeps any owed UP counted).
+        self._drain_timer.stop()
         self._hide_cursor()          # hide the system cursor — leave only the custom cross-hair dot
         # Apply no-activate before show() so the native windows are created
         # with WS_EX_NOACTIVATE and Qt cannot activate them while showing;
@@ -308,14 +340,73 @@ class ColorPickerOverlay(QWidget):
         self._apply_noactivate()
         self._timer.start()
         self._tick()
+        self._watchdog.start()
         self.activated.emit()
+
+    def _watchdog_stop(self):
+        if self._active:
+            print("[Picker] Watchdog timeout (30s) — force-stopping picker")
+            self.stop()
+
+    # Hook teardown ---------------------------------------------------------
+    # The picker's native hook swallows the mouse DOWN that confirms a pick.
+    # Releasing it immediately would let the paired UP through as an orphan,
+    # which desyncs Photoshop's mouse/stylus state machine and (in Wintab
+    # mode) makes the following stroke start without pressure.  So the hook is
+    # released in two phases: mark it inactive now, then keep it installed
+    # (swallowing only the owed UP) until the DLL reports it has unhooked.
+
+    def _release_hook(self):
+        """Stop intercepting clicks, draining any owed button-up first."""
+        if not _hook_dll:
+            return
+        try:
+            _hook_dll.uninstall()
+        except Exception:
+            pass
+        if not _hook_has_drain:
+            return
+        try:
+            owed = _hook_dll.pending()
+        except Exception:
+            return
+        if not owed:
+            return
+        self._drain_deadline = time.monotonic() + 5.0
+        if not self._drain_timer.isActive():
+            self._drain_timer.start()
+
+    def _drain_hook(self):
+        if not _hook_dll or not _hook_has_drain:
+            self._drain_timer.stop()
+            return
+        if self._active:
+            # A new pick re-armed the very same hook; its own stop() will
+            # drain again.  Never force-unhook a live pick.
+            self._drain_timer.stop()
+            return
+        try:
+            still_hooked = _hook_dll.maintenance()
+        except Exception:
+            still_hooked = 0
+        if not still_hooked:
+            self._drain_timer.stop()
+            return
+        if time.monotonic() > self._drain_deadline:
+            # The paired UP never arrived (dropped/never delivered).  Give up
+            # on it so the hook can never linger and eat a later click.
+            try:
+                _hook_dll.uninstall_force()
+            except Exception:
+                pass
+            self._drain_timer.stop()
 
     def stop(self):
         self._active = False
         self._wheel_accumulator = 0
         self._timer.stop()
-        if _hook_dll:
-            _hook_dll.uninstall()
+        self._watchdog.stop()
+        self._release_hook()
         self._show_cursor()          # restore the system cursor we hid in start()
         self._dot.hide()
         self.hide()
@@ -332,10 +423,21 @@ class ColorPickerOverlay(QWidget):
         self._active = False
         self._wheel_accumulator = 0
         self._timer.stop()
+        self._watchdog.stop()
+        self._drain_timer.stop()
         self._dot.close()
         self._show_cursor()          # ensure the cursor never gets stuck hidden if the widget is closed mid-pick
         if _hook_dll:
-            _hook_dll.uninstall()
+            # Force-free: the widget is going away, so the drain timer can no
+            # longer run to completion.  Close/shutdown is not the moment the
+            # next stroke starts, so risking one orphan UP here is acceptable.
+            try:
+                if _hook_has_drain:
+                    _hook_dll.uninstall_force()
+                else:
+                    _hook_dll.uninstall()
+            except Exception:
+                pass
         self._frozen = False
         self._freeze_pos = None
         self._shift_origin = None

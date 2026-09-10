@@ -477,6 +477,9 @@ class PhotoshopScriptBridge:
     def __init__(self) -> None:
         self.dir: str = user_cep_dir()
         self._panel_version_cache: dict[int, tuple[float, int | None]] = {}
+        # Monotonic deadline until which the client reports "assumed drawing"
+        # (see note_color_applied). 0.0 = inactive.
+        self._assume_drawing_until: float = 0.0
 
     # -- deployment ---------------------------------------------------------
 
@@ -686,6 +689,39 @@ class PhotoshopScriptBridge:
                         pass
         except Exception:
             pass
+
+    def note_color_applied(self, window_ms: int = 450) -> None:
+        """Mark a short "assumed drawing" window after handing PS a colour.
+
+        The CEP panel applies a write with ExtendScript on Photoshop's main
+        thread, and then keeps polling ``state.txt`` with another ExtendScript
+        every ~100 ms.  Those calls block PS's message pump; with Wintab the
+        stylus packet queue stalls while it is blocked, so a stroke that
+        starts right then loses its opening pressure packet — the classic
+        "first stroke has no pressure" bug, which shows up right after a
+        pick because the user draws immediately after confirming a colour.
+
+        ``memory_sync`` mirrors this flag into ``drawing.txt`` so the panel
+        skips its periodic state read for the window.  The *apply* itself is
+        deliberately not delayed: the colour must land before the user
+        paints, and the read-back is redundant during the window anyway
+        (applyScript already writes ``state.txt``).
+
+        This is the driver-agnostic fallback for ``is_painting`` detection:
+        VK_LBUTTON is not set by every Wintab driver (Huion / XP-Pen builds
+        commonly skip it), so tip-contact alone cannot be trusted.
+        """
+        try:
+            self._assume_drawing_until = time.monotonic() + max(0.0, window_ms / 1000.0)
+        except Exception:
+            pass
+
+    def assume_drawing_active(self) -> bool:
+        """True while the post-write "assumed drawing" window is open."""
+        try:
+            return time.monotonic() < self._assume_drawing_until
+        except Exception:
+            return False
 
     def cleanup_runtime_flags(self) -> None:
         """Remove transient client_alive.txt and drawing.txt."""

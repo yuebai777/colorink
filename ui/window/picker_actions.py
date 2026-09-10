@@ -236,9 +236,10 @@ class PickerActionsMixin:
             self.settings_window.hide()
         else:
             self._show_settings_window()
-        # Keep the no-focus window flags in sync with settings visibility:
-        # opening settings disables no-focus so the settings window can be
-        # used normally; closing it restores no-focus immediately.
+        # Keep the no-focus window flags in sync with settings visibility.
+        # The main window keeps NOACTIVATE either way (settings use their own
+        # top-level window) — toggling them here would let this window steal
+        # the drawing app's foreground and cost the next stroke its pressure.
         self.update_window_flags()
         self.update_no_focus_policies()
 
@@ -830,8 +831,14 @@ class PickerActionsMixin:
         if not self.cfg.get("showTaskbarIcon", False):
             flags |= Qt.WindowType.Tool
 
-        # Only apply no-focus mode if settings sidebar is CLOSED
-        no_focus = self.cfg.get("noFocusMode", False) and not (hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible())
+        # No-focus mode is a global preference — keep it on even while the
+        # settings UI is open.  Settings now live in their own top-level
+        # SettingsWindow, so the main window never needs to accept focus on
+        # its behalf.  Dropping NOACTIVATE here used to let the main window
+        # grab Photoshop's foreground when it was clicked with settings open;
+        # PS then closes and reopens its Wintab context, and the next stylus
+        # stroke starts without pressure.
+        no_focus = bool(self.cfg.get("noFocusMode", False))
         if no_focus:
             flags |= Qt.WindowType.WindowDoesNotAcceptFocus
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, no_focus)
@@ -853,9 +860,11 @@ class PickerActionsMixin:
         self._apply_ws_ex_noactivate(no_focus)
 
     def update_no_focus_policies(self):
-        is_settings_open = hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible()
-        enabled = self.cfg.get("noFocusMode", False) and not is_settings_open
-        
+        # Mirror update_window_flags(): the no-focus preference no longer
+        # depends on settings visibility (settings own a separate window), so
+        # the main window keeps refusing focus for Photoshop's sake.
+        enabled = bool(self.cfg.get("noFocusMode", False))
+
         policy = Qt.FocusPolicy.NoFocus if enabled else Qt.FocusPolicy.StrongFocus
 
         # Prevent Qt from activating the top-level window when it is shown.

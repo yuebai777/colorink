@@ -248,6 +248,25 @@ class MemorySyncThread(QThread):
                 break
             time.sleep(0.002)
 
+    def _note_ps_write(self) -> None:
+        """Open the post-write "assumed drawing" window on the PS bridge.
+
+        The CEP panel applies the colour with ExtendScript on Photoshop's main
+        thread and then keeps reading state with another ExtendScript every
+        ~100 ms; each call blocks the message pump, and with Wintab the
+        stylus packet queue stalls while it is blocked.  The user typically
+        starts the next stroke in exactly that window after confirming a
+        pick, so the opening pressure packet gets dropped.  Marking a short
+        "assumed drawing" window lets the panel's periodic state read stand
+        down for that moment (the apply itself is never delayed).
+        """
+        note = getattr(self.ps_sync, "note_color_applied", None)
+        if callable(note):
+            try:
+                note()
+            except Exception:
+                pass
+
     def get_active_pid(self):
         if not self.sync_enabled or self.paused:
             return None
@@ -322,6 +341,7 @@ class MemorySyncThread(QThread):
                             else:
                                 self.ps_sync.set_color(r1, g1, b1, color_index=1)
                                 self.ps_sync.set_color(r0, g0, b0, color_index=0)
+                            self._note_ps_write()
                             continue
 
                         # GUI 线程可能同时整体替换 _pending_writes（
@@ -403,6 +423,7 @@ class MemorySyncThread(QThread):
                             self.udm_sync.set_color(r, g, b)
                         elif self.software_mode == 'ps':
                             self.ps_sync.set_color(r, g, b, color_index=color_index)
+                            self._note_ps_write()
                         elif self.software_mode == 'companion':
                             self.companion_sync.set_color(
                                 r, g, b, hsv_u32=hsv_override, color_index=color_index,
@@ -506,6 +527,20 @@ class MemorySyncThread(QThread):
                                             is_painting = True
                     except Exception:
                         pass
+                    # Driver-agnostic fallback (Wintab + Huion/XP-Pen): some
+                    # drivers never set VK_LBUTTON for the pen tip, so the
+                    # check above misses real strokes.  The user almost always
+                    # starts drawing right after confirming a pick, so treat
+                    # the short post-write window as "painting" too and keep
+                    # the panel's periodic state ExtendScript quiet while the
+                    # first stroke's pressure packets are being delivered.
+                    if not is_painting:
+                        active = getattr(self.ps_sync, "assume_drawing_active", None)
+                        if callable(active):
+                            try:
+                                is_painting = bool(active())
+                            except Exception:
+                                pass
                     if hasattr(self.ps_sync, "set_drawing"):
                         self.ps_sync.set_drawing(is_painting)
 
