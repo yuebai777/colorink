@@ -52,6 +52,14 @@
   --vp-c-tip-1: var(--vp-c-brand-1);
   --vp-c-tip-soft: var(--vp-c-brand-soft);
 
+  /* 暗色背景体系：整体压暗，层次分明 */
+  --vp-c-bg: #131318;
+  --vp-c-bg-alt: #17171e;
+  --vp-c-bg-soft: #1a1a23;
+  --vp-c-bg-elv: #20202b;
+  --vp-c-divider: #2a2a36;
+  --vp-c-gutter: #23232e;
+
   --vp-home-hero-name-background: linear-gradient(
     115deg,
     #9d86ff 15%,
@@ -60,10 +68,10 @@
     #ffa25e 100%
   );
 
-  --ck-card-bg: #1b1b22;
-  --ck-card-border: #2c2c38;
-  --ck-placeholder-bg: linear-gradient(135deg, #201d33 0%, #2a1e2e 100%);
-  --ck-placeholder-border: #4a4170;
+  --ck-card-bg: #1c1c26;
+  --ck-card-border: #2e2e3c;
+  --ck-placeholder-bg: linear-gradient(135deg, #1f1c30 0%, #261e2c 100%);
+  --ck-placeholder-border: #49416e;
   --ck-placeholder-text: #a79ad6;
 }
 
@@ -76,6 +84,52 @@
 .VPHome .VPHero .tagline {
   max-width: 640px;
   line-height: 1.7;
+}
+
+/* Hero 右侧产品截图：放大 + 梦幻投影 */
+@media (min-width: 960px) {
+  .VPHome .VPHero .image-container {
+    max-width: 600px;
+    max-height: 600px;
+  }
+}
+
+@media (min-width: 640px) and (max-width: 959px) {
+  .VPHome .VPHero .image-container {
+    max-width: 460px;
+    max-height: 460px;
+  }
+}
+
+.VPHome .VPHero .VPImage {
+  border-radius: 16px;
+  box-shadow:
+    0 20px 55px rgba(109, 90, 232, 0.28),
+    0 4px 16px rgba(236, 72, 153, 0.15);
+}
+
+.dark .VPHome .VPHero .VPImage {
+  box-shadow:
+    0 20px 60px rgba(90, 65, 224, 0.45),
+    0 4px 18px rgba(236, 72, 153, 0.25);
+}
+
+/* Hero 主按钮：渐变 + 柔光 */
+.VPHome .VPHero .VPButton.brand {
+  background: linear-gradient(115deg, #6d5ae8, #a44fe6 60%, #c44bd8);
+  border: none;
+  box-shadow: 0 8px 22px rgba(109, 90, 232, 0.35);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.VPHome .VPHero .VPButton.brand:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 30px rgba(109, 90, 232, 0.45);
+}
+
+.dark .VPHome .VPHero .VPButton.brand {
+  background: linear-gradient(115deg, #7a63e8, #a44fe6 60%, #c44bd8);
+  color: #fff;
 }
 
 /* ============ 首页通用板块 ============ */
@@ -277,6 +331,8 @@
 }
 
 .ck-sponsor-img {
+  display: block;
+  margin: 0 auto;
   width: 220px;
   border-radius: 12px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
@@ -324,7 +380,17 @@
 
 .VPFeatures .VPFeature:hover {
   transform: translateY(-3px);
-  box-shadow: 0 10px 28px rgba(90, 65, 224, 0.12);
+  box-shadow: 0 12px 32px rgba(109, 90, 232, 0.16);
+}
+
+/* 特性图标：梦幻粉紫渐变底 */
+.VPFeatures .VPFeature .icon {
+  background: linear-gradient(135deg, #efeaff 0%, #ffeaf4 100%);
+  border-radius: 12px;
+}
+
+.dark .VPFeatures .VPFeature .icon {
+  background: linear-gradient(135deg, #29233f 0%, #332130 100%);
 }
 
 /* ============ 响应式 ============ */
