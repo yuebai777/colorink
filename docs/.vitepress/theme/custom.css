@@ -1,0 +1,342 @@
+/**
+ * Colorink 文档站自定义主题
+ * 设计基调：明快、通透、彩色 —— 契合"调色工具"的产品气质
+ * 同时适配亮色（默认）与暗色模式
+ */
+
+/* ============ 品牌色（亮色模式） ============ */
+:root {
+  --vp-c-brand-1: #6d5ae8;
+  --vp-c-brand-2: #5a41e0;
+  --vp-c-brand-3: #4a34c8;
+  --vp-c-brand-soft: rgba(109, 90, 232, 0.13);
+
+  --vp-c-tip-1: var(--vp-c-brand-1);
+  --vp-c-tip-soft: var(--vp-c-brand-soft);
+
+  /* Hero 标题渐变：紫 → 品红 → 珊瑚橙，像调色盘上的一抹渐变 */
+  --vp-home-hero-name-background: linear-gradient(
+    115deg,
+    #5a41e0 15%,
+    #a53fe8 45%,
+    #ec4899 72%,
+    #f97316 100%
+  );
+  --vp-home-hero-image-background-image: linear-gradient(
+    -45deg,
+    rgba(90, 65, 224, 0.35) 30%,
+    rgba(236, 72, 153, 0.35) 70%
+  );
+  --vp-home-hero-image-filter: blur(56px);
+
+  /* 页面背景：极浅的冷白，避免刺眼 */
+  --vp-c-bg: #fdfdfe;
+  --vp-c-bg-soft: #f6f6fa;
+  --vp-c-bg-elv: #ffffff;
+
+  /* 首页板块自定义变量 */
+  --ck-card-bg: #ffffff;
+  --ck-card-border: #e9e9f2;
+  --ck-placeholder-bg: linear-gradient(135deg, #f4f2ff 0%, #fdf2f8 100%);
+  --ck-placeholder-border: #cfc6f5;
+  --ck-placeholder-text: #7a6fb8;
+}
+
+/* ============ 品牌色（暗色模式） ============ */
+.dark {
+  --vp-c-brand-1: #a690ff;
+  --vp-c-brand-2: #8f78f5;
+  --vp-c-brand-3: #7a63e8;
+  --vp-c-brand-soft: rgba(166, 144, 255, 0.16);
+
+  --vp-c-tip-1: var(--vp-c-brand-1);
+  --vp-c-tip-soft: var(--vp-c-brand-soft);
+
+  --vp-home-hero-name-background: linear-gradient(
+    115deg,
+    #9d86ff 15%,
+    #c77dff 45%,
+    #ff7eb3 72%,
+    #ffa25e 100%
+  );
+
+  --ck-card-bg: #1b1b22;
+  --ck-card-border: #2c2c38;
+  --ck-placeholder-bg: linear-gradient(135deg, #201d33 0%, #2a1e2e 100%);
+  --ck-placeholder-border: #4a4170;
+  --ck-placeholder-text: #a79ad6;
+}
+
+/* ============ Hero 区微调 ============ */
+.VPHome .VPHero .name,
+.VPHome .VPHero .text {
+  max-width: 640px;
+}
+
+.VPHome .VPHero .tagline {
+  max-width: 640px;
+  line-height: 1.7;
+}
+
+/* ============ 首页通用板块 ============ */
+.ck-section {
+  margin: 2.5rem auto 0;
+  max-width: 1152px;
+  padding: 0 24px;
+}
+
+.ck-section-title {
+  text-align: center;
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-bottom: 0.5rem;
+  background: var(--vp-home-hero-name-background);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.ck-section-sub {
+  text-align: center;
+  color: var(--vp-c-text-2);
+  margin: 0 auto 2rem;
+  max-width: 640px;
+  line-height: 1.7;
+}
+
+/* ============ 截图展示与占位 ============ */
+.ck-shot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+  margin-bottom: 1rem;
+}
+
+.ck-shot {
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--ck-card-border);
+  background: var(--ck-card-bg);
+  box-shadow: 0 6px 24px rgba(90, 65, 224, 0.07);
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.ck-shot:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 32px rgba(90, 65, 224, 0.13);
+}
+
+.ck-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.ck-shot .ck-shot-cap {
+  padding: 10px 14px;
+  font-size: 0.85rem;
+  color: var(--vp-c-text-2);
+  border-top: 1px solid var(--ck-card-border);
+}
+
+/* 图片占位块：后续拿到图后，直接把整个 div 换成 <img> 即可 */
+.ck-img-placeholder {
+  aspect-ratio: 16 / 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--ck-placeholder-bg);
+  border: 1.5px dashed var(--ck-placeholder-border);
+  color: var(--ck-placeholder-text);
+}
+
+.ck-img-placeholder .ck-ph-icon {
+  font-size: 2rem;
+  opacity: 0.75;
+}
+
+.ck-img-placeholder .ck-ph-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.ck-img-placeholder .ck-ph-note {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+/* ============ 软件同步徽章 ============ */
+.ck-sync-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.ck-sync-card {
+  border: 1px solid var(--ck-card-border);
+  background: var(--ck-card-bg);
+  border-radius: 14px;
+  padding: 20px;
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.ck-sync-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 28px rgba(90, 65, 224, 0.12);
+}
+
+.ck-sync-card h3 {
+  margin: 0 0 6px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  border: none;
+  padding: 0;
+}
+
+.ck-sync-card .ck-sync-mode {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--vp-c-brand-soft);
+  color: var(--vp-c-brand-1);
+  margin-bottom: 10px;
+}
+
+.ck-sync-card p {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.65;
+  color: var(--vp-c-text-2);
+}
+
+/* ============ 赞助板块（爱发电） ============ */
+.ck-sponsor {
+  border-radius: 18px;
+  padding: 2.5rem 2rem;
+  text-align: center;
+  background: linear-gradient(135deg, rgba(109, 90, 232, 0.10) 0%, rgba(236, 72, 153, 0.10) 100%);
+  border: 1px solid var(--ck-card-border);
+}
+
+.ck-sponsor h2 {
+  border: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  font-size: 1.6rem;
+}
+
+.ck-sponsor p {
+  color: var(--vp-c-text-2);
+  max-width: 560px;
+  margin: 0 auto 1.5rem;
+  line-height: 1.7;
+}
+
+.ck-sponsor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.ck-btn {
+  display: inline-block;
+  padding: 10px 26px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  text-decoration: none !important;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.ck-btn:hover {
+  transform: translateY(-2px);
+}
+
+.ck-btn-afdian {
+  background: linear-gradient(115deg, #946ce6, #7c5cff);
+  color: #ffffff !important;
+  box-shadow: 0 6px 18px rgba(124, 92, 255, 0.35);
+}
+
+.ck-btn-afdian:hover {
+  box-shadow: 0 10px 24px rgba(124, 92, 255, 0.45);
+}
+
+.ck-btn-ghost {
+  border: 1.5px solid var(--vp-c-brand-1);
+  color: var(--vp-c-brand-1) !important;
+  background: transparent;
+}
+
+.ck-sponsor-img {
+  width: 220px;
+  border-radius: 12px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+}
+
+/* ============ 社区板块 ============ */
+.ck-community {
+  border-radius: 18px;
+  padding: 2.5rem 2rem;
+  text-align: center;
+  background: var(--vp-c-bg-soft);
+  border: 1px solid var(--ck-card-border);
+}
+
+.ck-community h2 {
+  border: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  font-size: 1.6rem;
+}
+
+.ck-community p {
+  color: var(--vp-c-text-2);
+  max-width: 560px;
+  margin: 0 auto 1.5rem;
+  line-height: 1.7;
+}
+
+.ck-community img {
+  width: 200px;
+  margin: 0 auto 1rem;
+  border-radius: 12px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
+  display: block;
+}
+
+.ck-community strong {
+  font-size: 1.05rem;
+}
+
+/* ============ 特性卡片微调（默认 features） ============ */
+.VPFeatures .VPFeature {
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.VPFeatures .VPFeature:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 28px rgba(90, 65, 224, 0.12);
+}
+
+/* ============ 响应式 ============ */
+@media (max-width: 640px) {
+  .ck-section {
+    padding: 0 16px;
+  }
+  .ck-section-title {
+    font-size: 1.4rem;
+  }
+  .ck-sponsor,
+  .ck-community {
+    padding: 2rem 1.25rem;
+  }
+}
