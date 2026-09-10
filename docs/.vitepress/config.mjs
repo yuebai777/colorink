@@ -146,7 +146,7 @@ export default defineConfig({
           { text: '常见问题', link: '/faq/' },
           { text: '⚡ 爱发电', link: 'https://afdian.com/a/touyimoyuebai' },
           {
-            text: 'v1.8.8 下载',
+            text: 'v1.8.9 下载',
             link: 'https://github.com/yuebai777/colorink/releases/latest'
           }
         ],
@@ -187,7 +187,7 @@ export default defineConfig({
           { text: 'FAQ', link: '/en/faq/' },
           { text: '⚡ Sponsor', link: 'https://afdian.com/a/touyimoyuebai' },
           {
-            text: 'Download v1.8.8',
+            text: 'Download v1.8.9',
             link: 'https://github.com/yuebai777/colorink/releases/latest'
           }
         ],
