@@ -89,15 +89,15 @@
 /* Hero 右侧产品截图：放大 + 梦幻投影 */
 @media (min-width: 960px) {
   .VPHome .VPHero .image-container {
-    max-width: 600px;
-    max-height: 600px;
+    max-width: 660px;
+    max-height: 660px;
   }
 }
 
 @media (min-width: 640px) and (max-width: 959px) {
   .VPHome .VPHero .image-container {
-    max-width: 460px;
-    max-height: 460px;
+    max-width: 500px;
+    max-height: 500px;
   }
 }
 

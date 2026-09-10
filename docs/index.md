@@ -6,8 +6,8 @@ hero:
   text: "专为绘画与设计打造的桌面调色工具"
   tagline: "全局极速取色 · 高精度色空间调色 · 绘画软件无缝同步 · 硬件感知灰度滤镜"
   image:
-    src: /screenshot.png
-    alt: Colorink 主界面截图
+    src: /hero-showcase.png
+    alt: Colorink 多种色盘与主题一览
   actions:
     - theme: brand
       text: 快速上手 →
