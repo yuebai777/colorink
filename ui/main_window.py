@@ -263,9 +263,10 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.init_foreground_tracker()
         self.apply_theme()
         self.init_tray()
-        # Timestamp of the last consumed local mouse/pen toggle press, used
-        # to deduplicate the tablet + synthetic-mouse event pair.
-        self._last_lab_toggle_ts = 0.0
+        # Timestamp of the last consumed local view-shortcut press (wheel ⇄
+        # LAB or next tab), used to deduplicate the tablet + synthetic-mouse
+        # event pair.
+        self._last_local_view_ts = 0.0
         app = QApplication.instance()
         if app is not None:
             app.installEventFilter(self)

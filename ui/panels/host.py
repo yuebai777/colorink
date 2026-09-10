@@ -447,8 +447,6 @@ class PanelHost(QWidget):
                 if tabs is None:
                     continue
                 current = tabs.currentIndex()
-                for index in range(tabs.count()):
-                    tabs.widget(index).setVisible(index == current)
                 # QStackedLayout.setCurrentIndex hides the outgoing page and shows
                 # the incoming one *synchronously*; a round-trip through another
                 # page forces that bookkeeping to run immediately, while the long
@@ -458,11 +456,64 @@ class PanelHost(QWidget):
                     other = (current + 1) % tabs.count()
                     tabs.setCurrentIndex(other)
                     tabs.setCurrentIndex(current)
-                stack = tabs.findChild(QStackedWidget)
-                if stack is not None and stack.layout() is not None:
-                    stack.layout().activate()
+                self._show_current_tab_page(tabs)
         finally:
             self._syncing_tabs = False
+
+    @staticmethod
+    def _show_current_tab_page(tabs: QTabWidget) -> None:
+        """Make exactly the current page of *tabs* visible, right now.
+
+        The stack's own bookkeeping is deferred until it is laid out, so a
+        page switched by anything other than a click (the local view
+        shortcut) would otherwise share the frame with the page it replaced
+        until the next layout pass.
+        """
+        current = tabs.currentIndex()
+        for index in range(tabs.count()):
+            page = tabs.widget(index)
+            if page is not None:
+                page.setVisible(index == current)
+        stack = tabs.findChild(QStackedWidget)
+        if stack is not None and stack.layout() is not None:
+            stack.layout().activate()
+
+    def tab_widget_at(self, global_pos: QPoint) -> QTabWidget | None:
+        """The tab stack whose visible area holds *global_pos*, or None.
+
+        The area is the whole QTabWidget rectangle — the header strip *and*
+        the current page below it — matching the whole-pane rule the
+        wheel/LAB zone already uses, so the shortcut keeps working after the
+        cursor has moved off the strip onto the page. Stacks with a single
+        page are skipped: there is nothing to switch to.
+        """
+        for tabs, _node in self._tabs:
+            if tabs is None or tabs.count() < 2 or not tabs.isVisible():
+                continue
+            try:
+                if tabs.rect().contains(tabs.mapFromGlobal(global_pos)):
+                    return tabs
+            except RuntimeError:
+                # Stale entry from a torn-down strip: its C++ object is gone,
+                # so it cannot own the cursor either.
+                continue
+        return None
+
+    def advance_tab(self, tabs: QTabWidget) -> bool:
+        """Select the next page of *tabs*, wrapping past the last one.
+
+        Returns True when the active page changed. Single-page stacks and a
+        stack with no current page (count 0) are left alone.
+        """
+        if tabs is None:
+            return False
+        count = tabs.count()
+        current = tabs.currentIndex()
+        if count < 2 or current < 0:
+            return False
+        tabs.setCurrentIndex((current + 1) % count)
+        self._show_current_tab_page(tabs)
+        return True
 
     def _top_align_panel(self, widget) -> None:
         """Keep a single-panel tab page's content glued to the tab strip.
