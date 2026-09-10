@@ -5,9 +5,6 @@ hero:
   name: "Colorink"
   text: "A desktop color companion built for painting & design"
   tagline: "Lightning-fast global color picking · High-precision color spaces · Seamless painting app sync · Hardware-aware grayscale filter"
-  image:
-    src: /hero-showcase.png
-    alt: Colorink palettes and themes showcase
   actions:
     - theme: brand
       text: Quick Start →

@@ -86,32 +86,64 @@
   line-height: 1.7;
 }
 
-/* Hero 右侧产品截图：放大 + 梦幻投影 */
-@media (min-width: 960px) {
-  .VPHome .VPHero .image-container {
-    max-width: 660px;
-    max-height: 660px;
-  }
+/* ============ Hero：整幅大图背景板 + 渐变衬底 ============ */
+.VPHome .VPHero {
+  position: relative;
+  overflow: hidden;
+  min-height: min(78vh, 780px);
+  display: flex;
+  align-items: center;
 }
 
-@media (min-width: 640px) and (max-width: 959px) {
-  .VPHome .VPHero .image-container {
-    max-width: 500px;
-    max-height: 500px;
-  }
+/* 背景大图：铺满整个 Hero，微放大避免硬边 */
+.VPHome .VPHero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: url(/colorink/hero-showcase.png) center 28% / cover no-repeat;
+  transform: scale(1.04);
+  filter: saturate(1.1);
 }
 
-.VPHome .VPHero .VPImage {
-  border-radius: 16px;
-  box-shadow:
-    0 20px 55px rgba(109, 90, 232, 0.28),
-    0 4px 16px rgba(236, 72, 153, 0.15);
+/* 渐变罩层：上部清透展示产品图，向下渐隐融入页面底色，保证文字可读 */
+.VPHome .VPHero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(253, 253, 254, 0.58) 0%,
+    rgba(253, 253, 254, 0.8) 48%,
+    var(--vp-c-bg) 100%
+  );
 }
 
-.dark .VPHome .VPHero .VPImage {
-  box-shadow:
-    0 20px 60px rgba(90, 65, 224, 0.45),
-    0 4px 18px rgba(236, 72, 153, 0.25);
+.dark .VPHome .VPHero::after {
+  background: linear-gradient(
+    180deg,
+    rgba(19, 19, 24, 0.68) 0%,
+    rgba(19, 19, 24, 0.84) 48%,
+    var(--vp-c-bg) 100%
+  );
+}
+
+.VPHome .VPHero .container {
+  position: relative;
+  z-index: 1;
+}
+
+/* Hero 文字在图上更醒目 */
+.VPHome .VPHero .text {
+  text-shadow: 0 2px 18px rgba(255, 255, 255, 0.65);
+}
+
+.VPHome .VPHero .tagline {
+  text-shadow: 0 1px 12px rgba(255, 255, 255, 0.7);
+}
+
+.dark .VPHome .VPHero .text,
+.dark .VPHome .VPHero .tagline {
+  text-shadow: 0 2px 16px rgba(0, 0, 0, 0.55);
 }
 
 /* Hero 主按钮：渐变 + 柔光 */
