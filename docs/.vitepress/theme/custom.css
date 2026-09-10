@@ -95,36 +95,109 @@
   align-items: center;
 }
 
-/* 背景大图：铺满整个 Hero，微放大避免硬边 */
+/* 背景大图：铺满整个 Hero，微放大避免硬边，色相缓慢呼吸 */
 .VPHome .VPHero::before {
   content: "";
   position: absolute;
   inset: 0;
   background: url(/colorink/hero-showcase.png) center 28% / cover no-repeat;
   transform: scale(1.04);
-  filter: saturate(1.1);
+  animation: ck-hero-hue 22s ease-in-out infinite alternate;
 }
 
-/* 渐变罩层：上部清透展示产品图，向下渐隐融入页面底色，保证文字可读 */
+@keyframes ck-hero-hue {
+  from {
+    filter: saturate(1.12) hue-rotate(-10deg);
+  }
+  to {
+    filter: saturate(1.32) hue-rotate(20deg);
+  }
+}
+
+/* 渐变罩层 + 动态极光：紫 / 粉 / 橙色光晕缓缓漂移，底部渐隐融入页面底色 */
 .VPHome .VPHero::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(
-    180deg,
-    rgba(253, 253, 254, 0.58) 0%,
-    rgba(253, 253, 254, 0.8) 48%,
-    var(--vp-c-bg) 100%
-  );
+  background:
+    linear-gradient(
+      180deg,
+      rgba(253, 253, 254, 0.55) 0%,
+      rgba(253, 253, 254, 0.78) 48%,
+      var(--vp-c-bg) 100%
+    ),
+    radial-gradient(45% 55% at 25% 30%, rgba(124, 92, 255, 0.4), transparent 70%),
+    radial-gradient(40% 50% at 75% 65%, rgba(236, 72, 153, 0.34), transparent 70%),
+    radial-gradient(35% 45% at 55% 18%, rgba(249, 115, 22, 0.24), transparent 70%);
+  background-size:
+    100% 100%,
+    170% 170%,
+    170% 170%,
+    170% 170%;
+  animation: ck-aurora 16s ease-in-out infinite alternate;
 }
 
 .dark .VPHome .VPHero::after {
-  background: linear-gradient(
-    180deg,
-    rgba(19, 19, 24, 0.68) 0%,
-    rgba(19, 19, 24, 0.84) 48%,
-    var(--vp-c-bg) 100%
-  );
+  background:
+    linear-gradient(
+      180deg,
+      rgba(19, 19, 24, 0.62) 0%,
+      rgba(19, 19, 24, 0.82) 48%,
+      var(--vp-c-bg) 100%
+    ),
+    radial-gradient(45% 55% at 25% 30%, rgba(139, 109, 255, 0.42), transparent 70%),
+    radial-gradient(40% 50% at 75% 65%, rgba(255, 110, 180, 0.32), transparent 70%),
+    radial-gradient(35% 45% at 55% 18%, rgba(255, 158, 94, 0.22), transparent 70%);
+  background-size:
+    100% 100%,
+    170% 170%,
+    170% 170%,
+    170% 170%;
+}
+
+@keyframes ck-aurora {
+  0% {
+    background-position:
+      0 0,
+      0% 0%,
+      100% 100%,
+      50% 0%;
+  }
+  50% {
+    background-position:
+      0 0,
+      62% 44%,
+      28% 58%,
+      18% 82%;
+  }
+  100% {
+    background-position:
+      0 0,
+      100% 100%,
+      0% 0%,
+      82% 22%;
+  }
+}
+
+/* Hero 标题渐变色流动 */
+.VPHome .VPHero .name .clip {
+  background-size: 220% auto;
+  animation: ck-name-flow 9s linear infinite;
+}
+
+@keyframes ck-name-flow {
+  to {
+    background-position: 220% center;
+  }
+}
+
+/* 尊重系统的减弱动态效果设置 */
+@media (prefers-reduced-motion: reduce) {
+  .VPHome .VPHero::before,
+  .VPHome .VPHero::after,
+  .VPHome .VPHero .name .clip {
+    animation: none;
+  }
 }
 
 .VPHome .VPHero .container {
