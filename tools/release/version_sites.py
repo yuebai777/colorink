@@ -44,6 +44,12 @@ VERSION_SITES: list[tuple[str, str, str, int]] = [
         1,
     ),
     (
+        "docs/.vitepress/config.mjs",
+        r"('Download v)(\d+\.\d+\.\d+)(')",
+        "docs 导航栏下载项（英文）",
+        1,
+    ),
+    (
         "package.json",
         r'("version": ")(\d+\.\d+\.\d+)(")',
         "package.json",
