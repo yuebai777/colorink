@@ -158,7 +158,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
             self.save_hotkeys, allow_mouse=True)
         grid_hotkeys.addWidget(row_grayscale, 3, 1)
 
-        grid_hotkeys.addWidget(QLabel(i18n.tr("LAB 切换（色轮悬停）")), 4, 0)
+        grid_hotkeys.addWidget(QLabel(i18n.tr("视图切换（色轮/标签页）")), 4, 0)
         row_lab_toggle, self.btn_lab_toggle, self.btn_lab_toggle_none = self._make_hotkey_row(
             "toggleLabKey", self.cfg.get("toggleLabKey", "Space"),
             self.save_hotkeys, allow_mouse=True)
@@ -177,6 +177,21 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         grid_hotkeys.addWidget(row_title_bar, 6, 1)
 
         cl_hk.addLayout(grid_hotkeys)
+
+        self.cb_zone_filter = QCheckBox(i18n.tr("排除任务栏与托盘区域"))
+        self.cb_zone_filter.stateChanged.connect(self.save_settings)
+        cl_hk.addWidget(self.cb_zone_filter)
+        lbl_zone_hint = QLabel(i18n.tr(
+            "鼠标键热键在任务栏 / 托盘 / 系统菜单区域内不触发，避免原生右键菜单被覆盖"))
+        lbl_zone_hint.setObjectName("TipDesc")
+        lbl_zone_hint.setWordWrap(True)
+        cl_hk.addWidget(lbl_zone_hint)
+
+        lbl_fallback = QLabel(i18n.tr("兜底热键：Ctrl+Alt+Shift+, 随时打开设置（不可解绑）"))
+        lbl_fallback.setObjectName("TipDesc")
+        lbl_fallback.setWordWrap(True)
+        cl_hk.addWidget(lbl_fallback)
+
         page_hotkeys.addWidget(card_hk)
 
         # ── Card 2: 取色视窗快捷操作 ──
@@ -287,6 +302,10 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cb_follow_mouse.blockSignals(True)
         self.cb_follow_mouse.setChecked(self.cfg.get("followMouseEnabled", False))
         self.cb_follow_mouse.blockSignals(False)
+
+        self.cb_zone_filter.blockSignals(True)
+        self.cb_zone_filter.setChecked(self.cfg.get("mouseHotkeyZoneFilter", True))
+        self.cb_zone_filter.blockSignals(False)
         
         # 2. Interface
         _idx = self.combo_theme.findData(self.cfg.get("ui-theme", "auto"))
@@ -592,6 +611,9 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cfg["borderStyle"] = border_key if border_key else "auto"
         
         self.cfg["followMouseEnabled"] = self.cb_follow_mouse.isChecked()
+        # settingChanged → on_settings_saved → update_hotkey_bindings 会把
+        # 该开关写进 global_hotkeys 的模块级闸门，改动即时生效、无需重启。
+        self.cfg["mouseHotkeyZoneFilter"] = self.cb_zone_filter.isChecked()
         self.cfg["lockWindowSize"] = self.cb_lock_size.isChecked()
         self.cfg["lockWindowPosition"] = self.cb_lock_position.isChecked()
         
@@ -861,10 +883,12 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Settings are open: disable the main window's no-focus window flags
-        # so the settings window can be used normally.  Mirrors hideEvent()
-        # below and keeps every show/hide path (close button, hamburger,
-        # eyedropper theme-pick re-show) in sync with the picker window.
+        # Settings are open.  The main window deliberately keeps its no-focus
+        # extension styles while this sidebar is up (the sidebar lives in its
+        # own top-level SettingsWindow, so the main window never needs to
+        # accept focus on its behalf).  Re-apply them anyway so every
+        # show/hide path (close button, hamburger, eyedropper theme-pick
+        # re-show) leaves the picker window in a consistent state.
         mv = self._parent
         if mv is None:
             return

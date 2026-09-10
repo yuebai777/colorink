@@ -2,6 +2,14 @@ import keyboard
 import mouse as _mouse
 from PyQt6.QtCore import QObject, pyqtSignal
 
+# Zone gate for mouse-button hotkeys (taskbar / tray / shell flyouts fall
+# through to the system). Imported defensively: if the module or pywin32 is
+# missing, the gate degrades to "never filter" (fail-open).
+try:
+    from core import input_zones
+except Exception:
+    input_zones = None
+
 
 class HotkeySignals(QObject):
     # Emits the configuration key name, e.g. "pickKey", "hideWindowKey", "followMouseKey"
@@ -34,7 +42,39 @@ _MOUSE_BUTTON_NAMES = {
 _bound_mouse_hotkeys = {}  # hotkey_type -> handler (for unhook)
 _bound_mouse_names = {}    # hotkey_type -> canonical button name (for dup check)
 
-def bind_hotkey(hotkey_type: str, hotkey_str: str):
+# Module-level switch for the mouse-hotkey zone gate. Written by
+# HotkeyMixin.update_hotkey_bindings() on every rebind (GUI thread), read by
+# the mouse-library handler thread — a plain bool swap is atomic under the
+# GIL, and reading it here avoids touching the disk config from the handler.
+_zone_filter_enabled = True
+
+
+def set_zone_filter_enabled(flag):
+    """Enable/disable the shell-zone gate for mouse-button hotkeys.
+
+    Called from the GUI thread on every hotkey rebind. Also kicks the
+    background taskbar-rect refresh so the first gated click already has a
+    snapshot to test against.
+    """
+    global _zone_filter_enabled
+    _zone_filter_enabled = bool(flag)
+    if _zone_filter_enabled and input_zones is not None:
+        try:
+            input_zones.start_background_refresh()
+        except Exception:
+            pass
+
+
+def _zone_gate_active():
+    """True when the zone gate should filter mouse-hotkey callbacks."""
+    if not _zone_filter_enabled or input_zones is None:
+        return False
+    try:
+        return input_zones.is_available()
+    except Exception:
+        return False
+
+def bind_hotkey(hotkey_type: str, hotkey_str: str, force: bool = False):
     if not hotkey_str:
         return
 
@@ -44,11 +84,16 @@ def bind_hotkey(hotkey_type: str, hotkey_str: str):
     # 拒绝同一组合绑定到两个功能：keyboard 库以组合名为字典键，
     # 第二次 add_hotkey 会覆盖条目，第一个回调仍挂在钩子里删不掉，
     # 按键会同时触发两个功能。
+    # force=True 仅用于不占用户槽位的硬编码兜底热键（__openSettings）：
+    # 即使与用户组合撞车也必须注册成功，撞车时两个回调都会触发（可接受的兜底代价）。
     for other_type, other_key in _bound_hotkeys.items():
         if other_type != hotkey_type and other_key == normalized:
-            print(f"[Hotkeys] Refusing duplicate hotkey: {hotkey_type} -> {normalized} "
-                  f"(already bound to {other_type})")
-            return
+            if not force:
+                print(f"[Hotkeys] Refusing duplicate hotkey: {hotkey_type} -> {normalized} "
+                      f"(already bound to {other_type})")
+                return
+            print(f"[Hotkeys] Warning: forced hotkey {hotkey_type} -> {normalized} "
+                  f"collides with {other_type}; both callbacks may fire")
 
     old_key = _bound_hotkeys.get(hotkey_type)
 
@@ -90,6 +135,15 @@ def bind_mouse_hotkey(hotkey_type: str, hotkey_str: str):
     old_handler = _bound_mouse_hotkeys.get(hotkey_type)
 
     def callback(*_args):
+        # Zone gate: over the taskbar / tray / shell flyouts the click falls
+        # through to the system untouched (we simply don't react), so native
+        # context menus are never covered by our always-on-top panel. Any
+        # gate error fails open (hotkey fires as before).
+        try:
+            if _zone_gate_active() and input_zones.ignore_at_cursor():
+                return
+        except Exception:
+            pass
         get_hotkey_signals().triggered.emit(hotkey_type)
 
     try:

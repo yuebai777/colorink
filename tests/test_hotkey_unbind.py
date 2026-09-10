@@ -24,6 +24,11 @@ HOTKEY_WIDGETS = {
     "toggleTitleBarKey": "title_bar",
 }
 
+#: Hard-wired, unbindable "open settings" combo. ``update_hotkey_bindings``
+#: registers it on every rebind under the internal ``__openSettings`` slot, so
+#: a profile with every user hotkey unbound can still reach settings.
+OPEN_SETTINGS_FALLBACK = "ctrl+alt+shift+,"
+
 
 @pytest.fixture(scope="module")
 def qapp():
@@ -243,5 +248,10 @@ def test_update_hotkey_bindings_skips_unbound_values(monkeypatch):
     cfg["pickKey"] = "Ctrl+Alt+Q"
     FakeWindow(cfg).update_hotkey_bindings()
 
-    assert keyboard_binds == ["ctrl+alt+q"]
+    # The hard-wired settings escape hatch is always registered: it owns no
+    # user-configurable slot, so an all-unbound profile can never silence it.
+    assert OPEN_SETTINGS_FALLBACK in keyboard_binds
+    # Everything else comes from the config — and an unbound value must vanish.
+    assert [name for name in keyboard_binds
+            if name != OPEN_SETTINGS_FALLBACK] == ["ctrl+alt+q"]
     assert mouse_binds == []

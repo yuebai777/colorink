@@ -8,6 +8,13 @@ from PyQt6.QtWidgets import QApplication
 from core import config, global_hotkeys
 from ui.hotkey_button import is_mouse_hotkey
 
+# Zone gate for pickKey: the picker hook DLL really swallows clicks, so
+# arming it over shell UI must be blocked even for keyboard-bound hotkeys.
+try:
+    from core import input_zones
+except Exception:
+    input_zones = None
+
 
 class HotkeyMixin:
     def init_hotkeys(self):
@@ -17,6 +24,10 @@ class HotkeyMixin:
 
     def update_hotkey_bindings(self):
         global_hotkeys.unbind_all()
+        # Push the zone-filter switch into global_hotkeys before rebinding so
+        # the mouse-button gate reflects the latest config immediately.
+        global_hotkeys.set_zone_filter_enabled(
+            self.cfg.get("mouseHotkeyZoneFilter", True))
         # Global hotkeys may be bound to a keyboard key or a mouse button —
         # route each value to the matching system hook (mouse hotkeys are
         # not suppressed, so the app under the cursor still gets the click).
@@ -35,9 +46,22 @@ class HotkeyMixin:
         lab_toggle_key = cast(str, self.cfg.get("toggleLabKey"))
         if not is_mouse_hotkey(lab_toggle_key):
             global_hotkeys.bind_hotkey("toggleLabKey", lab_toggle_key)
+        # Hard-wired, unbindable escape hatch: with showTitleBar=false, the
+        # right button occupied and the tray unreachable, every visible entry
+        # into settings can be unbound — keep one combo that always opens
+        # settings. force=True skips the duplicate check (it owns no
+        # user-visible slot; on collision both callbacks fire).
+        global_hotkeys.bind_hotkey("__openSettings", "ctrl+alt+shift+,", force=True)
 
     @pyqtSlot(str)
     def on_hotkey_triggered(self, hotkey_type):
+        if hotkey_type == "__openSettings":
+            # Unbindable fallback combo (Ctrl+Alt+Shift+,) — always opens
+            # settings, even when the main window is hidden to tray. Uses the
+            # idempotent show (not the toggle) so mashing the combo in a
+            # panic can never close the settings window again.
+            self._show_settings_window()
+            return
         if hotkey_type == "hideWindowKey":
             # 统一走 toggle_visibility，确保手动隐藏时设置 _user_hidden，
             # 前台追踪器不会立刻又把窗口拉出来。
@@ -63,12 +87,13 @@ class HotkeyMixin:
             # System-wide hook path: the Qt event filter already consumed the
             # key when a Colorink window has focus. Without focus — e.g. while
             # drawing in CSP with 无焦点选色模式 — this hook is the only path,
-            # and the mouse-over-wheel gate still applies.
+            # and the region gate still applies: a tab stack under the cursor
+            # switches page, the picker pane flips wheel/LAB.
             if QApplication.activeWindow() is not None:
                 return  # handled by the Qt key path
-            if self._is_lab_toggle_zone():
-                print("[Hotkeys] Toggle LAB view (local, no-focus)")
-                self.toggle_picker_mode()
+            if self._local_view_shortcut_zone():
+                print("[Hotkeys] Local view shortcut (no-focus)")
+                self._run_local_view_shortcut()
         elif hotkey_type == "toggleLabGlobalKey":
             print("[Hotkeys] Toggle LAB view (global)")
             self.toggle_picker_mode()
@@ -76,6 +101,15 @@ class HotkeyMixin:
             if self.picker_overlay.is_active:
                 self.picker_overlay.stop()
             else:
+                # 最后一次能在 DLL 装钩前拦截的机会：取色钩子会真吞点击
+                # （picker_hook.c return 1），此处保护的是其它软件不被吞，
+                # 因此对键盘路径同样生效（"键盘热键不过滤"的有意例外）。
+                if (self.cfg.get("mouseHotkeyZoneFilter", True)
+                        and input_zones is not None
+                        and input_zones.is_available()
+                        and input_zones.ignore_at_cursor()):
+                    print("[Hotkeys] pickKey ignored: cursor over taskbar/tray/shell UI")
+                    return
                 self.picker_overlay.start()
                 print("[Hotkeys] Global Color Picker activated")
         elif hotkey_type == "grayscaleFilterKey":

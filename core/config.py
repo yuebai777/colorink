@@ -86,7 +86,7 @@ def default_hotkey_config():
         "hideWindowKey": "Ctrl+Alt+Y",
         "toggleTitleBarKey": "Ctrl+Alt+K",  # 全局快捷键: 切换标题栏（设置/最小化/关闭那一栏）显隐
         "grayscaleFilterKey": "Ctrl+Alt+D",
-        "toggleLabKey": "Space",          # 本地快捷键: 鼠标悬停色轮/LAB区域时切换视图
+        "toggleLabKey": "Space",          # 本地快捷键: 悬停色轮/LAB区域切换视图，悬停标签页切换到下一个标签页
         "toggleLabGlobalKey": "Ctrl+Alt+L",   # 全局快捷键: 任意位置切换色轮/LAB视图
         "showLabToggleButton": True,      # 显示/隐藏色轮与LAB之间的浮动切换按钮
         "showLabShapeButton": True,       # 显示/隐藏 LAB 视图形状切换按钮
@@ -155,6 +155,9 @@ def default_hotkey_config():
         # 其余取值见 ui/border_themes.py 的 BORDER_THEMES。
         "borderStyle": "auto",
         "followMouseEnabled": False,
+        # 鼠标键全局热键在任务栏/托盘/系统菜单区域内不触发（放行给系统，
+        # 避免置顶窗口压住原生右键菜单）；键盘热键不受此开关影响。
+        "mouseHotkeyZoneFilter": True,
         "noFocusMode": True,
         "showLabLightnessSlider": False,
         "slidersTabs": False,                # 滑块组分页签叠放（B-4）
@@ -299,6 +302,7 @@ _BOOL_KEYS = frozenset({
     "showTitleBar", "showTaskbarIcon", "lockWindowSize", "lockWindowPosition",
     "onlyShowInCsp", "openAtLogin", "checkUpdatesOnStartup",
     "followMouseEnabled", "noFocusMode", "showLabLightnessSlider",
+    "mouseHotkeyZoneFilter",
     "slidersTabs", "panelDrag",
     "flipColorWheelHorizontally", "hideHueRing", "showModuleSwitchButton",
     "showLabToggleButton", "showLabShapeButton", "showLabHarmonyButton",

@@ -37,11 +37,15 @@ build_log.txt
 # MSVC linker exports from the native picker hook (keep .c source + .dll runtime in tree)
 core/picker_hook.exp
 core/picker_hook.lib
+# Safety copy made before swapping a running instance's picker_hook.dll
+core/picker_hook.dll.bak
 
 # Node & VitePress docs build artifacts
 node_modules/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
+# Transient config copy VitePress writes while bundling the site config
+docs/.vitepress/*.timestamp-*.mjs
 
 # IDE / editors
 .vscode/
@@ -62,6 +66,8 @@ Snipaste_*.png
 .reasonix/
 .opencode/
 .codegraph/
+.workbuddy/
+.workbuddy-ai/
 pyrightconfig.json
 
 # Local-only QA wizard & planning docs (kept on disk, intentionally out of repo -- see 5b45cef)

@@ -95,9 +95,14 @@ class TrayMixin:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.toggle_visibility()
         elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            # Trigger already toggled once above — show unconditionally.
+            # Trigger already toggled once above. If the panel ended up
+            # visible, a double-click means "take me straight to settings" —
+            # a left-button-only escape hatch for when right-click menus are
+            # occupied; otherwise force-show as before.
             self._user_hidden = False
-            if self.follow_mouse_active:
+            if self.isVisible():
+                self.toggle_settings_sidebar()
+            elif self.follow_mouse_active:
                 self.show_window_at_cursor()
             else:
                 self.show()

@@ -66,10 +66,21 @@ _EN: dict[str, str] = {
     "黑白滤镜": "Grayscale filter",
     "LAB切换(色轮)": "Toggle LAB (wheel)",
     "LAB切换(全局)": "Toggle LAB (global)",
-    "LAB 切换（色轮悬停）": "Toggle LAB (wheel hover)",
+    "视图切换（色轮/标签页）": "Switch view (wheel / tabs)",
     "LAB 切换（全局）": "Toggle LAB (global)",
     "标题栏显隐": "Toggle title bar",
     "标题栏显示/隐藏": "Toggle title bar",
+    "排除任务栏与托盘区域": "Exclude taskbar and tray areas",
+    "鼠标键热键在任务栏 / 托盘 / 系统菜单区域内不触发，避免原生右键菜单被覆盖":
+        "Mouse-button hotkeys do not fire over the taskbar, tray icons, or system "
+        "menus, so native right-click menus open normally",
+    "兜底热键：Ctrl+Alt+Shift+, 随时打开设置（不可解绑）":
+        "Fallback hotkey: Ctrl+Alt+Shift+, opens settings at any time (cannot be unbound)",
+    "勾选后，绑定到鼠标按键的全局热键在任务栏、托盘图标及系统弹出菜单上"
+    "不会触发，让系统原生右键菜单正常弹出；键盘热键不受影响":
+        "When enabled, global hotkeys bound to mouse buttons do not fire over the "
+        "taskbar, tray icons, or system popup menus, so native right-click menus "
+        "open normally; keyboard hotkeys are unaffected",
     # ── Appearance ──
     "背景主题": "Background theme",
     "背景 自动（匹配CSP）": "Auto (match CSP)",
@@ -353,8 +364,7 @@ _EN: dict[str, str] = {
     "系统 Luma (Mag) 作用于全部屏幕": "System Luma (Mag) applies to all screens",
     "点击后窗口隐藏3秒，移鼠标到目标位置": "Hides the window for 3 seconds, then move the mouse to the target",
     # Long tooltips
-    "鼠标悬停在色轮或LAB区域时，按此键/鼠标键切换色轮/LAB视图；支持键盘、鼠标按键或数位板笔按键（建议侧键/中键，左键会与色轮操作冲突）；无需聚焦本窗口，无焦点选色模式下也可用": "While hovering the wheel/LAB area, press this key/mouse button to switch the wheel/LAB view. Supports keyboard, mouse buttons and pen buttons (side/middle button recommended — left click conflicts with the wheel). No focus required; also works in no-focus pick mode.",
-    "鼠标悬停在色轮或LAB区域时，按此键/鼠标键切换色轮/LAB视图；支持键盘、鼠标按键或数位板笔按键（建议侧键/中键，左键会与色轮操作冲突）；无需聚焦本窗口，无焦点取色模式下也可用": "While hovering the wheel/LAB area, press this key/mouse button to switch the wheel/LAB view. Supports keyboard, mouse buttons and pen buttons (side/middle button recommended — left click conflicts with the wheel). No focus required; also works in no-focus pick mode.",
+    "鼠标悬停在色轮或LAB区域时，按此键/鼠标键切换色轮/LAB视图；悬停在标签页上（分页叠放的滑块组/面板）时切换到下一个标签页；支持键盘、鼠标按键或数位板笔按键（建议侧键/中键，左键会与色轮操作冲突）；无需聚焦本窗口，无焦点取色模式下也可用": "While hovering the wheel/LAB area, press this key/mouse button to switch the wheel/LAB view; while hovering a tab stack (sliders/panels stacked behind tabs) it switches to the next tab. Supports keyboard, mouse buttons and pen buttons (side/middle button recommended — left click conflicts with the wheel). No focus required; also works in no-focus pick mode.",
     "任意位置全局切换色轮/LAB视图，无需聚焦本窗口；支持键盘或鼠标按键（鼠标按键作为全局快捷键时不拦截点击，画画软件仍会收到）": "Toggle the wheel/LAB view globally from anywhere, no focus required. Supports keyboard or mouse buttons (mouse hotkeys are not suppressed, so the drawing app still receives the click).",
     "显示或隐藏标题栏（设置/最小化/关闭按钮那一栏）；隐藏后顶部边框与四周一致": "Show or hide the title bar (settings/minimize/close buttons). When hidden the top border matches the other edges.",
     "OKLCh (GPU兼容)：感知均匀的全屏黑白，覆盖 ColorInk；系统 Luma (Mag)：延迟最低、仅作用于全部屏幕的备用模式；需要按屏目标时请在 Native 后端选择 Luma。": "OKLCh (GPU-compatible): perceptual full-screen grayscale covering Colorink. System Luma (Mag): lowest latency fallback that only applies to all screens. Use the Native backend's Luma mode for per-screen targeting.",
@@ -370,7 +380,7 @@ _EN: dict[str, str] = {
     "解绑「隐藏窗口」快捷键（设为「无」），让该键位不再被占用": "Unbind the \"Hide window\" hotkey (set it to \"None\") so the key is free again",
     "解绑「跟随鼠标」快捷键（设为「无」），让该键位不再被占用": "Unbind the \"Follow mouse\" hotkey (set it to \"None\") so the key is free again",
     "解绑「灰度滤镜」快捷键（设为「无」），让该键位不再被占用": "Unbind the \"Grayscale filter\" hotkey (set it to \"None\") so the key is free again",
-    "解绑「LAB 切换（色轮悬停）」快捷键（设为「无」），让该键位不再被占用": "Unbind the \"Toggle LAB (wheel hover)\" hotkey (set it to \"None\") so the key is free again",
+    "解绑「视图切换（色轮/标签页）」快捷键（设为「无」），让该键位不再被占用": "Unbind the \"Switch view (wheel / tabs)\" hotkey (set it to \"None\") so the key is free again",
     "解绑「LAB 切换（全局）」快捷键（设为「无」），让该键位不再被占用": "Unbind the \"Toggle LAB (global)\" hotkey (set it to \"None\") so the key is free again",
     "解绑「标题栏显示/隐藏」快捷键（设为「无」），让该键位不再被占用": "Unbind the \"Toggle title bar\" hotkey (set it to \"None\") so the key is free again",
     "选择界面主题：自动匹配绘画软件、屏幕取色或固定灰/白/黑": "Choose the UI theme: auto-match the drawing app, eyedropper, or fixed gray/white/black",
