@@ -286,10 +286,13 @@ class SAI2Sync:
             mode=sai2_ui_refresh.DEFAULT_MODE,
         )
         # Picker-field mirror write (core.sai2_ui_sync): SAI's own colour
-        # panel (wheel, marker, slider thumbs) is driven by a separate picker
-        # state, so writing only the colour slot leaves it stale. "auto"
-        # resolves the panel mode from SAI's own state; the synchroniser is
-        # created lazily and every failure is swallowed.
+        # panel (wheel picture, ring marker, square picker point, track
+        # gradients) is driven by a separate picker state, so writing only the
+        # colour slot leaves it stale. Slider thumbs and the numeric read-outs
+        # are NOT driven by that state and cannot be moved without clicking
+        # (see core/sai2_ui_sync's module docstring). "auto" resolves the panel
+        # mode from SAI's own state; the synchroniser is created lazily and
+        # every failure is swallowed.
         self.panel_mode: str = "auto"
         self._ui_picker = None
 
@@ -587,10 +590,10 @@ class SAI2Sync:
                 self.ui_refresher.refresh(self._pid, (r, g, b), previous=previous)
             except Exception:
                 pass
-            # Picker-field mirror write: SAI's colour panel (wheel, marker,
-            # slider thumbs) is driven by a separate picker state, so the slot
-            # write above leaves it stale. Failures are swallowed — the slot
-            # write is the authoritative brush colour either way.
+            # Picker-field mirror write: SAI's colour panel (wheel picture,
+            # markers, track gradients) is driven by a separate picker state,
+            # so the slot write above leaves it stale. Failures are swallowed —
+            # the slot write is the authoritative brush colour either way.
             try:
                 picker = self.ui_picker()
                 if picker is not None:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""SAI2 colour-panel UI synchronisation (wheel, marker, sliders) via memory.
+"""SAI2 colour-panel UI synchronisation (wheel + track gradients) via memory.
 
 Background — all measured against a live SAI Ver.2 (Preview.2024.08.14,
 150% DPI); full evidence in ``docs/sync/sai2-color-wheel-sync-analysis.md``:
@@ -9,9 +9,18 @@ Background — all measured against a live SAI Ver.2 (Preview.2024.08.14,
   paints with.  Writing it does **not** update SAI's own colour panel.
 * The colour panel is driven by a separate *picker state*: three float fields
   at image offsets ``0x3216E0`` / ``0x3216E4`` / ``0x3216E8``.  Writing them
-  moves the wheel marker, the slider thumbs and (on the next repaint) the
-  numeric labels — verified pixel-for-pixel identical to clicking the colour
-  in SAI (0 px difference on the wheel region).
+  moves the wheel (hue ring content, inner-square content, both markers) and
+  the slider *track gradients*.
+* They do **not** move the slider thumbs or the numeric read-outs beside them
+  (measured on a live build, 2026-09: the six tracks and the six read-outs are
+  pixel-identical before and after a field write, in any order, even after a
+  forced ``RedrawWindow(..., RDW_ALLCHILDREN)``).  Those two are driven by
+  SAI's own widget state, which only SAI's input path updates — the read-outs
+  are also never refreshed by a repaint.  Mirror-writing therefore syncs the
+  wheel and the track gradients only; the thumbs/read-outs keep SAI's last
+  self-set colour, which is exactly what makes them usable as a mode signal
+  (see :func:`detect_mode_from_labels`) and why clicking a track remains the
+  only way to move them.
 * Field meaning depends on SAI's panel mode:
 
   =====  ================  ==========================  ==========
@@ -71,7 +80,19 @@ _MODE_ALIASES = {
     "hls": "hsl",          # colorink spells its module "HLS"
 }
 
-MATCH_TOL = 1e-4           # mode detection tolerance on the three fields
+MATCH_TOL = 1e-4           # tolerance when comparing two raw field values
+
+# Mode-detection tolerances, in **8-bit colour levels** rather than raw field
+# units.  The colour slot is an 8-bit rounding of SAI's own float colour, so no
+# mode formula can reproduce the stored fields exactly; worse, the saturation
+# field is violently sensitive near black (residuals up to 0.15 there), which
+# makes any fixed field-unit threshold either blind or deaf.  Reconstructing the
+# colour instead gives an error whose unit has physical meaning: the correct
+# mode reproduces the slot to ≈0.5 level, a wrong mode misses by 16 levels or
+# more (measured over 6000 colours, see tests/test_sai2_ui_sync.py).
+MODE_TOL_LEVELS = 2.5      # memory signal (slot + picker fields)
+LABEL_TOL_LEVELS = 5.0     # SAI's numeric read-outs are integers: coarser
+LABEL_MARGIN_LEVELS = 3.0  # ...so only trust them when the runner-up is far off
 
 DEBUG = False
 
@@ -109,6 +130,15 @@ def _vhsv_converter():
     return rgb_to_vhsv
 
 
+def _vhsv_rgb_converter():
+    """The inverse (``vhsv_to_rgb``), imported lazily for the same reason."""
+    try:
+        from ui.color_conversions import vhsv_to_rgb  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - optional dependency
+        return None
+    return vhsv_to_rgb
+
+
 def fields_for(mode: str, rgb: Sequence[int]) -> tuple[float, float, float] | None:
     """Picker field values for *rgb* under *mode*; ``None`` when unavailable.
 
@@ -131,28 +161,73 @@ def fields_for(mode: str, rgb: Sequence[int]) -> tuple[float, float, float] | No
     return None
 
 
-def detect_mode_from(slot: Sequence[int] | None, fields: Sequence[float] | None,
-                     tol: float = MATCH_TOL) -> str | None:
-    """Infer the panel mode from a slot colour and the three fields.
+def rgb_from_fields(mode: str, fields: Sequence[float] | None
+                    ) -> tuple[float, float, float] | None:
+    """The sRGB colour (0–255 floats) SAI derives from *fields* in *mode*.
 
-    Returns ``None`` for grey colours (hue undefined, all modes look alike)
-    or when nothing matches within *tol*.
+    Exact inverse of :func:`fields_for`; ``None`` for an unknown mode, missing
+    fields, or when the VHSV implementation is unavailable.
     """
-    if slot is None or fields is None or len(fields) < 3:
+    if fields is None or len(fields) < 3:
         return None
-    if is_grey(slot):
+    f1, f2, f3 = (float(v) for v in fields[:3])
+
+    def _c(x: float) -> float:
+        return max(0.0, min(1.0, x))
+
+    if mode == "hsv":
+        r, g, b = colorsys.hsv_to_rgb((f3 / 6.0) % 1.0, _c(f2), _c(f1))
+        return r * 255.0, g * 255.0, b * 255.0
+    if mode == "hsl":
+        r, g, b = colorsys.hls_to_rgb((f3 / 6.0) % 1.0, _c(f1), _c(f2))
+        return r * 255.0, g * 255.0, b * 255.0
+    if mode == "vhsv":
+        converter = _vhsv_rgb_converter()
+        if converter is None:
+            return None
+        return tuple(converter((f3 * 60.0) % 360.0, _c(f2) * 100.0, _c(f1) * 100.0))
+    return None
+
+
+def detect_mode_from(slot: Sequence[int] | None, fields: Sequence[float] | None,
+                     tol_levels: float = MODE_TOL_LEVELS,
+                     prefer: str | None = None) -> str | None:
+    """Infer the panel mode from a slot colour and the three picker fields.
+
+    Each candidate mode *interprets* the fields and is scored by how far the
+    colour it produces is from SAI's own 8-bit slot — so the residual is in
+    colour levels, which is the only unit in which "this mode is wrong" means
+    something.  Comparing raw field deltas instead is what made the old
+    detector miss a panel that was plainly in HSV mode: the 8-bit slot is a
+    rounding of SAI's float colour, worth up to 0.0034 in the hue field, while
+    the old tolerance was 1e-4.
+
+    Returns ``None`` for grey colours (hue undefined, every mode stores the
+    same fields) or when no mode reproduces the slot within *tol_levels*.
+    ``prefer`` keeps a previously resolved mode on a tie, so detection cannot
+    flip-flop between two modes that describe the colour equally well.
+    """
+    if slot is None or fields is None:
         return None
-    best_err = None
-    best_mode = None
+    slot = tuple(float(c) for c in slot[:3])
+    if len(slot) < 3 or is_grey(slot):
+        return None
+    scored = []
     for mode in MODES:
-        calc = fields_for(mode, slot)
-        if calc is None:
+        back = rgb_from_fields(mode, fields)
+        if back is None:
             continue
-        err = max(abs(a - b) for a, b in zip(fields, calc))
-        if best_err is None or err < best_err:
-            best_err, best_mode = err, mode
-    if best_mode is None or best_err is None or best_err > tol:
+        scored.append((max(abs(a - b) for a, b in zip(back, slot)), mode))
+    if not scored:
         return None
+    scored.sort()
+    best_err, best_mode = scored[0]
+    if best_err > tol_levels:
+        return None
+    if prefer:
+        for err, mode in scored:
+            if mode == prefer and err <= best_err + 1.0:
+                return mode
     return best_mode
 
 
@@ -182,6 +257,7 @@ _user32.EnumChildWindows.argtypes = (wintypes.HWND, _WNDENUMPROC, wintypes.LPARA
 
 WM_MOUSEMOVE = 0x0200
 TRACK_SIZE = (239, 36)      # physical px: all six slider tracks
+LABEL_SIZE = (33, 23)       # physical px: the numeric read-out beside a track
 WHEEL_SIZE = (250, 250)
 TRACK_ORDER = ("r", "g", "b", "h", "s", "v")
 
@@ -254,12 +330,8 @@ def detect_mode_by_labels(pid: int) -> str | None:
     Returns ``"hsl"``, ``"hsv_or_vhsv"`` or ``None`` when undecidable.
     """
     saw_l = saw_v = False
-    for hwnd in _all_child_windows(pid):
-        if _class_of(hwnd).lower() != "sflchildwindow":
-            continue
-        if not _user32.IsWindowVisible(hwnd):
-            continue
-        text = _text_of(hwnd).strip().upper()
+    for _hwnd, _rect, text in _visible_sfl_windows(pid):
+        text = text.strip().upper()
         if text == "L":
             saw_l = True
         elif text == "V":
@@ -271,48 +343,114 @@ def detect_mode_by_labels(pid: int) -> str | None:
     return None
 
 
+def read_panel_labels(pid: int) -> tuple[str, ...] | None:
+    """SAI's six numeric read-outs (R, G, B, H, S, V) as currently displayed.
+
+    Each read-out is its own window, sitting on the same row as the track it
+    belongs to, so the six are matched to the tracks by class, size and
+    vertical order — no hard-coded handles.
+
+    These numbers are written by SAI itself and are **never** refreshed by our
+    picker-field mirror writes (measured: writing the fields repaints the wheel
+    and the track gradients, but leaves both the thumbs and these labels
+    untouched).  They therefore still describe the last colour SAI set on its
+    own, which makes them the one mode signal our own writes cannot fool.
+    """
+    tracks: list[tuple[int, int, int, int]] = []
+    labels: list[tuple[int, int, str]] = []
+    for _hwnd, (left, top, right, bottom), text in _visible_sfl_windows(pid):
+        size = (right - left, bottom - top)
+        if size == TRACK_SIZE:
+            tracks.append((top, left, right, bottom))
+        elif size == LABEL_SIZE:
+            labels.append((top, left, text))
+    tracks.sort()
+    if len(tracks) < len(TRACK_ORDER):
+        return None
+    out: list[str] = []
+    for (top, _left, right, _bottom), _name in zip(tracks, TRACK_ORDER):
+        row = [text for (ltop, lleft, text) in labels
+               if abs(ltop - top) <= 6 and lleft >= right]
+        if not row:
+            return None
+        out.append(row[0])
+    return tuple(out)
+
+
+def detect_mode_from_labels(labels: Sequence[str] | None,
+                            tol_levels: float = LABEL_TOL_LEVELS,
+                            margin: float = LABEL_MARGIN_LEVELS) -> str | None:
+    """Infer the panel mode from SAI's own numeric read-outs.
+
+    ``labels`` is ``(R, G, B, H, S, third)`` as displayed.  Interpreting the
+    third read-out as V (HSV/VHSV) or as L (HSL) turns it back into picker
+    fields, and the mode whose colour matches the displayed RGB is the mode the
+    panel is in.  The integers are coarse, so the winner must also beat the
+    runner-up by *margin* — otherwise this source says nothing rather than
+    something wrong.
+    """
+    if labels is None or len(labels) < 6:
+        return None
+    try:
+        r, g, b, hue, sat, third = (int(str(v).strip()) for v in labels[:6])
+    except (TypeError, ValueError):
+        return None
+    slot = (r, g, b)
+    if is_grey(slot):
+        return None
+    fields = (third / 100.0, sat / 100.0, hue / 60.0)
+    scored = []
+    for mode in MODES:
+        back = rgb_from_fields(mode, fields)
+        if back is None:
+            continue
+        scored.append((max(abs(a - b) for a, b in zip(back, slot)), mode))
+    if not scored:
+        return None
+    scored.sort()
+    best_err, best_mode = scored[0]
+    if best_err > tol_levels:
+        return None
+    if len(scored) > 1 and scored[1][0] - best_err < margin:
+        return None
+    return best_mode
+
+
+def _visible_sfl_windows(pid: int) -> list[tuple[int, tuple[int, int, int, int], str]]:
+    """Every visible SAI child window as ``(hwnd, rect, text)``.
+
+    SAI draws its whole UI with one window class (``sflChildWindow``), so
+    controls are identified by their geometry instead of their class.
+    """
+    out: list[tuple[int, tuple[int, int, int, int], str]] = []
+    for hwnd in _all_child_windows(pid):
+        if _class_of(hwnd).lower() != "sflchildwindow":
+            continue
+        if not _user32.IsWindowVisible(hwnd):
+            continue
+        left, top, right, bottom = _rect_of(hwnd)
+        out.append((hwnd, (left, top, right, bottom), _text_of(hwnd)))
+    return out
+
+
 def discover_controls(pid: int) -> dict:
     """Find the wheel and the six slider tracks of the colour panel.
 
     Located purely by class + size + vertical order so that window moves,
     DPI changes and SAI restarts need no hard-coded handles.
     """
-    tops: list[int] = []
-
-    @_WNDENUMPROC
-    def cb(hwnd, _lparam):
-        if _pid_of(hwnd) == pid:
-            tops.append(hwnd)
-        return True
-
-    _user32.EnumWindows(cb, 0)
-
     tracks: list[tuple[int, int, int]] = []
     wheel = None
-    for top in tops:
-        kids: list[int] = []
-
-        @_WNDENUMPROC
-        def kid_cb(hwnd, _lparam, _kids=kids):
-            _kids.append(hwnd)
-            return True
-
-        _user32.EnumChildWindows(top, kid_cb, 0)
-        for h in kids:
-            if _class_of(h).lower() != "sflchildwindow":
-                continue
-            if not _user32.IsWindowVisible(h):
-                continue
-            left, top_y, right, bottom = _rect_of(h)
-            size = (right - left, bottom - top_y)
-            if size == TRACK_SIZE:
-                tracks.append((top_y, left, h))
-            elif size == WHEEL_SIZE and wheel is None:
-                wheel = h
+    for hwnd, (left, top, right, bottom), _text in _visible_sfl_windows(pid):
+        size = (right - left, bottom - top)
+        if size == TRACK_SIZE:
+            tracks.append((top, left, hwnd))
+        elif size == WHEEL_SIZE and wheel is None:
+            wheel = hwnd
     tracks.sort()
     out = {"wheel": wheel, "tracks": {}, "origins": {}}
-    for (top_y, left, h), name in zip(tracks, TRACK_ORDER):
-        out["tracks"][name] = h
+    for (top_y, left, hwnd), name in zip(tracks, TRACK_ORDER):
+        out["tracks"][name] = hwnd
         out["origins"][name] = (left, top_y)
     return out
 
@@ -407,14 +545,19 @@ class SAI2UiSync:
     def observe(self, sync) -> str | None:
         """Refresh the cached panel mode from SAI's own state.
 
-        Called by the writer **before** it touches the colour slot.  Two
+        Called by the writer **before** it touches the colour slot.  Three
         independent sources are used, most trustworthy first:
 
         1. SAI's slider labels — ``L`` means HSL, ``V`` means HSV or VHSV.
-           These are drawn by SAI and cannot be fooled by our field writes.
-        2. The picker fields vs the current slot colour, which separates HSV
-           from VHSV — but only while those fields are still SAI's own, hence
-           the label check above comes first.
+           They are drawn by SAI and cannot be fooled by our field writes.
+        2. SAI's slot colour interpreted by each candidate mode's own
+           conversion; the mode that reproduces the slot is the panel's mode.
+           Valid while the fields are still SAI's own, which is why
+           :meth:`_fields_changed_externally` watches for SAI rewriting them.
+        3. SAI's numeric read-outs (R, G, B, H, S, V), which SAI never
+           refreshes from our writes — so they still describe the last colour
+           SAI set itself and can settle the mode when the slot has gone grey
+           (grey has no hue, so source 2 has nothing to compare).
         """
         if self._mode in MODES:
             return self._mode
@@ -440,14 +583,23 @@ class SAI2UiSync:
         try:
             slot = self._read_slot(sync)
             fields = self._read_fields(sync)
-            detected = detect_mode_from(slot, fields) if slot and fields else None
+            detected = (detect_mode_from(slot, fields, prefer=self._resolved)
+                        if slot and fields else None)
         except Exception:  # noqa: BLE001
             detected = None
-        # Only HSV/VHSV can be confirmed from the fields when the labels say V;
-        # an "hsl" verdict here would just be our own previous write echoing.
-        if detected in ("hsv", "vhsv") and label != "hsl":
+        if detected is None and pid:
+            # The memory picture is inconclusive: SAI's own read-outs may
+            # still know, because they hold whatever colour SAI set last.
+            try:
+                detected = detect_mode_from_labels(read_panel_labels(pid))
+            except Exception:  # noqa: BLE001
+                detected = None
+        # The slider labels are drawn by SAI, so they outrank anything inferred:
+        # a "V" row means the mode is HSV or VHSV whatever the maths says.
+        if detected is not None and (label is None
+                                     or (label == "hsv_or_vhsv") == (detected != "hsl")):
             if self._resolved != detected:
-                _log("panel mode observed from fields: %s" % detected)
+                _log("panel mode observed: %s" % detected)
             self._resolved = detected
         return self._resolved
 

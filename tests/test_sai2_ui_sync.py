@@ -144,6 +144,158 @@ def test_detect_mode_missing_input_returns_none():
     assert ui.detect_mode_from((255, 0, 0), (0.1, 0.2)) is None
 
 
+# ── rgb_from_fields: exact inverse of fields_for ──────────────────────────
+@pytest.mark.parametrize("mode", ui.MODES)
+@pytest.mark.parametrize("rgb", [(186, 49, 222), (37, 189, 222), (128, 0, 0),
+                                 (255, 255, 255), (10, 240, 130), (0, 0, 0)])
+def test_rgb_from_fields_inverts_fields_for(mode, rgb):
+    back = ui.rgb_from_fields(mode, ui.fields_for(mode, rgb))
+    assert back == pytest.approx(rgb, abs=1e-6)
+
+
+def test_rgb_from_fields_rejects_unknown_mode_and_short_fields():
+    assert ui.rgb_from_fields("lab", (0.1, 0.2, 0.3)) is None
+    assert ui.rgb_from_fields("hsv", None) is None
+    assert ui.rgb_from_fields("hsv", (0.1, 0.2)) is None
+
+
+# ── detect_mode_from: the live regression (SAI in HSV read as VHSV) ────────
+def test_detect_mode_from_live_hsv_panel():
+    """Measured on a live SAI Ver.2 whose panel was in **HSV** mode.
+
+    The old detector compared raw field deltas against a 1e-4 tolerance, but
+    SAI's slot is an 8-bit rounding of its own float colour, which alone is
+    worth 0.0034 in the hue field here — so detection failed, the caller fell
+    back to "vhsv", and the wheel marker was drawn on the VHSV saturation
+    (0.711 instead of 0.780) while SAI was plainly in HSV.
+    """
+    slot = (186, 49, 222)
+    fields = (0.868726, 0.779923, 4.795276)
+    assert ui.detect_mode_from(slot, fields) == "hsv"
+    # ...and the VHSV reading of the same fields is 16 levels off, not 1.
+    back_hsv = ui.rgb_from_fields("hsv", fields)
+    back_vhsv = ui.rgb_from_fields("vhsv", fields)
+    assert max(abs(a - b) for a, b in zip(back_hsv, slot)) < 1.0
+    assert max(abs(a - b) for a, b in zip(back_vhsv, slot)) > 10.0
+
+
+def test_detect_mode_from_tolerates_the_8bit_slot_rounding():
+    """SAI holds a float colour and stores its rounded 8-bit slot."""
+    offsets = [(0.49, -0.49, 0.49), (-0.49, 0.49, -0.49), (0.2, 0.2, -0.2)]
+    for mode in ui.MODES:
+        for rgb in [(186, 49, 222), (37, 189, 222), (128, 0, 0), (10, 240, 130)]:
+            for off in offsets:
+                true_rgb = [c + d for c, d in zip(rgb, off)]
+                fields = ui.fields_for(mode, true_rgb)
+                assert ui.detect_mode_from(rgb, fields) == mode
+
+
+@pytest.mark.parametrize("mode", ui.MODES)
+@pytest.mark.parametrize("rgb", [(1, 2, 3), (10, 10, 11), (200, 205, 210)])
+def test_detect_mode_from_near_neutral_colours(mode, rgb):
+    """Near-neutral colours are where raw field deltas blow up.
+
+    The saturation field is extremely sensitive there (measured residual up to
+    0.149 for a slot of (1, 2, 3)), so the old field-delta comparison could
+    never have worked; colour-space scoring does not care.
+    """
+    assert ui.detect_mode_from(rgb, ui.fields_for(mode, rgb)) == mode
+
+
+def test_detect_mode_fields_are_identical_once_a_channel_hits_255():
+    """With V = 1 SAI's VHSV saturation collapses onto HSV's (k = 0 -> s = δ).
+
+    Both modes then store exactly the same fields, so the marker cannot land
+    anywhere else and resolving to either mode is correct.
+    """
+    slot = (255, 254, 255)
+    assert ui.fields_for("hsv", slot) == pytest.approx(ui.fields_for("vhsv", slot))
+    assert ui.detect_mode_from(slot, ui.fields_for("vhsv", slot)) in ("hsv", "vhsv")
+
+
+def test_detect_mode_from_keeps_the_previous_mode_on_a_tie():
+    """Two modes that describe the colour equally well must not flip-flop."""
+    slot = (240, 245, 250)                    # near-neutral: HSV and VHSV agree
+    fields = ui.fields_for("vhsv", slot)
+    assert ui.detect_mode_from(slot, fields) == "vhsv"
+    assert ui.detect_mode_from(slot, fields, prefer="hsv") == "hsv"
+    # A mode that is genuinely wrong is still never preferred back in.
+    wrong = ui.fields_for("vhsv", (128, 0, 0))       # VHSV decisively, not a tie
+    assert ui.detect_mode_from((128, 0, 0), wrong, prefer="hsv") == "vhsv"
+
+
+# ── detect_mode_from_labels: SAI's own numeric read-outs ──────────────────
+def test_detect_mode_from_labels_live_sample():
+    # the panel showed H=288 S=078 V=087 beside R=186 G=049 B=222
+    assert ui.detect_mode_from_labels(("186", "049", "222", "288", "078", "087")) == "hsv"
+
+
+def test_detect_mode_from_labels_vhsv_sample():
+    fields = ui.fields_for("vhsv", (128, 0, 0))
+    labels = ("128", "000", "000", "000",
+              "%03d" % round(fields[1] * 100), "%03d" % round(fields[0] * 100))
+    assert ui.detect_mode_from_labels(labels) == "vhsv"
+
+
+def test_detect_mode_from_labels_needs_a_clear_margin():
+    """Coarse integers: an ambiguous reading must say nothing, not guess."""
+    # H=288 S=078 V=087 reads as HSV; the same numbers read as VHSV are 16
+    # levels out, so a slightly padded tolerance still separates them.
+    assert ui.detect_mode_from_labels(("186", "049", "222", "288", "078", "087")) == "hsv"
+    # A near-neutral colour cannot separate the modes at all.
+    assert ui.detect_mode_from_labels(("100", "100", "100", "000", "000", "039")) is None
+
+
+def test_detect_mode_from_labels_rejects_bad_input():
+    assert ui.detect_mode_from_labels(None) is None
+    assert ui.detect_mode_from_labels(("186", "049")) is None
+    assert ui.detect_mode_from_labels(("x", "y", "z", "1", "2", "3")) is None
+    assert ui.detect_mode_from_labels(("186", "049", "222", "", "", "")) is None
+
+
+# ── read_panel_labels: pairing read-outs with their tracks ────────────────
+def _fake_window(rect, text=""):
+    return (0x1000 + rect[0], rect, text)
+
+
+def test_read_panel_labels_pairs_each_track_with_its_readout(monkeypatch):
+    windows = []
+    expected = []
+    for i in range(6):
+        top = 900 + i * 36
+        windows.append(_fake_window((67, top, 306, top + 36)))
+        windows.append(_fake_window((309, top, 342, top + 23), "%03d" % (i * 11)))
+        expected.append("%03d" % (i * 11))
+    monkeypatch.setattr(ui, "_visible_sfl_windows", lambda pid: windows)
+    assert ui.read_panel_labels(4242) == tuple(expected)
+
+
+def test_read_panel_labels_returns_none_when_a_readout_is_missing(monkeypatch):
+    windows = [_fake_window((67, 900 + i * 36, 306, 936 + i * 36)) for i in range(6)]
+    monkeypatch.setattr(ui, "_visible_sfl_windows", lambda pid: windows)
+    assert ui.read_panel_labels(4242) is None
+
+
+def test_observe_uses_readouts_when_the_slot_has_gone_grey(monkeypatch):
+    """A grey slot has no hue, so the fields cannot name the mode.
+
+    SAI's read-outs are not refreshed by our writes, so they still hold the
+    last colour SAI set itself — that is what recovers the mode here.
+    """
+    s = ui.SAI2UiSync("auto")
+    fake = _FakeSync()
+    fake._pid = 11
+    monkeypatch.setattr(ui, "detect_mode_by_labels", lambda pid: "hsv_or_vhsv")
+    monkeypatch.setattr(ui.SAI2UiSync, "_read_slot",
+                        staticmethod(lambda sync: (128, 128, 128)))
+    monkeypatch.setattr(ui.SAI2UiSync, "_read_fields",
+                        staticmethod(lambda sync: (0.50196, 0.0, 0.0)))
+    monkeypatch.setattr(ui, "read_panel_labels",
+                        lambda pid: ("186", "049", "222", "288", "078", "087"))
+    assert s.observe(fake) == "hsv"
+    assert s._resolve_mode(fake) == "hsv"
+
+
 # ── pack_field ────────────────────────────────────────────────────────────
 def test_pack_field_roundtrip():
     for value in (0.0, 1.0, 0.5, 2.5, 5.999, -0.0):
