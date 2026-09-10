@@ -16,6 +16,7 @@ from ui.border_themes import (
     resolve_border_theme,
     resolve_border_theme_key,
 )
+from ui.window.color_updates import apply_slider_bleed
 from ui.chrome_opacity import (
     CHROME_OPACITY_MAX,
     resolve_chrome_opacity,
@@ -545,6 +546,18 @@ class ThemeMixin:
         for chan, (slider, val_label) in self.slider_widgets.items():
             if isinstance(slider, GradientSlider):
                 slider.update_scale(scale, slider_theme, border)
+
+        # Room for the cursor's overhang (see create_group_sliders): the
+        # cursor's centre is the value anchor, so at min / max the cursor
+        # itself reaches half its own width past the groove's end. Pulling
+        # the slider's slot out by that much on both sides leaves the groove
+        # — which paintEvent insets by the same amount — exactly where it
+        # has always been, while the cursor gets the room to overhang it.
+        spend = 0
+        for _chan, (slider, _val_label) in self.slider_widgets.items():
+            if isinstance(slider, GradientSlider):
+                spend = max(spend, int(round(slider._cursor_pad())))
+        apply_slider_bleed(self, spend)
 
         # Per-group frames from the border theme:
         #   none → nothing (default / PS)

@@ -9,7 +9,14 @@ import colorsys
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QLayout, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QLayout,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ui.color_conversions import (
     hsv_to_hls_floats,
@@ -29,12 +36,36 @@ from ui.widgets import GradientSlider, SliderValueLabel
 from ui.window.module_defs import _C_SCALE, _C_SLIDER_MAX
 
 
+def apply_slider_bleed(owner, bleed) -> int:
+    """Size every row's cursor-bleed spacers to `bleed` px.
+
+    See `ColorUpdatesMixin.create_group_sliders`: the slider's slot is pulled
+    out by this much on both sides so the cursor — whose centre is the value
+    anchor and which therefore overhangs the groove's ends by half its own
+    width — has room to do so. `GradientSlider.paintEvent` insets the groove
+    by the same amount, so the groove's own span is untouched.
+
+    Returns the amount actually applied, so callers/tests can see what the
+    active theme and uiScale work out to.
+    """
+    amount = max(0, int(bleed))
+    for pair in getattr(owner, "slider_bleed_spacers", []):
+        for spacer in pair:
+            if spacer is not None:
+                spacer.changeSize(-amount, 0, QSizePolicy.Policy.Fixed,
+                                  QSizePolicy.Policy.Minimum)
+    return amount
+
+
 class ColorUpdatesMixin:
 
     def setup_sliders(self):
         # Create standard RGB, HSV, HSL, LAB groups
         self.slider_widgets = {}
         self.slider_containers = {}
+        # Per-row spacer items that give the cursor room to overhang the
+        # groove's ends; sized by `apply_theme` (see create_group_sliders).
+        self.slider_bleed_spacers = []
         same_space_base = self.cfg.get("sliderSameSpace", 6)
         
         # 1. RGB
@@ -179,10 +210,27 @@ class ColorUpdatesMixin:
             val_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             
             row.addWidget(label)
+            # The cursor is anchored by its geometric centre: at min / max
+            # that centre sits on the groove's own end and the cursor itself
+            # hangs half its width past it. These two negative spacers widen
+            # the slider's *slot* by exactly that much per side, so the widget
+            # has room for the overhang and simply overlaps the letter / value
+            # box a little — the groove keeps its full span instead of being
+            # shortened by half a cursor at each end. `apply_theme` re-sizes
+            # them from the active slider theme and uiScale.
+            row.addSpacing(0)
+            left_bleed = row.itemAt(row.count() - 1).spacerItem()
             row.addWidget(slider)
+            row.addSpacing(0)
+            right_bleed = row.itemAt(row.count() - 1).spacerItem()
             row.addSpacing(4)
             row.addWidget(val_label)
             layout.addLayout(row)
+
+            bleed_spacers = getattr(self, "slider_bleed_spacers", None)
+            if bleed_spacers is None:
+                bleed_spacers = self.slider_bleed_spacers = []
+            bleed_spacers.append((left_bleed, right_bleed))
             
             self.slider_widgets[chan] = (slider, val_label)
             

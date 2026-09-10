@@ -156,6 +156,78 @@ class GradientSlider(QSlider):
             half += max(1, int(raw_bw * s)) / 2.0
         return half
 
+    def _rect_handle_width(self, scale=None):
+        """Width of the ring drawn for a `handle_shape == "rect"` theme."""
+        s = self.scale if scale is None else scale
+        factor = float(cast(float, self._theme.get("handle_w_factor", 1.6)))
+        return max(2, int(5 * s * factor))
+
+    def _cursor_half_width(self, scale=None):
+        """Half of the total ink extent of this theme's cursor ("thumb").
+
+        The cursor is anchored by its geometric centre — that centre is what
+        points at the value it represents (see `value_anchor_x`) — so this is
+        also the smallest distance the end anchors may keep from the widget
+        edge. Any less and half the cursor's stroke lands outside the widget,
+        where the parent's clip rect slices it off, which is exactly what
+        happened at min / max.
+        """
+        if str(self._theme.get("handle_shape", "rect")) == "triangle-below":
+            return self._triangle_half_width(scale)
+        # Rect handle: the double ring is stroked *inside* its own rect
+        # (paintEvent insets the path by half a pen), so the handle is as
+        # wide as its ink.
+        return self._rect_handle_width(scale) / 2.0
+
+    def _cursor_pad(self):
+        """Distance each end anchor keeps from the widget edge.
+
+        Every horizontal coordinate in this widget derives from it: the value
+        axis — the gradient's stops, the out-of-gamut mask and the cursor's
+        own centre — spans exactly `[pad, width - pad]`, so `minimum()` sits
+        under the cursor's centre at the far left and `maximum()` at the far
+        right, while the cursor itself (ink extent `2 * _cursor_half_width()`)
+        still fits inside the widget at both ends.
+
+        Size-independent by design: it feeds the stylesheet, so `update_scale`
+        can call it before the widget has a width.
+        """
+        half = self._cursor_half_width()
+        if str(self._theme.get("handle_shape", "rect")) != "triangle-below":
+            return half
+        # The triangle painter snaps to a half-pixel so the 1px pen lands on
+        # one pixel column. A half-integer pad makes that snap a no-op at both
+        # extremes, so they come out exactly mirrored instead of one end being
+        # nudged outwards into the clip rect. Round up to the next half-pixel
+        # so the ink can never overrun the pad it was given.
+        pad = math.floor(half) + 0.5
+        return pad if pad >= half else pad + 1.0
+
+    def track_span(self, width=None):
+        """`(x0, x1)` — the x range this slider's value axis is drawn over.
+
+        The groove itself is painted across exactly this span, and the
+        gradient's stops, the out-of-gamut mask and the cursor's centre all
+        live on it, so the bar's two ends are `minimum()` / `maximum()` and
+        the colour under the cursor's centre is the colour that value encodes.
+        """
+        w = float(self.width() if width is None else width)
+        pad = min(self._cursor_pad(), max(0.0, w / 2.0))
+        return pad, max(pad, w - pad)
+
+    def value_anchor_x(self, frac=None, width=None):
+        """x the cursor's geometric centre takes for `frac` through the range.
+
+        Defaults to the slider's current value. The widget's edges are *not*
+        the ends of the range: `track_span` insets them by half a cursor.
+        """
+        x0, x1 = self.track_span(width)
+        if frac is None:
+            vrange = self.maximum() - self.minimum()
+            frac = (self.value() - self.minimum()) / vrange if vrange > 0 else 0.0
+        frac = min(1.0, max(0.0, float(frac)))
+        return x0 + frac * (x1 - x0)
+
     def update_scale(self, scale, theme=None, border=None):
         """Re-apply geometry for `scale`, optionally switching themes.
 
@@ -189,18 +261,21 @@ class GradientSlider(QSlider):
         self.scale = scale
         self.groove_h = max(2, int(16 * scale * float(cast(float, t["groove_h_factor"]))))
         self.groove_radius = 3.0 * scale * float(cast(float, t["groove_radius_factor"]))
-        handle_w = max(2, int(5 * scale * float(cast(float, t["handle_w_factor"]))))
+        # The native handle owns the hit area AND the travel span Qt maps
+        # values onto, so its width is not a free parameter: its centre sweeps
+        # [w/2, width - w/2], which has to be the very span `track_span()`
+        # paints the value axis over. Deriving it from the cursor's own ink
+        # extent (instead of the theme's raw handle width) is what keeps the
+        # cursor's centre on the value it points at, and its ink inside the
+        # widget at min / max.
+        handle_w = max(2, int(math.ceil(2.0 * self._cursor_pad())))
         handle_h = max(4, int(24 * scale * float(cast(float, t["handle_h_factor"]))))
         margin_y = -max(1, int(4 * scale * float(cast(float, t["handle_margin_y_factor"]))))
         border_radius = max(0, int(1 * scale * float(cast(float, t["handle_radius_factor"]))))
 
         if handle_shape == "triangle-below":
-            # Native handle is invisible, but it still owns the hit area AND
-            # the travel span Qt maps values onto, so it must be exactly as
-            # wide as the triangle drawn on top of it. With the old narrow
-            # handle the indicator both drifted away from the cursor and ran
-            # off the widget at 0 / max, where half of it was clipped away.
-            handle_w = max(handle_w, math.ceil(2 * self._triangle_half_width(scale)))
+            # Native handle is invisible; it only reserves the travel span the
+            # triangle is then centred on.
             self.setStyleSheet(f"""
                 QSlider::groove:horizontal {{
                     height: {self.groove_h}px;
@@ -280,20 +355,34 @@ class GradientSlider(QSlider):
             groove_y = max(0, (rect.height() - assembly_h) // 2)
         else:
             groove_y = (rect.height() - self.groove_h) // 2
-        groove_rect = QRectF(0, groove_y, rect.width(), self.groove_h)
+        # The *value axis* is not the widget: both ends are inset by half a
+        # cursor. The groove is painted across exactly that span and the
+        # cursor's centre travels it, so the bar's two ends ARE `minimum()`
+        # and `maximum()` — the cursor's centre lands on the bar's end at
+        # either extreme — while the cursor itself, which overhangs the bar
+        # by half its width there, still stays inside the widget instead of
+        # hanging outside where the parent's clip rect slices it.
+        axis_x0, axis_x1 = self.track_span()
+        axis_w = max(0.0, axis_x1 - axis_x0)
+        groove_rect = QRectF(axis_x0, groove_y, axis_w, self.groove_h)
 
-        grad = QLinearGradient(0, 0, rect.width(), 0)
+        def axis_x(frac):
+            """Widget x of `frac` through the value range."""
+            return axis_x0 + min(1.0, max(0.0, float(frac))) * axis_w
+
+        grad = QLinearGradient(axis_x0, 0, axis_x1, 0)
         for stop, color in self.gradient_colors:
             grad.setColorAt(stop, color)
 
         # Fill groove
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(grad)
-        painter.drawRoundedRect(groove_rect, self.groove_radius, self.groove_radius)
+        if axis_w > 0:
+            painter.drawRoundedRect(groove_rect, self.groove_radius, self.groove_radius)
 
         # Groove outline (border theme). Inset by half the pen width so the
         # stroke stays inside the widget instead of being clipped.
-        if self._groove_border_w > 0:
+        if self._groove_border_w > 0 and axis_w > 0:
             bw_g = self._groove_border_w
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(QPen(QColor(self._groove_border_color), bw_g))
@@ -307,30 +396,28 @@ class GradientSlider(QSlider):
         if self._gamut_min is not None and self._gamut_max is not None:
             vmin = self.minimum()
             vrange = self.maximum() - vmin
-            if vrange > 0:
+            if vrange > 0 and axis_w > 0:
                 left_frac = (self._gamut_min - vmin) / vrange
                 right_frac = (self._gamut_max - vmin) / vrange
                 painter.setBrush(QColor(160, 160, 160, 140))
                 if left_frac > 0.005:
-                    painter.drawRect(QRectF(0, groove_y, rect.width() * left_frac, self.groove_h))
+                    painter.drawRect(QRectF(axis_x0, groove_y,
+                                            axis_w * left_frac, self.groove_h))
                 if right_frac < 0.995:
-                    painter.drawRect(QRectF(rect.width() * right_frac, groove_y, rect.width() * (1.0 - right_frac), self.groove_h))
+                    right_x = axis_x(right_frac)
+                    painter.drawRect(QRectF(right_x, groove_y,
+                                            axis_x1 - right_x, self.groove_h))
 
         if handle_shape == "triangle-below":
             half_w = self._triangle_half_width()
-            vrange = self.maximum() - self.minimum()
-            frac = (self.value() - self.minimum()) / vrange if vrange > 0 else 0.0
-            # Travel on the same inset span the invisible native handle uses
-            # (update_scale sizes that handle to exactly this width): the
-            # marker sits under the cursor while dragging, lands dead centre
-            # at mid-range, and stays whole at both ends. Painting it at
-            # ``frac * width`` — as this did — pushed half of it outside the
-            # widget at 0 and at max, where the clip rect sliced it off.
-            centre = half_w + frac * max(0.0, rect.width() - 2 * half_w)
+            # The cursor's *geometric centre* is the anchor: it is placed on
+            # the value's own position on the track above, not offset by half
+            # its width. `track_span` has already reserved `half_w` of room at
+            # each end, so the whole triangle stays inside the widget.
+            centre = self.value_anchor_x()
             # Snap to a half-pixel so a 1px pen lands on one pixel column
             # instead of smearing across two (the indicator is small enough
-            # that the blur reads as grey mush otherwise), then keep the two
-            # extremes exactly flush with the groove ends.
+            # that the blur reads as grey mush otherwise).
             handle_x = math.floor(centre) + 0.5
             if rect.width() < 2 * half_w:
                 # Widget narrower than the marker itself: nothing can keep it
@@ -354,8 +441,16 @@ class GradientSlider(QSlider):
             tri_pen = QPen(tri_border_color, tri_bw) if tri_bw > 0 else QPen(Qt.PenStyle.NoPen)
 
             apex = QPointF(handle_x, tri_base_y)
-            left = QPointF(handle_x - tri_size_w, tri_base_y + tri_size_h)
-            right = QPointF(handle_x + tri_size_w, tri_base_y + tri_size_h)
+            # The indicator's *horizontal* edges — the base bar and the inner
+            # line sitting on it — are landed on whole device pixels. On a
+            # fractional uiScale (105%, 110%, …) or a scaled display the raw
+            # float falls between two rows, and antialiasing then paints a
+            # half-lit grey row under the indicator that reads as a drop
+            # shadow. The slanted sides are diagonal either way.
+            dpr = max(1.0, float(self.devicePixelRatioF()))
+            tri_bottom = round((tri_base_y + tri_size_h) * dpr) / dpr
+            left = QPointF(handle_x - tri_size_w, tri_bottom)
+            right = QPointF(handle_x + tri_size_w, tri_bottom)
 
             if tri_style == "caret":
                 # Thin "^" indicator (CSP): stroke only, never filled.
@@ -389,11 +484,15 @@ class GradientSlider(QSlider):
                     painter.drawPolygon(QPolygonF([apex, left, right]))
 
                     overhang = float(cast(float, t.get("handle_tri_base_overhang", 0))) * self.scale
-                    bottom_y = tri_base_y + tri_size_h
+                    # Both bar edges snapped in device space, so the bar keeps
+                    # a whole number of device rows and none of them bleeds
+                    # out as a half-lit grey one.
+                    bar_rows = max(1, round(base_h * dpr))
+                    bar_top = tri_bottom - bar_rows / dpr
 
                     # Stop the slanted sides on top of the bar; running them to
                     # the full bottom would stroke half a pen width below it.
-                    side_y = bottom_y - base_h
+                    side_y = bar_top
                     painter.setBrush(Qt.BrushStyle.NoBrush)
                     side_pen = QPen(tri_pen)
                     side_pen.setCapStyle(Qt.PenCapStyle.FlatCap)
@@ -405,17 +504,17 @@ class GradientSlider(QSlider):
                     bx1 = round(handle_x + tri_size_w + overhang)
                     painter.setPen(Qt.PenStyle.NoPen)
                     painter.setBrush(QColor(str(t.get("handle_tri_base_color", "#000000"))))
-                    painter.drawRect(QRectF(bx0, bottom_y - base_h, bx1 - bx0, base_h))
+                    painter.drawRect(QRectF(bx0, bar_top, bx1 - bx0, bar_rows / dpr))
 
                     inner_line = str(t.get("handle_tri_inner_line_color", "none"))
                     if inner_line.strip().lower() not in ("none", "transparent", ""):
-                        line_h = max(1, int(self.scale))
+                        line_h = max(1, round(max(1, int(self.scale)) * dpr)) / dpr
                         inset = base_h
                         inner_w = (bx1 - bx0) - 2 * inset
                         if inner_w > 0:
                             painter.setBrush(QColor(inner_line))
                             painter.drawRect(QRectF(
-                                bx0 + inset, bottom_y - base_h, inner_w, line_h
+                                bx0 + inset, bar_top, inner_w, line_h
                             ))
                 else:
                     painter.setPen(tri_pen)
@@ -439,14 +538,20 @@ class GradientSlider(QSlider):
             is_active = bool(opt.activeSubControls & QStyle.SubControl.SC_SliderHandle)
             hx, hy, hw, hh = float(hr_q.x()), float(hr_q.y()), float(hr_q.width()), float(hr_q.height())
             hr = max(0, int(1 * self.scale * float(cast(float, t["handle_radius_factor"]))))
-            hf = QRectF(hx, hy, hw, hh)
 
             bw = max(1, int(1 * self.scale))
+            # Both rings are stroked *inside* the handle rect (the pen straddles
+            # its path, so the path is inset by half a pen). Straddling the rect
+            # instead — as this used to — put half of each outer stroke outside
+            # the widget at min and at max, where the clip rect shaved it off:
+            # the cursor's edge facing the widget border came out at half
+            # weight while the opposite edge stayed solid.
+            hf = QRectF(hx + bw / 2, hy + bw / 2, hw - bw, hh - bw)
             painter.setBrush(Qt.BrushStyle.NoBrush)
 
             # Inner ring: white (normal) or theme hover colour (active)
             inner_color = QColor(t["handle_hover_border"]) if is_active else QColor(255, 255, 255, 200)
-            wi = QRectF(hx + bw, hy + bw, hw - 2 * bw, hh - 2 * bw)
+            wi = QRectF(hf.x() + bw, hf.y() + bw, hf.width() - 2 * bw, hf.height() - 2 * bw)
             wr = max(0, hr - bw)
             painter.setPen(QPen(inner_color, bw))
             painter.drawRoundedRect(wi, wr, wr)

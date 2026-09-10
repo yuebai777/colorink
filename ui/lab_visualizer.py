@@ -1141,38 +1141,75 @@ class LabSlider(QWidget):
         if update_widget:
             self.update()
 
+    #: Half the cursor bar's stroke. The cursor is anchored by its *centre*
+    #: (the value it shows), so the value axis stops this far short of the
+    #: band's ends: reaching the very edge would put half the stroke outside
+    #: the band, where the parent's clip rect shaves it off.
+    CURSOR_HALF = 1.0
+
+    def value_axis(self, top=None, height=None):
+        """`(y of L=100, y of L=0)` — the band inset by half a cursor."""
+        if top is None or height is None:
+            top, height = self.track_band()
+        half = min(self.CURSOR_HALF, max(0.0, height / 2.0))
+        return top + half, top + height - half
+
+    def lightness_to_y(self, lightness, top=None, height=None):
+        """y the cursor's centre takes for `lightness` (0..100)."""
+        y_top, y_bottom = self.value_axis(top, height)
+        frac = max(0.0, min(100.0, float(lightness))) / 100.0
+        return y_bottom - frac * (y_bottom - y_top)
+
+    def y_to_lightness(self, y, top=None, height=None):
+        """Inverse of `lightness_to_y`, clamped to the range."""
+        y_top, y_bottom = self.value_axis(top, height)
+        span = y_bottom - y_top
+        if span <= 0.0:
+            return 100.0
+        return max(0.0, min(100.0, (y_bottom - float(y)) / span * 100.0))
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
+
         w = self.width()
         top, h = self.track_band()
-        
-        # Draw L slider background gradient (white to black)
-        gradient = QLinearGradient(0.0, top, 0.0, top + h)
+        y_top, y_bottom = self.value_axis(top, h)
+
+        # The ramp runs between the value axis' ends, so the lightness a
+        # position encodes is the lightness the cursor shows there. Padding
+        # outside it (QLinearGradient pads with its end stops) keeps the bar
+        # itself spanning the whole band — the two ends are simply flat.
+        gradient = QLinearGradient(0.0, y_top, 0.0, y_bottom)
         gradient.setColorAt(0.0, QColor(255, 255, 255))
         gradient.setColorAt(1.0, QColor(0, 0, 0))
-        
+
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(gradient)
         painter.drawRect(QRectF(0.0, top, float(w), h))
-        
-        # Draw out-of-gamut gray overlay
-        top_frac = 1.0 - self._gamut_max / 100.0
-        bottom_frac = 1.0 - self._gamut_min / 100.0
-        
+
+        # Gray out the out-of-gamut bands, on that same axis: the mask edge
+        # under the cursor is then exactly where the cursor leaves the gamut.
+        gray_top = self.lightness_to_y(self._gamut_max, top, h)
+        gray_bottom = self.lightness_to_y(self._gamut_min, top, h)
+
         painter.setBrush(QColor(160, 160, 160, 140))
-        if top_frac > 0.005:
-            painter.drawRect(QRectF(0.0, top, float(w), h * top_frac))
-        if bottom_frac < 0.995:
-            painter.drawRect(QRectF(0.0, top + h * bottom_frac,
-                                    float(w), h * (1.0 - bottom_frac)))
-        
-        # Draw indicator cursor (horizontal bar)
-        cy = top + (1.0 - self.L / 100.0) * h
-        
+        if gray_top > y_top + 0.5:
+            painter.drawRect(QRectF(0.0, y_top, float(w), gray_top - y_top))
+        if gray_bottom < y_bottom - 0.5:
+            painter.drawRect(QRectF(0.0, gray_bottom, float(w),
+                                    y_bottom - gray_bottom))
+
+        # Draw indicator cursor (horizontal bar), centred on its value.
+        # Rounding the centre keeps the 2px stroke crisp; it used to truncate
+        # (int()), which biased every position up by up to a pixel. The clamp
+        # then guarantees the stroke's own two rows stay inside the axis, so
+        # neither end can be shaved by the band's edge.
+        cy = int(round(self.lightness_to_y(self.L, top, h)))
+        cy = max(int(math.ceil(y_top)), min(int(math.floor(y_bottom)), cy))
+
         painter.setPen(QPen(QColor(255, 255, 255) if self.L < 50.0 else QColor(0, 0, 0), 2))
-        painter.drawLine(0, int(cy), w, int(cy))
+        painter.drawLine(0, cy, w, cy)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -1192,9 +1229,6 @@ class LabSlider(QWidget):
 
     def handle_mouse(self, pos):
         top, h = self.track_band()
-        local_y = max(0.0, min(h, pos.y() - top))
-        
-        # Convert to L (0 to 100)
-        self.L = (1.0 - local_y / h) * 100.0
+        self.L = self.y_to_lightness(pos.y(), top, h)
         self.update()
         self.lightnessChanged.emit(self.L)
