@@ -63,6 +63,7 @@ Snipaste_*.png
 
 # AI agent session / local tooling state (machine-specific paths — never push)
 .omo/
+.omc/
 .reasonix/
 .opencode/
 .codegraph/

@@ -126,7 +126,13 @@ export default defineConfig({
   title: 'Colorink',
   description: '专为绘画与设计打造的 Windows 极速取色调色辅助工具',
   base: '/colorink/',
-  srcExclude: ['superpowers/**'],
+  srcExclude: [
+    'superpowers/**',
+    // PS 排查/方案稿：留在仓库里给维护者看，但不进文档站、不被搜索索引
+    // （里面含未在真机复现的推断与内部取证细节，不适合对用户公开渲染）。
+    'photoshop-first-stroke-plugin-audit.md',
+    'photoshop-wintab-pressure-fix-plan.md'
+  ],
   head: [
     ['meta', { name: 'theme-color', content: '#6d5ae8' }]
   ],
@@ -146,7 +152,7 @@ export default defineConfig({
           { text: '常见问题', link: '/faq/' },
           { text: '⚡ 爱发电', link: 'https://afdian.com/a/touyimoyuebai' },
           {
-            text: 'v1.8.9 下载',
+            text: 'v1.8.10 下载',
             link: 'https://github.com/yuebai777/colorink/releases/latest'
           }
         ],
