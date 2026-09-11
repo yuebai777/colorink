@@ -50,6 +50,20 @@ class SettingsWindow(QDialog):
         self._apply_window_theme()
         self._apply_fixed_size()
 
+    # ── State ──────────────────────────────────────────────────────────────
+
+    @property
+    def cfg(self) -> dict:
+        """The live settings dict, re-exported from the main window.
+
+        This window is a chrome shell: it owns no settings, it hosts the shared
+        ``SettingsSidebar``. Child dialogs are parented to *this* window, so
+        they reach for ``parent().cfg`` the way every other widget reaches for
+        ``main_window.cfg`` — without this the lookup silently fails and they
+        stop following live settings such as the font size.
+        """
+        return self._main_window.cfg
+
     # ── UI construction ───────────────────────────────────────────────────
 
     def _build_ui(self):

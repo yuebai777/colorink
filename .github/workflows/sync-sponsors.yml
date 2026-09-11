@@ -1,0 +1,55 @@
+name: Sync sponsor list
+
+# Maintains core/data/sponsors.json (the in-app 鸣谢名单) from the Afdian API.
+#
+# The api token lives in repository secrets and is never shipped: the app only
+# reads the generated, bundled data file. See tools/release/fetch_sponsors.py.
+#
+# Trigger it by hand with the "Run workflow" button on the Actions page — no
+# local tooling, no typing, nothing to install.
+
+on:
+  # Manual: Actions → Sync sponsor list → Run workflow.
+  workflow_dispatch:
+  # Safety net: refresh monthly so the roll does not drift too far behind.
+  schedule:
+    - cron: '0 3 1 * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-sponsors
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Fetch sponsors
+        env:
+          AFDIAN_USER_ID: ${{ secrets.AFDIAN_USER_ID }}
+          AFDIAN_API_TOKEN: ${{ secrets.AFDIAN_API_TOKEN }}
+        run: python tools/release/fetch_sponsors.py
+
+      # The script is idempotent and skips writing when nothing changed, so a
+      # missing diff here means "genuinely nothing to update" — not an error.
+      - name: Commit if the roll changed
+        run: |
+          if git diff --quiet -- core/data/sponsors.json; then
+            echo "Sponsor list unchanged — nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add core/data/sponsors.json
+          git commit -m "chore(sponsors): sync sponsor list"
+          git push

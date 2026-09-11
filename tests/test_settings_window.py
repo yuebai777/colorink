@@ -122,6 +122,24 @@ class TestSettingsWindowConstruction:
     def test_initial_state_is_hidden(self, settings_window):
         assert not settings_window.isVisible()
 
+    def test_theme_and_size_are_applied_during_construction(self, settings_window):
+        """Both must run in ``__init__``, before any ``settingChanged`` arrives.
+
+        Regression guard: adding the ``cfg`` property once left
+        ``_apply_window_theme()`` / ``_apply_fixed_size()`` stranded *after* its
+        ``return`` — syntactically valid, silently dead. The window then had no
+        stylesheet at all until the user touched a setting, so the title bar
+        painted with system defaults (a pale strip in the dark themes).
+        """
+        assert settings_window.styleSheet(), "no theme applied during construction"
+        assert settings_window._title_bar.styleSheet(), "title bar left unthemed"
+        assert settings_window.height() > 0
+        assert settings_window.width() == 520
+
+    def test_cfg_is_the_main_windows_settings(self, settings_window, stub_main_window):
+        """Child dialogs read ``parent().cfg``; it must be the live dict."""
+        assert settings_window.cfg is stub_main_window.cfg
+
 
 class TestLanguageSwitch:
     """Language changes re-apply immediately without a restart."""

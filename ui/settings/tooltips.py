@@ -77,6 +77,7 @@ _SETTINGS_TOOLTIPS: dict[str, str] = {
     "btn_check_update": "检查 GitHub 上是否有新版本",
     "btn_about_author": "查看作者信息和项目主页",
     "btn_view_source": "打开 GitHub 上的项目源码仓库",
+    "btn_sponsors": "查看支持过 Colorink 的赞助者名单",
     "cb_check_updates": "启动后自动在后台检查更新（结果通过托盘通知显示）",
 }
 

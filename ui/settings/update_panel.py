@@ -262,6 +262,40 @@ class UpdatePanelMixin:
         """
         webbrowser.open(updater.GITHUB_URL)
 
+    def on_open_sponsors(self):
+        """Open the sponsor honour roll, reusing a live instance if one is up.
+
+        Non-modal on purpose: the roll is something to read *while* tweaking
+        settings, and an application-modal ``exec()`` would also make the
+        reuse guard below unreachable.
+
+        The host window is the ``SettingsWindow`` (this mixin is only ever
+        built into its sidebar), which gives the dialog the right parent —
+        stacking above the settings chrome, and being hidden together with it.
+        It is ``None`` on paths that build the sidebar without that window; the
+        dialog tolerates that.
+        """
+        from ui.sponsor_hall import SponsorHallDialog
+
+        existing = getattr(self, "_sponsor_dialog", None)
+        if existing is not None:
+            try:
+                if existing.isVisible():
+                    existing.raise_()
+                    existing.activateWindow()
+                    return
+                # Closed earlier — drop it so repeated open/close cycles do not
+                # pile up children on the settings window.
+                existing.deleteLater()
+            except RuntimeError:
+                pass  # wrapped C++ object already gone
+
+        dialog = SponsorHallDialog(self.window())
+        self._sponsor_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
     def _on_check_updates_toggled(self, checked: bool):
         self.cfg["checkUpdatesOnStartup"] = bool(checked)
         self._persist_config()
@@ -362,9 +396,15 @@ class UpdatePanelMixin:
         self.btn_view_source = QPushButton(i18n.tr("查看源码"))
         self.btn_view_source.setToolTip(i18n.tr("打开 GitHub 上的项目源码仓库"))
         self.btn_view_source.clicked.connect(self.on_view_source)
+        # No inline tooltip here on purpose: the static catalog in
+        # ``ui.settings.tooltips`` owns this button's tooltip, and
+        # tests/test_settings_tooltips.py asserts the two stay identical.
+        self.btn_sponsors = QPushButton(i18n.tr("鸣谢赞助者"))
+        self.btn_sponsors.clicked.connect(self.on_open_sponsors)
         row_about_actions.addWidget(self.btn_check_update)
         row_about_actions.addWidget(self.btn_about_author)
         row_about_actions.addWidget(self.btn_view_source)
+        row_about_actions.addWidget(self.btn_sponsors)
         row_about_actions.addStretch()
         cl_about.addLayout(row_about_actions)
 

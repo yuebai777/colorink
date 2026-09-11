@@ -265,6 +265,21 @@ _EN: dict[str, str] = {
     "关闭": "Close",
     "Colorink 更新": "Colorink update",
     "发现新版本 {latest}，点击查看下载": "New version {latest} available — click to view",
+    # ── Sponsor honour roll ──
+    "鸣谢赞助者": "Thanks to our sponsors",
+    "查看支持过 Colorink 的赞助者名单": "See who has supported Colorink",
+    "鸣谢 · 赞助者名单": "Thanks · Sponsor list",
+    "Colorink 完全免费开源。感谢以下朋友的支持，让这个项目走得更远。":
+        "Colorink is free and open source. Thanks to these friends for "
+        "keeping it going.",
+    "共 {n} 位赞助者": "{n} sponsors in total",
+    # A second key exists only because English needs a singular form. Chinese
+    # has no plural rule, so its own side of the pair is never rendered (the
+    # dialog prefers the unmarked key outside English) — it is spelled out for
+    # whoever reads this table, not for the user.
+    "共 {n} 位赞助者（单数）": "{n} sponsor in total",
+    "还没有赞助记录 —— 你可以成为第一位 ☕": "No sponsors yet — be the first ☕",
+    "前往爱发电赞助": "Sponsor on Afdian",
     # ── Companion / sync status ──
     "● 已连接": "● Connected",
     "○ 已保存 — 等待 CSP...": "○ Saved — waiting for CSP...",
