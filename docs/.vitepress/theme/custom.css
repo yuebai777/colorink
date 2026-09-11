@@ -34,12 +34,44 @@
   --vp-c-bg-soft: #f6f6fa;
   --vp-c-bg-elv: #ffffff;
 
-  /* 首页板块自定义变量 */
-  --ck-card-bg: #ffffff;
-  --ck-card-border: #e9e9f2;
-  --ck-placeholder-bg: linear-gradient(135deg, #f4f2ff 0%, #fdf2f8 100%);
+  /* 首页板块自定义变量（卡片同样走半透明，让极光雾透出来） */
+  --ck-card-bg: rgba(255, 255, 255, 0.74);
+  --ck-card-border: rgba(233, 233, 242, 0.9);
+  --ck-placeholder-bg: linear-gradient(135deg, rgba(244, 242, 255, 0.72) 0%, rgba(253, 242, 248, 0.72) 100%);
   --ck-placeholder-border: #cfc6f5;
   --ck-placeholder-text: #7a6fb8;
+
+  /* ---------- 玻璃拟态表面：顶栏 / 侧栏 / 本地导航让出透明度 ---------- */
+  --vp-nav-bg-color: rgba(253, 253, 254, 0.66);
+  --vp-nav-screen-bg-color: rgba(253, 253, 254, 0.96);
+  --vp-local-nav-bg-color: rgba(253, 253, 254, 0.7);
+  --vp-sidebar-bg-color: rgba(250, 250, 254, 0.6);
+  --ck-glass-blur: blur(18px) saturate(1.6);
+
+  /* ---------- 动态极光雾调色板：浅粉 / 浅紫 / 浅蓝 / 薄荷 + 一点暖桃 ---------- */
+  --ck-mist-rose: rgba(255, 168, 213, 0.7);
+  --ck-mist-violet: rgba(178, 158, 255, 0.66);
+  --ck-mist-azure: rgba(136, 194, 255, 0.62);
+  --ck-mist-aqua: rgba(146, 231, 224, 0.5);
+  --ck-mist-peach: rgba(255, 205, 176, 0.48);
+  --ck-mist-glow: rgba(255, 255, 255, 0.5);
+  --ck-cursor-glow: rgba(255, 255, 255, 0.42);
+  --ck-sweep: rgba(255, 255, 255, 0.6);
+  --ck-sweep-opacity: 0.5;
+  --ck-aurora-veil: linear-gradient(
+    180deg,
+    rgba(253, 253, 254, 0) 0%,
+    rgba(253, 253, 254, 0.08) 55%,
+    rgba(253, 253, 254, 0.42) 100%
+  );
+  --ck-fog-opacity: 0.5;
+  --ck-fog-blend: soft-light;
+  --ck-grain-opacity: 0.05;
+  --ck-orb-blur: 64px;
+
+  /* ---------- 雾与颗粒：SVG 分形噪声（feTurbulence）内联，零外部请求 ---------- */
+  --ck-fog-texture: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='420' height='420'%3E%3Cfilter id='ckfog' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.0052' numOctaves='5' seed='9' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='420' height='420' filter='url(%23ckfog)'/%3E%3C/svg%3E");
+  --ck-grain-texture: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='ckgrain' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23ckgrain)'/%3E%3C/svg%3E");
 }
 
 /* ============ 品牌色（暗色模式） ============ */
@@ -68,11 +100,358 @@
     #ffa25e 100%
   );
 
-  --ck-card-bg: #1c1c26;
-  --ck-card-border: #2e2e3c;
-  --ck-placeholder-bg: linear-gradient(135deg, #1f1c30 0%, #261e2c 100%);
+  --ck-card-bg: rgba(28, 28, 38, 0.68);
+  --ck-card-border: rgba(46, 46, 60, 0.9);
+  --ck-placeholder-bg: linear-gradient(135deg, rgba(31, 28, 48, 0.7) 0%, rgba(38, 30, 44, 0.7) 100%);
   --ck-placeholder-border: #49416e;
   --ck-placeholder-text: #a79ad6;
+
+  /* 暗色下的玻璃表面：压得更深一点，保证正文对比度 */
+  --vp-nav-bg-color: rgba(19, 19, 24, 0.62);
+  --vp-nav-screen-bg-color: rgba(19, 19, 24, 0.96);
+  --vp-local-nav-bg-color: rgba(19, 19, 24, 0.66);
+  --vp-sidebar-bg-color: rgba(23, 23, 30, 0.56);
+
+  /* 暗色极光：饱和度抬高、明度压低，像夜里的星云 */
+  --ck-mist-rose: rgba(255, 96, 178, 0.32);
+  --ck-mist-violet: rgba(142, 110, 255, 0.36);
+  --ck-mist-azure: rgba(72, 142, 255, 0.32);
+  --ck-mist-aqua: rgba(58, 216, 214, 0.2);
+  --ck-mist-peach: rgba(255, 152, 108, 0.16);
+  --ck-mist-glow: rgba(146, 118, 255, 0.32);
+  --ck-cursor-glow: rgba(148, 120, 255, 0.3);
+  --ck-sweep: rgba(168, 138, 255, 0.4);
+  --ck-sweep-opacity: 0.42;
+  --ck-aurora-veil: linear-gradient(
+    180deg,
+    rgba(19, 19, 24, 0) 0%,
+    rgba(19, 19, 24, 0.16) 55%,
+    rgba(19, 19, 24, 0.6) 100%
+  );
+  --ck-fog-opacity: 0.38;
+  --ck-grain-opacity: 0.06;
+}
+
+/* ============ 动态极光雾背景 ============ */
+/**
+ * 整站背景：5 团高斯模糊的浅粉色雾在视口里缓慢漂移、呼吸、互相叠色，
+ * 上面再压一层 SVG 分形噪声做的云雾颗粒和一层胶片颗粒。
+ * 图层全屏 fixed、pointer-events: none、z-index: -1：
+ * 永远在 html 底色之上、在导航 / 正文 / 侧栏之下。
+ */
+html {
+  background-color: var(--vp-c-bg);
+}
+
+/* body 的底色交给 html，否则会盖住负 z-index 的极光层 */
+body {
+  background-color: transparent;
+}
+
+.ck-aurora {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  /* 自带底色：让 soft-light / overlay 混合有一层不透明底，
+     否则噪点会以半透明灰直接盖在页面上，把整站颜色压暗串灰 */
+  background-color: var(--vp-c-bg);
+  opacity: var(--ck-aurora-strength, 1);
+  transition: opacity 0.6s ease;
+}
+
+/* 文档页收一点强度，让长文底色更安静 */
+.ck-aurora:not(.ck-aurora--home) {
+  --ck-aurora-strength: 0.85;
+}
+
+/* 视差容器：指针位置经 JS 缓动后写进 --ck-px / --ck-py（-1 ~ 1），
+   只做 translate3d，模糊层缓存在 GPU 上，不触发重绘 */
+.ck-aurora__field {
+  position: absolute;
+  inset: -16%;
+  transform: translate3d(
+    calc(var(--ck-px, 0) * 30px),
+    calc(var(--ck-py, 0) * 26px),
+    0
+  );
+}
+
+.ck-orb {
+  position: absolute;
+  display: block;
+  border-radius: 50%;
+  filter: blur(var(--ck-orb-blur));
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+.ck-orb--rose {
+  width: 54vmax;
+  height: 48vmax;
+  left: -4%;
+  top: -8%;
+  background: radial-gradient(circle at 50% 50%, var(--ck-mist-rose) 0%, transparent 68%);
+  animation: ck-mist-a 26s ease-in-out infinite alternate;
+}
+
+.ck-orb--violet {
+  width: 58vmax;
+  height: 52vmax;
+  left: 34%;
+  top: 12%;
+  background: radial-gradient(circle at 50% 50%, var(--ck-mist-violet) 0%, transparent 70%);
+  animation: ck-mist-b 34s ease-in-out infinite alternate;
+}
+
+.ck-orb--azure {
+  width: 56vmax;
+  height: 50vmax;
+  left: 4%;
+  top: 42%;
+  background: radial-gradient(circle at 50% 50%, var(--ck-mist-azure) 0%, transparent 70%);
+  animation: ck-mist-c 30s ease-in-out infinite alternate;
+}
+
+.ck-orb--aqua {
+  width: 46vmax;
+  height: 42vmax;
+  left: 58%;
+  top: -6%;
+  background: radial-gradient(circle at 50% 50%, var(--ck-mist-aqua) 0%, transparent 72%);
+  animation: ck-mist-d 38s ease-in-out infinite alternate;
+}
+
+.ck-orb--peach {
+  width: 48vmax;
+  height: 44vmax;
+  left: 26%;
+  top: 56%;
+  background: radial-gradient(circle at 50% 50%, var(--ck-mist-peach) 0%, transparent 72%);
+  animation: ck-mist-e 32s ease-in-out infinite alternate;
+}
+
+/* 每个圆斑的漂移方向 / 幅度 / 呼吸节奏都不同，避免同频导致"整体平移"的机械感 */
+@keyframes ck-mist-a {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: translate3d(11vw, 7vh, 0) scale(1.16);
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(-5vw, 14vh, 0) scale(0.92);
+    opacity: 0.7;
+  }
+}
+
+@keyframes ck-mist-b {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1.04);
+    opacity: 0.72;
+  }
+  50% {
+    transform: translate3d(-13vw, 9vh, 0) scale(0.9);
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(7vw, -7vh, 0) scale(1.12);
+    opacity: 0.8;
+  }
+}
+
+@keyframes ck-mist-c {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.96);
+    opacity: 0.78;
+  }
+  50% {
+    transform: translate3d(10vw, -11vh, 0) scale(1.14);
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(-8vw, 5vh, 0) scale(1);
+    opacity: 0.7;
+  }
+}
+
+@keyframes ck-mist-d {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1.08);
+    opacity: 0.7;
+  }
+  50% {
+    transform: translate3d(-9vw, 13vh, 0) scale(0.94);
+    opacity: 0.95;
+  }
+  100% {
+    transform: translate3d(12vw, 6vh, 0) scale(1.18);
+    opacity: 0.75;
+  }
+}
+
+@keyframes ck-mist-e {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.94);
+    opacity: 0.66;
+  }
+  50% {
+    transform: translate3d(8vw, -9vh, 0) scale(1.15);
+    opacity: 0.92;
+  }
+  100% {
+    transform: translate3d(-11vw, -4vh, 0) scale(1.02);
+    opacity: 0.7;
+  }
+}
+
+/* 柔光罩层：底部渐隐，页面下缘更沉、顶部更透 */
+.ck-aurora__veil {
+  position: absolute;
+  inset: 0;
+  background: var(--ck-aurora-veil);
+}
+
+/* 云雾颗粒：feTurbulence 分形噪声放大铺满，静态零逐帧开销 */
+.ck-aurora__fog {
+  position: absolute;
+  inset: 0;
+  background-image: var(--ck-fog-texture);
+  background-size: 640px 640px;
+  background-repeat: repeat;
+  mix-blend-mode: var(--ck-fog-blend);
+  opacity: var(--ck-fog-opacity);
+}
+
+/* 光带：一道很宽很软的高光斜着扫过整个雾面，像雾里透进来的光 */
+.ck-aurora__sweep {
+  position: absolute;
+  inset: -30% -60%;
+  background: linear-gradient(
+    104deg,
+    transparent 34%,
+    var(--ck-sweep) 50%,
+    transparent 66%
+  );
+  mix-blend-mode: soft-light;
+  opacity: var(--ck-sweep-opacity);
+  transform: translate3d(-14%, -3%, 0);
+  animation: ck-sweep-drift 58s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+@keyframes ck-sweep-drift {
+  from {
+    transform: translate3d(-14%, -3%, 0);
+  }
+  to {
+    transform: translate3d(14%, 3%, 0);
+  }
+}
+
+/* 跟随鼠标的柔光斑（缓动由 JS 那一侧做，这里只补一个淡入） */
+.ck-aurora__cursor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 66vmax;
+  height: 66vmax;
+  margin: -33vmax 0 0 -33vmax;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, var(--ck-cursor-glow) 0%, transparent 60%);
+  opacity: 0;
+  transform: translate3d(var(--ck-cx, 50vw), var(--ck-cy, 40vh), 0);
+  transition: opacity 1.2s ease;
+  will-change: transform;
+}
+
+.ck-aurora.is-awake .ck-aurora__cursor {
+  opacity: 1;
+}
+
+/* 胶片颗粒：抹掉大面积渐变的色带 */
+.ck-aurora__grain {
+  position: absolute;
+  inset: 0;
+  background-image: var(--ck-grain-texture);
+  background-size: 140px 140px;
+  background-repeat: repeat;
+  mix-blend-mode: overlay;
+  opacity: var(--ck-grain-opacity);
+}
+
+/* ============ 玻璃拟态表面 ============ */
+/* 顶栏 / 本地导航 / 侧栏做成半透明磨砂，让极光雾从背后透出来 */
+.VPNavBar,
+.VPNavBar .content-body,
+.VPLocalNav,
+.VPSidebar {
+  -webkit-backdrop-filter: var(--ck-glass-blur);
+  backdrop-filter: var(--ck-glass-blur);
+}
+
+.VPFooter {
+  background-color: transparent;
+}
+
+/* 特性卡片同样玻璃化 */
+.VPFeatures .VPFeature .box {
+  background-color: var(--ck-card-bg);
+  border-color: var(--ck-card-border);
+}
+
+@media (min-width: 960px) {
+  .VPFeatures .VPFeature .box,
+  .ck-shot,
+  .ck-sync-card {
+    -webkit-backdrop-filter: blur(12px) saturate(1.4);
+    backdrop-filter: blur(12px) saturate(1.4);
+  }
+}
+
+/* ============ 减弱动态效果 / 小屏降级 ============ */
+@media (prefers-reduced-motion: reduce) {
+  .ck-orb {
+    animation: none !important;
+  }
+
+  .ck-aurora__cursor {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .ck-aurora {
+    --ck-orb-blur: 44px;
+  }
+
+  /* 手机 GPU 弱，砍掉两层色雾与光斑，保留主氛围 */
+  .ck-orb--aqua,
+  .ck-orb--peach,
+  .ck-aurora__cursor {
+    display: none;
+  }
+}
+
+/* 高对比度偏好与打印：直接关掉氛围层，回到干净的纯色底 */
+@media (prefers-contrast: more) {
+  .ck-aurora {
+    display: none;
+  }
+}
+
+@media print {
+  .ck-aurora {
+    display: none;
+  }
+
+  html,
+  body {
+    background: #fff;
+  }
 }
 
 /* ============ Hero 区微调 ============ */
@@ -95,13 +474,29 @@
   align-items: center;
 }
 
-/* 背景大图：铺满整个 Hero，微放大避免硬边，色相缓慢呼吸 */
+/* 背景大图：铺满整个 Hero，微放大避免硬边，色相缓慢呼吸。
+   降低不透明度并向下渐隐，让产品截图"浮"在极光雾里，而不是压住整片背景 */
 .VPHome .VPHero::before {
   content: "";
   position: absolute;
   inset: 0;
   background: url(/colorink/hero-showcase.png) center 28% / cover no-repeat;
   transform: scale(1.04);
+  opacity: 0.58;
+  -webkit-mask-image: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.95) 0%,
+    rgba(0, 0, 0, 0.82) 50%,
+    rgba(0, 0, 0, 0.32) 84%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  mask-image: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.95) 0%,
+    rgba(0, 0, 0, 0.82) 50%,
+    rgba(0, 0, 0, 0.32) 84%,
+    rgba(0, 0, 0, 0) 100%
+  );
   animation: ck-hero-hue 22s ease-in-out infinite alternate;
 }
 
@@ -122,9 +517,10 @@
   background:
     linear-gradient(
       180deg,
-      rgba(253, 253, 254, 0.55) 0%,
-      rgba(253, 253, 254, 0.78) 48%,
-      var(--vp-c-bg) 100%
+      rgba(253, 253, 254, 0.34) 0%,
+      rgba(253, 253, 254, 0.52) 48%,
+      rgba(253, 253, 254, 0.58) 82%,
+      rgba(253, 253, 254, 0) 100%
     ),
     radial-gradient(45% 55% at 25% 30%, rgba(124, 92, 255, 0.4), transparent 70%),
     radial-gradient(40% 50% at 75% 65%, rgba(236, 72, 153, 0.34), transparent 70%),
@@ -141,9 +537,10 @@
   background:
     linear-gradient(
       180deg,
-      rgba(19, 19, 24, 0.62) 0%,
-      rgba(19, 19, 24, 0.82) 48%,
-      var(--vp-c-bg) 100%
+      rgba(19, 19, 24, 0.44) 0%,
+      rgba(19, 19, 24, 0.62) 48%,
+      rgba(19, 19, 24, 0.68) 82%,
+      rgba(19, 19, 24, 0) 100%
     ),
     radial-gradient(45% 55% at 25% 30%, rgba(139, 109, 255, 0.42), transparent 70%),
     radial-gradient(40% 50% at 75% 65%, rgba(255, 110, 180, 0.32), transparent 70%),
