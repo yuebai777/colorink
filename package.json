@@ -1,6 +1,6 @@
 {
   "name": "colorink-docs",
-  "version": "1.8.9",
+  "version": "1.8.10",
   "description": "Colorink official documentation and user guides",
   "type": "module",
   "scripts": {

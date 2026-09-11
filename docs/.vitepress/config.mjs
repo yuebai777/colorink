@@ -193,7 +193,7 @@ export default defineConfig({
           { text: 'FAQ', link: '/en/faq/' },
           { text: '⚡ Sponsor', link: 'https://afdian.com/a/touyimoyuebai' },
           {
-            text: 'Download v1.8.9',
+            text: 'Download v1.8.10',
             link: 'https://github.com/yuebai777/colorink/releases/latest'
           }
         ],
