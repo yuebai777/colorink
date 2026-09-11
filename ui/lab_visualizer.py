@@ -1214,6 +1214,7 @@ class LabSlider(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.dragging = True
+            self.setCursor(Qt.CursorShape.BlankCursor)
             self.interactionStarted.emit()
             self.handle_mouse(event.position())
 
@@ -1224,6 +1225,7 @@ class LabSlider(QWidget):
     def mouseReleaseEvent(self, event):
         was_dragging = self.dragging
         self.dragging = False
+        self.unsetCursor()
         if was_dragging:
             self.interactionFinished.emit()
 

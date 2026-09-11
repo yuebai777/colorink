@@ -332,6 +332,17 @@ class SyncMixin:
                 if slider.isSliderDown():
                     is_dragging = True
                     break
+        elif source == "wheel":
+            wheel = getattr(self, "color_wheel", None)
+            if wheel is not None and getattr(wheel, "dragging", None):
+                is_dragging = True
+        elif source == "lab":
+            lab = getattr(self, "lab_square", None)
+            if lab is not None and getattr(lab, "dragging", False):
+                is_dragging = True
+            lab_s = getattr(self, "lab_slider", None)
+            if lab_s is not None and getattr(lab_s, "dragging", False):
+                is_dragging = True
         if is_dragging:
             return
         hsv_ov = None

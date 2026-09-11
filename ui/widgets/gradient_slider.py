@@ -126,9 +126,15 @@ class GradientSlider(QSlider):
         event.accept()
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setCursor(Qt.CursorShape.BlankCursor)
         if handle_slider_jump_press(self, event):
             return
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self.unsetCursor()
+        super().mouseReleaseEvent(event)
 
     def _triangle_extent(self, scale=None):
         """Vertical space the triangle indicator needs below the groove."""

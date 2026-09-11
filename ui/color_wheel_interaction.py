@@ -236,7 +236,7 @@ class ColorWheelInteractionMixin:
                         self.dragging = "square"
                         self.handle_square_drag(pos.x(), pos.y(), cx, cy, half)
 
-            if self.dragging and self.dragging != "hue":
+            if self.dragging:
                 self.setCursor(Qt.CursorShape.BlankCursor)
 
     def mouseMoveEvent(self, event):

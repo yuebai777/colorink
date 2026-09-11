@@ -489,6 +489,7 @@ class ColorUpdatesMixin:
         # persisted state reflects *what the user just settled on*.
         self._record_color_history()
         if hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
+            color_index = 0 if self.active_slot == "fg" else 1
             hsv_override = None
             if self.sync_thread.software_mode == 'companion':
                 entry_h = self.slider_widgets.get("H_hsv")
@@ -497,12 +498,17 @@ class ColorUpdatesMixin:
                 if entry_h and entry_s and entry_v:
                     MAX = 4294967295
                     hsv_override = (int(entry_h[0].value()/360*MAX), int(entry_s[0].value()/100*MAX), int(entry_v[0].value()/100*MAX))
+                elif hasattr(self, "_get_hsv_u32_for_sync"):
+                    hsv_override = self._get_hsv_u32_for_sync(color_index)
             # Source-space sync for CSP memory mode (source is already
             # recorded by _project_color from the unified Color).
             src_sp, src_v = self._resolve_sync_source()
-            color_index = 0 if self.active_slot == "fg" else 1
+            is_transparent = (
+                self._fg_transparent if color_index == 0 else self._bg_transparent
+            )
             self.sync_thread.write_color(r, g, b, hsv_u32=hsv_override,
                                          source_space=src_sp, source_values=src_v,
+                                         transparent=is_transparent,
                                          color_index=color_index)
 
     def _schedule_lab_gamut_range(self, delay_ms: int = 50):
