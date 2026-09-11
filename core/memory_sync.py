@@ -263,9 +263,18 @@ class MemorySyncThread(QThread):
         note = getattr(self.ps_sync, "note_color_applied", None)
         if callable(note):
             try:
-                note()
+                note(1500)
             except Exception:
-                pass
+                try:
+                    note()
+                except Exception:
+                    pass
+            set_drawing = getattr(self.ps_sync, "set_drawing", None)
+            if callable(set_drawing):
+                try:
+                    set_drawing(True)
+                except Exception:
+                    pass
 
     def get_active_pid(self):
         if not self.sync_enabled or self.paused:

@@ -12,6 +12,7 @@ usable while the drawing program keeps the keyboard.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QEvent, QPoint, QRect, QSize, Qt, pyqtSignal
@@ -904,3 +905,19 @@ class FloatingPanelWindow(PanelHolder, QWidget):
     def _on_dropped(self, global_pos) -> None:
         self.dropped_at.emit(self.panel_id, global_pos)
         self.geometry_changed.emit(self.panel_id)
+
+    def nativeEvent(self, eventType, message):
+        if sys.platform == "win32" and eventType == b"windows_generic_MSG":
+            try:
+                import ctypes
+                import ctypes.wintypes
+                msg = ctypes.wintypes.MSG.from_address(int(message))
+                if msg.message == 0x0021:  # WM_MOUSEACTIVATE
+                    if getattr(self, "_no_focus", False):
+                        # MA_NOACTIVATE (3): Do not activate this window, but
+                        # deliver mouse message to child widgets.
+                        return True, 3
+            except Exception:
+                pass
+        return super().nativeEvent(eventType, message)
+

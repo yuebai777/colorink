@@ -494,7 +494,17 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
                 import ctypes
                 import ctypes.wintypes
                 msg = ctypes.wintypes.MSG.from_address(int(message))
-                if msg.message == 0x02E4:  # WM_GETDPISCALEDSIZE
+                if msg.message == 0x0021:  # WM_MOUSEACTIVATE
+                    no_focus = bool(getattr(self, "cfg", {}).get("noFocusMode", False))
+                    if no_focus:
+                        # MA_NOACTIVATE (3): Do not activate this window, but
+                        # deliver the mouse message to the clicked child widget.
+                        # This prevents Windows 10 from firing WM_NCACTIVATE(FALSE)
+                        # to the foreground drawing app (e.g. Photoshop), which would
+                        # otherwise suspend its WinTab context and lose pressure on the
+                        # next stroke.
+                        return True, 3
+                elif msg.message == 0x02E4:  # WM_GETDPISCALEDSIZE
                     class _SIZE(ctypes.Structure):
                         _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
 

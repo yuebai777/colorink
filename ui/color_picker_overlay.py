@@ -16,6 +16,8 @@ from PyQt6.QtCore import QPoint, QRect, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QCursor, QImage, QPainter, QPen
 from PyQt6.QtWidgets import QApplication, QWidget
 
+from core.foreground import focus_guard
+
 _ZOOM=6; _RADIUS=7; _PREVIEW=32; _PAD=6; _BR=8
 # Fixed magnifier display area in px (at default zoom × radius)
 _GRID_PX = (2*_RADIUS+1) * _ZOOM  # 90
@@ -247,9 +249,16 @@ class ColorPickerOverlay(QWidget):
         # was there before we overwrote it.
         try:
             ctypes.windll.user32.SystemParametersInfoW(0x0057, 0, None, 0)
-            # SPI_SETCURSORS resets the system cursor table; nudge the cursor
-            # so the foreground drawing app re-evaluates and re-applies its
-            # brush cursor without requiring an extra click.
+        except Exception:
+            pass
+        # NOTE: 这里以前会再调 SetCursorPos(pos+1) / SetCursorPos(pos) 去"催"
+        # 前台画图软件重画笔刷光标。那两次调用是**注入合成鼠标移动**，而且正好
+        # 发生在"取色确认、笔尖开始往画布移动"的同一瞬间 —— WinTab 应用
+        # （Photoshop）靠"最近的输入是笔还是鼠标"做仲裁，一次合成移动就足以让它
+        # 把接下来的一笔当鼠标处理：满压感粗斑，第二笔恢复。
+        # 笔本来就往前走，真实的移动事件会让画图软件重画光标，不需要我们注入。
+        # 要复现旧行为（排查用）：COLORINK_PICKER_CURSOR_NUDGE=1
+        if os.environ.get("COLORINK_PICKER_CURSOR_NUDGE"):
             try:
                 pos = win32api.GetCursorPos()
                 if pos:
@@ -257,8 +266,6 @@ class ColorPickerOverlay(QWidget):
                     win32api.SetCursorPos(pos)
             except Exception:
                 pass
-        except Exception:
-            pass
 
     @property
     def is_active(self):
@@ -303,6 +310,11 @@ class ColorPickerOverlay(QWidget):
             pass
 
     def start(self):
+        # 记住笔尖碰我们之前谁拥有前台/焦点，stop() 时还回去。取色浮层是
+        # WS_EX_NOACTIVATE，理论上抢不到激活；但驱动侧"活动窗口"判断一旦
+        # 被我们扰动，PS 的 WinTab 上下文就会挂起 → 首笔丢压感。这里只是
+        # 采集，动不了任何东西。
+        focus_guard.capture()
         self._active = True
         self._wheel_accumulator = 0
         self._frozen = False
@@ -372,6 +384,8 @@ class ColorPickerOverlay(QWidget):
             return
         if not owed:
             return
+        if os.environ.get("COLORINK_DEBUG_PEN"):
+            print(f"[picker] hook kept installed: still owes {owed} button-up(s)", flush=True)
         self._drain_deadline = time.monotonic() + 5.0
         if not self._drain_timer.isActive():
             self._drain_timer.start()
@@ -395,6 +409,9 @@ class ColorPickerOverlay(QWidget):
         if time.monotonic() > self._drain_deadline:
             # The paired UP never arrived (dropped/never delivered).  Give up
             # on it so the hook can never linger and eat a later click.
+            if os.environ.get("COLORINK_DEBUG_PEN"):
+                print("[picker] hook drain deadline hit — owed button-up never arrived, "
+                      "force-unhooking", flush=True)
             try:
                 _hook_dll.uninstall_force()
             except Exception:
@@ -410,6 +427,9 @@ class ColorPickerOverlay(QWidget):
         self._show_cursor()          # restore the system cursor we hid in start()
         self._dot.hide()
         self.hide()
+        # 交还激活/焦点：颜色已经交给同步线程，用户在往画布移动的路上就把
+        # PS 的 WinTab 上下文恢复掉，别等落笔那一刻才握手。
+        focus_guard.restore()
         self._shots = []  # free the snapshots
         self._frozen = False
         self._freeze_pos = None

@@ -297,3 +297,207 @@ def bring_process_to_foreground(pid: int) -> bool:
         user32.SetForegroundWindow(hwnd_to_focus)
         return True
     return False
+
+
+# ── 笔尖焦点交还（WinTab 首笔压感） ────────────────────────────────────
+#
+# 机制：Photoshop 在 WinTab 模式（PSUserConfig: UseSystemStylus 0）下，压感包
+# 只会送给"当前拥有激活/键盘焦点"的那个窗口的 Wintab 上下文。别的窗口一旦把
+# 激活或焦点拿走，PS 会挂起自己的上下文（WTEnable(FALSE)）；等用户落笔时才重新
+# 握手，而握手期间到达的第一包 —— 恰好是带压力的那一包 —— 就丢了。表现就是
+# 首笔满压感粗斑 / 折线，第二笔正常。
+#
+# 为什么别的外部取色工具不中招：它们要么停靠在 Photoshop 自己的窗口里（PS 始终
+# 是活动的顶层窗口），要么根本不需要笔点进它们的窗口（全局热键 + 悬停采样，笔
+# 一直待在画布上）。Colorink 必须让笔点进自己的窗口，于是要在交互结束、笔还在
+# 往画布移动的路上，就把激活 + 焦点交还回去 —— 让 WinTab 上下文在落笔之前恢复，
+# 而不是在落笔那一刻才恢复。
+#
+# 安全边界（三条都满足才动手）：
+#   * capture 时前台是本进程以外的窗口（否则本来就是我们，没什么可还的），
+#   * restore 时前台或键盘焦点确实落在我们手上（用户没跑去用别的软件），
+#   * 目标窗口仍然存在、可见、未被最小化。
+# 另外只挂在"笔"的事件上，鼠标交互不碰 —— 免得用户用笔点数值框之后没法打字。
+#
+# COLORINK_FOCUS_GUARD=0   关掉
+# COLORINK_FOCUS_GUARD=force 无条件交还（诊断用：验证"预恢复上下文"是否有效）
+
+_FOCUS_GUARD_OFF = ("0", "false", "no", "off")
+
+
+def _focus_debug(*parts) -> None:
+    """COLORINK_DEBUG_PEN=1 时打印笔尖焦点交还的决策过程。
+
+    和 ``ui.window.layout._pen_debug`` 共用同一个开关（``run_pen_debug.bat``），
+    这样"到底有没有采集到、为什么没还"在客户机上是可以直接看到的，不用猜。
+    """
+    if os.environ.get("COLORINK_DEBUG_PEN"):
+        print("[focus]", *parts, flush=True)
+
+
+class StylusFocusGuard:
+    """记住笔尖触碰我们之前谁拥有前台/焦点，交互结束时还回去。"""
+
+    def __init__(self) -> None:
+        self._hwnd = 0
+        self._tid = 0
+        self._pid = 0
+
+    # -- 配置 -----------------------------------------------------------
+    @staticmethod
+    def mode() -> str:
+        return str(os.environ.get("COLORINK_FOCUS_GUARD", "1")).strip().lower()
+
+    @classmethod
+    def enabled(cls) -> bool:
+        return cls.mode() not in _FOCUS_GUARD_OFF
+
+    @classmethod
+    def forced(cls) -> bool:
+        return cls.mode() == "force"
+
+    # -- 采集 -----------------------------------------------------------
+    def capture(self) -> bool:
+        """在笔尖按下之前调一次：记住当时的前台窗口。"""
+        if not self.enabled():
+            return False
+        try:
+            import win32gui
+            import win32process
+        except ImportError:
+            return False
+        try:
+            hwnd = win32gui.GetForegroundWindow()
+            if not hwnd:
+                return False
+            tid, pid = win32process.GetWindowThreadProcessId(hwnd)
+            if pid == os.getpid():
+                # 前台已经是我们：没有"别人"的激活可以还。
+                self.clear()
+                _focus_debug("capture skip: foreground is already ours")
+                return False
+            self._hwnd, self._tid, self._pid = int(hwnd), int(tid or 0), int(pid or 0)
+            _focus_debug("capture ok: hwnd", self._hwnd, "pid", self._pid)
+            return True
+        except Exception:
+            return False
+
+    # -- 判断 -----------------------------------------------------------
+    def we_hold_input(self) -> bool:
+        """前台或键盘焦点是否落在本进程。"""
+        try:
+            import win32gui
+            import win32process
+        except ImportError:
+            return False
+        try:
+            fg = win32gui.GetForegroundWindow()
+            if fg:
+                _, pid = win32process.GetWindowThreadProcessId(fg)
+                if pid == os.getpid():
+                    return True
+            # GetFocus() 只回答"调用线程的消息队列是否拥有键盘焦点" ——
+            # 正好用来判断焦点是不是被我们的某个窗口拿走了。
+            return bool(win32gui.GetFocus())
+        except Exception:
+            return False
+
+    # -- 交还 -----------------------------------------------------------
+    @staticmethod
+    def _is_drawing_app(pid: int) -> bool:
+        """capture 到的那个窗口是不是画图软件（PS / SAI / CSP / UDM）。
+
+        对画图软件**不做**"我们是否确实拿到了前台/焦点"的检查：WinTab 的上下文
+        焦点可能在驱动层就被换走了（我们自己的窗口没有激活、`GetFocus()` 也是 0，
+        看起来什么都没丢），但 PS 那边已经把上下文挂起了。重申一次激活 + 焦点是
+        **幂等**的 —— 本来就是我们的前台/焦点时这两个调用什么也不会发生 ——
+        却能保证笔回到画布之前上下文已经恢复。
+        """
+        if not pid:
+            return False
+        try:
+            exe = _resolve_process_exe(int(pid))
+        except Exception:
+            return False
+        if not exe:
+            return False
+        try:
+            return bool(_exe_matches_drawing_app(exe))
+        except Exception:
+            return False
+
+    def restore(self) -> bool:
+        """把激活 + 键盘焦点交还给 capture() 记下的那个窗口。"""
+        if not self.enabled():
+            return False
+        if not self._hwnd:
+            _focus_debug("restore skip: nothing captured")
+            return False
+        hwnd = self._hwnd
+        pid = self._pid
+        self.clear()
+        try:
+            import win32api
+            import win32gui
+            import win32process
+        except ImportError:
+            return False
+        try:
+            if not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd):
+                _focus_debug("restore skip: target window gone/invisible", hwnd)
+                return False
+            if win32gui.IsIconic(hwnd):
+                _focus_debug("restore skip: target minimized", hwnd)
+                return False  # 用户把它最小化了，别自作主张恢复
+            target_is_drawing_app = self._is_drawing_app(pid)
+            if (not self.forced() and not target_is_drawing_app
+                    and not self.we_hold_input()):
+                _focus_debug("restore skip: we hold neither foreground nor focus")
+                return False  # 用户已经去用别的软件了，不抢
+            if target_is_drawing_app:
+                # 画图软件：无论看不看得见"被抢走"，都重申一次（幂等）。
+                _focus_debug("restore: drawing app target -> re-assert activation+focus",
+                             "forced" if self.forced() else "")
+            cur_tid = int(win32api.GetCurrentThreadId())
+            fg = win32gui.GetForegroundWindow()
+            fg_tid = 0
+            if fg:
+                try:
+                    fg_tid, _ = win32process.GetWindowThreadProcessId(fg)
+                    fg_tid = int(fg_tid or 0)
+                except Exception:
+                    fg_tid = 0
+            attached = False
+            try:
+                # 前台锁：跨进程调 SetForegroundWindow 会被系统拒绝，
+                # 先把输入队列挂到当前前台线程上再调。
+                if fg_tid and fg_tid != cur_tid:
+                    win32process.AttachThreadInput(cur_tid, fg_tid, True)
+                    attached = True
+                win32gui.BringWindowToTop(hwnd)
+                win32gui.SetForegroundWindow(hwnd)
+                # 激活之外还要交还键盘焦点：Wintab 的上下文焦点跟着焦点窗口走；
+                # 而且对"本来就是前台"的目标，SetForegroundWindow 不会产生新的
+                # WM_ACTIVATEAPP，只有 SetFocus 能把 WTI_FOCUS 还给画布。
+                win32gui.SetFocus(hwnd)
+            finally:
+                if attached:
+                    try:
+                        win32process.AttachThreadInput(cur_tid, fg_tid, False)
+                    except Exception:
+                        pass
+            ok = win32gui.GetForegroundWindow() == hwnd
+            _focus_debug("restore ->", hwnd, "ok" if ok else "foreground-call-refused")
+            return ok
+        except Exception as exc:
+            _focus_debug("restore failed:", type(exc).__name__, exc)
+            return False
+
+    def clear(self) -> None:
+        self._hwnd = 0
+        self._tid = 0
+        self._pid = 0
+
+
+#: 进程级单例：取色浮层和主窗口共用一份采集/交还状态。
+focus_guard = StylusFocusGuard()

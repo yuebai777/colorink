@@ -15,6 +15,7 @@ from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import QApplication, QLineEdit, QPlainTextEdit, QTextEdit, QWidget
 
 from core import config
+from core.foreground import focus_guard
 from ui import preview_clearance, window_layout
 from ui.hotkey_button import MOUSE_BUTTON_NAME_BY_QT, capture_active, parse_key_event
 from ui.ringless_mode import RinglessConfig, resolve_ringless_layout
@@ -1087,6 +1088,15 @@ class LayoutMixin:
 
     def eventFilter(self, watched, event):
         try:
+            # 笔尖焦点交还（WinTab 首笔压感）。笔尖按下之前记住当时的前台窗口，
+            # 抬起时把激活 + 键盘焦点还回去：WinTab 的压感包只送给"拥有激活/
+            # 键盘焦点"的那个窗口，PS 一旦被摘掉就会挂起上下文，落笔时才重新
+            # 握手 —— 第一包（带压力的那包）就没了。在笔往画布移动的过程中就
+            # 还回去，落笔时上下文已经是活的。只挂在笔事件上，鼠标不碰。
+            if event.type() == QEvent.Type.TabletPress:
+                focus_guard.capture()
+            elif event.type() == QEvent.Type.TabletRelease:
+                focus_guard.restore()
             # The swatch cluster is fitted while sliders_container may still
             # have zero real geometry (a grip-toggle rebuild happens in the
             # middle of the pass) and before the window has grown to the new
@@ -1263,6 +1273,9 @@ class LayoutMixin:
                 if slider.isSliderDown():
                     slider_down = True
                     break
+            lab_s = getattr(self, "lab_slider", None)
+            if lab_s is not None and getattr(lab_s, "dragging", False):
+                slider_down = True
             if wheel_dragging or slider_down:
                 _pen_debug("  dragging, blank")
                 self._force_cursor_shape(Qt.CursorShape.BlankCursor)

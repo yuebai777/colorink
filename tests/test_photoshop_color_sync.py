@@ -127,3 +127,16 @@ class TestUnifiedBridge:
         ps._detect = lambda force=False: []
         assert ps.connect() is False
         assert "未检测到" in ps.last_error
+
+    def test_drawing_window_methods_delegate_to_bridge(self):
+        ps = PhotoshopSync()
+        mock_bridge = MagicMock()
+        mock_bridge.assume_drawing_active.return_value = True
+        ps._bridge = mock_bridge
+
+        ps.note_color_applied(600)
+        mock_bridge.note_color_applied.assert_called_once_with(600)
+
+        assert ps.assume_drawing_active() is True
+        mock_bridge.assume_drawing_active.assert_called_once()
+

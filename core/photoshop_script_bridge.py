@@ -378,7 +378,7 @@ function poll() {
                         if (drVal === '1') {
                             var stDr = fs.statSync(drPath);
                             var drMtime = stDr ? (stDr.mtimeMs !== undefined ? stDr.mtimeMs : stDr.mtime.getTime()) : 0;
-                            if (Date.now() - drMtime < 800) {
+                            if (Date.now() - drMtime < 1500) {
                                 isDrawing = true;
                             }
                         }
@@ -690,7 +690,7 @@ class PhotoshopScriptBridge:
         except Exception:
             pass
 
-    def note_color_applied(self, window_ms: int = 450) -> None:
+    def note_color_applied(self, window_ms: int = 1500) -> None:
         """Mark a short "assumed drawing" window after handing PS a colour.
 
         The CEP panel applies a write with ExtendScript on Photoshop's main

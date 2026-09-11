@@ -565,6 +565,17 @@ class PhotoshopSync:
         if self._bridge is not None:
             self._bridge.set_drawing(is_drawing)
 
+    def note_color_applied(self, window_ms: int = 1500) -> None:
+        """Mark a short 'assumed drawing' window after handing PS a colour."""
+        if self._bridge is not None:
+            self._bridge.note_color_applied(window_ms)
+
+    def assume_drawing_active(self) -> bool:
+        """True while the post-write 'assumed drawing' window is open."""
+        if self._bridge is not None:
+            return self._bridge.assume_drawing_active()
+        return False
+
     def cleanup_runtime_flags(self) -> None:
         """Clean up transient runtime flag files."""
         if self._bridge is not None:

@@ -21,6 +21,13 @@ static volatile LONG g_active        = 0;
 static volatile LONG g_pending_left_up  = 0;
 static volatile LONG g_pending_right_up = 0;
 
+/* When each debt was created (GetTickCount, hook thread only).  Used to tell a
+   *fresh press* (a new stroke the drawing app must see whole) apart from a
+   duplicate DOWN belonging to the press we already ate. */
+static DWORD g_left_debt_ms  = 0;
+static DWORD g_right_debt_ms = 0;
+#define DEBT_STALE_MS 150
+
 static LONG pending_count(void) {
     return InterlockedCompareExchange(&g_pending_left_up, 0, 0)
          + InterlockedCompareExchange(&g_pending_right_up, 0, 0);
@@ -37,6 +44,23 @@ static void unhook_if_idle(void) {
 
 LRESULT CALLBACK MouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode >= 0) {
+        /* A brand-new press (picker already inactive) while a button-up is
+           still owed means that owed UP was never delivered - the driver
+           dropped it, or the press/release straddled a window switch.  The
+           *new* stroke's own UP must pass through: eating it would leave the
+           drawing app with a button stuck down (one broken stroke, the next
+           one fine).  The 150 ms floor keeps a duplicate DOWN for the same
+           physical press from cancelling a debt we still have to pay. */
+        if (!g_active && wParam == WM_LBUTTONDOWN &&
+            InterlockedCompareExchange(&g_pending_left_up, 0, 0) > 0 &&
+            (DWORD)(GetTickCount() - g_left_debt_ms) > DEBT_STALE_MS) {
+            InterlockedExchange(&g_pending_left_up, 0);
+        }
+        if (!g_active && wParam == WM_RBUTTONDOWN &&
+            InterlockedCompareExchange(&g_pending_right_up, 0, 0) > 0 &&
+            (DWORD)(GetTickCount() - g_right_debt_ms) > DEBT_STALE_MS) {
+            InterlockedExchange(&g_pending_right_up, 0);
+        }
         /* Swallow the UP paired with a DOWN we ate.  Runs even after the
            picker stopped, so the hook can keep each click symmetric. */
         if (wParam == WM_LBUTTONUP &&
@@ -52,12 +76,16 @@ LRESULT CALLBACK MouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
         if (g_active) {
             if (wParam == WM_LBUTTONDOWN) {
                 InterlockedExchange(&g_left_clicked, 1);
-                InterlockedIncrement(&g_pending_left_up);
+                if (InterlockedIncrement(&g_pending_left_up) == 1) {
+                    g_left_debt_ms = GetTickCount();
+                }
                 return 1; /* swallow */
             }
             if (wParam == WM_RBUTTONDOWN) {
                 InterlockedExchange(&g_right_clicked, 1);
-                InterlockedIncrement(&g_pending_right_up);
+                if (InterlockedIncrement(&g_pending_right_up) == 1) {
+                    g_right_debt_ms = GetTickCount();
+                }
                 return 1; /* swallow */
             }
             if (wParam == WM_MOUSEWHEEL) {
