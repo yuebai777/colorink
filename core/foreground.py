@@ -335,6 +335,62 @@ def _focus_debug(*parts) -> None:
         print("[focus]", *parts, flush=True)
 
 
+import ctypes
+from ctypes import wintypes
+
+
+class _GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("hwndActive", wintypes.HWND),
+        ("hwndFocus", wintypes.HWND),
+        ("hwndCapture", wintypes.HWND),
+        ("hwndMenuOwner", wintypes.HWND),
+        ("hwndMoveSize", wintypes.HWND),
+        ("hwndCaret", wintypes.HWND),
+        ("rcCaret", wintypes.RECT),
+    ]
+
+
+def _resolve_thread_focus(tid: int, win32gui_module=None) -> int:
+    """跨进程获取指定 GUI 线程的键盘焦点窗口 HWND。
+
+    优先尝试传入的 win32gui 模块（单测 mock 挂在此处）；在真实系统上 pywin32
+    未导出该 API，通过 ctypes user32.GetGUIThreadInfo 直接调用系统底层。
+    """
+    if win32gui_module and hasattr(win32gui_module, "GetGUIThreadInfo"):
+        try:
+            info = win32gui_module.GetGUIThreadInfo(int(tid or 0))
+            return int(getattr(info, "hwndFocus", 0) or 0)
+        except Exception:
+            pass
+    try:
+        gui = _GUITHREADINFO()
+        gui.cbSize = ctypes.sizeof(_GUITHREADINFO)
+        if ctypes.windll.user32.GetGUIThreadInfo(int(tid or 0), ctypes.byref(gui)):
+            return int(gui.hwndFocus or 0)
+    except Exception:
+        pass
+    return 0
+
+
+_EXTRA_DRAWING_EXES = (
+    "krita", "painter", "medibang", "firealpaca", "rebelle",
+    "sketchbook", "ibispaint", "tvpaint", "aseprite", "illustrator",
+)
+
+
+def is_any_drawing_exe(exe_name: str) -> bool:
+    if not exe_name:
+        return False
+    stem = exe_name[:-4] if exe_name.lower().endswith(".exe") else exe_name
+    stem = stem.lower()
+    if _exe_matches_drawing_app(exe_name):
+        return True
+    return any(marker in stem for marker in _EXTRA_DRAWING_EXES)
+
+
 class StylusFocusGuard:
     """记住笔尖触碰我们之前谁拥有前台/焦点，交互结束时还回去。"""
 
@@ -484,8 +540,7 @@ class StylusFocusGuard:
             if not fg or int(fg) != int(hwnd):
                 return False
             fg_tid, _ = win32process.GetWindowThreadProcessId(fg)
-            info = win32gui.GetGUIThreadInfo(int(fg_tid or 0))
-            focus = int(getattr(info, "hwndFocus", 0) or 0)
+            focus = _resolve_thread_focus(int(fg_tid or 0), win32gui)
             if not focus:
                 return True  # 前台线程暂无焦点窗口（罕见）：前台已对，别搅
             _, focus_pid = win32process.GetWindowThreadProcessId(focus)
@@ -496,7 +551,7 @@ class StylusFocusGuard:
     # -- 交还 -----------------------------------------------------------
     @staticmethod
     def _is_drawing_app(pid: int) -> bool:
-        """capture 到的那个窗口是不是画图软件（PS / SAI / CSP / UDM）。
+        """capture 到的那个窗口是不是画图软件（PS / SAI / CSP / UDM / Krita / Painter 等）。
 
         对画图软件**不做**"我们是否确实拿到了前台/焦点"的检查：WinTab 的上下文
         焦点可能在驱动层就被换走了（我们自己的窗口没有激活、`GetFocus()` 也是 0，
@@ -513,7 +568,7 @@ class StylusFocusGuard:
         if not exe:
             return False
         try:
-            return bool(_exe_matches_drawing_app(exe))
+            return is_any_drawing_exe(exe)
         except Exception:
             return False
 

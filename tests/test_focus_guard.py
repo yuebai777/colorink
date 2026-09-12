@@ -567,3 +567,81 @@ def test_mouse_press_does_not_touch_the_guard(qapp, monkeypatch):
         host.close()
 
     assert (rec.captured, rec.restored) == (0, 0)
+
+
+def test_resolve_thread_focus_uses_ctypes_when_win32gui_lacks_api(monkeypatch):
+    """当 win32gui 模块没有 GetGUIThreadInfo 时（真实 pywin32 环境），
+    _resolve_thread_focus 正确通过 ctypes 底层调用 user32.GetGUIThreadInfo。"""
+    import ctypes
+    from core.foreground import _resolve_thread_focus
+
+    # 创建一个没有 GetGUIThreadInfo 的伪 win32gui 模块
+    class DummyWin32Gui:
+        pass
+
+    class DummyUser32:
+        def __init__(self):
+            self.called_tid = None
+
+        def GetGUIThreadInfo(self, tid, p_info):
+            self.called_tid = int(getattr(tid, "value", tid))
+            p_info._obj.hwndFocus = 9999
+            return 1
+
+    dummy_user32 = DummyUser32()
+    monkeypatch.setattr(ctypes.windll, "user32", dummy_user32)
+
+    focus_hwnd = _resolve_thread_focus(1234, DummyWin32Gui())
+    assert dummy_user32.called_tid == 1234
+    assert focus_hwnd == 9999
+
+
+def test_is_any_drawing_exe_covers_expanded_software():
+    """兼容性加固：支持 PS / SAI / CSP / UDM 之外的绘画软件
+    （Krita / Painter / Medibang / FireAlpaca / Rebelle / Sketchbook / IbisPaint / Aseprite 等）。"""
+    from core.foreground import is_any_drawing_exe
+
+    drawing_exes = [
+        "photoshop.exe", "Photoshop.exe", "PhotoshopPrefs.exe",
+        "sai.exe", "sai2.exe",
+        "clipstudiopaint.exe", "CLIPStudioPaint.exe",
+        "udmpaintpro.exe",
+        "krita.exe", "Krita.exe",
+        "Painter 2023.exe", "Corel Painter.exe",
+        "medibangpaintpro.exe", "MediBangPaint.exe",
+        "firealpaca.exe", "FireAlpaca64.exe",
+        "rebelle.exe", "Rebelle 7.exe",
+        "sketchbook.exe",
+        "ibispaint.exe",
+        "tvpaint.exe",
+        "aseprite.exe",
+        "illustrator.exe",
+    ]
+    for exe in drawing_exes:
+        assert is_any_drawing_exe(exe) is True, f"Expected {exe} to be recognized as drawing app"
+
+    non_drawing_exes = [
+        "chrome.exe", "msedge.exe", "code.exe", "notepad.exe", "explorer.exe",
+        "cmd.exe", "powershell.exe", "wechat.exe", "discord.exe",
+    ]
+    for exe in non_drawing_exes:
+        assert is_any_drawing_exe(exe) is False, f"Expected {exe} not to be recognized as drawing app"
+
+
+def test_restore_zero_churn_works_for_expanded_drawing_apps(monkeypatch):
+    """验证 expanded 绘图软件（例如 krita.exe）在仍握着前台+焦点时，
+    restore() 同样走零搅动路径，一次系统调用都不做，防止首笔丢失。"""
+    env = _Win32Env(monkeypatch, pids={100: _OTHER_PID})
+    env.user32.foreground = 100
+    env.user32.after_foreground = 100
+    env.user32.gui_info.hwndFocus = 100   # 焦点在 Krita 自己手里
+    monkeypatch.setattr("core.foreground._resolve_process_exe", lambda pid: "krita.exe")
+
+    g = StylusFocusGuard()
+    assert g.capture() is True
+    assert g._is_drawing_app(_OTHER_PID) is True
+
+    # restore 应该识别到目标已经握着前台+焦点，完全不调用 SetForegroundWindow / SetFocus
+    assert g.restore() is True
+    assert env.user32.calls == []
+

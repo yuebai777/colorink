@@ -227,3 +227,47 @@ def test_start_does_not_fallback_when_capture_succeeds(qapp, monkeypatch):
         overlay._active = False
         overlay._timer.stop()
         overlay._watchdog.stop()
+
+
+def test_overlay_and_cursor_dot_native_mouse_activate_noactivate(qapp, monkeypatch):
+    """ColorPickerOverlay 和 CursorDot 必须在收到 WM_MOUSEACTIVATE 时返回 (True, 3) (MA_NOACTIVATE)，
+    绝不激活自身、绝不抢夺画图软件的前台状态，避免触发 WinTab 上下文挂起。"""
+    import ctypes
+    import ctypes.wintypes
+    from ui.color_picker_overlay import CursorDot
+
+    overlay = _make_overlay(monkeypatch, _RecGuard(), _FakeWin32Api())
+    dot = CursorDot()
+
+    # 构造 WM_MOUSEACTIVATE (0x0021) 结构体
+    msg = ctypes.wintypes.MSG()
+    msg.message = 0x0021
+    msg_addr = ctypes.addressof(msg)
+
+    res_overlay = overlay.nativeEvent(b"windows_generic_MSG", msg_addr)
+    assert res_overlay == (True, 3), f"ColorPickerOverlay should return (True, 3), got {res_overlay}"
+
+    res_dot = dot.nativeEvent(b"windows_generic_MSG", msg_addr)
+    assert res_dot == (True, 3), f"CursorDot should return (True, 3), got {res_dot}"
+
+    # 非 WM_MOUSEACTIVATE 消息应返回 (False, 0)
+    msg.message = 0x0001
+    assert overlay.nativeEvent(b"windows_generic_MSG", msg_addr) == (False, 0)
+    assert dot.nativeEvent(b"windows_generic_MSG", msg_addr) == (False, 0)
+
+
+def test_release_hook_drain_deadline_is_short(qapp, monkeypatch):
+    """验证 _release_hook 的等待超时为 0.3 秒级别（防止持续 5 秒全局吃键导致落笔无反应）。"""
+    import time
+
+    guard = _RecGuard()
+    overlay = _make_overlay(monkeypatch, guard, _FakeWin32Api())
+    # 模拟 hook 仍欠 1 个按键释放
+    cpo._hook_dll.owed = 1
+    t0 = time.monotonic()
+    overlay._release_hook()
+    assert overlay._drain_deadline > t0
+    # deadline 应在 0.3s 附近，严禁使用 5.0 秒的大延迟
+    assert overlay._drain_deadline - t0 < 1.0
+    overlay._drain_timer.stop()
+

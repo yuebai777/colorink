@@ -919,5 +919,5 @@ class FloatingPanelWindow(PanelHolder, QWidget):
                         return True, 3
             except Exception:
                 pass
-        return super().nativeEvent(eventType, message)
+        return False, 0
 

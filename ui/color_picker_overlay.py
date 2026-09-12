@@ -7,6 +7,7 @@ hook thread → no GIL contention → smooth + click interception.
 
 import ctypes
 import os
+import sys
 import time
 from typing import Any, cast
 
@@ -113,6 +114,17 @@ class CursorDot(QWidget):
         p.drawLine(c,c-L,c,c+L); p.drawLine(c-L,c,c+L,c)
         p.end()
     def follow(self,x,y): self.move(x-8,y-8)
+
+    def nativeEvent(self, eventType, message):
+        if sys.platform == "win32" and eventType == b"windows_generic_MSG":
+            try:
+                import ctypes.wintypes
+                msg = ctypes.wintypes.MSG.from_address(int(message))
+                if msg.message == 0x0021:  # WM_MOUSEACTIVATE
+                    return True, 3  # MA_NOACTIVATE
+            except Exception:
+                pass
+        return False, 0
 
 
 class ColorPickerOverlay(QWidget):
@@ -315,6 +327,17 @@ class ColorPickerOverlay(QWidget):
         except Exception:
             pass
 
+    def nativeEvent(self, eventType, message):
+        if sys.platform == "win32" and eventType == b"windows_generic_MSG":
+            try:
+                import ctypes.wintypes
+                msg = ctypes.wintypes.MSG.from_address(int(message))
+                if msg.message == 0x0021:  # WM_MOUSEACTIVATE
+                    return True, 3  # MA_NOACTIVATE
+            except Exception:
+                pass
+        return False, 0
+
     def start(self):
         # 记住取色前谁拥有前台/焦点，stop() 时还回去。取色浮层是
         # WS_EX_NOACTIVATE，理论上抢不到激活；但驱动侧"活动窗口"判断一旦
@@ -397,7 +420,7 @@ class ColorPickerOverlay(QWidget):
             return
         if os.environ.get("COLORINK_DEBUG_PEN"):
             print(f"[picker] hook kept installed: still owes {owed} button-up(s)", flush=True)
-        self._drain_deadline = time.monotonic() + 5.0
+        self._drain_deadline = time.monotonic() + 0.3
         if not self._drain_timer.isActive():
             self._drain_timer.start()
 
