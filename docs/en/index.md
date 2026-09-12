@@ -136,6 +136,20 @@ features:
   </div>
 </div>
 
+<div class="ck-section">
+  <div class="ck-feedback-banner">
+    <h2>💡 Share Your Ideas & Track Development Roadmap</h2>
+    <p>
+      Every feature in Colorink comes from creators' suggestions. Whether reporting bugs, requesting new software sync, or sharing UX ideas, let us know!
+    </p>
+    <div style="margin-top: 1.2rem;">
+      <a class="ck-btn ck-btn-feedback" href="/colorink/en/feedback/">
+        👉 Visit Feedback & Roadmap Board →
+      </a>
+    </div>
+  </div>
+</div>
+
 <div class="ck-section" style="margin-bottom: 3rem;">
   <div class="ck-community">
     <h2>Join the Colorink User Community</h2>

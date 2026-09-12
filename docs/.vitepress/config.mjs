@@ -150,6 +150,7 @@ export default defineConfig({
           { text: '核心功能', link: '/guide/color-picking' },
           { text: '绘画软件同步', link: '/sync/overview' },
           { text: '常见问题', link: '/faq/' },
+          { text: '意见反馈', link: '/feedback/' },
           { text: '⚡ 爱发电', link: 'https://afdian.com/a/touyimoyuebai' },
           {
             text: '下载',
@@ -191,6 +192,7 @@ export default defineConfig({
           { text: 'Features', link: '/en/guide/color-picking' },
           { text: 'App Sync', link: '/en/sync/overview' },
           { text: 'FAQ', link: '/en/faq/' },
+          { text: 'Feedback', link: '/en/feedback/' },
           { text: '⚡ Sponsor', link: 'https://afdian.com/a/touyimoyuebai' },
           {
             text: 'Download',

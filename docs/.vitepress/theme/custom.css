@@ -1413,6 +1413,362 @@ body {
   margin: 0 0 1.5rem;
 }
 
+/* ============ 需求与开发进度看板 (RoadmapBoard) ============ */
+.ck-feedback-page-wrap {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2.5rem 1.5rem 4rem;
+}
+
+.ck-roadmap-wrap {
+  margin-top: 3.5rem;
+}
+
+.ck-roadmap-header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.ck-roadmap-title {
+  font-size: 1.8rem;
+  font-weight: 800;
+  margin: 0 0 0.6rem;
+  border: none;
+  padding: 0;
+  color: var(--vp-c-text-1);
+}
+
+.ck-roadmap-desc {
+  font-size: 1rem;
+  color: var(--vp-c-text-2);
+  margin: 0 auto;
+  max-width: 600px;
+  line-height: 1.6;
+}
+
+/* 状态流程指示条 */
+.ck-flow-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 1.8rem 0 2.5rem;
+}
+
+.ck-flow-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: var(--vp-c-bg-soft);
+  border: 1px solid var(--ck-card-border);
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--vp-c-text-2);
+}
+
+.ck-flow-step .step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 0.72rem;
+  background: var(--ck-card-border);
+  color: var(--vp-c-text-1);
+}
+
+.ck-flow-step.active {
+  background: var(--vp-c-brand-soft);
+  border-color: var(--vp-c-brand-1);
+  color: var(--vp-c-brand-1);
+}
+
+.ck-flow-step.active .step-num {
+  background: var(--vp-c-brand-1);
+  color: #ffffff;
+}
+
+.ck-flow-step.finish {
+  background: linear-gradient(115deg, rgba(168, 85, 247, 0.12), rgba(236, 72, 153, 0.12));
+  border-color: rgba(236, 72, 153, 0.4);
+  color: #ec4899;
+}
+
+.ck-flow-step.finish .step-num {
+  background: #ec4899;
+  color: #ffffff;
+}
+
+.ck-flow-arrow {
+  color: var(--vp-c-text-3);
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+/* 看板三列布局 */
+.ck-board-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+  margin-bottom: 2.5rem;
+}
+
+.ck-board-col {
+  background: var(--ck-card-bg);
+  backdrop-filter: var(--ck-glass-blur);
+  -webkit-backdrop-filter: var(--ck-glass-blur);
+  border: 1px solid var(--ck-card-border);
+  border-radius: 18px;
+  padding: 1.3rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.ck-board-col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 1.1rem;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid var(--ck-card-border);
+}
+
+.ck-board-col-head .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.ck-board-col-head.in-progress .dot {
+  background: #704df4;
+  box-shadow: 0 0 8px #704df4;
+}
+
+.ck-board-col-head.planned .dot {
+  background: #f59e0b;
+}
+
+.ck-board-col-head.shipped .dot {
+  background: #10b981;
+}
+
+.ck-board-col-head h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  border: none;
+  padding: 0;
+  color: var(--vp-c-text-1);
+}
+
+.ck-board-col-head .count {
+  margin-left: auto;
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-2);
+}
+
+.ck-board-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+}
+
+.ck-task-card {
+  background: var(--vp-c-bg-soft);
+  border: 1px solid var(--ck-card-border);
+  border-radius: 12px;
+  padding: 14px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.ck-task-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.05);
+}
+
+.ck-task-card.is-shipped {
+  opacity: 0.92;
+}
+
+.ck-task-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.ck-tag {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.tag-sync {
+  background: rgba(59, 130, 246, 0.12);
+  color: #3b82f6;
+}
+
+.tag-core {
+  background: rgba(168, 85, 247, 0.12);
+  color: #a855f7;
+}
+
+.tag-feat {
+  background: rgba(236, 72, 153, 0.12);
+  color: #ec4899;
+}
+
+.tag-ui {
+  background: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
+}
+
+.tag-done {
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
+}
+
+.ck-task-ver {
+  font-size: 0.75rem;
+  font-family: var(--vp-font-family-mono);
+  font-weight: 600;
+  color: var(--vp-c-brand-1);
+}
+
+.ck-task-ver-shipped {
+  font-size: 0.75rem;
+  font-family: var(--vp-font-family-mono);
+  font-weight: 600;
+  color: #10b981;
+}
+
+.ck-status-text {
+  font-size: 0.74rem;
+  color: var(--vp-c-text-3);
+}
+
+.ck-task-name {
+  margin: 0 0 6px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  line-height: 1.4;
+  border: none;
+  padding: 0;
+  color: var(--vp-c-text-1);
+}
+
+.ck-task-desc {
+  font-size: 0.82rem;
+  color: var(--vp-c-text-2);
+  line-height: 1.5;
+  margin: 0 0 10px;
+}
+
+.ck-progress-bar-wrap {
+  height: 5px;
+  background: var(--ck-card-border);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.ck-progress-bar-inner {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #704df4, #ec4899);
+}
+
+.ck-task-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.76rem;
+  color: var(--vp-c-text-3);
+}
+
+.ck-progress-text {
+  font-weight: 600;
+  color: var(--vp-c-brand-1);
+}
+
+.ck-check-icon {
+  color: #10b981;
+  font-weight: 600;
+}
+
+/* GitHub 看板直达底栏 */
+.ck-issues-link-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  background: var(--ck-card-bg);
+  backdrop-filter: var(--ck-glass-blur);
+  -webkit-backdrop-filter: var(--ck-glass-blur);
+  border: 1px solid var(--ck-card-border);
+  border-radius: 16px;
+  padding: 1.4rem 1.8rem;
+}
+
+.ck-issues-info strong {
+  display: block;
+  font-size: 1rem;
+  margin-bottom: 4px;
+  color: var(--vp-c-text-1);
+}
+
+.ck-issues-info p {
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--vp-c-text-2);
+}
+
+/* 首页意见反馈入口横幅 */
+.ck-feedback-banner {
+  border-radius: 18px;
+  padding: 2.2rem 2rem;
+  text-align: center;
+  background: linear-gradient(135deg, rgba(112, 77, 244, 0.08) 0%, rgba(236, 72, 153, 0.08) 100%);
+  border: 1px solid var(--ck-card-border);
+}
+
+.ck-feedback-banner h2 {
+  border: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  font-size: 1.5rem;
+}
+
+.ck-feedback-banner p {
+  color: var(--vp-c-text-2);
+  max-width: 580px;
+  margin: 0 auto 1.5rem;
+  line-height: 1.65;
+}
+
+.ck-btn-feedback {
+  background: linear-gradient(115deg, #704df4, #9333ea);
+  color: #ffffff !important;
+  box-shadow: 0 4px 16px rgba(112, 77, 244, 0.35);
+}
+
+.ck-btn-feedback:hover {
+  box-shadow: 0 8px 22px rgba(112, 77, 244, 0.45);
+}
+
 /* ============ 响应式 ============ */
 @media (max-width: 640px) {
   .ck-section {
@@ -1422,7 +1778,8 @@ body {
     font-size: 1.4rem;
   }
   .ck-sponsor,
-  .ck-community {
+  .ck-community,
+  .ck-feedback-banner {
     padding: 2rem 1.25rem;
   }
   .ck-dl-title {
@@ -1439,6 +1796,9 @@ body {
   .ck-dl-compare {
     grid-template-columns: 1fr;
   }
+  .ck-board-grid {
+    grid-template-columns: 1fr;
+  }
   .ck-feedback-card {
     padding: 1.6rem 1.2rem;
   }
@@ -1449,4 +1809,12 @@ body {
   .ck-fb-btn-primary {
     width: 100%;
   }
+  .ck-issues-link-bar {
+    flex-direction: column;
+    text-align: center;
+  }
+  .ck-issues-link-bar .ck-btn {
+    width: 100%;
+  }
 }
+

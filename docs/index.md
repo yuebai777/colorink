@@ -136,6 +136,20 @@ features:
   </div>
 </div>
 
+<div class="ck-section">
+  <div class="ck-feedback-banner">
+    <h2>💡 提出你的需求，查看功能开发进度</h2>
+    <p>
+      Colorink 的每一个功能都来自画师的真实建议。无论是新绘画软件适配、操作体验优化还是遇到的 bug，欢迎随时提交。
+    </p>
+    <div style="margin-top: 1.2rem;">
+      <a class="ck-btn ck-btn-feedback" href="/colorink/feedback/">
+        👉 前往意见反馈与进度看板 →
+      </a>
+    </div>
+  </div>
+</div>
+
 <div class="ck-section" style="margin-bottom: 3rem;">
   <div class="ck-community">
     <h2>欢迎加入 Colorink 用户交流群</h2>
@@ -146,3 +160,4 @@ features:
     <p style="margin: 0;"><strong>QQ 群号：1108560464</strong></p>
   </div>
 </div>
+
