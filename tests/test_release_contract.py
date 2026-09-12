@@ -352,3 +352,32 @@ def test_hardcoded_version_matches_app_version(rel_path, pattern, label, expecte
         f"{label}: {rel_path} 版本号漂移：{stale}，应为 {APP_VERSION}。"
         f" 修复：python tools/release/bump_version.py {APP_VERSION}"
     )
+
+
+@pytest.mark.parametrize(
+    "rel_path,pattern,label,expected",
+    VERSION_SITES,
+    ids=[label for _, _, label, _ in VERSION_SITES],
+)
+def test_version_site_pattern_supports_the_write_path(rel_path, pattern, label, expected):
+    """清单契约：每个正则必须有三个捕获组，bump_version 才能写回去。
+
+    ``bump_version.py::apply()`` 用 ``group(1) + 新版本号 + group(3)`` 重建
+    文本；少一个组就 IndexError。``--check`` 只读 ``group(2)``，所以组数不足
+    时检查依旧全绿，只有真正发版时才炸（v1.8.11 踩过一次：新增的两条下载页
+    模式只写了两个组）。这里既断言组数，也真的走一遍替换路径。
+    """
+    groups = re.compile(pattern, re.M).groups
+    assert groups == 3, (
+        f"{label}: 模式有 {groups} 个捕获组，必须恰好 3 个 —— "
+        "bump_version.py 用 group(1) + group(3) 做替换，少一个组会在发版时崩"
+    )
+    content = (PROJECT_ROOT / rel_path).read_text(encoding="utf-8")
+    rewritten = re.sub(
+        pattern,
+        lambda m: f"{m.group(1)}{APP_VERSION}{m.group(3)}",
+        content,
+        flags=re.M,
+    )
+    # 版本号已经是当前值时，重写必须是恒等变换。
+    assert rewritten == content

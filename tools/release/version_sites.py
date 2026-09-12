@@ -32,14 +32,20 @@ VERSION_SITES: list[tuple[str, str, str, int]] = [
         1,
     ),
     (
+        "docs/en/index.md",
+        r"(Download Latest \(v)(\d+\.\d+\.\d+)(\))",
+        "docs 英文首页下载按钮",
+        1,
+    ),
+    (
         "docs/download/index.md",
-        r"(最新稳定版 v)(\d+\.\d+\.\d+)",
+        r"(最新稳定版 v)(\d+\.\d+\.\d+)(</div>)",
         "docs 下载页版本徽标",
         1,
     ),
     (
         "docs/en/download/index.md",
-        r"(Latest Release v)(\d+\.\d+\.\d+)",
+        r"(Latest Release v)(\d+\.\d+\.\d+)(</div>)",
         "docs 下载页版本徽标（英文）",
         1,
     ),
