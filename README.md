@@ -149,10 +149,8 @@ python build_pyqt.py
 ## 开发
 
 - 灰度原生运行时（`native_grayscale/runtime/grayscale_overlay.pyc`）随仓库分发，`python native_grayscale/build_runtime.py` 可复现编译；原生灰度不可用时自动回退 Mag 后端
-- `tests/` 含 1200+ 项自动化测试（发布契约、窗口布局不变量、首次启动默认值、高精度色彩转换、边界吸附、面板拖拽回归等），`python -m pytest` 运行
-- 改动后要跑哪些测试、发版前要过哪些关，见 [TESTING.md](TESTING.md)；纯手动打勾清单见 [CHECKLIST.md](CHECKLIST.md)
-- `tools/` 含同步诊断与端到端稳定性脚本（内存探针、写路径对比等），便于排查 CSP / PS 同步问题
-- 架构与设计说明见 [DESIGN.md](DESIGN.md)，色彩转换管道见 [OKLCH_CONVERSION_PIPELINE.md](OKLCH_CONVERSION_PIPELINE.md)
+- `tests/` 是自动化测试的全部入口：`python -m pytest` 一把跑完（发布契约、窗口布局不变量、首次启动默认值、高精度色彩转换、边界吸附、面板拖拽回归等）
+- `tools/release/` 是发布链路（版本同步、产物打包、资产与安装包校验）；`tools/feedback-worker/` 是文档站反馈页的服务端
 
 ## 支持作者
 

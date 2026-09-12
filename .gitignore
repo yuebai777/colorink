@@ -77,6 +77,33 @@ tools/test_wizard.py
 测试.bat
 docs/superpowers/
 
+# Maintainer-only docs — workflow manuals, no user-facing value, kept on disk only
+RELEASE.md
+TESTING.md
+CHECKLIST.md
+DESIGN.md
+OKLCH_CONVERSION_PIPELINE.md
+# SAI2 reverse-engineering report (process ids, memory addresses, control hwnds)
+docs/sync/sai2-color-wheel-sync-analysis.md
+
+# One-off debug / forensics scripts — local tooling, never part of the product.
+# STAYS TRACKED: tools/release/ (release pipeline), tools/feedback-worker/
+# (docs-site feedback backend) and tools/reset-colorink-hotkeys.bat (end-user
+# rescue script shipped in the docs).
+tools/diag_*.py
+tools/probe_*.py
+tools/find_*.py
+tools/preview_*.py
+tools/e2e_*.py
+tools/verify_*.py
+tools/compare_write_paths.py
+tools/diff_process_memory.py
+tools/search_color_copies.py
+tools/simulate_x_switch.py
+tools/stability_test.py
+tools/visual_lab_disc_check.py
+tools/ps_probe_env.jsx
+
 # Throwaway debug scratch (machine-specific paths, one-off probes)
 scratch/
 _debug_run.bat

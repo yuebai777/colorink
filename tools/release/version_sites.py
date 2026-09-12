@@ -26,27 +26,21 @@ VERSION_SITES: list[tuple[str, str, str, int]] = [
         1,
     ),
     (
-        "TESTING.md",
-        r"(基线（\d{4}-\d{2}，v)(\d+\.\d+\.\d+)(）)",
-        "TESTING 基线版本",
-        1,
-    ),
-    (
         "docs/index.md",
         r"(下载最新版 \(v)(\d+\.\d+\.\d+)(\))",
         "docs 首页下载按钮",
         1,
     ),
     (
-        "docs/.vitepress/config.mjs",
-        r"('v)(\d+\.\d+\.\d+)( 下载')",
-        "docs 导航栏下载项",
+        "docs/download/index.md",
+        r"(最新稳定版 v)(\d+\.\d+\.\d+)",
+        "docs 下载页版本徽标",
         1,
     ),
     (
-        "docs/.vitepress/config.mjs",
-        r"('Download v)(\d+\.\d+\.\d+)(')",
-        "docs 导航栏下载项（英文）",
+        "docs/en/download/index.md",
+        r"(Latest Release v)(\d+\.\d+\.\d+)",
+        "docs 下载页版本徽标（英文）",
         1,
     ),
     (
