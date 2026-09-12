@@ -10,7 +10,7 @@ hero:
       text: Quick Start →
       link: /en/guide/getting-started
     - theme: alt
-      text: Download Latest (v1.8.10)
+      text: Download Latest (v1.8.11)
       link: /en/download/
     - theme: alt
       text: ⚡ Sponsor on Afdian

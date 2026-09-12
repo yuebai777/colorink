@@ -6,7 +6,7 @@ description: 下载 Colorink 桌面调色与极速取色工具，支持 Windows 
 
 <div class="ck-download-wrap">
   <div class="ck-dl-hero">
-    <div class="ck-dl-badge">⚡ 最新稳定版 v1.8.10</div>
+    <div class="ck-dl-badge">⚡ 最新稳定版 v1.8.11</div>
     <h1 class="ck-dl-title">下载 Colorink</h1>
     <p class="ck-dl-desc">
       专为绘画与设计打造的桌面调色伴侣。无需配置 Python 或复杂环境，双击即用。
