@@ -11,7 +11,7 @@ hero:
       link: /guide/getting-started
     - theme: alt
       text: 下载最新版 (v1.8.10)
-      link: https://github.com/yuebai777/colorink/releases/latest
+      link: /download/
     - theme: alt
       text: ⚡ 爱发电赞助
       link: https://afdian.com/a/touyimoyuebai

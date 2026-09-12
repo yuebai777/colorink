@@ -152,8 +152,8 @@ export default defineConfig({
           { text: '常见问题', link: '/faq/' },
           { text: '⚡ 爱发电', link: 'https://afdian.com/a/touyimoyuebai' },
           {
-            text: 'v1.8.10 下载',
-            link: 'https://github.com/yuebai777/colorink/releases/latest'
+            text: '下载',
+            link: '/download/'
           }
         ],
         sidebar: {
@@ -193,8 +193,8 @@ export default defineConfig({
           { text: 'FAQ', link: '/en/faq/' },
           { text: '⚡ Sponsor', link: 'https://afdian.com/a/touyimoyuebai' },
           {
-            text: 'Download v1.8.10',
-            link: 'https://github.com/yuebai777/colorink/releases/latest'
+            text: 'Download',
+            link: '/en/download/'
           }
         ],
         sidebar: {
