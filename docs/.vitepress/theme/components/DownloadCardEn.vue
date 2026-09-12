@@ -51,46 +51,6 @@
       </div>
     </div>
 
-    <!-- Version Comparison -->
-    <div class="ck-dl-compare">
-      <div class="ck-compare-card recommended">
-        <span class="ck-compare-badge">Recommended for Most Artists</span>
-        <h3>Standalone Onefile</h3>
-        <span class="ck-compare-file">Colorink.exe</span>
-        <p>All dependencies and runtime assets packaged into a single clean executable file.</p>
-        <ul class="ck-compare-features">
-          <li><span>✓</span> Truly portable, run straight from Desktop or USB</li>
-          <li><span>✓</span> Clean workspace with no file clutter</li>
-          <li><span>✓</span> Automatic single-instance locking</li>
-        </ul>
-        <a
-          class="ck-compare-btn"
-          href="https://github.com/yuebai777/colorink/releases/latest/download/Colorink.exe"
-          download
-        >
-          Download Standalone (.exe)
-        </a>
-      </div>
-
-      <div class="ck-compare-card">
-        <h3>Directory Package (Onedir)</h3>
-        <span class="ck-compare-file">Colorink-Onedir.zip</span>
-        <p>Pre-extracted runtime folder, eliminating runtime unpack overhead on startup.</p>
-        <ul class="ck-compare-features">
-          <li><span>✓</span> Instantaneous startup without decompression delay</li>
-          <li><span>✓</span> Prevents antivirus false positives on temp unpacks</li>
-          <li><span>✓</span> Ideal for permanent installation in your tools directory</li>
-        </ul>
-        <a
-          class="ck-compare-btn"
-          href="https://github.com/yuebai777/colorink/releases/latest/download/Colorink-Onedir.zip"
-          download
-        >
-          Download Directory (.zip)
-        </a>
-      </div>
-    </div>
-
     <!-- Security Note -->
     <div class="ck-dl-notice">
       <strong>🛡️ First Launch Note:</strong><br />

@@ -1,4 +1,5 @@
 ---
+layout: page
 title: Download Colorink
 description: Download Colorink desktop color picking & palette tool for Windows 10 / 11 (64-bit). Direct download links for Standalone Onefile and Onedir packages.
 ---

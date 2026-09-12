@@ -51,46 +51,6 @@
       </div>
     </div>
 
-    <!-- 双版本差异对比 -->
-    <div class="ck-dl-compare">
-      <div class="ck-compare-card recommended">
-        <span class="ck-compare-badge">推荐大多数画师</span>
-        <h3>独立单文件版</h3>
-        <span class="ck-compare-file">Colorink.exe</span>
-        <p>所有运行所需依赖与资源全部封装在一个可执行文件中，极度便携干净。</p>
-        <ul class="ck-compare-features">
-          <li><span>✓</span> 单文件免安装，放桌面即可启动</li>
-          <li><span>✓</span> 适合经常随身携带或拷贝使用</li>
-          <li><span>✓</span> 自动建立单实例锁，避免重复开启</li>
-        </ul>
-        <a
-          class="ck-compare-btn"
-          href="https://github.com/yuebai777/colorink/releases/latest/download/Colorink.exe"
-          download
-        >
-          下载单文件版 (.exe)
-        </a>
-      </div>
-
-      <div class="ck-compare-card">
-        <h3>解压目录版 (Onedir)</h3>
-        <span class="ck-compare-file">Colorink-Onedir.zip</span>
-        <p>运行时文件已预先解压在独立文件夹内，省去了单文件版的临时解压环节。</p>
-        <ul class="ck-compare-features">
-          <li><span>✓</span> 毫秒级极速响应，启动零等待</li>
-          <li><span>✓</span> 彻底避免杀软对单文件临时释放的误报</li>
-          <li><span>✓</span> 解压到常用软件盘，长驻使用体验最佳</li>
-        </ul>
-        <a
-          class="ck-compare-btn"
-          href="https://github.com/yuebai777/colorink/releases/latest/download/Colorink-Onedir.zip"
-          download
-        >
-          下载解压目录版 (.zip)
-        </a>
-      </div>
-    </div>
-
     <!-- 初次启动安全提示 -->
     <div class="ck-dl-notice">
       <strong>🛡️ 初次启动提示：</strong><br />
@@ -101,5 +61,4 @@
 </template>
 
 <script setup>
-// Pure Vue component avoids markdown indentation code-block quirks completely.
 </script>

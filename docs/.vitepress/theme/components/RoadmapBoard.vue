@@ -1,131 +1,182 @@
 <template>
   <div class="ck-roadmap-wrap">
     <div class="ck-roadmap-header">
-      <div class="ck-feedback-badge">📊 开发进度 & 需求看板</div>
-      <h3 class="ck-roadmap-title">我们正在为 Colorink 打造什么？</h3>
+      <div class="ck-feedback-badge">⚡ 实时 GitHub Issues 看板</div>
+      <h3 class="ck-roadmap-title">问题反馈与处理进度</h3>
       <p class="ck-roadmap-desc">
-        每一位画师的建议都会在这里得到认真审视。下面是当前正在全力攻坚的功能、规划中的需求以及近期已落地的更新。
+        直接调取 GitHub 仓库的真实 Issues 列表。您在上方提交或由画师反馈的每一条建议，其当前状态与解决进度均在此实时公开。
       </p>
     </div>
 
-    <!-- 状态流程示意条 -->
-    <div class="ck-flow-bar">
-      <div class="ck-flow-step done">
-        <span class="step-num">1</span>
-        <span class="step-text">📝 提交建议</span>
+    <!-- 真实进度统计卡片 -->
+    <div class="ck-real-stats-card">
+      <div class="ck-stat-item">
+        <span class="stat-num">{{ stats.total }}</span>
+        <span class="stat-label">总反馈议题</span>
       </div>
-      <div class="ck-flow-arrow">→</div>
-      <div class="ck-flow-step active">
-        <span class="step-num">2</span>
-        <span class="step-text">🔍 需求评审</span>
+      <div class="ck-stat-divider"></div>
+      <div class="ck-stat-item open">
+        <span class="stat-num">{{ stats.open }}</span>
+        <span class="stat-label">🟡 处理 / 跟进中</span>
       </div>
-      <div class="ck-flow-arrow">→</div>
-      <div class="ck-flow-step active">
-        <span class="step-num">3</span>
-        <span class="step-text">🛠️ 研发中</span>
+      <div class="ck-stat-divider"></div>
+      <div class="ck-stat-item closed">
+        <span class="stat-num">{{ stats.closed }}</span>
+        <span class="stat-label">🟢 已解决 / 已落地</span>
       </div>
-      <div class="ck-flow-arrow">→</div>
-      <div class="ck-flow-step finish">
-        <span class="step-num">4</span>
-        <span class="step-text">🎉 随新版发布</span>
-      </div>
-    </div>
-
-    <!-- 看板主体三栏 -->
-    <div class="ck-board-grid">
-      <!-- 正在开发中 -->
-      <div class="ck-board-col">
-        <div class="ck-board-col-head in-progress">
-          <span class="dot"></span>
-          <h4>🛠️ 正在开发中 (In Progress)</h4>
-          <span class="count">{{ inProgressList.length }}</span>
+      <div class="ck-stat-divider"></div>
+      <div class="ck-stat-item progress-col">
+        <div class="stat-progress-top">
+          <span class="stat-label">总体解决完成度</span>
+          <span class="stat-rate">{{ stats.rate }}%</span>
         </div>
-        <div class="ck-board-cards">
+        <div class="ck-stat-bar-track">
           <div
-            v-for="(item, idx) in inProgressList"
-            :key="idx"
-            class="ck-task-card"
-          >
-            <div class="ck-task-top">
-              <span :class="['ck-tag', item.tagType]">{{ item.tag }}</span>
-              <span class="ck-task-ver">{{ item.targetVersion }}</span>
-            </div>
-            <h5 class="ck-task-name">{{ item.title }}</h5>
-            <p class="ck-task-desc">{{ item.desc }}</p>
-            <div class="ck-progress-bar-wrap">
-              <div
-                class="ck-progress-bar-inner"
-                :style="{ width: item.progress + '%' }"
-              ></div>
-            </div>
-            <div class="ck-task-foot">
-              <span class="ck-progress-text">进度：{{ item.progress }}%</span>
-              <span class="ck-task-from">源自画师反馈</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 评估与计划中 -->
-      <div class="ck-board-col">
-        <div class="ck-board-col-head planned">
-          <span class="dot"></span>
-          <h4>💡 采纳与规划中 (Planned)</h4>
-          <span class="count">{{ plannedList.length }}</span>
-        </div>
-        <div class="ck-board-cards">
-          <div
-            v-for="(item, idx) in plannedList"
-            :key="idx"
-            class="ck-task-card"
-          >
-            <div class="ck-task-top">
-              <span :class="['ck-tag', item.tagType]">{{ item.tag }}</span>
-              <span class="ck-status-text">{{ item.statusText }}</span>
-            </div>
-            <h5 class="ck-task-name">{{ item.title }}</h5>
-            <p class="ck-task-desc">{{ item.desc }}</p>
-            <div class="ck-task-foot">
-              <span class="ck-task-votes">🔥 {{ item.heat }} 画师关注</span>
-              <span class="ck-task-from">排期评估中</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 近期已发布 -->
-      <div class="ck-board-col">
-        <div class="ck-board-col-head shipped">
-          <span class="dot"></span>
-          <h4>✅ 最近已上线 (Shipped)</h4>
-          <span class="count">{{ shippedList.length }}</span>
-        </div>
-        <div class="ck-board-cards">
-          <div
-            v-for="(item, idx) in shippedList"
-            :key="idx"
-            class="ck-task-card is-shipped"
-          >
-            <div class="ck-task-top">
-              <span class="ck-tag tag-done">已落地</span>
-              <span class="ck-task-ver-shipped">{{ item.version }}</span>
-            </div>
-            <h5 class="ck-task-name">{{ item.title }}</h5>
-            <p class="ck-task-desc">{{ item.desc }}</p>
-            <div class="ck-task-foot">
-              <span class="ck-date-text">{{ item.date }}</span>
-              <span class="ck-check-icon">✓ 稳定运行中</span>
-            </div>
-          </div>
+            class="ck-stat-bar-fill"
+            :style="{ width: stats.rate + '%' }"
+          ></div>
         </div>
       </div>
     </div>
 
-    <!-- GitHub 看板直达底栏 -->
+    <!-- 过滤器与刷新操作 -->
+    <div class="ck-issues-toolbar">
+      <div class="ck-filter-tabs">
+        <button
+          type="button"
+          :class="['ck-filter-btn', { active: currentFilter === 'all' }]"
+          @click="currentFilter = 'all'"
+        >
+          全部 ({{ issues.length }})
+        </button>
+        <button
+          type="button"
+          :class="['ck-filter-btn', { active: currentFilter === 'open' }]"
+          @click="currentFilter = 'open'"
+        >
+          🟡 跟进中 ({{ stats.open }})
+        </button>
+        <button
+          type="button"
+          :class="['ck-filter-btn', { active: currentFilter === 'closed' }]"
+          @click="currentFilter = 'closed'"
+        >
+          🟢 已完成 ({{ stats.closed }})
+        </button>
+      </div>
+
+      <button
+        type="button"
+        class="ck-refresh-btn"
+        :disabled="loading"
+        @click="fetchIssues"
+        title="刷新最新 GitHub Issues"
+      >
+        <span :class="['refresh-icon', { spinning: loading }]">🔄</span>
+        <span>{{ loading ? '同步中...' : '刷新状态' }}</span>
+      </button>
+    </div>
+
+    <!-- 加载中状态 -->
+    <div v-if="loading && issues.length === 0" class="ck-issues-loading">
+      <span class="loading-spin">🌀</span>
+      <p>正在拉取 GitHub Issues 最新进度数据...</p>
+    </div>
+
+    <!-- 错误 / 速率限制提示 -->
+    <div v-else-if="error" class="ck-issues-error">
+      <p>⚠️ {{ error }}</p>
+      <a
+        href="https://github.com/yuebai777/colorink/issues"
+        target="_blank"
+        rel="noopener"
+        class="ck-btn ck-btn-ghost"
+      >
+        直接在 GitHub 上查看完整议题列表 →
+      </a>
+    </div>
+
+    <!-- 议题列表 -->
+    <div v-else-if="filteredIssues.length > 0" class="ck-issues-list">
+      <a
+        v-for="item in filteredIssues"
+        :key="item.id"
+        :href="item.html_url"
+        target="_blank"
+        rel="noopener"
+        class="ck-issue-row"
+      >
+        <!-- 状态指示 -->
+        <div class="ck-issue-status">
+          <span
+            v-if="item.state === 'open'"
+            class="badge-status open"
+            title="状态：正在跟进 / 开发中"
+          >
+            🟡 跟进中
+          </span>
+          <span
+            v-else
+            class="badge-status closed"
+            title="状态：已修复或已实现并合入"
+          >
+            🟢 已完成
+          </span>
+        </div>
+
+        <!-- 议题主体 -->
+        <div class="ck-issue-main">
+          <div class="ck-issue-title-line">
+            <span class="ck-issue-num">#{{ item.number }}</span>
+            <span class="ck-issue-title">{{ item.title }}</span>
+            <!-- 标签 -->
+            <span
+              v-for="label in item.labels"
+              :key="label.id"
+              class="ck-issue-label"
+              :style="{ backgroundColor: '#' + label.color + '22', color: '#' + label.color }"
+            >
+              {{ label.name }}
+            </span>
+          </div>
+
+          <div class="ck-issue-meta">
+            <img
+              v-if="item.user && item.user.avatar_url"
+              :src="item.user.avatar_url"
+              class="ck-user-avatar"
+              alt="avatar"
+            />
+            <span class="ck-user-name">@{{ item.user ? item.user.login : '匿名' }}</span>
+            <span class="meta-dot">·</span>
+            <span>创建于 {{ formatDate(item.created_at) }}</span>
+            <span v-if="item.state === 'closed' && item.closed_at" class="closed-date">
+              <span class="meta-dot">·</span>
+              已于 {{ formatDate(item.closed_at) }} 结案
+            </span>
+            <span v-if="item.comments > 0" class="ck-comments-count">
+              💬 {{ item.comments }} 条回复
+            </span>
+          </div>
+        </div>
+
+        <!-- 外链箭头 -->
+        <div class="ck-issue-arrow">
+          <span>↗</span>
+        </div>
+      </a>
+    </div>
+
+    <!-- 列表为空 -->
+    <div v-else class="ck-issues-empty">
+      <p>暂无符合当前筛选条件的反馈议题。</p>
+    </div>
+
+    <!-- 底部操作条 -->
     <div class="ck-issues-link-bar">
       <div class="ck-issues-info">
-        <strong>想查看更多议题讨论或技术细节？</strong>
-        <p>所有功能反馈与 Bug 处理过程均在 GitHub 完全公开透明。</p>
+        <strong>想参与技术讨论或补充复现步骤？</strong>
+        <p>每一条反馈在 GitHub 均有独立编号与评论区，欢迎交流。</p>
       </div>
       <a
         class="ck-btn ck-btn-ghost"
@@ -133,85 +184,75 @@
         target="_blank"
         rel="noopener"
       >
-        🔎 前往 GitHub Issues 议题列表 →
+        进入 GitHub Issues 讨论区 →
       </a>
     </div>
   </div>
 </template>
 
 <script setup>
-const inProgressList = [
-  {
-    title: 'SAI2 透明色与双向调色联动增强',
-    desc: '优化透明色选定状态下的色轮轨道渐变，画笔在下笔首帧时色彩瞬时刷新无延迟。',
-    tag: '软件适配',
-    tagType: 'tag-sync',
-    targetVersion: 'v1.9.0',
-    progress: 85
-  },
-  {
-    title: '取色热键区域过滤与双屏多显示器边界优化',
-    desc: '防误触规则与边缘像素拾取补偿，全面支持高刷新率与高分屏混插显示环境。',
-    tag: '核心引擎',
-    tagType: 'tag-core',
-    targetVersion: 'v1.9.0',
-    progress: 70
-  },
-  {
-    title: '调色盘预设导出与通用格式兼容 (ACO / ASE)',
-    desc: '支持将 Colorink 中收藏的和弦配色方案直接一键导出为 Photoshop / CSP 通用色板。',
-    tag: '功能拓展',
-    tagType: 'tag-feat',
-    targetVersion: 'v1.9.1',
-    progress: 45
-  }
-]
+import { computed, onMounted, ref } from 'vue'
 
-const plannedList = [
-  {
-    title: '调色盘暗色模式多款色彩主题皮肤',
-    desc: '提供高对比纯黑、冷灰调、低饱和米白等多套视觉风格，契合不同作画环境。',
-    tag: 'UI 定制',
-    tagType: 'tag-ui',
-    statusText: '已立项 · 设计中',
-    heat: '高频诉求'
-  },
-  {
-    title: '吸色管按住 Shift 锁定水平 / 垂直单轴移动',
-    desc: '精确采样同一条基准线上的渐变色彩，方便画师做素描明度阶梯对比。',
-    tag: '操作体验',
-    tagType: 'tag-feat',
-    statusText: '技术评估中',
-    heat: '画师建议'
-  },
-  {
-    title: 'Krita / openCanvas 绘画软件同步通道调研',
-    desc: '为更多开源与小众专业绘画软件提供免插件或内存直连的调色同步。',
-    tag: '软件生态',
-    tagType: 'tag-sync',
-    statusText: '需求采纳',
-    heat: '社区需求'
-  }
-]
+const issues = ref([])
+const loading = ref(false)
+const error = ref('')
+const currentFilter = ref('all')
 
-const shippedList = [
-  {
-    title: '专属下载页与独立免装单文件版 (Onefile)',
-    desc: '无需安装 Python 或运行时，双击即启，支持直接下载与高速加速镜像。',
-    version: 'v1.8.10',
-    date: '2026-09'
-  },
-  {
-    title: 'CLIP STUDIO PAINT (CSP) Companion 扫码直连',
-    desc: '全面兼容国行优动漫及 CSP 1.x~5.x 全版本，配对一次永久自动重连。',
-    version: 'v1.8.9',
-    date: '2026-08'
-  },
-  {
-    title: 'OKLCh 感知灰度与 BT.709 硬件明度滤镜',
-    desc: '全屏一键切换黑白视界，数位板画师随时快速检验素描明暗五大调子。',
-    version: 'v1.8.8',
-    date: '2026-07'
+const stats = computed(() => {
+  const total = issues.value.length
+  const open = issues.value.filter((i) => i.state === 'open').length
+  const closed = issues.value.filter((i) => i.state === 'closed').length
+  const rate = total > 0 ? Math.round((closed / total) * 100) : 100
+  return { total, open, closed, rate }
+})
+
+const filteredIssues = computed(() => {
+  if (currentFilter.value === 'open') {
+    return issues.value.filter((i) => i.state === 'open')
   }
-]
+  if (currentFilter.value === 'closed') {
+    return issues.value.filter((i) => i.state === 'closed')
+  }
+  return issues.value
+})
+
+async function fetchIssues() {
+  loading.value = true
+  error.value = ''
+  try {
+    const res = await fetch(
+      'https://api.github.com/repos/yuebai777/colorink/issues?state=all&per_page=30'
+    )
+    if (!res.ok) {
+      if (res.status === 403) {
+        throw new Error('访问频率暂时受限（GitHub 匿名 API 限制），请稍候刷新或直接前往 GitHub 仓库查看。')
+      }
+      throw new Error(`无法获取 Issues 列表 (HTTP ${res.status})`)
+    }
+    const data = await res.json()
+    if (Array.isArray(data)) {
+      issues.value = data
+    } else {
+      issues.value = []
+    }
+  } catch (err) {
+    error.value = err.message || '网络请求失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+function formatDate(isoStr) {
+  if (!isoStr) return ''
+  try {
+    const d = new Date(isoStr)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  } catch {
+    return isoStr
+  }
+}
+
+onMounted(() => {
+  fetchIssues()
+})
 </script>

@@ -1413,15 +1413,40 @@ body {
   margin: 0 0 1.5rem;
 }
 
-/* ============ 需求与开发进度看板 (RoadmapBoard) ============ */
-.ck-feedback-page-wrap {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 2.5rem 1.5rem 4rem;
+/* ============ 页面全局居中支持 (Page Layout Centering) ============ */
+.VPPage {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  width: 100% !important;
 }
 
+.VPPage > .container {
+  max-width: 100% !important;
+  margin: 0 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  width: 100% !important;
+}
+
+.ck-download-wrap,
+.ck-feedback-page-wrap {
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto !important;
+  padding: 3rem 1.5rem 5rem;
+  box-sizing: border-box;
+}
+
+.ck-download-content {
+  width: 100%;
+}
+
+/* ============ 实时 GitHub Issues 进度看板 (RoadmapBoard) ============ */
 .ck-roadmap-wrap {
-  margin-top: 3.5rem;
+  margin-top: 3rem;
+  width: 100%;
 }
 
 .ck-roadmap-header {
@@ -1439,273 +1464,299 @@ body {
 }
 
 .ck-roadmap-desc {
-  font-size: 1rem;
+  font-size: 0.96rem;
   color: var(--vp-c-text-2);
   margin: 0 auto;
   max-width: 600px;
   line-height: 1.6;
 }
 
-/* 状态流程指示条 */
-.ck-flow-bar {
+/* 真实进度统计卡片 */
+.ck-real-stats-card {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin: 1.8rem 0 2.5rem;
-}
-
-.ck-flow-step {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 16px;
-  border-radius: 999px;
-  background: var(--vp-c-bg-soft);
-  border: 1px solid var(--ck-card-border);
-  font-size: 0.86rem;
-  font-weight: 600;
-  color: var(--vp-c-text-2);
-}
-
-.ck-flow-step .step-num {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  font-size: 0.72rem;
-  background: var(--ck-card-border);
-  color: var(--vp-c-text-1);
-}
-
-.ck-flow-step.active {
-  background: var(--vp-c-brand-soft);
-  border-color: var(--vp-c-brand-1);
-  color: var(--vp-c-brand-1);
-}
-
-.ck-flow-step.active .step-num {
-  background: var(--vp-c-brand-1);
-  color: #ffffff;
-}
-
-.ck-flow-step.finish {
-  background: linear-gradient(115deg, rgba(168, 85, 247, 0.12), rgba(236, 72, 153, 0.12));
-  border-color: rgba(236, 72, 153, 0.4);
-  color: #ec4899;
-}
-
-.ck-flow-step.finish .step-num {
-  background: #ec4899;
-  color: #ffffff;
-}
-
-.ck-flow-arrow {
-  color: var(--vp-c-text-3);
-  font-weight: 700;
-  font-size: 1.1rem;
-}
-
-/* 看板三列布局 */
-.ck-board-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 18px;
-  margin-bottom: 2.5rem;
-}
-
-.ck-board-col {
+  justify-content: space-between;
+  gap: 16px;
   background: var(--ck-card-bg);
   backdrop-filter: var(--ck-glass-blur);
   -webkit-backdrop-filter: var(--ck-glass-blur);
   border: 1px solid var(--ck-card-border);
   border-radius: 18px;
-  padding: 1.3rem 1.1rem;
+  padding: 1.5rem 1.8rem;
+  margin-bottom: 1.8rem;
+  box-shadow: 0 10px 30px rgba(109, 90, 232, 0.06);
+}
+
+.ck-stat-item {
   display: flex;
   flex-direction: column;
-}
-
-.ck-board-col-head {
-  display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 1.1rem;
-  padding-bottom: 0.8rem;
-  border-bottom: 1px solid var(--ck-card-border);
+  gap: 4px;
 }
 
-.ck-board-col-head .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-}
-
-.ck-board-col-head.in-progress .dot {
-  background: #704df4;
-  box-shadow: 0 0 8px #704df4;
-}
-
-.ck-board-col-head.planned .dot {
-  background: #f59e0b;
-}
-
-.ck-board-col-head.shipped .dot {
-  background: #10b981;
-}
-
-.ck-board-col-head h4 {
-  margin: 0;
-  font-size: 0.95rem;
-  font-weight: 700;
-  border: none;
-  padding: 0;
+.ck-stat-item .stat-num {
+  font-size: 1.8rem;
+  font-weight: 800;
   color: var(--vp-c-text-1);
+  line-height: 1;
 }
 
-.ck-board-col-head .count {
-  margin-left: auto;
-  font-size: 0.74rem;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--vp-c-bg-soft);
-  color: var(--vp-c-text-2);
-}
-
-.ck-board-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  flex: 1;
-}
-
-.ck-task-card {
-  background: var(--vp-c-bg-soft);
-  border: 1px solid var(--ck-card-border);
-  border-radius: 12px;
-  padding: 14px;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
-}
-
-.ck-task-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.05);
-}
-
-.ck-task-card.is-shipped {
-  opacity: 0.92;
-}
-
-.ck-task-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.ck-tag {
-  font-size: 0.72rem;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 6px;
-}
-
-.tag-sync {
-  background: rgba(59, 130, 246, 0.12);
-  color: #3b82f6;
-}
-
-.tag-core {
-  background: rgba(168, 85, 247, 0.12);
-  color: #a855f7;
-}
-
-.tag-feat {
-  background: rgba(236, 72, 153, 0.12);
-  color: #ec4899;
-}
-
-.tag-ui {
-  background: rgba(245, 158, 11, 0.12);
+.ck-stat-item.open .stat-num {
   color: #f59e0b;
 }
 
-.tag-done {
-  background: rgba(16, 185, 129, 0.12);
+.ck-stat-item.closed .stat-num {
   color: #10b981;
 }
 
-.ck-task-ver {
-  font-size: 0.75rem;
-  font-family: var(--vp-font-family-mono);
-  font-weight: 600;
-  color: var(--vp-c-brand-1);
-}
-
-.ck-task-ver-shipped {
-  font-size: 0.75rem;
-  font-family: var(--vp-font-family-mono);
-  font-weight: 600;
-  color: #10b981;
-}
-
-.ck-status-text {
-  font-size: 0.74rem;
+.ck-stat-item .stat-label {
+  font-size: 0.8rem;
   color: var(--vp-c-text-3);
+  font-weight: 500;
 }
 
-.ck-task-name {
-  margin: 0 0 6px;
-  font-size: 0.92rem;
-  font-weight: 700;
-  line-height: 1.4;
-  border: none;
-  padding: 0;
-  color: var(--vp-c-text-1);
-}
-
-.ck-task-desc {
-  font-size: 0.82rem;
-  color: var(--vp-c-text-2);
-  line-height: 1.5;
-  margin: 0 0 10px;
-}
-
-.ck-progress-bar-wrap {
-  height: 5px;
+.ck-stat-divider {
+  width: 1px;
+  height: 36px;
   background: var(--ck-card-border);
-  border-radius: 999px;
-  overflow: hidden;
+}
+
+.ck-stat-item.progress-col {
+  flex: 1;
+  max-width: 260px;
+  align-items: stretch;
+}
+
+.stat-progress-top {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.82rem;
   margin-bottom: 6px;
 }
 
-.ck-progress-bar-inner {
+.stat-rate {
+  font-weight: 700;
+  color: #10b981;
+}
+
+.ck-stat-bar-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--ck-card-border);
+  overflow: hidden;
+}
+
+.ck-stat-bar-fill {
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, #704df4, #ec4899);
+  background: linear-gradient(90deg, #704df4, #10b981);
+  transition: width 0.4s ease;
 }
 
-.ck-task-foot {
+/* 过滤与刷新工具条 */
+.ck-issues-toolbar {
   display: flex;
-  align-items: center;
   justify-content: space-between;
-  font-size: 0.76rem;
-  color: var(--vp-c-text-3);
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 1.2rem;
+  flex-wrap: wrap;
 }
 
-.ck-progress-text {
+.ck-filter-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.ck-filter-btn {
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--ck-card-border);
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-2);
+  font-size: 0.84rem;
   font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.ck-filter-btn:hover {
+  border-color: var(--vp-c-brand-1);
   color: var(--vp-c-brand-1);
 }
 
-.ck-check-icon {
-  color: #10b981;
+.ck-filter-btn.active {
+  background: var(--vp-c-brand-soft);
+  border-color: var(--vp-c-brand-1);
+  color: var(--vp-c-brand-1);
+}
+
+.ck-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--ck-card-border);
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-2);
+  font-size: 0.84rem;
   font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.ck-refresh-btn:hover:not(:disabled) {
+  border-color: var(--vp-c-brand-1);
+  color: var(--vp-c-brand-1);
+}
+
+.refresh-icon.spinning {
+  display: inline-block;
+  animation: ck-spin 1s linear infinite;
+}
+
+@keyframes ck-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Issues 真实列表卡片 */
+.ck-issues-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 2rem;
+}
+
+.ck-issue-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--ck-card-bg);
+  backdrop-filter: var(--ck-glass-blur);
+  -webkit-backdrop-filter: var(--ck-glass-blur);
+  border: 1px solid var(--ck-card-border);
+  border-radius: 14px;
+  padding: 14px 18px;
+  text-decoration: none !important;
+  color: inherit !important;
+  text-align: left;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.ck-issue-row:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(109, 90, 232, 0.08);
+  border-color: var(--vp-c-brand-soft);
+}
+
+.ck-issue-status .badge-status {
+  display: inline-flex;
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.badge-status.open {
+  background: rgba(245, 158, 11, 0.12);
+  color: #d97706;
+}
+
+.badge-status.closed {
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
+}
+
+.ck-issue-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.ck-issue-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.ck-issue-num {
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--vp-c-brand-1);
+}
+
+.ck-issue-title {
+  font-size: 0.96rem;
+  font-weight: 700;
+  color: var(--vp-c-text-1);
+}
+
+.ck-issue-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 4px;
+}
+
+.ck-issue-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--vp-c-text-3);
+  flex-wrap: wrap;
+}
+
+.ck-user-avatar {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.ck-user-name {
+  font-weight: 600;
+  color: var(--vp-c-text-2);
+}
+
+.meta-dot {
+  opacity: 0.5;
+}
+
+.closed-date {
+  color: #10b981;
+}
+
+.ck-comments-count {
+  margin-left: auto;
+  font-weight: 600;
+}
+
+.ck-issue-arrow {
+  font-size: 1.1rem;
+  color: var(--vp-c-text-3);
+  transition: transform 0.2s;
+}
+
+.ck-issue-row:hover .ck-issue-arrow {
+  transform: translate(2px, -2px);
+  color: var(--vp-c-brand-1);
+}
+
+.ck-issues-loading,
+.ck-issues-empty,
+.ck-issues-error {
+  text-align: center;
+  padding: 3rem 1.5rem;
+  background: var(--ck-card-bg);
+  border: 1px solid var(--ck-card-border);
+  border-radius: 16px;
+  margin-bottom: 2rem;
 }
 
 /* GitHub 看板直达底栏 */

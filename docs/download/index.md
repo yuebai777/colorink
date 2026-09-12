@@ -1,4 +1,5 @@
 ---
+layout: page
 title: 下载 Colorink
 description: 下载 Colorink 桌面调色与极速取色工具，支持 Windows 10 / 11 64位。提供独立单文件版与解压目录版直链下载。
 ---

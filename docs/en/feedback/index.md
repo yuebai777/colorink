@@ -1,4 +1,5 @@
 ---
+layout: page
 title: Feedback & Development Roadmap
 description: Colorink Feedback Center & Feature Roadmap. Submit suggestions without a GitHub account and track progress in real time.
 ---
@@ -14,7 +15,7 @@ description: Colorink Feedback Center & Feature Roadmap. Submit suggestions with
     <div class="ck-dl-tags">
       <span class="ck-dl-tag">⚡ No GitHub Account Needed</span>
       <span class="ck-dl-tag">🛡️ Private & Secure</span>
-      <span class="ck-dl-tag">📊 Transparent Roadmap</span>
+      <span class="ck-dl-tag">📊 Live GitHub Issues</span>
       <span class="ck-dl-tag">💬 Community Powered</span>
     </div>
   </div>
@@ -22,6 +23,6 @@ description: Colorink Feedback Center & Feature Roadmap. Submit suggestions with
   <!-- Feedback Submission Form -->
   <FeedbackCard />
 
-  <!-- Roadmap Board -->
+  <!-- Live GitHub Issues Board -->
   <RoadmapBoard />
 </div>
