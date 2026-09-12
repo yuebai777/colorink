@@ -38,9 +38,11 @@ try:
         build_space_offsets,
         decode_space_raws,
         encode_space_values,
+        encode_space_values_float,
         format_space_values,
         resolve_active_rgb,
         rgb_to_space_values,
+        space_to_rgb_float,
     )
 except ImportError:
     from core.brush_color_spaces import (
@@ -50,9 +52,11 @@ except ImportError:
         build_space_offsets,
         decode_space_raws,
         encode_space_values,
+        encode_space_values_float,
         format_space_values,
         resolve_active_rgb,
         rgb_to_space_values,
+        space_to_rgb_float,
     )
 
 # ---------------------------------------------------------------------------
@@ -66,6 +70,11 @@ DEFAULT_VERSION_KEY = "udm4.0"
 _DEFAULT_RED_OFFSET   = 0x20
 _DEFAULT_GREEN_OFFSET = 0x24
 _DEFAULT_BLUE_OFFSET  = 0x28
+
+# Sub-color slot stride and transparent / active-slot flag offsets.
+_SUB_OFFSET_DELTA      = 0x58
+_TRANSPARENT_FLAG_OFFS = 0x08
+_TRANSPARENT_FLAG_ON   = 0xFFFFFFFF
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +264,7 @@ class UDMSync:
         self.g_off: int = _DEFAULT_GREEN_OFFSET
         self.b_off: int = _DEFAULT_BLUE_OFFSET
         self.space_offsets = build_space_offsets(self.r_off)
+        self.sub_space_offsets = build_space_offsets(self.r_off + _SUB_OFFSET_DELTA)
         self._last_hsv_h: float = 0.0
         self._last_hsv_s: float = 0.0
         # 连续解析失败计数：目标进程退出后达到阈值即主动断开重连。
@@ -306,12 +316,13 @@ class UDMSync:
         self.abs_b = _parse_int(sec.get("absoluteblue",  "0"))
         self.abs_mode = sec.get("absolutemode", "auto").strip().lower()
         self.space_offsets = build_space_offsets(self.r_off)
+        self.sub_space_offsets = build_space_offsets(self.r_off + _SUB_OFFSET_DELTA)
         _log(
             "Config loaded: "
             f"Path={path} Version={self.current_version} Process={self.process_name} "
             f"Base=0x{self.base_offset:X} R=0x{self.r_off:X} G=0x{self.g_off:X} B=0x{self.b_off:X} "
             f"UseAbs={self.use_abs} AbsR=0x{self.abs_r:X} AbsG=0x{self.abs_g:X} AbsB=0x{self.abs_b:X} "
-            f"AbsMode={self.abs_mode} Layout={self.space_offsets}"
+            f"AbsMode={self.abs_mode} Layout={self.space_offsets} SubLayout={self.sub_space_offsets}"
         )
 
     def set_version(self, key: str) -> bool:
@@ -513,6 +524,48 @@ class UDMSync:
                  f"failures — dropping connection")
             self._drop_connection()
 
+    def _read_transparent_flag(self) -> bool:
+        """Return True when UDM's current drawing color is transparent."""
+        if self.pm is None or self.target is None:
+            if not self.connect() or self.target is None:
+                return False
+        try:
+            return self._read_u32(self.target + _TRANSPARENT_FLAG_OFFS) == _TRANSPARENT_FLAG_ON
+        except Exception:
+            return False
+
+    def _write_transparent_flag(self, transparent: bool) -> bool:
+        """Set or clear the transparent flag in UDM memory."""
+        if self.pm is None or self.target is None:
+            if not self.connect() or self.target is None:
+                return False
+        try:
+            self._write_u32(
+                self.target + _TRANSPARENT_FLAG_OFFS,
+                _TRANSPARENT_FLAG_ON if transparent else 0,
+            )
+            _log(f"set_color: transparent={transparent}")
+            return True
+        except Exception as exc:
+            _log(f"_write_transparent_flag: exception: {exc}")
+            return False
+
+    def get_active_slot_index(self) -> int | None:
+        """Current active-slot index: 0 = main (fg), 1 = sub (bg).
+
+        Returns None while the active slot is transparent (_TRANSPARENT_FLAG_ON).
+        """
+        if self.pm is None or self.target is None:
+            if not self.connect() or self.target is None:
+                return None
+        try:
+            raw = self._read_u32(self.target + _TRANSPARENT_FLAG_OFFS)
+        except Exception:
+            return None
+        if raw == _TRANSPARENT_FLAG_ON:
+            return None
+        return int(raw & 0xFF)
+
     # ----- public color access -------------------------------------------
     def get_color(self) -> dict[str, int] | None:
         if self.pm is None and not self.connect():
@@ -543,6 +596,8 @@ class UDMSync:
             if h_val > 0 or s_val > 1: self._last_hsv_h = h_val
             if source_values.get("v", 0) > 1: self._last_hsv_s = s_val
         source_raws = snapshots[source_space]["raws"]
+        rgb["transparent"] = 1 if self._read_transparent_flag() else 0
+        rgb["index"] = 0
         _log(
             "get_color: "
             f"source={source_space} "
@@ -553,36 +608,147 @@ class UDMSync:
         )
         return rgb
 
-    def set_color(self, r: int, g: int, b: int) -> bool:
+    def get_sub_color(self) -> dict[str, int] | None:
+        """Read the UDM sub-color (background) slot as 8-bit RGB."""
+        if self.pm is None and not self.connect():
+            return None
+
+        if self.target is None:
+            space_addrs = self._resolve_space_addresses()
+            if not space_addrs or self.target is None:
+                return None
+
+        try:
+            snapshots: dict[str, dict[str, Any]] = {}
+            for space_name, offsets in self.sub_space_offsets.items():
+                raws = tuple(self._read_u32(self.target + off) for off in offsets)
+                snapshots[space_name] = {
+                    "offsets": offsets,
+                    "raws": raws,
+                    "values": decode_space_raws(space_name, raws),
+                }
+
+            source_space, rgb, source_values = resolve_active_rgb(snapshots)
+            return {
+                "r": _clamp_byte(rgb["r"]),
+                "g": _clamp_byte(rgb["g"]),
+                "b": _clamp_byte(rgb["b"]),
+                "transparent": 0,
+                "index": 1,
+            }
+        except Exception as exc:
+            _log(f"get_sub_color: exception: {exc}")
+            return None
+
+    def set_color(
+        self,
+        r: int,
+        g: int,
+        b: int,
+        source_space: str | None = None,
+        source_values: Mapping[str, float] | None = None,
+        transparent: bool = False,
+        color_index: int = 0,
+    ) -> bool:
         if self.pm is None and not self.connect():
             return False
 
+        if transparent:
+            # Transparent belongs to the ACTIVE slot: activate the target slot first,
+            # then set the transparent flag.
+            if self.target is not None:
+                self._write_u32(self.target + _TRANSPARENT_FLAG_OFFS, 1 if color_index == 1 else 0)
+            return self._write_transparent_flag(True)
+
+        if color_index == 1:
+            # Sub slot (background)
+            if self.target is None and not self._resolve_space_addresses():
+                return False
+            if self.target is None:
+                return False
+            rgb = {"r": _clamp_byte(r), "g": _clamp_byte(g), "b": _clamp_byte(b)}
+            try:
+                if source_space and source_values and source_space in SPACE_ORDER:
+                    source_rgb_float = space_to_rgb_float(source_space, source_values)
+                    source_rgb = {
+                        "r": int(round(source_rgb_float["r"])),
+                        "g": int(round(source_rgb_float["g"])),
+                        "b": int(round(source_rgb_float["b"])),
+                    }
+                else:
+                    source_rgb = rgb
+                    source_space = None
+
+                hsv_vals = rgb_to_space_values("hsv", source_rgb)
+                for space_name in SPACE_ORDER:
+                    if space_name == source_space and source_values:
+                        encoded = encode_space_values_float(space_name, source_values)
+                    elif space_name == "hsv":
+                        encoded = encode_space_values(space_name, hsv_vals)
+                    else:
+                        encoded = encode_space_values(space_name, rgb_to_space_values(space_name, source_rgb))
+                    for off, raw in zip(self.sub_space_offsets[space_name], encoded):
+                        self._write_u32(self.target + off, raw)
+
+                # Activate the sub slot (writing 1 to +0x08)
+                self._write_u32(self.target + _TRANSPARENT_FLAG_OFFS, 1)
+                _log(f"set_color (sub): RGB=[{rgb['r']}, {rgb['g']}, {rgb['b']}]")
+                return True
+            except Exception as exc:
+                _log(f"set_color (sub): exception: {exc}")
+                return False
+
+        # Main slot (color_index == 0)
         space_addrs = self._resolve_space_addresses()
-        if not space_addrs:
+        if not space_addrs or self.target is None:
             _log("set_color: no usable addresses resolved")
             return False
 
         rgb = {"r": _clamp_byte(r), "g": _clamp_byte(g), "b": _clamp_byte(b)}
         try:
-            hsv_vals: dict[str, Any] = rgb_to_space_values("hsv", rgb)
-            if hsv_vals["s"] < 1: hsv_vals["h"] = self._last_hsv_h
-            else: self._last_hsv_h = hsv_vals["h"]
-            if hsv_vals["v"] < 1: hsv_vals["s"] = self._last_hsv_s
-            else: self._last_hsv_s = hsv_vals["s"]
+            if source_space and source_values and source_space in SPACE_ORDER:
+                source_rgb_float = space_to_rgb_float(source_space, source_values)
+                source_rgb = {
+                    "r": int(round(source_rgb_float["r"])),
+                    "g": int(round(source_rgb_float["g"])),
+                    "b": int(round(source_rgb_float["b"])),
+                }
+            else:
+                source_rgb = rgb
+                source_space = None
+
+            hsv_vals: dict[str, Any] = rgb_to_space_values("hsv", source_rgb)
+            if hsv_vals["s"] < 1:
+                hsv_vals["h"] = self._last_hsv_h
+            else:
+                self._last_hsv_h = hsv_vals["h"]
+            if hsv_vals["v"] < 1:
+                hsv_vals["s"] = self._last_hsv_s
+            else:
+                self._last_hsv_s = hsv_vals["s"]
+
             for space_name in SPACE_ORDER:
-                if space_name == "hsv": values = hsv_vals
-                else: values = rgb_to_space_values(space_name, rgb)
-                encoded = encode_space_values(space_name, values)
+                if space_name == source_space and source_values:
+                    encoded = encode_space_values_float(space_name, source_values)
+                elif space_name == "hsv":
+                    values = hsv_vals
+                    encoded = encode_space_values(space_name, values)
+                else:
+                    values = rgb_to_space_values(space_name, source_rgb)
+                    encoded = encode_space_values(space_name, values)
                 for addr, raw in zip(space_addrs[space_name], encoded):
                     self._write_u32(addr, raw)
+
+            # Activate main slot (writing 0 to +0x08, clearing transparent flag)
+            self._write_u32(self.target + _TRANSPARENT_FLAG_OFFS, 0)
             _log(
-                "set_color: "
+                "set_color (main): "
                 f"RGB=[{rgb['r']}, {rgb['g']}, {rgb['b']}] "
                 f"synced_spaces={list(SPACE_ORDER)}"
             )
             return True
         except Exception as exc:
-            _log(f"set_color: exception: {exc}")
+            _log(f"set_color (main): exception: {exc}")
             return False
 
     # ----- introspection --------------------------------------------------

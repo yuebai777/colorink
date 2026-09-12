@@ -414,6 +414,13 @@ class MemorySyncThread(QThread):
                                 # 会把它误判为"槽 1 已清除"并发
                                 # 出虚假的 transparent_changed(1, False)。
                                 self._last_read_transparent[0] = True
+                            elif self.software_mode == 'udm':
+                                self.udm_sync.set_color(
+                                    r, g, b, source_space=src_space,
+                                    source_values=src_vals, transparent=True,
+                                    color_index=color_index,
+                                )
+                                self._last_read_transparent[0] = True
                             continue
 
                         if self.software_mode == 'csp':
@@ -429,7 +436,12 @@ class MemorySyncThread(QThread):
                         elif self.software_mode == 'sai':
                             self.sai2_sync.set_color(r, g, b)
                         elif self.software_mode == 'udm':
-                            self.udm_sync.set_color(r, g, b)
+                            self.udm_sync.set_color(
+                                r, g, b, source_space=src_space,
+                                source_values=src_vals, color_index=color_index,
+                            )
+                            self._last_synced_color[color_index] = (r, g, b)
+                            self._last_read_transparent[color_index] = False
                         elif self.software_mode == 'ps':
                             self.ps_sync.set_color(r, g, b, color_index=color_index)
                             self._note_ps_write()
@@ -507,9 +519,16 @@ class MemorySyncThread(QThread):
                     # colour of a drag still reaches SAI's widgets.
                     self.sai2_sync.tick_ui_refresh()
                 elif self.software_mode == 'udm':
-                    color = self.udm_sync.get_color()
-                    if color is not None:
-                        colors = [color]
+                    main_color = self.udm_sync.get_color()
+                    sub_color = self.udm_sync.get_sub_color()
+                    if main_color is not None:
+                        colors.append(main_color)
+                    if sub_color is not None:
+                        colors.append(sub_color)
+                    active = self.udm_sync.get_active_slot_index()
+                    if active is not None and active != self._last_active_slot:
+                        self._last_active_slot = active
+                        self.signals.active_slot_changed.emit(active)
                     status = self.udm_sync.status()
                     connected = status.get('connected', False)
                 elif self.software_mode == 'ps':

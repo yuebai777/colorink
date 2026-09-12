@@ -160,7 +160,7 @@ class SyncMixin:
             mode = self.sync_thread.software_mode
         if color_index in (0, 1):
             # 内存模式：+0x08 透明标志属于激活槽（index 恒 0），映射活动槽
-            if mode == 'csp' and color_index == 0:
+            if mode in ('csp', 'udm') and color_index == 0:
                 slot = self.active_slot
             else:
                 slot = "fg" if color_index == 0 else "bg"
