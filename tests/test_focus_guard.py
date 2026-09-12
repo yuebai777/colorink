@@ -30,6 +30,13 @@ _OTHER_PID = _MY_PID + 4242
 # ── win32 替身 ──────────────────────────────────────────────────────────────
 
 
+class _FakeGuiThreadInfo:
+    """win32gui.GetGUIThreadInfo 的替身 —— 只需要 hwndFocus 字段。"""
+
+    def __init__(self, hwnd_focus=0):
+        self.hwndFocus = hwnd_focus
+
+
 class _FakeUser32:
     def __init__(self):
         self.calls = []
@@ -39,6 +46,10 @@ class _FakeUser32:
         self.iconic = False
         self.exists = True
         self.after_foreground = None  # SetForegroundWindow 之后的"新前台"
+        self.top_windows = []         # EnumWindows 按 Z 序返回的顶层窗口
+        self.visible_map = {}         # hwnd -> bool（缺省回落到 self.visible）
+        self.iconic_map = {}          # hwnd -> bool（缺省回落到 self.iconic）
+        self.gui_info = _FakeGuiThreadInfo()  # 前台线程的焦点窗口（0=无）
 
     # -- 查询 --
     def GetForegroundWindow(self):
@@ -47,14 +58,22 @@ class _FakeUser32:
     def GetFocus(self):
         return self.focus
 
+    def GetGUIThreadInfo(self, tid):
+        return self.gui_info
+
     def IsWindow(self, hwnd):
         return self.exists
 
     def IsWindowVisible(self, hwnd):
-        return self.visible
+        return self.visible_map.get(hwnd, self.visible)
 
     def IsIconic(self, hwnd):
-        return self.iconic
+        return self.iconic_map.get(hwnd, self.iconic)
+
+    def EnumWindows(self, callback, extra):
+        for hwnd in self.top_windows:
+            if callback(hwnd, extra) is False:
+                break
 
     # -- 动作 --
     def BringWindowToTop(self, hwnd):
@@ -125,6 +144,69 @@ def test_capture_ignores_our_own_foreground(monkeypatch):
 
     assert g.capture() is False
     assert g._hwnd == 0
+
+
+def test_capture_keeps_previous_target_when_foreground_is_ours(monkeypatch):
+    """前台变成我们自己时，capture 放弃但**不得清空**已记住的目标。
+
+    用鼠标的用户常在触发热键取色前刚点过我们的窗口 —— 若这里把记忆清空，
+    取色结束 restore() 就无目标可还，画图软件拿不回前台，下一次点画布的
+    第一击只会被用来"激活窗口"。
+    """
+    env = _Win32Env(monkeypatch, pids={100: _OTHER_PID, 200: _MY_PID})
+    env.user32.foreground = 100
+    g = StylusFocusGuard()
+    assert g.capture() is True
+    assert g._hwnd == 100
+
+    env.user32.foreground = 200  # 用户点了我们的窗口，前台变成自己
+    assert g.capture() is False
+    assert g._hwnd == 100          # 记忆保留，restore() 还有目标
+
+
+# ── 兜底采集（前台已是自己时改记 Z 序最顶的画图软件窗口）────────────────────
+
+
+def test_fallback_picks_topmost_drawing_window(monkeypatch):
+    import core.foreground as fg
+
+    env = _Win32Env(monkeypatch, pids={100: _OTHER_PID, 200: _OTHER_PID + 1})
+    env.user32.top_windows = [100, 200]  # Z 序：100 在上
+    g = StylusFocusGuard()
+    # 100 是记事本、200 是 Photoshop → 跳过 100，记录 200
+    monkeypatch.setattr(
+        fg, "_resolve_process_exe",
+        lambda pid: "notepad.exe" if pid == _OTHER_PID else "photoshop.exe",
+    )
+
+    assert g.capture_drawing_app_fallback() is True
+    assert g._hwnd == 200
+    assert g._pid == _OTHER_PID + 1
+
+
+def test_fallback_skips_invisible_and_minimized(monkeypatch):
+    import core.foreground as fg
+
+    env = _Win32Env(monkeypatch, pids={100: _OTHER_PID, 200: _OTHER_PID + 1})
+    env.user32.top_windows = [100, 200]
+    env.user32.iconic_map = {100: True}  # 100（PS）被最小化 → 不可作为目标
+    g = StylusFocusGuard()
+    monkeypatch.setattr(fg, "_resolve_process_exe", lambda pid: "photoshop.exe")
+
+    assert g.capture_drawing_app_fallback() is True
+    assert g._hwnd == 200                  # 挑了下一个可见的
+
+
+def test_fallback_returns_false_without_drawing_app(monkeypatch):
+    import core.foreground as fg
+
+    env = _Win32Env(monkeypatch, pids={100: _OTHER_PID})
+    env.user32.top_windows = [100]
+    g = StylusFocusGuard()
+    monkeypatch.setattr(fg, "_resolve_process_exe", lambda pid: "notepad.exe")
+
+    assert g.capture_drawing_app_fallback() is False
+    assert g._hwnd == 0                    # 找不到就维持原样，绝不抢非画图软件
 
 
 def test_capture_disabled_by_env(monkeypatch):
@@ -226,8 +308,9 @@ def test_restore_skips_minimized_or_invisible_target(monkeypatch):
 
 
 def test_restore_reasserts_for_drawing_app_even_when_we_hold_nothing(monkeypatch):
-    """目标是画图软件时不做"是否真的被抢走"的检查 —— WinTab 的上下文焦点可能
-    在驱动层就被换走，我们自己看不到；重申一次是幂等的。"""
+    """前台已被第三方进程拿走、目标是画图软件时仍要交还 —— WinTab 的上下文
+    焦点可能在驱动层就被换走，我们自己看不到。（"目标仍握前台+焦点"的
+    正常路径由下面的零搅动用例覆盖，不走这里。）"""
     env = _Win32Env(monkeypatch, pids={100: _OTHER_PID, 200: _OTHER_PID})
     env.user32.foreground = 100
     env.user32.after_foreground = 100
@@ -240,6 +323,116 @@ def test_restore_reasserts_for_drawing_app_even_when_we_hold_nothing(monkeypatch
     assert g.restore() is True
     assert ("SetForegroundWindow", 100) in env.user32.calls
     assert ("SetFocus", 100) in env.user32.calls
+
+
+# ── 交还的"零搅动"路径（取色后第一击失效的修复）─────────────────────────────
+
+
+def test_restore_is_noop_when_target_already_holds_foreground_and_focus(monkeypatch):
+    """全局热键取色的正常路径：画图软件从未失去前台（浮层 WS_EX_NOACTIVATE），
+    键盘焦点也一直在它手上。
+
+    此时重申激活/焦点**不是**幂等的：AttachThreadInput + SetFocus 会给目标
+    重放 WM_KILLFOCUS/WM_SETFOCUS，detach 时拆分两线程共享的按键状态 ——
+    恰好吞掉取色结束后用户点画布的第一击（"第一击没反应、第二击才画"，
+    鼠标路径专属：笔走 Wintab/Ink 不进 Windows 鼠标队列，所以笔没事）。
+    目标已握前台+焦点时必须一次系统调用都不做。
+    """
+    env = _Win32Env(monkeypatch, pids={100: _OTHER_PID, 300: _OTHER_PID})
+    env.user32.foreground = 100
+    env.user32.gui_info.hwndFocus = 300  # 焦点窗口也属于目标进程
+    g = StylusFocusGuard()
+    g.capture()
+    monkeypatch.setattr(StylusFocusGuard, "_is_drawing_app", staticmethod(lambda pid: True))
+    calls = []
+    monkeypatch.setattr(StylusFocusGuard, "_request_photoshop_focus",
+                        staticmethod(lambda pid: calls.append(pid)))
+
+    assert g.restore() is True
+    assert env.user32.calls == []        # SetForegroundWindow/SetFocus 一次都不做
+    assert env.proc.calls == []          # 也没有 AttachThreadInput
+    assert calls == []                   # 焦点本来就在它手上，连 loseFocus 都不用发
+
+
+def test_restore_still_hands_back_when_focus_slipped_to_us(monkeypatch):
+    """前台还是画图软件，但键盘焦点被我们的窗口拿走 → 不能跳过，必须还。"""
+    env = _Win32Env(monkeypatch, pids={100: _OTHER_PID, 300: _OTHER_PID, 400: _MY_PID})
+    env.user32.foreground = 100
+    env.user32.gui_info.hwndFocus = 400  # 焦点窗口属于我们
+    env.user32.after_foreground = 100
+    g = StylusFocusGuard()
+    g.capture()
+    monkeypatch.setattr(StylusFocusGuard, "_is_drawing_app", staticmethod(lambda pid: True))
+
+    assert g.restore() is True
+    assert ("SetForegroundWindow", 100) in env.user32.calls
+    assert ("SetFocus", 100) in env.user32.calls
+
+
+def test_restore_force_mode_overrides_the_noop_shortcut(monkeypatch):
+    """force（诊断模式）保持"无条件交还"语义：绕过零搅动跳过，照常重申。"""
+    env = _Win32Env(monkeypatch, pids={100: _OTHER_PID, 300: _OTHER_PID})
+    env.user32.foreground = 100
+    env.user32.gui_info.hwndFocus = 300
+    env.user32.after_foreground = 100
+    g = StylusFocusGuard()
+    g.capture()
+    monkeypatch.setattr(StylusFocusGuard, "_is_drawing_app", staticmethod(lambda pid: True))
+    monkeypatch.setenv("COLORINK_FOCUS_GUARD", "force")
+
+    assert g.restore() is True
+    assert ("SetForegroundWindow", 100) in env.user32.calls
+    assert ("SetFocus", 100) in env.user32.calls
+
+
+def test_restore_noop_shortcut_requires_drawing_app_target(monkeypatch):
+    """零搅动跳过只对画图软件目标生效；普通窗口目标维持原有安全边界。"""
+    env = _Win32Env(monkeypatch, pids={100: _OTHER_PID, 300: _OTHER_PID})
+    env.user32.foreground = 100
+    env.user32.gui_info.hwndFocus = 300
+    g = StylusFocusGuard()
+    g.capture()
+    monkeypatch.setattr(StylusFocusGuard, "_is_drawing_app", staticmethod(lambda pid: False))
+    env.user32.foreground = 200          # 用户跑去别的软件 → 不抢
+
+    assert g.restore() is False
+    assert env.user32.calls == []
+
+
+def test_restore_requests_photoshop_focus_for_drawing_app(monkeypatch):
+    """交还画图软件时，除 SetForegroundWindow 外还要经 CEP 让 PS 自己收回焦点
+    （前台锁兜底）。非画图软件目标不触发。"""
+    env = _Win32Env(monkeypatch, pids={100: _OTHER_PID, 200: _MY_PID})
+    env.user32.foreground = 100
+    g = StylusFocusGuard()
+    g.capture()
+    env.user32.foreground = 200
+    env.user32.after_foreground = 100
+    monkeypatch.setattr(StylusFocusGuard, "_is_drawing_app",
+                        staticmethod(lambda pid: True))
+    calls = []
+    monkeypatch.setattr(StylusFocusGuard, "_request_photoshop_focus",
+                        staticmethod(lambda pid: calls.append(pid)))
+
+    assert g.restore() is True
+    assert calls == [_OTHER_PID]
+
+
+def test_restore_skips_photoshop_focus_for_non_drawing_app(monkeypatch):
+    env = _Win32Env(monkeypatch, pids={100: _OTHER_PID, 200: _MY_PID})
+    env.user32.foreground = 100
+    g = StylusFocusGuard()
+    g.capture()
+    env.user32.foreground = 200
+    env.user32.after_foreground = 100
+    monkeypatch.setattr(StylusFocusGuard, "_is_drawing_app",
+                        staticmethod(lambda pid: False))
+    calls = []
+    monkeypatch.setattr(StylusFocusGuard, "_request_photoshop_focus",
+                        staticmethod(lambda pid: calls.append(pid)))
+
+    assert g.restore() is True
+    assert calls == []
 
 
 def test_is_drawing_app_matches_known_drawing_executables(monkeypatch):

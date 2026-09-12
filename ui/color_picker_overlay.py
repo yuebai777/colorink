@@ -178,6 +178,12 @@ class ColorPickerOverlay(QWidget):
         self._drain_timer.setInterval(16)
         self._drain_timer.timeout.connect(self._drain_hook)
         self._drain_deadline = 0.0
+        # 焦点交还延迟到"确认取色的那下鼠标键物理抬起"之后
+        # （见 _schedule_focus_restore 的注释）。
+        self._focus_restore_timer = QTimer(self)
+        self._focus_restore_timer.setInterval(16)
+        self._focus_restore_timer.timeout.connect(self._poll_focus_restore)
+        self._focus_restore_deadline = 0.0
 
     def _capture_all_screens(self):
         """Snapshot every screen once, before any picker UI is shown.
@@ -310,11 +316,16 @@ class ColorPickerOverlay(QWidget):
             pass
 
     def start(self):
-        # 记住笔尖碰我们之前谁拥有前台/焦点，stop() 时还回去。取色浮层是
+        # 记住取色前谁拥有前台/焦点，stop() 时还回去。取色浮层是
         # WS_EX_NOACTIVATE，理论上抢不到激活；但驱动侧"活动窗口"判断一旦
-        # 被我们扰动，PS 的 WinTab 上下文就会挂起 → 首笔丢压感。这里只是
-        # 采集，动不了任何东西。
-        focus_guard.capture()
+        # 被我们扰动，PS 的 WinTab 上下文就会挂起 → 首笔丢压感。
+        # 前台已经是我们时（用户刚用鼠标点过我们的窗口）capture 抓不到
+        # 该还回去的目标，退而用 Z 序最顶的画图软件窗口兜底，stop() 才有
+        # 东西可还。
+        if not focus_guard.capture():
+            focus_guard.capture_drawing_app_fallback()
+        self._focus_restore_timer.stop()
+        self._focus_restore_deadline = 0.0
         self._active = True
         self._wheel_accumulator = 0
         self._frozen = False
@@ -418,6 +429,61 @@ class ColorPickerOverlay(QWidget):
                 pass
             self._drain_timer.stop()
 
+    # Focus restore -----------------------------------------------------
+    # Restoring the drawing app's foreground/focus while the pick-confirming
+    # mouse button is still physically held desyncs the app's mouse state
+    # machine: it reads "button down" the moment it gets focus, and the paired
+    # UP is then swallowed by the picker's hook — so the *next* click's DOWN is
+    # treated as a duplicate press ("first click after a pick does nothing,
+    # second one paints").  Wait until the button is really up before handing
+    # input back.
+
+    def _mouse_buttons_released(self) -> bool:
+        """Both pick-confirming buttons physically up?
+
+        ``GetAsyncKeyState`` reflects the *physical* state (hook-swallowed
+        messages still move it), and its semantics are identical on Windows 10
+        and 11.  Tablet drivers that never set ``VK_LBUTTON`` satisfy this
+        immediately, so the pen path stays zero-latency.
+        """
+        try:
+            if win32api.GetAsyncKeyState(win32con.VK_LBUTTON) & 0x8000:
+                return False
+            if win32api.GetAsyncKeyState(win32con.VK_RBUTTON) & 0x8000:
+                return False
+        except Exception:
+            pass
+        return True
+
+    def _schedule_focus_restore(self):
+        """Hand activation/focus back — after the confirming button is released.
+
+        A pick confirms on button-DOWN (``_tick`` polls ``left_clicked`` every
+        16 ms), but a human click spans ~60–120 ms, so ``stop()`` almost always
+        runs while the button is still held.  Restoring focus in that window
+        lets the drawing app observe "button down" right as it regains focus,
+        and the paired UP is then swallowed by the hook — wedging its mouse
+        state machine.  Deferring the restore until the physical release keeps
+        the button state consistent at the moment input comes back.
+
+        Device- and app-agnostic: pens whose drivers don't set ``VK_LBUTTON``
+        restore immediately (no added latency); pens that do are restored on
+        lift, while the user is still moving back to the canvas.  A 500 ms
+        deadline bounds the wait for an unusually long press.
+        """
+        if self._mouse_buttons_released():
+            focus_guard.restore()
+            return
+        self._focus_restore_deadline = time.monotonic() + 0.5
+        if not self._focus_restore_timer.isActive():
+            self._focus_restore_timer.start()
+
+    def _poll_focus_restore(self):
+        if self._mouse_buttons_released() or time.monotonic() > self._focus_restore_deadline:
+            self._focus_restore_timer.stop()
+            self._focus_restore_deadline = 0.0
+            focus_guard.restore()
+
     def stop(self):
         self._active = False
         self._wheel_accumulator = 0
@@ -428,8 +494,9 @@ class ColorPickerOverlay(QWidget):
         self._dot.hide()
         self.hide()
         # 交还激活/焦点：颜色已经交给同步线程，用户在往画布移动的路上就把
-        # PS 的 WinTab 上下文恢复掉，别等落笔那一刻才握手。
-        focus_guard.restore()
+        # PS 的 WinTab 上下文恢复掉，别等落笔那一刻才握手。但要等确认取色
+        # 的那下鼠标键真正抬起再还（见 _schedule_focus_restore）。
+        self._schedule_focus_restore()
         self._shots = []  # free the snapshots
         self._frozen = False
         self._freeze_pos = None
@@ -445,6 +512,8 @@ class ColorPickerOverlay(QWidget):
         self._timer.stop()
         self._watchdog.stop()
         self._drain_timer.stop()
+        self._focus_restore_timer.stop()
+        self._focus_restore_deadline = 0.0
         self._dot.close()
         self._show_cursor()          # ensure the cursor never gets stuck hidden if the widget is closed mid-pick
         if _hook_dll:

@@ -373,14 +373,70 @@ class StylusFocusGuard:
             tid, pid = win32process.GetWindowThreadProcessId(hwnd)
             if pid == os.getpid():
                 # 前台已经是我们：没有"别人"的激活可以还。
-                self.clear()
-                _focus_debug("capture skip: foreground is already ours")
+                # 但**不要清空**已有的记忆 —— 用鼠标的用户常在触发热键取色前
+                # 刚点过我们的窗口（前台/焦点已落在我们手上），若这里 clear()，
+                # 取色结束后 restore() 就无目标可还，画图软件永远拿不回前台，
+                # 下一次点画布的第一击只会被 Windows 用来"激活窗口"（"取色后
+                # 第一击没反应，第二击才画"）。保留上一次记住的窗口（通常正是
+                # 那个画图软件），restore() 还有目标可还；restore 自身的
+                # IsWindow / 可见 / 未最小化检查会兜住过期目标。
+                _focus_debug("capture skip: foreground is already ours, keep previous target",
+                             self._hwnd)
                 return False
             self._hwnd, self._tid, self._pid = int(hwnd), int(tid or 0), int(pid or 0)
             _focus_debug("capture ok: hwnd", self._hwnd, "pid", self._pid)
             return True
         except Exception:
             return False
+
+    # -- 兜底采集 -----------------------------------------------------------
+    def capture_drawing_app_fallback(self) -> bool:
+        """前台是自己（``capture()`` 放弃）时的兜底：记录 Z 序最顶的画图软件窗口。
+
+        用鼠标的用户常在触发热键取色前刚点过我们的窗口 —— 那时前台/焦点已在
+        我们手上，``capture()`` 抓不到"该还回去的目标"。这里枚举顶层窗口，
+        把第一个（Z 序最顶、也就是最近还在交互的）**可见且未最小化**的画图
+        软件窗口（PS / CSP / SAI / UDM，由 ``identify_drawing_app`` 判定）记
+        下来，``restore()`` 就有目标可还。只在确实找到时才覆盖记忆，找不到
+        就维持原样 —— 绝不抢非画图软件的前台。
+        """
+        if not self.enabled():
+            return False
+        try:
+            import win32gui
+            import win32process
+        except ImportError:
+            return False
+        found = {"hwnd": 0, "tid": 0, "pid": 0}
+
+        def _cb(hwnd, _extra):
+            if found["hwnd"]:
+                return False
+            try:
+                if not win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd):
+                    return True
+                tid, pid = win32process.GetWindowThreadProcessId(hwnd)
+                if not pid or pid == os.getpid():
+                    return True
+                if self._is_drawing_app(pid):
+                    found["hwnd"] = int(hwnd)
+                    found["tid"] = int(tid or 0)
+                    found["pid"] = int(pid or 0)
+                    return False
+            except Exception:
+                pass
+            return True
+
+        try:
+            win32gui.EnumWindows(_cb, None)
+        except Exception:
+            return False
+        if not found["hwnd"]:
+            _focus_debug("fallback capture: no drawing app window found")
+            return False
+        self._hwnd, self._tid, self._pid = found["hwnd"], found["tid"], found["pid"]
+        _focus_debug("fallback capture ok: hwnd", self._hwnd, "pid", self._pid)
+        return True
 
     # -- 判断 -----------------------------------------------------------
     def we_hold_input(self) -> bool:
@@ -399,6 +455,41 @@ class StylusFocusGuard:
             # GetFocus() 只回答"调用线程的消息队列是否拥有键盘焦点" ——
             # 正好用来判断焦点是不是被我们的某个窗口拿走了。
             return bool(win32gui.GetFocus())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _target_holds_input(hwnd: int, pid: int) -> bool:
+        """目标窗口是否仍握着前台**与**键盘焦点。
+
+        正常的"全局热键取色"流程里，画图软件从未失去前台（取色浮层
+        ``WS_EX_NOACTIVATE`` 抢不到激活，热键也不切换前台）。此时重申
+        激活/焦点**不是**幂等操作：``AttachThreadInput`` + ``SetFocus``
+        会给目标重放 ``WM_KILLFOCUS``/``WM_SETFOCUS``，并在 detach 时
+        拆分两个线程共享的输入状态 —— 恰好撞上取色结束后用户点画布的
+        第一击（"第一击没反应、第二击才画"，所有画图软件一致；鼠标
+        路径专属，因为 Wintab/Ink 的笔输入不走 Windows 鼠标队列）。
+
+        ``GetGUIThreadInfo`` 可跨进程查询指定 GUI 线程的焦点/捕获窗口，
+        无需 AttachThreadInput，Win10/Win11 语义一致。焦点窗口属于目标
+        进程（或前台线程暂无焦点窗口）即视为"焦点仍握在目标手上"。
+        """
+        try:
+            import win32gui
+            import win32process
+        except ImportError:
+            return False
+        try:
+            fg = win32gui.GetForegroundWindow()
+            if not fg or int(fg) != int(hwnd):
+                return False
+            fg_tid, _ = win32process.GetWindowThreadProcessId(fg)
+            info = win32gui.GetGUIThreadInfo(int(fg_tid or 0))
+            focus = int(getattr(info, "hwndFocus", 0) or 0)
+            if not focus:
+                return True  # 前台线程暂无焦点窗口（罕见）：前台已对，别搅
+            _, focus_pid = win32process.GetWindowThreadProcessId(focus)
+            return int(focus_pid or 0) == int(pid)
         except Exception:
             return False
 
@@ -426,6 +517,31 @@ class StylusFocusGuard:
         except Exception:
             return False
 
+    @staticmethod
+    def _request_photoshop_focus(pid: int) -> None:
+        """目标是 Photoshop 时，经 CEP 面板让 PS 主动收回焦点。
+
+        ``SetForegroundWindow`` 受 Windows 前台锁限制，跨进程/跨完整性级别时
+        可能被拒；CEP 的 ``com.adobe.PhotoshopLoseFocus`` 事件让 PS 自己收回
+        焦点，不受前台锁约束 —— 与上面的直接交还互为兜底。仅在确认目标是
+        PS（而非 SAI / CSP / UDM）时触发；任何失败都静默，绝不打断正常交还。
+        """
+        try:
+            exe = _resolve_process_exe(int(pid))
+        except Exception:
+            return
+        try:
+            if identify_drawing_app(exe_name=exe) != "ps":
+                return
+        except Exception:
+            return
+        try:
+            from core import photoshop_script_bridge as _psb
+            ok = _psb.request_focus_restore(int(pid))
+            _focus_debug("photoshop loseFocus requested, bridge-write", ok)
+        except Exception:
+            pass
+
     def restore(self) -> bool:
         """把激活 + 键盘焦点交还给 capture() 记下的那个窗口。"""
         if not self.enabled():
@@ -450,6 +566,17 @@ class StylusFocusGuard:
                 _focus_debug("restore skip: target minimized", hwnd)
                 return False  # 用户把它最小化了，别自作主张恢复
             target_is_drawing_app = self._is_drawing_app(pid)
+            if (not self.forced() and target_is_drawing_app
+                    and self._target_holds_input(hwnd, pid)):
+                # 目标仍握着前台与键盘焦点 —— 全局热键取色的正常路径。
+                # 此时重申激活/焦点会搅动输入状态（AttachThreadInput +
+                # SetFocus 重放焦点事件、detach 拆分共享按键状态），恰好
+                # 吞掉取色结束后用户点画布的第一击。焦点本来就好好在
+                # 目标手上：什么都不做才是真正的幂等。真正需要交还的
+                # 场景（取色前点过 Colorink 窗口、前台/焦点确实被我们
+                # 拿走）不会命中这个分支，仍走完整交还。
+                _focus_debug("restore skip: target already holds foreground+focus", hwnd)
+                return True
             if (not self.forced() and not target_is_drawing_app
                     and not self.we_hold_input()):
                 _focus_debug("restore skip: we hold neither foreground nor focus")
@@ -487,6 +614,11 @@ class StylusFocusGuard:
                     except Exception:
                         pass
             ok = win32gui.GetForegroundWindow() == hwnd
+            # PS 专属兜底：无论 SetForegroundWindow 是否被前台锁拦下，都经 CEP
+            # 让 PS 自己收回焦点（PhotoshopLoseFocus 不受前台锁限制）。两条路
+            # 互为备份；bridge 未部署/面板过旧时此调用静默为空操作。
+            if target_is_drawing_app:
+                self._request_photoshop_focus(pid)
             _focus_debug("restore ->", hwnd, "ok" if ok else "foreground-call-refused")
             return ok
         except Exception as exc:
