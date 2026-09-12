@@ -55,7 +55,15 @@ DRAWING_FILENAME: Final = "drawing.txt"
 # panel with an older protocol keeps writing the old value (or nothing),
 # so Colorink can tell "deployed file is new" from "running panel is
 # new" — only the latter clears the "restart Photoshop" hint.
-PANEL_VERSION: Final = 14
+# NOTE: keep the two hardcoded '…' literals inside _INDEX_TEMPLATE in sync
+# (the Node-fs panel_version write and the fallback pv.write(...)).
+PANEL_VERSION: Final = 15
+
+# Focus-restore trigger file (<base>_<pid>.txt). Colorink drops it next to
+# cmd.txt when it wants Photoshop to pull input focus back itself via the
+# CEP ``com.adobe.PhotoshopLoseFocus`` event — immune to the Windows
+# foreground lock that defeats SetForegroundWindow.
+FOCUS_BASENAME: Final = "focus"
 
 EXTENSION_ID: Final = "com.colorink.bridge"
 EXTENSION_DIR_NAME: Final = "ColorinkBridge"
@@ -75,6 +83,35 @@ def user_cep_dir() -> str:
 
 def _pid_filename(base: str, pid: int) -> str:
     return f"{base}_{int(pid)}.txt"
+
+
+def request_focus_restore(pid: int) -> bool:
+    """Drop a focus-restore trigger file for the Photoshop with *pid*.
+
+    The panel polls ``focus_<pid>.txt`` next to ``cmd.txt`` and, on seeing
+    it, dispatches ``com.adobe.PhotoshopLoseFocus`` so Photoshop pulls input
+    focus back **itself** — a path that is immune to the Windows foreground
+    lock which makes ``SetForegroundWindow`` fail.  This complements (never
+    replaces) the direct foreground restore: when the bridge is not deployed
+    or the panel is too old, the direct path still applies.  Uses a temp file
+    + atomic replace so the panel never reads a half-written trigger.
+
+    Returns False when the user-level bridge is not deployed (or the write
+    failed) — callers should treat that as "CEP path unavailable", not an
+    error.
+    """
+    try:
+        d = user_cep_dir()
+        if not os.path.isdir(d):
+            return False
+        path = os.path.join(d, _pid_filename(FOCUS_BASENAME, pid))
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="ascii", newline="\n") as f:
+            f.write(str(int(time.time() * 1000)))
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
 
 
 # Manifest mirroring com.adobe.Butler.backend (the one structure proven
@@ -177,6 +214,32 @@ function evalScript(script, cb) {
         });
     } else if (cb) { cb(null); }
 }
+// Ask Photoshop to pull input focus back to itself. The CEP
+// com.adobe.PhotoshopLoseFocus event makes PS reclaim focus on its own,
+// which is NOT subject to the Windows foreground lock that defeats an
+// external SetForegroundWindow. Colorink drops focus_<pid>.txt to trigger
+// this when handing a pick back to the canvas.
+function loseFocus() {
+    try {
+        if (!window.__adobe_cep__) { return; }
+        var appId = "";
+        var extId = "";
+        try {
+            var env = window.__adobe_cep__.getHostEnvironment();
+            if (env && env.appId) { appId = String(env.appId); }
+        } catch (e1) {}
+        try {
+            if (window.__adobe_cep__.getExtensionId) { extId = String(window.__adobe_cep__.getExtensionId()); }
+        } catch (e2) {}
+        window.__adobe_cep__.dispatchEvent({
+            type: "com.adobe.PhotoshopLoseFocus",
+            scope: "APPLICATION",
+            appId: appId,
+            extensionId: extId,
+            data: ""
+        });
+    } catch (e) {}
+}
 // Resolve this Photoshop's PID for multi-instance routing. Not every
 // ExtendScript engine exposes $.pid (green builds return undefined), so
 // try the CEP host environment first (appPid), then $.pid via
@@ -263,7 +326,7 @@ function beatScript(d) {
     var suff = pidSuffix();
     return "(function(){try{var d='" + d + "';" +
         "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
-        "pv.write('14');pv.close();" +
+        "pv.write('15');pv.close();" +
         "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
         "h.write(String(new Date().getTime()));h.close();}catch(e){}})()";
 }
@@ -315,10 +378,22 @@ function poll() {
         if (useNodeFs) {
             if (doBeat) {
                 try {
-                    fs.writeFileSync(d + '/panel_version' + suff + '.txt', '14');
+                    fs.writeFileSync(d + '/panel_version' + suff + '.txt', '15');
                     fs.writeFileSync(d + '/heartbeat' + suff + '.txt', String(Date.now()));
                 } catch (eBeat) {}
             }
+            // Focus-restore trigger: Colorink drops focus_<pid>.txt so the
+            // panel makes Photoshop reclaim focus itself (the CEP LoseFocus
+            // event is immune to the Windows foreground lock). Highest
+            // priority — handle before any colour command so a pick hand-back
+            // is never queued behind a pending apply.
+            try {
+                var focusPath = d + '/focus' + suff + '.txt';
+                if (fs.existsSync(focusPath)) {
+                    try { fs.unlinkSync(focusPath); } catch (eFu) {}
+                    loseFocus();
+                }
+            } catch (eFocus) {}
             try {
                 var st = fs.existsSync(d + '/cmd.txt') ? fs.statSync(d + '/cmd.txt') : null;
                 var m = 0;
@@ -406,12 +481,16 @@ function poll() {
             // while idle. State/heartbeat are throttled.
             var suff = pidSuffix();
             var script =
-                "(function(){try{" +
+                "(function(){var __ckDidFocus=false;try{" +
                 "var d='" + d + "';var my='" + myPid + "';" +
+                // Focus-restore trigger — see the Node-fs branch. Record it
+                // first so it is still reported when the early returns fire.
+                "var ckff=new File(d+'/focus" + suff + ".txt');" +
+                "if(ckff.exists){ckff.remove();__ckDidFocus=true;}" +
                 "var ca=new File(d+'/client_alive.txt');" +
-                "if(!ca.exists){return;}" +
+                "if(!ca.exists){return __ckDidFocus?'FOCUS':'';}" +
                 "var caT=ca.modified?ca.modified.getTime():0;" +
-                "if(new Date().getTime()-caT>4000){return;}" +
+                "if(new Date().getTime()-caT>4000){return __ckDidFocus?'FOCUS':'';}" +
                 "var ap=new File(d+'/applied" + suff + ".txt');var last='';" +
                 "if(ap.exists){ap.open('r');last=ap.read();ap.close();}" +
                 "var line='';var cf=new File(d+'/cmd.txt');" +
@@ -444,11 +523,13 @@ function poll() {
                 "}" +
                 (doBeat ?
                 "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
-                "pv.write('14');pv.close();" +
+                "pv.write('15');pv.close();" +
                 "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
                 "h.write(String(new Date().getTime()));h.close();" : "") +
-                "}catch(e){}})()";
-            evalScript(script, function () {});
+                "}catch(e){}return __ckDidFocus?'FOCUS':'';})()";
+            evalScript(script, function (res) {
+                if (res === "FOCUS") { loseFocus(); }
+            });
             return;
         }
         if (doState) { evalScript(stateScript(d), function () {}); }
