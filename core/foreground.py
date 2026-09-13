@@ -375,22 +375,6 @@ def _resolve_thread_focus(tid: int, win32gui_module=None) -> int:
     return 0
 
 
-_EXTRA_DRAWING_EXES = (
-    "krita", "painter", "medibang", "firealpaca", "rebelle",
-    "sketchbook", "ibispaint", "tvpaint", "aseprite", "illustrator",
-)
-
-
-def is_any_drawing_exe(exe_name: str) -> bool:
-    if not exe_name:
-        return False
-    stem = exe_name[:-4] if exe_name.lower().endswith(".exe") else exe_name
-    stem = stem.lower()
-    if _exe_matches_drawing_app(exe_name):
-        return True
-    return any(marker in stem for marker in _EXTRA_DRAWING_EXES)
-
-
 class StylusFocusGuard:
     """记住笔尖触碰我们之前谁拥有前台/焦点，交互结束时还回去。"""
 
@@ -568,7 +552,7 @@ class StylusFocusGuard:
         if not exe:
             return False
         try:
-            return is_any_drawing_exe(exe)
+            return bool(_exe_matches_drawing_app(exe))
         except Exception:
             return False
 
