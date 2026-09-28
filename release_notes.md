@@ -1,3 +1,16 @@
+## v1.8.12
+
+Photoshop 的颜色同步改走 ActionManager 的内置取色通道，彻底杜绝切色/同步引起的首笔压感丢失；同时开启 CEP 调试模式并大幅降低面板轮询延迟，同步响应更加迅速丝滑。
+
+### 修复
+
+- **Photoshop 颜色同步改走 ActionManager 取色器事件，保护 WinTab 压感与画笔动态**：此前通过 COM / ExtendScript 直接对 `app.foregroundColor` / `app.backgroundColor` 赋值会扰动 Photoshop 内部状态，导致 WinTab 模式下切色后的第一笔丢失压感或笔刷动态。现在全面切换到 ActionManager 的 `setd` 事件，并声明来源为 `photoshopPicker`（前后台色交换走 `Exch` 事件），Photoshop 将其视为内置拾色器的标准取色操作，保留压感与笔触上下文；非 JS 通信下平滑回落至旧接口
+- **自动配置 CEP 调试模式（PlayerDebugMode）**：在部署 CEP 脚本扩展时自动向注册表写入 `PlayerDebugMode=1`（覆盖 CSXS.9 至 CSXS.16），避免因未签名扩展被 Photoshop 静默拦截或弹出警告导致面板无法加载
+
+### 变更
+
+- **CEP 脚本面板轮询与通信性能大幅提升**：CEP 面板命令轮询间隔由 100ms 压缩至 25ms（`FAST_MS = 25`），状态回读间隔调整为 100ms，并在 CEP 扩展配置中加入 `--disable-background-timer-throttling` 参数防止后台定时器降频；面板协议号升级为 16
+
 ## v1.8.11
 
 优动漫 PAINT 的副色槽、透明色板与「当前槽位」跟着 CSP 一起同步了；「取色后点画布第一击没反应」这条线又挖出一处真 bug——上一版为保护 WinTab 加的「零搅动」判断，因为调了一个 pywin32 根本没导出的 API，实际从未生效过。文档站也多了独立下载页与一份可以投票的反馈路线图。
