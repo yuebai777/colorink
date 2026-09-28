@@ -57,7 +57,7 @@ DRAWING_FILENAME: Final = "drawing.txt"
 # new" — only the latter clears the "restart Photoshop" hint.
 # NOTE: keep the two hardcoded '…' literals inside _INDEX_TEMPLATE in sync
 # (the Node-fs panel_version write and the fallback pv.write(...)).
-PANEL_VERSION: Final = 15
+PANEL_VERSION: Final = 16
 
 # Focus-restore trigger file (<base>_<pid>.txt). Colorink drops it next to
 # cmd.txt when it wants Photoshop to pull input focus back itself via the
@@ -83,6 +83,42 @@ def user_cep_dir() -> str:
 
 def _pid_filename(base: str, pid: int) -> str:
     return f"{base}_{int(pid)}.txt"
+
+
+def ensure_cep_debug_mode(min_version: int = 6, max_version: int = 20) -> bool:
+    """Enable Adobe CEP PlayerDebugMode for Photoshop extension loading.
+
+    Unsigned CEP extensions (like ColorinkBridge) require PlayerDebugMode="1"
+    in HKEY_CURRENT_USER\\Software\\Adobe\\CSXS.<version>. Without this flag,
+    Photoshop displays '无法加载“com.colorink.bridge”扩展，因为它未经正确签署'
+    (extension could not be loaded because it was not properly signed).
+
+    Writing to HKCU requires no administrator elevation.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return False
+
+    success = True
+    for ver in range(min_version, max_version + 1):
+        key_path = f"Software\\Adobe\\CSXS.{ver}"
+        try:
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as k:
+                    val, _ = winreg.QueryValueEx(k, "PlayerDebugMode")
+                    if str(val) == "1":
+                        continue
+            except FileNotFoundError:
+                pass
+
+            with winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE
+            ) as k:
+                winreg.SetValueEx(k, "PlayerDebugMode", 0, winreg.REG_SZ, "1")
+        except OSError:
+            success = False
+    return success
 
 
 def request_focus_restore(pid: int) -> bool:
@@ -141,6 +177,7 @@ _MANIFEST_TEMPLATE: Final = """<?xml version="1.0" encoding="UTF-8" standalone="
           <MainPath>./index.html</MainPath>
           <CEFCommandLine>
             <Parameter>--enable-nodejs</Parameter>
+            <Parameter>--disable-background-timer-throttling</Parameter>
           </CEFCommandLine>
         </Resources>
         <Lifecycle>
@@ -306,9 +343,9 @@ claimStaleCmd();
     } catch (e) {}
 })();
 var tick = 0;
-var FAST_MS = 100;     // command mailbox check interval
-var STATE_EVERY = 1;   // state read-back every tick (100 ms) for instant color pick sync
-var BEAT_EVERY = 40;   // heartbeat + panel_version every 40 ticks (4 s)
+var FAST_MS = 25;     // command mailbox check interval (25ms for zero-latency pick apply)
+var STATE_EVERY = 4;   // state read-back every 4 ticks (100 ms) for instant color pick sync
+var BEAT_EVERY = 160;  // heartbeat + panel_version every 160 ticks (4 s)
 var cmdMtime = 0;
 var lastToken = "";
 var lastStateStr = "";
@@ -326,37 +363,45 @@ function beatScript(d) {
     var suff = pidSuffix();
     return "(function(){try{var d='" + d + "';" +
         "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
-        "pv.write('15');pv.close();" +
+        "pv.write('16');pv.close();" +
         "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
         "h.write(String(new Date().getTime()));h.close();}catch(e){}})()";
 }
 function applyScript(d, parts) {
     // parts: <token>|<pid>|<index>|<r>|<g>|<b>  or  <token>|<pid>|swap  or  <token>|<pid>|both|<fg_r>|<fg_g>|<fg_b>|<bg_r>|<bg_g>|<bg_b>
-    // Mutate the existing SolidColor objects in place: constructing
-    // `new SolidColor()` fails with "EvalScript error" on this green
-    // build, while reading/mutating app.foregroundColor works.
+    // Safe in-process write path: Prefer ActionManager setd with Srce="photoshopPicker".
+    // Photoshop treats this as an internal color-picker pick, preserving the tablet/WinTab
+    // input context and brush dynamics without dropping first-stroke pressure.
+    // Fallback: mutate existing SolidColor objects in place if ActionManager fails.
     var suff = pidSuffix();
     var s = "(function(){try{var d='" + d + "';";
+    s += "function _setAM(isBg,r,g,b){try{" +
+        "var d0=new ActionDescriptor();var r0=new ActionReference();" +
+        "r0.putProperty(charIDToTypeID('Clr '),isBg?charIDToTypeID('BckC'):charIDToTypeID('Frgc'));" +
+        "d0.putReference(charIDToTypeID('null'),r0);" +
+        "var cd=new ActionDescriptor();" +
+        "cd.putDouble(charIDToTypeID('Rd  '),r);" +
+        "cd.putDouble(charIDToTypeID('Grn '),g);" +
+        "cd.putDouble(charIDToTypeID('Bl  '),b);" +
+        "d0.putObject(charIDToTypeID('T   '),charIDToTypeID('RGBC'),cd);" +
+        "d0.putString(charIDToTypeID('Srce'),'photoshopPicker');" +
+        "executeAction(charIDToTypeID('setd'),d0,DialogModes.NO);" +
+        "}catch(eAM){" +
+        "if(isBg){var bg=app.backgroundColor;bg.rgb.red=r;bg.rgb.green=g;bg.rgb.blue=b;}" +
+        "else{var fg=app.foregroundColor;fg.rgb.red=r;fg.rgb.green=g;fg.rgb.blue=b;}}};";
     if (parts[2] === 'swap') {
-        s += "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
+        s += "try{executeAction(charIDToTypeID('Exch'),undefined,DialogModes.NO);}catch(eEx){" +
+            "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
             "var fr=fg.rgb.red;var fg2=fg.rgb.green;var fb=fg.rgb.blue;" +
             "var br=bg.rgb.red;var bg3=bg.rgb.green;var bb=bg.rgb.blue;" +
             "fg.rgb.red=br;fg.rgb.green=bg3;fg.rgb.blue=bb;" +
-            "bg.rgb.red=fr;bg.rgb.green=fg2;bg.rgb.blue=fb;";
+            "bg.rgb.red=fr;bg.rgb.green=fg2;bg.rgb.blue=fb;}";
     } else if (parts[2] === 'both' && parts.length >= 9) {
-        s += "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
-            "fg.rgb.red=" + parseInt(parts[3], 10) + ";" +
-            "fg.rgb.green=" + parseInt(parts[4], 10) + ";" +
-            "fg.rgb.blue=" + parseInt(parts[5], 10) + ";" +
-            "bg.rgb.red=" + parseInt(parts[6], 10) + ";" +
-            "bg.rgb.green=" + parseInt(parts[7], 10) + ";" +
-            "bg.rgb.blue=" + parseInt(parts[8], 10) + ";";
+        s += "_setAM(false," + parseInt(parts[3], 10) + "," + parseInt(parts[4], 10) + "," + parseInt(parts[5], 10) + ");" +
+            "_setAM(true," + parseInt(parts[6], 10) + "," + parseInt(parts[7], 10) + "," + parseInt(parts[8], 10) + ");";
     } else {
-        var target = (parseInt(parts[2], 10) === 1) ? "app.backgroundColor" : "app.foregroundColor";
-        s += "var c=" + target + ";" +
-            "c.rgb.red=" + parseInt(parts[3], 10) + ";" +
-            "c.rgb.green=" + parseInt(parts[4], 10) + ";" +
-            "c.rgb.blue=" + parseInt(parts[5], 10) + ";";
+        var isBg = (parseInt(parts[2], 10) === 1);
+        s += "_setAM(" + (isBg ? "true" : "false") + "," + parseInt(parts[3], 10) + "," + parseInt(parts[4], 10) + "," + parseInt(parts[5], 10) + ");";
     }
     // Apply writes the state back immediately.
     s += "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
@@ -378,7 +423,7 @@ function poll() {
         if (useNodeFs) {
             if (doBeat) {
                 try {
-                    fs.writeFileSync(d + '/panel_version' + suff + '.txt', '15');
+                    fs.writeFileSync(d + '/panel_version' + suff + '.txt', '16');
                     fs.writeFileSync(d + '/heartbeat' + suff + '.txt', String(Date.now()));
                 } catch (eBeat) {}
             }
@@ -499,17 +544,28 @@ function poll() {
                 "var applied=false;" +
                 "if(parts.length>=3&&(my==''||parts[1]==my)&&parts[0]!=last){" +
                 "if(parts[2]=='swap'){" +
+                "try{executeAction(charIDToTypeID('Exch'),undefined,DialogModes.NO);}catch(eEx){" +
                 "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
                 "var fr=fg.rgb.red;var fg2=fg.rgb.green;var fb=fg.rgb.blue;" +
                 "var br=bg.rgb.red;var bg3=bg.rgb.green;var bb=bg.rgb.blue;" +
                 "fg.rgb.red=br;fg.rgb.green=bg3;fg.rgb.blue=bb;" +
-                "bg.rgb.red=fr;bg.rgb.green=fg2;bg.rgb.blue=fb;" +
+                "bg.rgb.red=fr;bg.rgb.green=fg2;bg.rgb.blue=fb;}" +
                 "applied=true;" +
                 "}else if(parts.length>=6){" +
-                "var c=(parseInt(parts[2],10)==1)?app.backgroundColor:app.foregroundColor;" +
-                "c.rgb.red=parseInt(parts[3],10);" +
-                "c.rgb.green=parseInt(parts[4],10);" +
-                "c.rgb.blue=parseInt(parts[5],10);" +
+                "var isBg=(parseInt(parts[2],10)==1);" +
+                "var r=parseInt(parts[3],10),g=parseInt(parts[4],10),b=parseInt(parts[5],10);" +
+                "try{" +
+                "var d0=new ActionDescriptor();var r0=new ActionReference();" +
+                "r0.putProperty(charIDToTypeID('Clr '),isBg?charIDToTypeID('BckC'):charIDToTypeID('Frgc'));" +
+                "d0.putReference(charIDToTypeID('null'),r0);" +
+                "var cd=new ActionDescriptor();" +
+                "cd.putDouble(charIDToTypeID('Rd  '),r);cd.putDouble(charIDToTypeID('Grn '),g);cd.putDouble(charIDToTypeID('Bl  '),b);" +
+                "d0.putObject(charIDToTypeID('T   '),charIDToTypeID('RGBC'),cd);" +
+                "d0.putString(charIDToTypeID('Srce'),'photoshopPicker');" +
+                "executeAction(charIDToTypeID('setd'),d0,DialogModes.NO);" +
+                "}catch(eAM){" +
+                "var c=isBg?app.backgroundColor:app.foregroundColor;" +
+                "c.rgb.red=r;c.rgb.green=g;c.rgb.blue=b;}" +
                 "applied=true;" +
                 "}" +
                 "var a=new File(d+'/applied" + suff + ".txt');a.open('w');" +
@@ -523,7 +579,7 @@ function poll() {
                 "}" +
                 (doBeat ?
                 "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
-                "pv.write('15');pv.close();" +
+                "pv.write('16');pv.close();" +
                 "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
                 "h.write(String(new Date().getTime()));h.close();" : "") +
                 "}catch(e){}return __ckDidFocus?'FOCUS':'';})()";
@@ -580,6 +636,10 @@ class PhotoshopScriptBridge:
         Photoshop restart.
         """
         try:
+            try:
+                ensure_cep_debug_mode()
+            except Exception:
+                pass
             os.makedirs(self.dir, exist_ok=True)
             os.makedirs(os.path.join(self.dir, "CSXS"), exist_ok=True)
             with open(self._manifest_path(), "w",

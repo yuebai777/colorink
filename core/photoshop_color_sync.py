@@ -406,9 +406,11 @@ class PhotoshopSync:
             return False
         try:
             self._invoke_js(
+                "try{executeAction(charIDToTypeID('Exch'),undefined,DialogModes.NO);}catch(e){"
                 "var t=app.foregroundColor;"
                 "app.foregroundColor=app.backgroundColor;"
                 "app.backgroundColor=t;"
+                "}"
             )
             return True
         except Exception as exc:
@@ -443,12 +445,33 @@ class PhotoshopSync:
             if cur and cur["r"] == r and cur["g"] == g and cur["b"] == b:
                 return True  # no-op
 
-            slot = (self._app.ForegroundColor if color_index == 0
-                    else self._app.BackgroundColor)
-            rgb = slot.RGB          # single dispatch — mutate in place
-            rgb.Red = r
-            rgb.Green = g
-            rgb.Blue = b
+            if self._dispid_js:
+                is_bg = (color_index == 1)
+                js = (
+                    f"try{{"
+                    f"var d=new ActionDescriptor();var r=new ActionReference();"
+                    f"r.putProperty(charIDToTypeID('Clr '),{'charIDToTypeID(\"BckC\")' if is_bg else 'charIDToTypeID(\"Frgc\")'});"
+                    f"d.putReference(charIDToTypeID('null'),r);"
+                    f"var cd=new ActionDescriptor();"
+                    f"cd.putDouble(charIDToTypeID('Rd  '),{r});"
+                    f"cd.putDouble(charIDToTypeID('Grn '),{g});"
+                    f"cd.putDouble(charIDToTypeID('Bl  '),{b});"
+                    f"d.putObject(charIDToTypeID('T   '),charIDToTypeID('RGBC'),cd);"
+                    f"d.putString(charIDToTypeID('Srce'),'photoshopPicker');"
+                    f"executeAction(charIDToTypeID('setd'),d,DialogModes.NO);"
+                    f"}}catch(e){{"
+                    f"var s={'app.backgroundColor' if is_bg else 'app.foregroundColor'};"
+                    f"s.rgb.red={r};s.rgb.green={g};s.rgb.blue={b};"
+                    f"}}"
+                )
+                self._invoke_js(js)
+            else:
+                slot = (self._app.ForegroundColor if color_index == 0
+                        else self._app.BackgroundColor)
+                rgb = slot.RGB          # single dispatch — mutate in place
+                rgb.Red = r
+                rgb.Green = g
+                rgb.Blue = b
             log(f"set_color: idx={color_index} RGB=[{r}, {g}, {b}]")
             return True
         except Exception as exc:
@@ -484,14 +507,32 @@ class PhotoshopSync:
             return False
 
         try:
-            fg = self._app.ForegroundColor
-            fg.RGB.Red = fg_r
-            fg.RGB.Green = fg_g
-            fg.RGB.Blue = fg_b
-            bg = self._app.BackgroundColor
-            bg.RGB.Red = bg_r
-            bg.RGB.Green = bg_g
-            bg.RGB.Blue = bg_b
+            if self._dispid_js:
+                js = (
+                    f"function _s(b,r,g,v){{try{{"
+                    f"var d=new ActionDescriptor();var ref=new ActionReference();"
+                    f"ref.putProperty(charIDToTypeID('Clr '),b?charIDToTypeID('BckC'):charIDToTypeID('Frgc'));"
+                    f"d.putReference(charIDToTypeID('null'),ref);"
+                    f"var cd=new ActionDescriptor();"
+                    f"cd.putDouble(charIDToTypeID('Rd  '),r);"
+                    f"cd.putDouble(charIDToTypeID('Grn '),g);"
+                    f"cd.putDouble(charIDToTypeID('Bl  '),v);"
+                    f"d.putObject(charIDToTypeID('T   '),charIDToTypeID('RGBC'),cd);"
+                    f"d.putString(charIDToTypeID('Srce'),'photoshopPicker');"
+                    f"executeAction(charIDToTypeID('setd'),d,DialogModes.NO);"
+                    f"}}catch(e){{var s=b?app.backgroundColor:app.foregroundColor;s.rgb.red=r;s.rgb.green=g;s.rgb.blue=v;}}}};"
+                    f"_s(false,{fg_r},{fg_g},{fg_b});_s(true,{bg_r},{bg_g},{bg_b});"
+                )
+                self._invoke_js(js)
+            else:
+                fg = self._app.ForegroundColor
+                fg.RGB.Red = fg_r
+                fg.RGB.Green = fg_g
+                fg.RGB.Blue = fg_b
+                bg = self._app.BackgroundColor
+                bg.RGB.Red = bg_r
+                bg.RGB.Green = bg_g
+                bg.RGB.Blue = bg_b
             return True
         except Exception as exc:
             _print_error(f"set_both_colors: {exc}")

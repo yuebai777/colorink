@@ -14,6 +14,7 @@ from core.photoshop_script_bridge import (
     PANEL_VERSION_FILENAME,
     PhotoshopScriptBridge,
     STATE_FILENAME,
+    ensure_cep_debug_mode,
 )
 
 
@@ -55,6 +56,7 @@ class TestDeploy:
         assert "applicationActivate" in content
         assert "<Type>Custom</Type>" in content
         assert "--enable-nodejs" in content
+        assert "--disable-background-timer-throttling" in content
         assert "ScriptPath" not in content
 
     def test_panel_uses_evalscript_and_node_fs(self, bridge):
@@ -65,6 +67,8 @@ class TestDeploy:
         assert "setInterval" in html
         assert "window.__adobe_cep__.evalScript" in html
         assert "require('fs')" in html
+        assert "photoshopPicker" in html
+        assert "ActionDescriptor" in html
         assert "app.foregroundColor" in html
         assert "app.backgroundColor" in html
         assert "getSystemPath" in html
@@ -376,9 +380,55 @@ class TestRuntimeFlags:
         # state read-back checks string output
         assert "typeof result === 'string'" in html
         assert "result.indexOf('|') !== -1" in html
-        # STATE_EVERY is 1 tick (0.1 s)
-        assert "var STATE_EVERY = 1;" in html
+        # STATE_EVERY is 4 ticks (0.1 s at 25 ms tick interval)
+        assert "var STATE_EVERY = 4;" in html
         # Fallback panel_version matches PANEL_VERSION
         assert f"pv.write('{PANEL_VERSION}')" in html
+
+
+class TestCepDebugMode:
+    def test_ensure_cep_debug_mode_sets_player_debug_mode(self):
+        try:
+            import winreg
+        except ImportError:
+            pytest.skip("winreg not available on this platform")
+
+        test_ver = 99
+        test_key = f"Software\\Adobe\\CSXS.{test_ver}"
+        try:
+            res = ensure_cep_debug_mode(min_version=test_ver, max_version=test_ver)
+            assert res is True
+
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, test_key) as k:
+                val, reg_type = winreg.QueryValueEx(k, "PlayerDebugMode")
+                assert val == "1"
+                assert reg_type == winreg.REG_SZ
+
+            # Idempotency check
+            assert ensure_cep_debug_mode(min_version=test_ver, max_version=test_ver) is True
+        finally:
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, test_key)
+            except OSError:
+                pass
+
+    def test_ensure_cep_debug_mode_no_winreg(self, monkeypatch):
+        import sys
+        monkeypatch.setitem(sys.modules, "winreg", None)
+        assert ensure_cep_debug_mode() is False
+
+    def test_deploy_calls_ensure_cep_debug_mode(self, bridge, monkeypatch):
+        called = False
+
+        def fake_debug_mode(*args, **kwargs):
+            nonlocal called
+            called = True
+            return True
+
+        import core.photoshop_script_bridge as psb
+        monkeypatch.setattr(psb, "ensure_cep_debug_mode", fake_debug_mode)
+        assert bridge.deploy() is True
+        assert called is True
+
 
 
