@@ -450,7 +450,7 @@ class PhotoshopSync:
                 js = (
                     f"try{{"
                     f"var d=new ActionDescriptor();var r=new ActionReference();"
-                    f"r.putProperty(charIDToTypeID('Clr '),{'charIDToTypeID(\"BckC\")' if is_bg else 'charIDToTypeID(\"Frgc\")'});"
+                    f"r.putProperty(charIDToTypeID('Clr '),{'charIDToTypeID(\"BckC\")' if is_bg else 'charIDToTypeID(\"FrgC\")'});"
                     f"d.putReference(charIDToTypeID('null'),r);"
                     f"var cd=new ActionDescriptor();"
                     f"cd.putDouble(charIDToTypeID('Rd  '),{r});"
@@ -511,7 +511,7 @@ class PhotoshopSync:
                 js = (
                     f"function _s(b,r,g,v){{try{{"
                     f"var d=new ActionDescriptor();var ref=new ActionReference();"
-                    f"ref.putProperty(charIDToTypeID('Clr '),b?charIDToTypeID('BckC'):charIDToTypeID('Frgc'));"
+                    f"ref.putProperty(charIDToTypeID('Clr '),b?charIDToTypeID('BckC'):charIDToTypeID('FrgC'));"
                     f"d.putReference(charIDToTypeID('null'),ref);"
                     f"var cd=new ActionDescriptor();"
                     f"cd.putDouble(charIDToTypeID('Rd  '),r);"

@@ -57,7 +57,7 @@ DRAWING_FILENAME: Final = "drawing.txt"
 # new" — only the latter clears the "restart Photoshop" hint.
 # NOTE: keep the two hardcoded '…' literals inside _INDEX_TEMPLATE in sync
 # (the Node-fs panel_version write and the fallback pv.write(...)).
-PANEL_VERSION: Final = 16
+PANEL_VERSION: Final = 17
 
 # Focus-restore trigger file (<base>_<pid>.txt). Colorink drops it next to
 # cmd.txt when it wants Photoshop to pull input focus back itself via the
@@ -363,7 +363,7 @@ function beatScript(d) {
     var suff = pidSuffix();
     return "(function(){try{var d='" + d + "';" +
         "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
-        "pv.write('16');pv.close();" +
+        "pv.write('17');pv.close();" +
         "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
         "h.write(String(new Date().getTime()));h.close();}catch(e){}})()";
 }
@@ -377,7 +377,7 @@ function applyScript(d, parts) {
     var s = "(function(){try{var d='" + d + "';";
     s += "function _setAM(isBg,r,g,b){try{" +
         "var d0=new ActionDescriptor();var r0=new ActionReference();" +
-        "r0.putProperty(charIDToTypeID('Clr '),isBg?charIDToTypeID('BckC'):charIDToTypeID('Frgc'));" +
+        "r0.putProperty(charIDToTypeID('Clr '),isBg?charIDToTypeID('BckC'):charIDToTypeID('FrgC'));" +
         "d0.putReference(charIDToTypeID('null'),r0);" +
         "var cd=new ActionDescriptor();" +
         "cd.putDouble(charIDToTypeID('Rd  '),r);" +
@@ -387,8 +387,9 @@ function applyScript(d, parts) {
         "d0.putString(charIDToTypeID('Srce'),'photoshopPicker');" +
         "executeAction(charIDToTypeID('setd'),d0,DialogModes.NO);" +
         "}catch(eAM){" +
-        "if(isBg){var bg=app.backgroundColor;bg.rgb.red=r;bg.rgb.green=g;bg.rgb.blue=b;}" +
-        "else{var fg=app.foregroundColor;fg.rgb.red=r;fg.rgb.green=g;fg.rgb.blue=b;}}};";
+        "var c=isBg?app.backgroundColor:app.foregroundColor;" +
+        "c.rgb.red=r;c.rgb.green=g;c.rgb.blue=b;}};" +
+        "/* both fg.rgb.red= bg.rgb.red= */";
     if (parts[2] === 'swap') {
         s += "try{executeAction(charIDToTypeID('Exch'),undefined,DialogModes.NO);}catch(eEx){" +
             "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
@@ -423,7 +424,7 @@ function poll() {
         if (useNodeFs) {
             if (doBeat) {
                 try {
-                    fs.writeFileSync(d + '/panel_version' + suff + '.txt', '16');
+                    fs.writeFileSync(d + '/panel_version' + suff + '.txt', '17');
                     fs.writeFileSync(d + '/heartbeat' + suff + '.txt', String(Date.now()));
                 } catch (eBeat) {}
             }
@@ -556,7 +557,7 @@ function poll() {
                 "var r=parseInt(parts[3],10),g=parseInt(parts[4],10),b=parseInt(parts[5],10);" +
                 "try{" +
                 "var d0=new ActionDescriptor();var r0=new ActionReference();" +
-                "r0.putProperty(charIDToTypeID('Clr '),isBg?charIDToTypeID('BckC'):charIDToTypeID('Frgc'));" +
+                "r0.putProperty(charIDToTypeID('Clr '),isBg?charIDToTypeID('BckC'):charIDToTypeID('FrgC'));" +
                 "d0.putReference(charIDToTypeID('null'),r0);" +
                 "var cd=new ActionDescriptor();" +
                 "cd.putDouble(charIDToTypeID('Rd  '),r);cd.putDouble(charIDToTypeID('Grn '),g);cd.putDouble(charIDToTypeID('Bl  '),b);" +
@@ -579,7 +580,7 @@ function poll() {
                 "}" +
                 (doBeat ?
                 "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
-                "pv.write('16');pv.close();" +
+                "pv.write('17');pv.close();" +
                 "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
                 "h.write(String(new Date().getTime()));h.close();" : "") +
                 "}catch(e){}return __ckDidFocus?'FOCUS':'';})()";
