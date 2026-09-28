@@ -51,11 +51,9 @@ def extract_release_notes(version: str) -> Path:
             f"{NOTES_REL} 顶部不是 {heading.strip()!r} —— 先写发布说明再打包。"
         )
     body = text[len(heading):]
-    end = body.find("\n---\n")
-    if end == -1:
-        end = body.find("\n## v")
-    if end != -1:
-        body = body[:end]
+    ends = [pos for pos in (body.find("\n---\n"), body.find("\n## v")) if pos != -1]
+    if ends:
+        body = body[:min(ends)]
     body = body.strip() + "\n"
     out = PROJECT_ROOT / "dist" / f"release_notes_v{version}.md"
     out.parent.mkdir(parents=True, exist_ok=True)
