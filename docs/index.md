@@ -10,7 +10,7 @@ hero:
       text: 快速上手 →
       link: /guide/getting-started
     - theme: alt
-      text: 下载最新版 (v1.8.12)
+      text: 下载最新版 (v1.8.13)
       link: /download/
     - theme: alt
       text: ⚡ 爱发电赞助

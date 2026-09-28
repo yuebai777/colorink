@@ -1,3 +1,11 @@
+## v1.8.13
+
+修正 Photoshop 前景色 ActionManager 类型 ID 大小写，彻底打通前景色免扰动写入路径；CEP 脚本面板版本同步升至 17。
+
+### 修复
+
+- **Photoshop 前景色 ActionManager 事件 ID 大小写修正**：ActionManager 设置前景色时使用的 OSType 4 字符标识为 `'FrgC'`（大写 C），此前误写为 `'Frgc'` 导致前景色写入时抛出异常并降级回退至旧版 SolidColor 路径。现已修正为 `'FrgC'`，确保前景色与背景色均完整走通 ActionManager 内置通道，彻底杜绝笔刷压感与动态丢失；CEP 面板版本同步升至 17
+
 ## v1.8.12
 
 Photoshop 的颜色同步改走 ActionManager 的内置取色通道，彻底杜绝切色/同步引起的首笔压感丢失；同时开启 CEP 调试模式并大幅降低面板轮询延迟，同步响应更加迅速丝滑。
