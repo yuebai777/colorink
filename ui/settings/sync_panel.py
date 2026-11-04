@@ -521,7 +521,7 @@ class SyncPanelMixin:
         lbl_sai_title.setFixedWidth(110)
         row_sai_layout.addWidget(lbl_sai_title)
         self.combo_sai = NonScrollComboBox()
-        self.combo_sai.addItems(["auto", "pre-2024-sai2", "after-2024-sai2"])
+        self.combo_sai.addItems(["auto", "pre-2024-sai2", "after-2024-sai2", "after-2026-sai2"])
         self.combo_sai.setToolTip(i18n.tr("2024 年后的 SAI2 版本地址偏移不同，自动检测失败时可手动指定"))
         self.combo_sai.currentTextChanged.connect(self.save_settings)
         row_sai_layout.addWidget(self.combo_sai)

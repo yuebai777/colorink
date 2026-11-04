@@ -230,10 +230,26 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         screen_target = self.cfg.get("grayscaleFilterScreen", "all")
         self.grayscale_overlay.set_target(screen_target)
         if backend != "mag":
-            prepare = getattr(self.grayscale_overlay, "prepare", None)
-            if callable(prepare):
-                # grayscale_overlay.prepare runs once the window is up:
-                QTimer.singleShot(800, prepare)
+            def _prepare_and_check():
+                prepare = getattr(self.grayscale_overlay, "prepare", None)
+                if callable(prepare):
+                    prepare()
+                if not getattr(self.grayscale_overlay, "is_healthy", True):
+                    print("[Grayscale] Backend failed health check after prepare — falling back to Mag")
+                    from core.mag_grayscale import MagFilterController
+                    mag_ctrl = MagFilterController(mode="luma")
+                    if mag_ctrl.is_available:
+                        try:
+                            close_fn = getattr(self.grayscale_overlay, "close", None)
+                            if callable(close_fn):
+                                close_fn()
+                        except Exception:
+                            pass
+                        self.grayscale_overlay = mag_ctrl
+                        self.cfg["grayscaleFilterBackend"] = "mag"
+
+            # grayscale_overlay.prepare runs once the window is up:
+            QTimer.singleShot(800, _prepare_and_check)
             # Pre-import dxcam off the GUI thread so the first Ctrl+Alt+D does not
             # pay the one-time ~0.4s module/D3D11/comtypes import cost.
             if sys.modules.get("dxcam") is None:

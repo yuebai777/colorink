@@ -531,6 +531,7 @@ fn capture_worker_thread(
     }
 
     let mut dup: Option<IDXGIOutputDuplication> = None;
+    let mut dup_fail_count = 0;
 
     while running.load(Ordering::Relaxed) {
         if !active.load(Ordering::Relaxed) {
@@ -552,12 +553,33 @@ fn capture_worker_thread(
 
         if dup.is_none() {
             unsafe {
-                match output1.DuplicateOutput(&device) {
-                    Ok(d) => {
-                        dup = Some(d);
+                let mut d_opt = None;
+                if let Ok(output5) = output1.cast::<IDXGIOutput5>() {
+                    let formats = [DXGI_FORMAT_B8G8R8A8_UNORM];
+                    if let Ok(d) = output5.DuplicateOutput1(&device, 0, &formats) {
+                        d_opt = Some(d);
                     }
-                    Err(e) => {
-                        println!("[Capture {}] DuplicateOutput failed: {:?}", output_idx, e);
+                }
+                if d_opt.is_none() {
+                    if let Ok(d) = output1.DuplicateOutput(&device) {
+                        d_opt = Some(d);
+                    }
+                }
+
+                match d_opt {
+                    Some(d) => {
+                        dup = Some(d);
+                        dup_fail_count = 0;
+                    }
+                    None => {
+                        dup_fail_count += 1;
+                        println!("[Capture {}] DuplicateOutput failed (attempt {}/5)", output_idx, dup_fail_count);
+                        if dup_fail_count >= 5 {
+                            IS_HEALTHY.store(false, Ordering::SeqCst);
+                            notify.notify_one();
+                            println!("[Capture {}] DuplicateOutput failed repeatedly, marked DComp as unhealthy.", output_idx);
+                            break;
+                        }
                         thread::sleep(Duration::from_millis(50));
                         continue;
                     }
@@ -802,27 +824,16 @@ fn render_worker_thread(
             continue;
         }
 
-        // Update window visibility based on target_screen
+        // Check backend health
+        if !IS_HEALTHY.load(Ordering::Relaxed) {
+            println!("[Render] Backend became unhealthy, exiting render loop.");
+            break;
+        }
+
+        // For each screen that should NOT be shown, hide if visible
         for (idx, screen) in screens.iter().enumerate() {
             let should_show = req_target < 0 || req_target as usize == screen.output_idx;
-            if should_show && !screen_visibilities[idx] {
-                unsafe {
-                    let x = screen.rect.left;
-                    let y = screen.rect.top;
-                    let w = (screen.rect.right - screen.rect.left).max(1);
-                    let h = (screen.rect.bottom - screen.rect.top).max(1);
-                    let _ = SetWindowPos(
-                        screen.hwnd,
-                        HWND_TOPMOST,
-                        x,
-                        y,
-                        w,
-                        h,
-                        SWP_NOACTIVATE | SWP_SHOWWINDOW,
-                    );
-                }
-                screen_visibilities[idx] = true;
-            } else if !should_show && screen_visibilities[idx] {
+            if !should_show && screen_visibilities[idx] {
                 unsafe {
                     let _ = ShowWindow(screen.hwnd, SW_HIDE);
                 }
@@ -830,11 +841,12 @@ fn render_worker_thread(
             }
         }
 
-        // For each visible screen, check if a new frame is ready and render it
+        // For each screen that should be shown, check if a new frame is ready and render it
         let mut any_rendered = false;
 
         for (idx, screen) in screens.iter().enumerate() {
-            if !screen_visibilities[idx] {
+            let should_show = req_target < 0 || req_target as usize == screen.output_idx;
+            if !should_show {
                 continue;
             }
 
@@ -885,6 +897,26 @@ fn render_worker_thread(
                     if pres.is_ok() {
                         FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
                         CNT_PRESENT_OK.fetch_add(1, Ordering::Relaxed);
+
+                        // Reveal window ONLY AFTER the first frame is successfully presented!
+                        // Sized with 1-pixel margin on the horizontal edges so Windows 11 shell
+                        // does not falsely classify it as borderless fullscreen and trigger Focus Assist.
+                        if !screen_visibilities[idx] {
+                            let x = screen.rect.left - 1;
+                            let y = screen.rect.top;
+                            let win_w = (screen.rect.right - screen.rect.left).max(1) + 2;
+                            let win_h = (screen.rect.bottom - screen.rect.top).max(1);
+                            let _ = SetWindowPos(
+                                screen.hwnd,
+                                HWND_TOPMOST,
+                                x,
+                                y,
+                                win_w,
+                                win_h,
+                                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                            );
+                            screen_visibilities[idx] = true;
+                        }
                     } else {
                         CNT_PRESENT_ERR.fetch_add(1, Ordering::Relaxed);
                     }

@@ -193,10 +193,28 @@ class DCompGrayscaleController:
                 ok = bool(self._dll.dcomp_filter_set_active(True))
                 if not ok:
                     self.last_error = "激活 DComp 灰度滤镜失败"
-                else:
-                    self._dll.dcomp_filter_set_target(self._target_index)
-                    self._dll.dcomp_filter_set_mode(mode_code)
-                return ok
+                    return False
+                self._dll.dcomp_filter_set_target(self._target_index)
+                self._dll.dcomp_filter_set_mode(mode_code)
+
+                # 快速验证后台抓取是否健康：等待确认捕获状态
+                import time
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < 0.15:
+                    if not self.is_healthy:
+                        self.last_error = "DComp 屏幕捕获失败（可能是 HDR 屏幕或图形驱动限制）"
+                        self.set_active(False)
+                        return False
+                    if self.get_stats().get("present_frames", 0) > 0:
+                        break
+                    time.sleep(0.015)
+
+                if not self.is_healthy:
+                    self.last_error = "DComp 屏幕捕获异常，已停止滤镜"
+                    self.set_active(False)
+                    return False
+
+                return True
             else:
                 self._dll.dcomp_filter_set_active(False)
                 return True

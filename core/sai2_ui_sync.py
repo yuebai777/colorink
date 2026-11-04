@@ -256,10 +256,44 @@ _user32.EnumWindows.argtypes = (_WNDENUMPROC, wintypes.LPARAM)
 _user32.EnumChildWindows.argtypes = (wintypes.HWND, _WNDENUMPROC, wintypes.LPARAM)
 
 WM_MOUSEMOVE = 0x0200
-TRACK_SIZE = (239, 36)      # physical px: all six slider tracks
-LABEL_SIZE = (33, 23)       # physical px: the numeric read-out beside a track
-WHEEL_SIZE = (250, 250)
+TRACK_SIZE = (239, 36)      # physical px: all six slider tracks (pre-2026 default)
+LABEL_SIZE = (33, 23)       # physical px: the numeric read-out beside a track (pre-2026 default)
+WHEEL_SIZE = (250, 250)     # physical px: color wheel (pre-2026 default)
+
+KNOWN_TRACK_SIZES = ((239, 36), (244, 34))
+KNOWN_LABEL_SIZES = ((33, 23), (30, 22))
+KNOWN_WHEEL_SIZES = ((250, 250), (296, 249))
 TRACK_ORDER = ("r", "g", "b", "h", "s", "v")
+
+
+def _is_track_size(w: int, h: int) -> bool:
+    if h <= 0:
+        return False
+    for tw, th in KNOWN_TRACK_SIZES:
+        if abs(w - tw) <= 2 and abs(h - th) <= 2:
+            return True
+    ratio = w / h
+    return 140 <= w <= 400 and 20 <= h <= 60 and 5.5 <= ratio <= 8.2
+
+
+def _is_label_size(w: int, h: int) -> bool:
+    if h <= 0:
+        return False
+    for lw, lh in KNOWN_LABEL_SIZES:
+        if abs(w - lw) <= 2 and abs(h - lh) <= 2:
+            return True
+    ratio = w / h
+    return 18 <= w <= 55 and 13 <= h <= 38 and 1.1 <= ratio <= 1.8
+
+
+def _is_wheel_size(w: int, h: int) -> bool:
+    if h <= 0:
+        return False
+    for ww, wh in KNOWN_WHEEL_SIZES:
+        if abs(w - ww) <= 4 and abs(h - wh) <= 4:
+            return True
+    ratio = w / h
+    return 150 <= w <= 450 and 150 <= h <= 450 and 0.9 <= ratio <= 1.3
 
 
 def _class_of(hwnd: int) -> str:
@@ -356,21 +390,48 @@ def read_panel_labels(pid: int) -> tuple[str, ...] | None:
     untouched).  They therefore still describe the last colour SAI set on its
     own, which makes them the one mode signal our own writes cannot fool.
     """
-    tracks: list[tuple[int, int, int, int]] = []
+    raw_tracks: list[tuple[int, int, int, int]] = []
     labels: list[tuple[int, int, str]] = []
     for _hwnd, (left, top, right, bottom), text in _visible_sfl_windows(pid):
-        size = (right - left, bottom - top)
-        if size == TRACK_SIZE:
-            tracks.append((top, left, right, bottom))
-        elif size == LABEL_SIZE:
+        w, h = right - left, bottom - top
+        if _is_track_size(w, h):
+            raw_tracks.append((top, left, right, bottom))
+        elif _is_label_size(w, h):
             labels.append((top, left, text))
-    tracks.sort()
+
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for t in raw_tracks:
+        top, l, r, b = t
+        th = b - top
+        matched_k = None
+        for k in groups:
+            if abs(k[0] - l) <= 4 and abs(k[1] - r) <= 4 and abs(k[2] - th) <= 2:
+                matched_k = k
+                break
+        if matched_k is None:
+            matched_k = (l, r, th)
+        groups[matched_k].append(t)
+
+    tracks: list[tuple[int, int, int, int]] = []
+    for g in groups.values():
+        if len(g) == len(TRACK_ORDER):
+            tracks = sorted(g)
+            break
+    if not tracks:
+        for g in groups.values():
+            if len(g) >= len(TRACK_ORDER):
+                tracks = sorted(g)[:len(TRACK_ORDER)]
+                break
+    if not tracks and raw_tracks:
+        tracks = sorted(raw_tracks)
+
     if len(tracks) < len(TRACK_ORDER):
         return None
     out: list[str] = []
     for (top, _left, right, _bottom), _name in zip(tracks, TRACK_ORDER):
         row = [text for (ltop, lleft, text) in labels
-               if abs(ltop - top) <= 6 and lleft >= right]
+               if abs(ltop - top) <= 6 and lleft >= right - 10]
         if not row:
             return None
         out.append(row[0])
@@ -439,15 +500,48 @@ def discover_controls(pid: int) -> dict:
     Located purely by class + size + vertical order so that window moves,
     DPI changes and SAI restarts need no hard-coded handles.
     """
-    tracks: list[tuple[int, int, int]] = []
-    wheel = None
+    raw_tracks: list[tuple[int, int, int, int, int]] = []
+    wheels: list[tuple[int, int, int, int, int]] = []
     for hwnd, (left, top, right, bottom), _text in _visible_sfl_windows(pid):
-        size = (right - left, bottom - top)
-        if size == TRACK_SIZE:
-            tracks.append((top, left, hwnd))
-        elif size == WHEEL_SIZE and wheel is None:
-            wheel = hwnd
-    tracks.sort()
+        w, h = right - left, bottom - top
+        if _is_track_size(w, h):
+            raw_tracks.append((top, left, right, bottom, hwnd))
+        elif _is_wheel_size(w, h):
+            wheels.append((top, left, right, bottom, hwnd))
+
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for t in raw_tracks:
+        top, l, r, b, hwnd = t
+        th = b - top
+        matched_k = None
+        for k in groups:
+            if abs(k[0] - l) <= 4 and abs(k[1] - r) <= 4 and abs(k[2] - th) <= 2:
+                matched_k = k
+                break
+        if matched_k is None:
+            matched_k = (l, r, th)
+        groups[matched_k].append((top, l, hwnd))
+
+    tracks: list[tuple[int, int, int]] = []
+    for g in groups.values():
+        if len(g) == len(TRACK_ORDER):
+            tracks = sorted(g)
+            break
+    if not tracks:
+        for g in groups.values():
+            if len(g) >= len(TRACK_ORDER):
+                tracks = sorted(g)[:len(TRACK_ORDER)]
+                break
+    if not tracks and raw_tracks:
+        tracks = sorted((top, l, hwnd) for (top, l, r, b, hwnd) in raw_tracks)
+
+    wheel = wheels[0][4] if wheels else None
+    if len(wheels) > 1 and tracks:
+        track_left = tracks[0][1]
+        best = min(wheels, key=lambda item: abs(item[1] - track_left))
+        wheel = best[4]
+
     out = {"wheel": wheel, "tracks": {}, "origins": {}}
     for (top_y, left, hwnd), name in zip(tracks, TRACK_ORDER):
         out["tracks"][name] = hwnd
@@ -518,7 +612,7 @@ class SAI2UiSync:
             if fields is None:
                 return self._fail("mode %s unavailable" % mode)
             controls = self._get_controls(sync)
-            if not controls or not controls.get("tracks"):
+            if not controls or (not controls.get("tracks") and not controls.get("wheel")):
                 return self._fail("colour panel controls not found")
             if not self._write_fields(sync, fields, grey=is_grey(rgb)):
                 return self._fail("field write failed")
@@ -656,25 +750,49 @@ class SAI2UiSync:
         return data[2], data[1], data[0]
 
     @staticmethod
-    def _read_fields(sync) -> tuple[float, float, float] | None:
-        data = sai2_brush_link._read_memory(sync._handle,
-                                            sync._base + ZONE_BASE, ZONE_LEN)
-        if not data or len(data) < F_H + 4:
-            return None
-        return (struct.unpack_from("<f", data, F_V)[0],
-                struct.unpack_from("<f", data, F_S)[0],
-                struct.unpack_from("<f", data, F_H)[0])
+    def _field_addresses(sync) -> tuple[int, int, int]:
+        """Return (addr_v, addr_s, addr_h) for the picker state fields.
 
-    @staticmethod
-    def _write_fields(sync, fields: Sequence[float], grey: bool) -> bool:
+        In both pre-2024 and 2026+ builds, SAI2's internal PickerState structure
+        places the float fields (V, S, H) at -0x20, -0x1C, -0x18 relative to
+        the active brush color slot. If color_addr is unavailable, falls back to
+        the image base + ZONE_BASE for backwards compatibility.
+        """
+        color_addr = getattr(sync, "_color_addr", None)
+        if color_addr:
+            return color_addr - 0x20, color_addr - 0x1C, color_addr - 0x18
+        base = getattr(sync, "_base", 0) or 0
+        return base + ZONE_BASE + F_V, base + ZONE_BASE + F_S, base + ZONE_BASE + F_H
+
+    @classmethod
+    def _read_fields(cls, sync) -> tuple[float, float, float] | None:
+        addr_v, addr_s, addr_h = cls._field_addresses(sync)
+        if addr_s == addr_v + 4 and addr_h == addr_s + 4:
+            data = sai2_brush_link._read_memory(sync._handle, addr_v, 12)
+            if data and len(data) >= 12:
+                return (struct.unpack_from("<f", data, 0)[0],
+                        struct.unpack_from("<f", data, 4)[0],
+                        struct.unpack_from("<f", data, 8)[0])
+        data_v = sai2_brush_link._read_memory(sync._handle, addr_v, 4)
+        data_s = sai2_brush_link._read_memory(sync._handle, addr_s, 4)
+        data_h = sai2_brush_link._read_memory(sync._handle, addr_h, 4)
+        if not (data_v and data_s and data_h):
+            return None
+        return (struct.unpack("<f", data_v)[0],
+                struct.unpack("<f", data_s)[0],
+                struct.unpack("<f", data_h)[0])
+
+    @classmethod
+    def _write_fields(cls, sync, fields: Sequence[float], grey: bool) -> bool:
         """Write the picker fields; grey targets keep SAI's previous hue."""
+        addr_v, addr_s, addr_h = cls._field_addresses(sync)
         ok = sai2_brush_link._write_memory(
-            sync._handle, sync._base + ZONE_BASE + F_V, pack_field(fields[0]))
+            sync._handle, addr_v, pack_field(fields[0]))
         ok = sai2_brush_link._write_memory(
-            sync._handle, sync._base + ZONE_BASE + F_S, pack_field(fields[1])) and ok
+            sync._handle, addr_s, pack_field(fields[1])) and ok
         if not grey:
             ok = sai2_brush_link._write_memory(
-                sync._handle, sync._base + ZONE_BASE + F_H,
+                sync._handle, addr_h,
                 pack_field(fields[2])) and ok
         return ok
 
@@ -682,9 +800,12 @@ class SAI2UiSync:
     def _trigger_repaint(controls: dict) -> None:
         """Two cross-control moves: SAI repaints only on a *changed* position."""
         wheel = controls.get("wheel")
-        track = controls["tracks"].get("r")
+        tracks = controls.get("tracks") or {}
+        track = tracks.get("r") or next(iter(tracks.values()), None)
         if wheel:
             _user32.PostMessageW(wheel, WM_MOUSEMOVE, 0, ((100 << 16) | 100))
             time.sleep(0.05)
+            if not track:
+                _user32.PostMessageW(wheel, WM_MOUSEMOVE, 0, ((100 << 16) | 101))
         if track:
             _user32.PostMessageW(track, WM_MOUSEMOVE, 0, ((18 << 16) | 100))

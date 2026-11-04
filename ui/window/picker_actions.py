@@ -674,7 +674,12 @@ class PickerActionsMixin:
                     self.grayscale_overlay = dcomp_ctrl
                 else:
                     from core.native_grayscale import NativeGrayscaleController
-                    self.grayscale_overlay = NativeGrayscaleController(mode=new_mode)
+                    fallback = NativeGrayscaleController(mode=new_mode)
+                    if fallback.is_available:
+                        self.grayscale_overlay = fallback
+                    else:
+                        from core.mag_grayscale import MagFilterController
+                        self.grayscale_overlay = MagFilterController(mode="luma")
         screen_target = self.cfg.get("grayscaleFilterScreen", "all")
         self.grayscale_overlay.set_target(screen_target)
         self.grayscale_overlay.set_mode(

@@ -474,3 +474,115 @@ def test_sai2_sync_ui_picker_is_cached():
 
     s = sai2_brush_link.SAI2Sync()
     assert s.ui_picker() is s.ui_picker()
+
+
+# ── 2026 build compatibility tests ────────────────────────────────────────
+def test_field_addresses_relative_to_color_addr():
+    fake = _FakeSync()
+    fake._color_addr = 0x1404786D0
+    fake._base = 0x140000000
+    fv, fs, fh = ui.SAI2UiSync._field_addresses(fake)
+    assert fv == 0x1404786B0
+    assert fs == 0x1404786B4
+    assert fh == 0x1404786B8
+
+
+def test_field_addresses_fallback_when_no_color_addr():
+    fake = _FakeSync()
+    fake._color_addr = None
+    fake._base = 0x140000000
+    fv, fs, fh = ui.SAI2UiSync._field_addresses(fake)
+    assert fv == 0x140000000 + ui.ZONE_BASE + ui.F_V
+    assert fs == 0x140000000 + ui.ZONE_BASE + ui.F_S
+    assert fh == 0x140000000 + ui.ZONE_BASE + ui.F_H
+
+
+def test_size_matchers_accept_both_2024_and_2026_dimensions():
+    # 2024 legacy baseline
+    assert ui._is_track_size(239, 36) is True
+    assert ui._is_label_size(33, 23) is True
+    assert ui._is_wheel_size(250, 250) is True
+
+    # 2026 build dimensions
+    assert ui._is_track_size(244, 34) is True
+    assert ui._is_label_size(30, 22) is True
+    assert ui._is_wheel_size(296, 249) is True
+
+    # Rejection of completely unrelated widgets
+    assert ui._is_track_size(100, 100) is False
+    assert ui._is_label_size(100, 100) is False
+    assert ui._is_wheel_size(244, 34) is False
+
+
+def test_discover_controls_and_labels_2026(monkeypatch):
+    """Simulate a 2026 build window hierarchy with 244x34 tracks and 30x22 labels."""
+    mock_windows = [
+        # Wheel: (left=46, top=683, right=342, bottom=932) -> 296x249
+        (0x1000, (46, 683, 342, 932), ""),
+        # Tracks & labels: R, G, B, H, S, V at left=64..308 (w=244, h=34), labels at left=312..342 (w=30, h=22)
+        (0x1001, (64, 949, 308, 983), ""),
+        (0x1002, (312, 949, 342, 971), "204"),
+        (0x1003, (64, 983, 308, 1017), ""),
+        (0x1004, (312, 983, 342, 1005), "162"),
+        (0x1005, (64, 1017, 308, 1051), ""),
+        (0x1006, (312, 1017, 342, 1039), "134"),
+        (0x1007, (64, 1060, 308, 1094), ""),
+        (0x1008, (312, 1060, 342, 1082), "024"),
+        (0x1009, (64, 1094, 308, 1128), ""),
+        (0x100A, (312, 1094, 342, 1116), "034"),
+        (0x100B, (64, 1128, 308, 1162), ""),
+        (0x100C, (312, 1128, 342, 1150), "080"),
+    ]
+    monkeypatch.setattr(ui, "_visible_sfl_windows", lambda pid: mock_windows)
+
+    controls = ui.discover_controls(999)
+    assert controls["wheel"] == 0x1000
+    assert controls["tracks"]["r"] == 0x1001
+    assert controls["tracks"]["g"] == 0x1003
+    assert controls["tracks"]["b"] == 0x1005
+    assert controls["tracks"]["h"] == 0x1007
+    assert controls["tracks"]["s"] == 0x1009
+    assert controls["tracks"]["v"] == 0x100B
+
+    labels = ui.read_panel_labels(999)
+    assert labels == ("204", "162", "134", "024", "034", "080")
+
+
+def test_size_matchers_accept_100_and_125_percent_dpi():
+    # 100% DPI (96 DPI): 2/3 of 150% reference sizes
+    assert ui._is_track_size(159, 24) is True
+    assert ui._is_label_size(22, 15) is True
+    assert ui._is_wheel_size(167, 167) is True
+
+    # 125% DPI (120 DPI): 5/6 of 150% reference sizes
+    assert ui._is_track_size(199, 30) is True
+    assert ui._is_label_size(28, 19) is True
+    assert ui._is_wheel_size(208, 208) is True
+
+
+def test_sync_succeeds_when_only_wheel_is_visible(monkeypatch):
+    """When user hides RGB/HSV sliders in SAI2 and keeps only the color wheel open, UI sync still updates the wheel."""
+    s = ui.SAI2UiSync("hsv")
+    fake = _FakeSync()
+    fake._handle = 0x1234
+    fake._pid = 888
+    fake._color_addr = 0x140308000
+    fake._base = 0x140000000
+
+    monkeypatch.setattr(ui, "_visible_sfl_windows", lambda pid: [
+        (0x2000, (50, 500, 300, 750), ""),  # Only wheel visible, no slider tracks
+    ])
+    written = {}
+    monkeypatch.setattr(ui.sai2_brush_link, "_write_memory",
+                        lambda h, addr, data: written.setdefault(addr, data) is not None)
+    posted = []
+    monkeypatch.setattr(ui._user32, "PostMessageW",
+                        lambda hwnd, msg, wp, lp: posted.append((hwnd, msg, lp)) or 1)
+    monkeypatch.setattr(ui.time, "sleep", lambda _: None)
+
+    assert s.sync(fake, (255, 0, 0)) is True
+    assert len(written) == 3
+    assert len(posted) == 2
+    assert posted[0][0] == 0x2000
+
+

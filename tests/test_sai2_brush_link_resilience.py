@@ -86,7 +86,8 @@ def _scan_hits(monkeypatch, hits):
 # ── version/auto helpers ──────────────────────────────────────────────────
 @pytest.mark.parametrize("value,expected", [
     (None, True), ("", True), ("auto", True), ("AUTO", True), ("  auto ", True),
-    ("pre-2024-sai2", False), ("after-2024-sai2", False), ("vhsv", False),
+    ("pre-2024-sai2", False), ("after-2024-sai2", False), ("after-2026-sai2", False),
+    ("2026", False), ("vhsv", False),
 ])
 def test_is_auto_version(value, expected):
     assert sl._is_auto_version(value) is expected
@@ -99,6 +100,8 @@ def test_init_marks_auto_and_normalises_version(monkeypatch):
     assert sl.SAI2Sync("auto")._auto_version is True
     assert sl.SAI2Sync(None)._auto_version is True
     assert sl.SAI2Sync("after-2024-sai2")._auto_version is False
+    assert sl.SAI2Sync("after-2026-sai2")._auto_version is False
+    assert sl.SAI2Sync("2026").version == "after-2026-sai2"
     assert sl.SAI2Sync("auto").version in sl.SIGNATURES
 
 
@@ -136,6 +139,28 @@ def test_auto_tries_every_signature(monkeypatch):
     resolved = sync._resolve_color_address(0x1, BASE, 0x1000)
     assert resolved == (SLOT_ADDR, "signature:after-2024-sai2")
     assert len(calls) == 2
+
+
+def test_auto_hits_after_2026_when_earlier_signatures_miss(monkeypatch):
+    """pre-2024 and after-2024 miss, after-2026 hits -> 2026 signature wins."""
+    sync = sl.SAI2Sync("auto")
+    calls = _scan_hits(monkeypatch, [None, None, PATTERN_HIT])
+    disp, rel = _sig_entry("after-2026-sai2", PATTERN_HIT, SLOT_ADDR)
+    monkeypatch.setattr(sl, "_read_memory",
+                        _reader({disp: rel, SLOT_ADDR: b"\x01\x02\x03"}))
+    resolved = sync._resolve_color_address(0x1, BASE, 0x1000)
+    assert resolved == (SLOT_ADDR, "signature:after-2026-sai2")
+    assert len(calls) == 3
+
+
+def test_explicit_2026_version_uses_after_2026_offset(monkeypatch):
+    """Pinned 2026 version falls back to after-2026-sai2 offset when pattern scan fails."""
+    sync = sl.SAI2Sync("after-2026-sai2")
+    _scan_hits(monkeypatch, [None])
+    offset_addr = BASE + sl.KNOWN_OFFSETS["after-2026-sai2"]
+    monkeypatch.setattr(sl, "_read_memory", _reader({offset_addr: b"\x01\x02\x03"}))
+    resolved = sync._resolve_color_address(0x1, BASE, 0x1000)
+    assert resolved == (offset_addr, "offset:after-2026-sai2")
 
 
 def test_explicit_version_tries_only_that_signature(monkeypatch):
@@ -349,3 +374,67 @@ def test_status_reports_resolved_method(monkeypatch):
     assert status["connected"] is True
     assert status["reason"] == "ok"
     assert status["resolvedBy"] == "signature:pre-2024-sai2"
+
+
+def test_universal_epilogue_fallback_resolves_2022_build(monkeypatch):
+    """When primary signatures miss (e.g. 2022 x64 with pinned version), epilogue wins before KNOWN_OFFSETS."""
+    sync = sl.SAI2Sync("pre-2024-sai2")
+    _scan_hits(monkeypatch, [None])
+    # Place 88 05 [disp32] E8 11 22 33 44 48 83 C4 38 C3 at BASE + 0x2000
+    code_offset = 0x2000
+    target_slot = BASE + 0x310500
+    disp = target_slot - (BASE + code_offset + 6)
+    ins = b"\x88\x05" + struct.pack("<i", disp) + b"\xE8\x11\x22\x33\x44\x48\x83\xC4\x38\xC3"
+    chunk = b"\x90" * code_offset + ins + b"\x90" * 64
+
+    def read(handle, address, size):
+        if address == BASE:
+            return chunk[:size]
+        if address == target_slot:
+            return b"\x11\x22\x33"
+        return None
+
+    monkeypatch.setattr(sl, "_read_memory", read)
+    resolved = sync._resolve_color_address(0x1, BASE, 0x400000)
+    assert resolved == (target_slot, "signature:universal-epilogue")
+
+
+def test_universal_x86_fallback_resolves_32bit_build(monkeypatch):
+    """32-bit sai2.exe (base 0x400000) resolves via x86 signature instead of hitting read-only offset."""
+    sync = sl.SAI2Sync("auto")
+    _scan_hits(monkeypatch, [None, None, None])
+    x86_base = 0x400000
+    target_slot = 0x6AB340
+    # E8 11 22 33 44 6A 03 A2 [abs32] E8
+    ins = b"\xE8\x11\x22\x33\x44\x6A\x03\xA2" + struct.pack("<I", target_slot) + b"\xE8\x00\x00\x00\x00"
+    chunk = b"\x90" * 0x1000 + ins + b"\x90" * 64
+
+    def read(handle, address, size):
+        if address == x86_base:
+            return chunk[:size]
+        if address == target_slot:
+            return b"\x44\x55\x66"
+        return None
+
+    monkeypatch.setattr(sl, "_read_memory", read)
+    resolved = sync._resolve_color_address(0x1, x86_base, 0x400000)
+    assert resolved == (target_slot, "signature:x86-pre2026")
+
+
+def test_read_chunk_resilient_skips_protected_pe_header(monkeypatch):
+    """If [base, base+0x1000) is PAGE_NOACCESS, _scan_pattern_masked still scans .text at base+0x1000."""
+    pattern = sl.SIGNATURES["pre-2024-sai2"]["pattern"]
+    raw_pat = bytes(b if b is not None else 0x00 for b in pattern)
+    text_chunk = b"\x90" * 0x200 + raw_pat + b"\x90" * 0x200
+
+    def read(handle, address, size):
+        if address == BASE:
+            return None  # PE header protected
+        if address == BASE + 0x1000:
+            return text_chunk[:size]
+        return None
+
+    monkeypatch.setattr(sl, "_read_memory", read)
+    hit = sl._scan_pattern_masked(0x1, BASE, 0x2000, pattern)
+    assert hit == BASE + 0x1000 + 0x200
+

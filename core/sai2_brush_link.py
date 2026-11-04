@@ -34,6 +34,7 @@ TH32CS_SNAPMODULE32 = 0x10
 #
 # pre-2024:   B9 03 00 00 00 88 05 ?? ?? ?? ??
 # after-2024: E8 ?? ?? ?? ?? B9 01 00 00 00 88 05 ?? ?? ?? ??
+# after-2026: 8B C1 C1 E8 10 8B D1 88 0D ?? ?? ?? ??
 DEFAULT_VERSION = "pre-2024-sai2"
 
 SIGNATURES: dict[str, dict[str, Any]] = {
@@ -47,11 +48,17 @@ SIGNATURES: dict[str, dict[str, Any]] = {
         "disp_offset": 12,
         "next_rip_offset": 16,
     },
+    "after-2026-sai2": {
+        "pattern": [0x8B, 0xC1, 0xC1, 0xE8, 0x10, 0x8B, 0xD1, 0x88, 0x0D, None, None, None, None],
+        "disp_offset": 9,
+        "next_rip_offset": 13,
+    },
 }
 
 # Fallback fixed offsets for known builds, used only when pattern scan fails
 KNOWN_OFFSETS: dict[str, int] = {
     "default": 0x303DC0,  # 2021.5.28 build
+    "after-2026-sai2": 0x4786D0,  # 2026.09.21 build
 }
 
 DEBUG = False
@@ -64,6 +71,15 @@ def _log(msg: str) -> None:
 
 def _normalize_version(version: str | None) -> str:
     s = str(version or "").strip().lower()
+    if s in (
+        "after-2026-sai2",
+        "after2026sai2",
+        "after-2026",
+        "after2026",
+        "2026",
+        "2026.09",
+    ):
+        return "after-2026-sai2"
     if s in (
         "after-2024-sai2",
         "after2024sai2",
@@ -144,30 +160,34 @@ def _find_process(name: str) -> int | None:
     """Locate a process id by image name."""
     name_lower = name.lower().encode("utf-8")
     snapshot = _kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-    if not snapshot or snapshot == 0xFFFFFFFF:
+    if not snapshot or snapshot in (0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF, -1):
         return None
 
     pe = PROCESSENTRY32()
     pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
 
     pid: int | None = None
+    fallback_pid: int | None = None
     if _kernel32.Process32First(snapshot, ctypes.byref(pe)):
         while True:
-            if pe.szExeFile.lower() == name_lower:
+            exe_lower = pe.szExeFile.lower()
+            if exe_lower == name_lower:
                 pid = pe.th32ProcessID
                 break
+            if fallback_pid is None and exe_lower.startswith(b"sai2") and exe_lower.endswith(b".exe"):
+                fallback_pid = pe.th32ProcessID
             if not _kernel32.Process32Next(snapshot, ctypes.byref(pe)):
                 break
 
     _kernel32.CloseHandle(snapshot)
-    return pid
+    return pid if pid is not None else fallback_pid
 
 
 def _get_module_info(pid: int, module_name: str) -> tuple[int | None, int | None]:
     """Return (base_addr, module_size) for the named module inside the process."""
     name_lower = module_name.lower().encode("utf-8")
     snapshot = _kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid)
-    if not snapshot or snapshot == 0xFFFFFFFF:
+    if not snapshot or snapshot in (0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF, -1):
         return None, None
 
     me = MODULEENTRY32()
@@ -175,16 +195,25 @@ def _get_module_info(pid: int, module_name: str) -> tuple[int | None, int | None
 
     base_addr: int | None = None
     mod_size: int | None = None
+    first_base: int | None = None
+    first_size: int | None = None
     if _kernel32.Module32First(snapshot, ctypes.byref(me)):
         while True:
-            if me.szModule.lower() == name_lower:
-                base_addr = ctypes.cast(me.modBaseAddr, ctypes.c_void_p).value
-                mod_size = me.modBaseSize
+            cand_base = ctypes.cast(me.modBaseAddr, ctypes.c_void_p).value
+            cand_size = me.modBaseSize
+            if first_base is None:
+                first_base, first_size = cand_base, cand_size
+            mod_lower = me.szModule.lower()
+            if mod_lower == name_lower or (mod_lower.startswith(b"sai2") and mod_lower.endswith(b".exe")):
+                base_addr = cand_base
+                mod_size = cand_size
                 break
             if not _kernel32.Module32Next(snapshot, ctypes.byref(me)):
                 break
 
     _kernel32.CloseHandle(snapshot)
+    if base_addr is None and first_base is not None:
+        return first_base, first_size
     return base_addr, mod_size
 
 
@@ -203,6 +232,18 @@ def _write_memory(handle, address: int, data) -> bool:
     # 必须校验实际写入字节数：部分写入（跨页/权限边缘）会返回成功但
     # 把 B/G/R 通道写错位，读回的是坏颜色。
     return result != 0 and bytes_written.value == len(data)
+
+
+def _read_chunk_resilient(handle, base: int, offset: int, read_size: int) -> tuple[int, bytes] | None:
+    """Read a memory chunk, skipping the 4KB PE header page if protected."""
+    data = _read_memory(handle, base + offset, read_size)
+    if data:
+        return offset, data
+    if offset == 0 and read_size > 0x1000:
+        data = _read_memory(handle, base + 0x1000, read_size - 0x1000)
+        if data:
+            return 0x1000, data
+    return None
 
 
 def _scan_pattern_masked(handle, base: int, size: int, pattern: list[int | None]) -> int | None:
@@ -224,9 +265,10 @@ def _scan_pattern_masked(handle, base: int, size: int, pattern: list[int | None]
         read_size = min(CHUNK_SIZE, size - offset)
         if read_size < pattern_len:
             continue
-        data = _read_memory(handle, base + offset, read_size)
-        if not data:
+        res = _read_chunk_resilient(handle, base, offset, read_size)
+        if not res:
             continue
+        eff_offset, data = res
 
         start = 0
         while True:
@@ -245,8 +287,121 @@ def _scan_pattern_masked(handle, base: int, size: int, pattern: list[int | None]
                     matched = False
                     break
             if matched:
-                return base + offset + cand
+                return base + eff_offset + cand
 
+            start = pos + 1
+
+    return None
+
+
+def _scan_universal_fallbacks(
+    handle,
+    base: int,
+    size: int,
+    seen: set[int],
+) -> tuple[int, str] | None:
+    """Scan for build-invariant x64/x86 SAI2 color-slot instruction patterns.
+
+    Used before falling back to KNOWN_OFFSETS so that 2020–2023 x64 builds,
+    32-bit (x86) builds, and misconfigured version selections still resolve
+    the exact active brush color address instead of a stale fixed offset.
+    """
+    CHUNK_SIZE = 0x100000
+    OVERLAP = 32
+    step = max(1, CHUNK_SIZE - OVERLAP)
+
+    for offset in range(0, size, step):
+        read_size = min(CHUNK_SIZE, size - offset)
+        if read_size < 20:
+            continue
+        res = _read_chunk_resilient(handle, base, offset, read_size)
+        if not res:
+            continue
+        eff_offset, data = res
+        if len(data) < 20:
+            continue
+        chunk_base = base + eff_offset
+
+        # 1. Universal x64 UpdateColorSlotFromFloats epilogue:
+        #    88 05 [disp32] E8 ?? ?? ?? ?? 48 83 C4 38 C3
+        start = 0
+        while True:
+            pos = data.find(b"\x48\x83\xC4\x38\xC3", start)
+            if pos == -1:
+                break
+            if pos >= 11 and data[pos - 11:pos - 9] == b"\x88\x05" and data[pos - 5] == 0xE8:
+                disp = struct.unpack_from("<i", data, pos - 9)[0]
+                cand = chunk_base + (pos - 11) + 6 + disp
+                if base <= cand < base + size and cand not in seen:
+                    seen.add(cand)
+                    if _read_memory(handle, cand, 3):
+                        return cand, "signature:universal-epilogue"
+            start = pos + 1
+
+        # 2. Universal x64 SetMainColorFromPackedRGB:
+        #    8B C1 C1 E8 10 8B D1 88 0D [disp32]
+        pos = data.find(b"\x8B\xC1\xC1\xE8\x10\x8B\xD1\x88\x0D")
+        if pos != -1 and pos + 13 <= len(data):
+            disp = struct.unpack_from("<i", data, pos + 9)[0]
+            cand = chunk_base + pos + 13 + disp
+            if base <= cand < base + size and cand not in seen:
+                seen.add(cand)
+                if _read_memory(handle, cand, 3):
+                    return cand, "signature:after-2026-sai2"
+
+        # 3. Universal x64 SwapMainSubColor (X-key handler):
+        #    8B 05 [disp32_main] 8B 0D [disp32_sub] where sub == main + 4
+        start = 0
+        while True:
+            pos = data.find(b"\x8B\x05", start)
+            if pos == -1 or pos + 15 > len(data):
+                break
+            if data[pos + 6:pos + 8] == b"\x8B\x0D":
+                tail2 = data[pos + 12:pos + 14]
+                tail3 = data[pos + 12:pos + 15]
+                if tail2 == b"\x89\x0D" or tail3 == b"\x48\x8B\x15":
+                    d1 = struct.unpack_from("<i", data, pos + 2)[0]
+                    d2 = struct.unpack_from("<i", data, pos + 8)[0]
+                    m_addr = chunk_base + pos + 6 + d1
+                    s_addr = chunk_base + pos + 12 + d2
+                    if s_addr == m_addr + 4 and base <= m_addr < base + size and m_addr not in seen:
+                        seen.add(m_addr)
+                        if _read_memory(handle, m_addr, 3):
+                            return m_addr, "signature:x64-swap"
+            start = pos + 1
+
+        # 4. Universal x86 (32-bit) UpdateColorSlotFromFloats:
+        #    E8 ?? ?? ?? ?? 6A 03 A2 [abs32] E8
+        start = 0
+        while True:
+            pos = data.find(b"\x6A\x03\xA2", start)
+            if pos == -1 or pos + 8 > len(data):
+                break
+            if pos >= 5 and data[pos - 5] == 0xE8 and data[pos + 7] == 0xE8:
+                cand = struct.unpack_from("<I", data, pos + 3)[0]
+                if base <= cand < base + size and cand not in seen:
+                    seen.add(cand)
+                    if _read_memory(handle, cand, 3):
+                        return cand, "signature:x86-pre2026"
+            start = pos + 1
+
+        # 5. Universal x86 (32-bit) SwapMainSubColor (X-key handler):
+        #    A1 [abs32_main] 8B 0D [abs32_sub] where sub == main + 4
+        start = 0
+        while True:
+            pos = data.find(b"\x8B\x0D", start)
+            if pos == -1 or pos + 10 > len(data):
+                break
+            if pos >= 5 and data[pos - 5] == 0xA1:
+                tail2 = data[pos + 6:pos + 8]
+                tail4 = data[pos + 6:pos + 10]
+                if tail2 == b"\x89\x0D" or tail4 == b"\xF3\x0F\x7E\x05":
+                    m_addr = struct.unpack_from("<I", data, pos - 4)[0]
+                    s_addr = struct.unpack_from("<I", data, pos + 2)[0]
+                    if s_addr == m_addr + 4 and base <= m_addr < base + size and m_addr not in seen:
+                        seen.add(m_addr)
+                        if _read_memory(handle, m_addr, 3):
+                            return m_addr, "signature:x86-swap"
             start = pos + 1
 
     return None
@@ -489,6 +644,16 @@ class SAI2Sync:
             _log(f"Pattern matched at 0x{pattern_addr:X}, candidate 0x{color_addr:X}")
             if _read_memory(handle, color_addr, 3):
                 return color_addr, f"signature:{version}"
+
+        fallback = _scan_universal_fallbacks(handle, base, size, seen)
+        if fallback is not None:
+            return fallback
+
+        if not self._auto_version and self.version in KNOWN_OFFSETS:
+            color_addr = base + KNOWN_OFFSETS[self.version]
+            if color_addr not in seen and _read_memory(handle, color_addr, 3):
+                _log(f"Using fixed offset {self.version} -> 0x{color_addr:X}")
+                return color_addr, f"offset:{self.version}"
 
         for name, offset in KNOWN_OFFSETS.items():
             color_addr = base + offset
