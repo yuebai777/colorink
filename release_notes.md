@@ -1,3 +1,21 @@
+## v1.8.14
+
+新增窗口化区域灰度滤镜（支持屏幕框选自定义区域与一键重置最大化），升级 DirectComposition 零分配多显示器硬件灰度引擎与 SAI2 2026 双向同步韧性；设置面板重构为 10 个精细化分类页，并全面打磨高分屏（High-DPI）矢量按钮与色环渲染精度。
+
+### 新增
+
+- **窗口/区域灰度滤镜（Region Grayscale Filter）**：新增独立于全屏灰度的窗口化区域灰度滤镜（默认快捷键 `Ctrl+Alt+G`），默认以无边框、无任务栏图标、鼠标穿透的置顶最大化窗口呈现，支持通过交互式遮罩（`RegionGrayscaleSelector`）在屏幕上拖拽框选任意局部矩形作为灰度观察区（框选时双击或按空格恢复默认最大化，右键/ESC 取消）。优先采用 `DirectComposition` 硬件裁剪加速（支持 OKLCh 等明度与 Luma 双算法），并内置独立高刷工作线程驱动的窗口化 `WC_MAGNIFIER` 后端（使用 `MagSetWindowFilterList` 排除宿主窗口避免递归自捕获）；设置页与系统托盘右键菜单同步提供快捷开关、框选与重置入口
+- **设置面板重构为 10 大精细分类 & 新增取色放大镜倍率调节**：左侧导航由原 6 页拆分为「快捷键 / 界面 / 窗口 / 取色器 / 色环 / LAB / 滑块 / 灰度滤镜 / 同步 / 系统」10 个独立页面，按导航项数量自适应窗口高度；「取色器」页新增全局屏幕取色放大镜默认倍率（`pickerZoom`，2× ~ 20×）滑块，「灰度滤镜」页新增全屏灰度与区域灰度的一键快捷开关
+- **矢量绘制的取色器浮动模式/模块按钮（`PickerIconButton`）**：用 QPainter 抗锯齿几何矢量绘制（HSV 内接方框、VHSV 对角分割、HLS 三角、RGB 等轴测立方体、LCh 菱形、LAB 平面+明度条、色环与圆盘/方框切换图标）全面替换原先直接渲染的 Unicode 字符（`◉`、`☉`、`◩`、`△`），彻底消除 Windows 高分屏下的 ClearType 亚像素彩边与基线偏移
+- **颜色历史网格支持按住拖拽连续选色**：在历史色块网格上按住鼠标左键滑动可实时跨格预览并连续取色
+
+### 修复
+
+- **SAI2 2026 内存同步韧性与 UI 控件联动刷新**：扩充 SAI2 2026 版本的内存特征扫描与候选地址校验逻辑，提升重启或切换画布后的自动重连稳定性，并完善颜色写入后的 SAI2 调色板 UI 同步刷新
+- **DirectComposition 灰度滤镜多显示器覆盖与设备丢失自愈**：重构 `native_dcomp`（`dcomp_filter.dll`）渲染循环为零分配（Zero-Allocation）架构，支持跨多显示器虚拟桌面坐标与局部区域裁剪（`dcomp_filter_set_region`），并在 D3D11/DXGI 设备重置或切换全屏/区域模式时自动清理裁剪状态与恢复呈现
+- **高分屏（High-DPI）色环缓存、透明色板与历史网格边框像素对齐**：色环与 LAB 切片离屏缓存按真实 `devicePixelRatioF` 物理像素尺寸渲染，消除缩放屏幕下的采样模糊；修正颜色历史悬停/选中边框在非整除余数列（spare column）上的 1px 偏移；优化透明色板（`TransparentSwatchButton`）、渐变滑块（`GradientSlider`）与无色环（Ringless）模式下顶部按钮的动态避让（`_update_lab_avoid`）
+- **CSP Companion 线程安全中止与测试会话隔离**：`CSPCompanionSync` 新增 `abort()` 方法通过 `shutdown(SHUT_RDWR)` 立即唤醒阻塞中的 TCP 连接，`MemorySyncThread.stop()` 改为安全分离而非强行 `terminate()` 销毁运行中线程，并在 `conftest.py` 隔离会话级 `%APPDATA%` 目录，根除后台重连引起的原生线程崩溃
+
 ## v1.8.13
 
 修正 Photoshop 前景色 ActionManager 类型 ID 大小写，彻底打通前景色免扰动写入路径；CEP 脚本面板版本同步升至 17。
