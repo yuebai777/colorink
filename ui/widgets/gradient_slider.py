@@ -4,7 +4,7 @@ import math
 from typing import cast
 
 from PyQt6.QtCore import QPointF, QRect, QRectF, Qt
-from PyQt6.QtGui import QColor, QLinearGradient, QMouseEvent, QPainter, QPen, QPolygonF
+from PyQt6.QtGui import QColor, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen, QPolygonF
 from PyQt6.QtWidgets import QSlider, QStyle, QStyleOptionSlider
 
 from ui.slider_themes import get_slider_theme
@@ -386,6 +386,31 @@ class GradientSlider(QSlider):
         if axis_w > 0:
             painter.drawRoundedRect(groove_rect, self.groove_radius, self.groove_radius)
 
+        # Out-of-gamut overlay (clipped to the rounded groove and drawn before
+        # the groove border so it never bleeds past rounded corners or covers
+        # the border stroke).
+        if self._gamut_min is not None and self._gamut_max is not None:
+            vmin = self.minimum()
+            vrange = self.maximum() - vmin
+            if vrange > 0 and axis_w > 0:
+                left_frac = (self._gamut_min - vmin) / vrange
+                right_frac = (self._gamut_max - vmin) / vrange
+                if left_frac > 0.005 or right_frac < 0.995:
+                    painter.save()
+                    clip_path = QPainterPath()
+                    clip_path.addRoundedRect(groove_rect, self.groove_radius, self.groove_radius)
+                    painter.setClipPath(clip_path)
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(160, 160, 160, 140))
+                    if left_frac > 0.005:
+                        painter.drawRect(QRectF(axis_x0, groove_y,
+                                                axis_w * left_frac, self.groove_h))
+                    if right_frac < 0.995:
+                        right_x = axis_x(right_frac)
+                        painter.drawRect(QRectF(right_x, groove_y,
+                                                axis_x1 - right_x, self.groove_h))
+                    painter.restore()
+
         # Groove outline (border theme). Inset by half the pen width so the
         # stroke stays inside the widget instead of being clipped.
         if self._groove_border_w > 0 and axis_w > 0:
@@ -396,23 +421,6 @@ class GradientSlider(QSlider):
                 groove_rect.adjusted(bw_g / 2, bw_g / 2, -bw_g / 2, -bw_g / 2),
                 self.groove_radius, self.groove_radius,
             )
-
-        # Out-of-gamut overlay
-        painter.setPen(Qt.PenStyle.NoPen)
-        if self._gamut_min is not None and self._gamut_max is not None:
-            vmin = self.minimum()
-            vrange = self.maximum() - vmin
-            if vrange > 0 and axis_w > 0:
-                left_frac = (self._gamut_min - vmin) / vrange
-                right_frac = (self._gamut_max - vmin) / vrange
-                painter.setBrush(QColor(160, 160, 160, 140))
-                if left_frac > 0.005:
-                    painter.drawRect(QRectF(axis_x0, groove_y,
-                                            axis_w * left_frac, self.groove_h))
-                if right_frac < 0.995:
-                    right_x = axis_x(right_frac)
-                    painter.drawRect(QRectF(right_x, groove_y,
-                                            axis_x1 - right_x, self.groove_h))
 
         if handle_shape == "triangle-below":
             half_w = self._triangle_half_width()

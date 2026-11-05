@@ -249,23 +249,33 @@ class SettingsHelpersMixin:
                 for x in (8.0, 12.0, 16.0, 20.0, 24.0):
                     p.drawEllipse(QPointF(x, row_y), 1.2, 1.2)
         elif kind == "interface":
-            # Monitor
+            # Monitor / theme
             p.drawRoundedRect(4, 5, 28, 17, 2, 2)
             p.drawLine(QPointF(18, 22), QPointF(18, 27))
             p.drawLine(QPointF(11, 30), QPointF(25, 30))
+        elif kind == "window":
+            # Window frame with title bar
+            p.drawRoundedRect(4, 6, 28, 24, 3, 3)
+            p.drawLine(QPointF(4, 13), QPointF(32, 13))
+            p.setBrush(c)
+            p.drawEllipse(QPointF(9, 9.5), 1.1, 1.1)
+            p.drawEllipse(QPointF(13.5, 9.5), 1.1, 1.1)
         elif kind == "picker":
             # Color wheel (ring + inner ring + hue dot)
             p.drawEllipse(QPointF(cx, cy), 16, 16)
             p.drawEllipse(QPointF(cx, cy), 6, 6)
             p.setBrush(c)
             p.drawEllipse(QPointF(cx - 11, cy), 2.1, 2.1)
-        elif kind == "panels":
-            # Panels: one wide block over two side-by-side ones
-            p.drawRoundedRect(4, 5, 28, 10, 2, 2)
-            p.drawRoundedRect(4, 19, 12, 12, 2, 2)
-            p.drawRoundedRect(20, 19, 12, 12, 2, 2)
-        elif kind == "filter":
-            # Sliders/filter: three horizontal lines with knobs
+        elif kind == "lab":
+            # LAB plane + harmony circle
+            p.drawRoundedRect(5, 5, 26, 26, 3, 3)
+            p.drawEllipse(QPointF(cx, cy), 8, 8)
+            p.setBrush(c)
+            p.drawEllipse(QPointF(cx + 8, cy), 2.0, 2.0)
+            p.drawEllipse(QPointF(cx - 4, cy - 6.9), 2.0, 2.0)
+            p.drawEllipse(QPointF(cx - 4, cy + 6.9), 2.0, 2.0)
+        elif kind == "sliders":
+            # Three horizontal slider tracks with knobs
             p.drawLine(QPointF(6, 10), QPointF(30, 10))
             p.drawLine(QPointF(6, 18), QPointF(30, 18))
             p.drawLine(QPointF(6, 26), QPointF(30, 26))
@@ -273,6 +283,16 @@ class SettingsHelpersMixin:
             p.drawEllipse(QPointF(12, 10), 2.2, 2.2)
             p.drawEllipse(QPointF(24, 18), 2.2, 2.2)
             p.drawEllipse(QPointF(18, 26), 2.2, 2.2)
+        elif kind == "panels":
+            # Panels: one wide block over two side-by-side ones
+            p.drawRoundedRect(4, 5, 28, 10, 2, 2)
+            p.drawRoundedRect(4, 19, 12, 12, 2, 2)
+            p.drawRoundedRect(20, 19, 12, 12, 2, 2)
+        elif kind == "filter":
+            # Grayscale contrast circle (half-shaded)
+            p.drawEllipse(QPointF(cx, cy), 14, 14)
+            p.setBrush(c)
+            p.drawChord(int(cx - 14), int(cy - 14), 28, 28, -90 * 16, 180 * 16)
         elif kind == "software":
             # Circular sync arrows
             r = 11.0

@@ -16,6 +16,7 @@ _MODS = [
     "win32com.client.dynamic", "win32com.client.gencache",
     "win32com.client.CLSIDToClass", "pythoncom",
 ]
+_PREV_MODS = {_m: sys.modules.get(_m) for _m in _MODS}
 for _m in _MODS:
     _mock = MagicMock()
     sys.modules[_m] = _mock
@@ -38,6 +39,12 @@ setattr(sys.modules["win32gui"], "GetWindow", MagicMock(return_value=0))
 setattr(sys.modules["win32gui"], "GetWindowTextLengthW", MagicMock(return_value=0))
 
 from ui.main_window import MainWindow
+
+for _m, _orig in _PREV_MODS.items():
+    if _orig is None:
+        sys.modules.pop(_m, None)
+    else:
+        sys.modules[_m] = _orig
 
 
 class ContentHeightPolicyTests(unittest.TestCase):

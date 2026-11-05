@@ -61,6 +61,8 @@ class SyncPanelMixin:
         self.row_csp_widget.setVisible(selected == "csp")
         self.row_csp_hint_widget.setVisible(selected == "csp")
         self.row_sai_widget.setVisible(selected == "sai")
+        if hasattr(self, "row_sai_panel_widget"):
+            self.row_sai_panel_widget.setVisible(selected == "sai")
         self.row_udm_widget.setVisible(selected == "udm")
         self.row_ps_widget.setVisible(selected == "ps")
         self.row_companion_widget.setVisible(show_companion)
@@ -608,17 +610,5 @@ class SyncPanelMixin:
         self._ps_bridge_prompted = False
 
         page_sync.addWidget(card_sync)
-
-        # ── Card 2: 全屏灰度滤镜 ──
-        if hasattr(self, "_build_grayscale_card"):
-            self._build_grayscale_card(page_sync)
-
-        # ── Card 3: 配置管理 ──
-        if hasattr(self, "_build_config_card"):
-            self._build_config_card(page_sync)
-
-        # ── Card 4: 关于与更新 ──
-        if hasattr(self, "_build_about_card"):
-            self._build_about_card(page_sync)
 
 

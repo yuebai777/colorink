@@ -63,6 +63,23 @@ class TrayMixin:
 
         tray_menu.addSeparator()
 
+        region_toggle_action = QAction(i18n.tr("切换区域灰度滤镜"), self)
+        region_toggle_action.triggered.connect(self.toggle_region_grayscale)
+        tray_menu.addAction(region_toggle_action)
+        self.tray_region_grayscale_action = region_toggle_action
+
+        region_select_action = QAction(i18n.tr("框选灰度区域..."), self)
+        region_select_action.triggered.connect(self.start_select_grayscale_region)
+        tray_menu.addAction(region_select_action)
+        self.tray_select_region_action = region_select_action
+
+        region_reset_action = QAction(i18n.tr("重置灰度区域为最大化"), self)
+        region_reset_action.triggered.connect(self.reset_grayscale_region_to_maximized)
+        tray_menu.addAction(region_reset_action)
+        self.tray_reset_region_action = region_reset_action
+
+        tray_menu.addSeparator()
+
         settings_action = QAction(i18n.tr("打开设置"), self)
         settings_action.triggered.connect(self.toggle_settings_sidebar)
         tray_menu.addAction(settings_action)
@@ -228,6 +245,17 @@ class TrayMixin:
             close_fn = getattr(self.grayscale_overlay, "close", None)
             if callable(close_fn):
                 close_fn()
+        if hasattr(self, 'region_grayscale_overlay'):
+            self.region_grayscale_overlay.set_active(False)
+            close_fn = getattr(self.region_grayscale_overlay, "close", None)
+            if callable(close_fn):
+                close_fn()
+        if hasattr(self, 'region_grayscale_selector'):
+            try:
+                self.region_grayscale_selector.stop_selection()
+                self.region_grayscale_selector.close()
+            except Exception:
+                pass
         if hasattr(self, 'sync_thread'):
             # Disable sync & reset PS COM ref so the polling loop
             # won't try to make new COM calls to a dead Photoshop.

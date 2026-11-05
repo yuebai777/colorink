@@ -278,3 +278,16 @@ def test_track_band_defaults_to_the_whole_widget(qapp):
     bar = LabSlider()
     bar.resize(18, 300)
     assert bar.track_band() == (0.0, 300.0)
+
+
+def test_square_plane_clears_bottom_buttons_via_avoid_bottom(qapp):
+    """回归：当预览盒在左下角（avoid_top 很小）或右下角有悬浮按钮时，
+    avoid_bottom 必须收缩方形 LAB 平面，使其底边停在右下角按钮上方，不被按钮遮挡。"""
+    sq = LabSquare()
+    sq.resize(350, 350)
+    sq.set_shape("square")
+    sq.set_avoid_top(6)
+    sq.set_avoid_bottom(BUTTON_SIZE + BUTTON_MARGIN + 4)
+    _gap, _x, y, size = sq.plane_geometry()
+    buttons_top = 350 - BUTTON_SIZE - BUTTON_MARGIN
+    assert y + size <= buttons_top - 4

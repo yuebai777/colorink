@@ -18,9 +18,11 @@ from ui.color_preview_box import ColorPreviewBox
 from ui.picker_panes import LabPane, PaneWithModeButton, WheelPane
 from ui.ringless_mode import RinglessLayout
 
-for _m in ("brush_color_spaces","win32gui","win32api","win32con","win32process",
-           "psutil","win32com","win32com.client","win32com.client.dynamic",
-           "win32com.client.gencache","win32com.client.CLSIDToClass","pythoncom"):
+_MOCK_MODS = ("brush_color_spaces","win32gui","win32api","win32con","win32process",
+              "psutil","win32com","win32com.client","win32com.client.dynamic",
+              "win32com.client.gencache","win32com.client.CLSIDToClass","pythoncom")
+_PREV_MODS = {_m: _s.modules.get(_m) for _m in _MOCK_MODS}
+for _m in _MOCK_MODS:
     _s.modules[_m] = MagicMock()
 setattr(_s.modules["brush_color_spaces"], "PSColorSpace", MagicMock())
 for _a in ("GetForegroundWindow","GetWindowText","GetWindowLong","SetWindowLong",
@@ -30,6 +32,12 @@ for _a in ("GetForegroundWindow","GetWindowText","GetWindowLong","SetWindowLong"
     setattr(_s.modules["win32gui"], _a, MagicMock(return_value=False))
 
 from ui.main_window import MainWindow
+
+for _m, _orig in _PREV_MODS.items():
+    if _orig is None:
+        _s.modules.pop(_m, None)
+    else:
+        _s.modules[_m] = _orig
 
 # ── Canonical layouts (typed, immutable) ─────────────────────────────────
 
@@ -447,3 +455,44 @@ class TestLabTopControlBarLifecycle:
         # Sizing and layout must not be clobbered to legacy circle fit
         assert harness.preview_box.width() == initial_width
         assert harness.preview_box._ringless_layout is not None
+
+
+class TestPickerIconButton:
+    """Tests for vector-drawn PickerIconButton icons on mode and module buttons."""
+
+    @pytest.mark.parametrize("kind", [
+        "module:hsv", "module:vhsv", "module:hls", "module:rgb", "module:lch",
+        "mode:lab", "mode:wheel", "lab:square", "lab:disc",
+    ])
+    def test_all_icon_kinds_render_non_empty(self, qapp, kind):
+        from PyQt6.QtGui import QImage
+        from ui.widgets.picker_icon_button import PickerIconButton
+
+        btn = PickerIconButton("X", icon_kind=kind)
+        btn.setFixedSize(28, 28)
+        btn.setStyleSheet("QPushButton { background: transparent; border: none; color: #222222; }")
+        img = QImage(28, 28, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(0)
+        btn.render(img)
+        opaque = sum(
+            1 for y in range(28) for x in range(28)
+            if img.pixelColor(x, y).alpha() > 40
+        )
+        assert opaque >= 20, f"icon_kind={kind} did not render visible vector strokes"
+
+    def test_module_and_lab_shape_buttons_sync_icon_kind(self, harness):
+        from ui.widgets.picker_icon_button import PickerIconButton
+
+        harness.btn_module = PickerIconButton("HSV", harness.pane_wheel, icon_kind="module:hsv")
+        harness.btn_lab_shape = PickerIconButton("□", harness.pane_lab, icon_kind="lab:square")
+        for mod in ("hsv", "vhsv", "hls", "rgb", "lch"):
+            harness._current_module = mod
+            MainWindow._update_module_button_label(harness)
+            assert harness.btn_module.icon_kind == f"module:{mod}"
+
+        harness.lab_square.shape = "disc"
+        MainWindow._update_lab_shape_button(harness)
+        assert harness.btn_lab_shape.icon_kind == "lab:disc"
+        harness.lab_square.shape = "square"
+        MainWindow._update_lab_shape_button(harness)
+        assert harness.btn_lab_shape.icon_kind == "lab:square"

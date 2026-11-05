@@ -210,9 +210,9 @@ class ColorPreviewBox(QWidget):
         self._ringless_swatch(painter, fg_rect, radius, self.fg_color, fg_active)
 
     def _ringless_swatch(self, painter, rect, radius, color, active):
-        painter.setBrush(QBrush(color))
-        painter.setPen(QPen(self.active_border_color, 2.5) if active else QPen(self.inactive_border_color, 1.0))
-        painter.drawRoundedRect(rect, radius, radius)
+        bw, r = (2.5 if active else 1.0), max(0.0, radius - (0.75 if active else 0.0))
+        painter.setBrush(QBrush(color)); painter.setPen(QPen(self.active_border_color if active else self.inactive_border_color, bw))
+        painter.drawRoundedRect(rect.adjusted(bw / 2.0, bw / 2.0, -bw / 2.0, -bw / 2.0), r, r)
 
     def legacy_circle_geometry(self):
         """Centres and radii of the legacy fg/bg circles.

@@ -113,6 +113,8 @@ class SettingsWindow(QDialog):
             max_h = min(560, screen.availableGeometry().height() - 40)
 
         content_hint = 0
+        if hasattr(self.sidebar, "nav") and self.sidebar.nav is not None:
+            content_hint = max(content_hint, self.sidebar.nav.count() * 32 + 12)
         for i in range(self.sidebar.stack.count()):
             page_widget = self.sidebar.stack.widget(i)
             if isinstance(page_widget, QScrollArea):

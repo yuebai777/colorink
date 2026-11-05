@@ -78,13 +78,19 @@ class ColorWheelRenderingMixin:
             slice_cx, slice_cy, slice_r = cx, cy, triangle_radius
 
             # 1) Draw Hue Ring with Caching (skip in oklch-slice mode — it has no ring)
+            dpr = max(1.0, float(self.devicePixelRatioF()))
             if self.wheel_mode != "oklch-slice":
                 flip_h = self.cfg.get("flipColorWheelHorizontally", False)
-                ring_key = (int(cx), int(cy), int(outer_radius), int(inner_radius), flip_h)
+                ring_key = (int(cx), int(cy), int(outer_radius), int(inner_radius), flip_h, round(dpr, 2))
                 if not hasattr(self, "_cached_ring_key") or self._cached_ring_key != ring_key or not hasattr(self, "_cached_ring_img") or self._cached_ring_img is None:
                     w = self.width()
                     h = self.height()
-                    self._cached_ring_img = QImage(w, h, QImage.Format.Format_ARGB32)
+                    self._cached_ring_img = QImage(
+                        max(1, int(round(w * dpr))),
+                        max(1, int(round(h * dpr))),
+                        QImage.Format.Format_ARGB32_Premultiplied,
+                    )
+                    self._cached_ring_img.setDevicePixelRatio(dpr)
                     self._cached_ring_img.fill(0)
 
                     p = QPainter(self._cached_ring_img)
@@ -125,11 +131,16 @@ class ColorWheelRenderingMixin:
                 L_ring = 0.85
                 C_ring = 0.4
                 flip_h = self.cfg.get("flipColorWheelHorizontally", False)
-                ring_key = (int(cx), int(cy), int(outer_radius), int(inner_radius), flip_h)
+                ring_key = (int(cx), int(cy), int(outer_radius), int(inner_radius), flip_h, round(dpr, 2))
                 if not hasattr(self, "_cached_oklch_ring_key") or self._cached_oklch_ring_key != ring_key or not hasattr(self, "_cached_oklch_ring_img"):
                     w = self.width()
                     h = self.height()
-                    self._cached_oklch_ring_img = QImage(w, h, QImage.Format.Format_ARGB32)
+                    self._cached_oklch_ring_img = QImage(
+                        max(1, int(round(w * dpr))),
+                        max(1, int(round(h * dpr))),
+                        QImage.Format.Format_ARGB32_Premultiplied,
+                    )
+                    self._cached_oklch_ring_img.setDevicePixelRatio(dpr)
                     self._cached_oklch_ring_img.fill(0)
                     p = QPainter(self._cached_oklch_ring_img)
                     p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -286,7 +297,7 @@ class ColorWheelRenderingMixin:
             painter.save()
             painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(int(cx - half), int(cy - half), width, height)
+            painter.drawRect(QRectF(int(cx - half) + 0.5, int(cy - half) + 0.5, width - 1.0, height - 1.0))
             painter.restore()
             return
         if self._cached_img_key == cache_key and self._cached_img is not None:
@@ -294,7 +305,7 @@ class ColorWheelRenderingMixin:
             painter.save()
             painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(int(cx - half), int(cy - half), width, height)
+            painter.drawRect(QRectF(int(cx - half) + 0.5, int(cy - half) + 0.5, width - 1.0, height - 1.0))
             painter.restore()
             return
 
@@ -309,7 +320,7 @@ class ColorWheelRenderingMixin:
         painter.save()
         painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(int(cx - half), int(cy - half), width, height)
+        painter.drawRect(QRectF(int(cx - half) + 0.5, int(cy - half) + 0.5, width - 1.0, height - 1.0))
         painter.restore()
 
     def draw_vhsv_square(self, painter, cx, cy, r):
@@ -327,7 +338,7 @@ class ColorWheelRenderingMixin:
             painter.save()
             painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(int(cx - half), int(cy - half), width, height)
+            painter.drawRect(QRectF(int(cx - half) + 0.5, int(cy - half) + 0.5, width - 1.0, height - 1.0))
             painter.restore()
             return
         if self._cached_img_key == cache_key and self._cached_img is not None:
@@ -335,7 +346,7 @@ class ColorWheelRenderingMixin:
             painter.save()
             painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(int(cx - half), int(cy - half), width, height)
+            painter.drawRect(QRectF(int(cx - half) + 0.5, int(cy - half) + 0.5, width - 1.0, height - 1.0))
             painter.restore()
             return
 
@@ -350,7 +361,7 @@ class ColorWheelRenderingMixin:
         painter.save()
         painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(int(cx - half), int(cy - half), width, height)
+        painter.drawRect(QRectF(int(cx - half) + 0.5, int(cy - half) + 0.5, width - 1.0, height - 1.0))
         painter.restore()
 
     def _oklch_hue_for_ring(self) -> float:

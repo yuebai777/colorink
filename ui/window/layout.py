@@ -566,55 +566,71 @@ class LayoutMixin:
             preview.raise_()
 
     def _update_lab_avoid(self):
-        """Tell LabSquare how much of its top is covered by the floating
-        preview box, so the ab plane renders below it instead of being hidden.
+        """Tell LabSquare how much of its top/bottom is covered by the floating
+        preview box and bottom-right mode buttons, so the ab plane renders
+        cleanly between them instead of being hidden underneath.
 
-        In ringless mode the top control bar reserves space via the LAB layout
-        margin, so legacy preview-box avoidance is skipped.
+        In ringless mode the top/bottom control bar reserves space via the LAB
+        layout margin, so legacy avoidance is skipped.
         """
         if not hasattr(self, 'lab_square') or not hasattr(self, 'preview_box'):
             return
         pb = self.preview_box
         ls = self.lab_square
 
-        # ── Ringless mode: layout margin owns the top spacing ──
-        if self.cfg.get("hideHueRing", False):
+        def _apply_avoid(top_px: int, bottom_px: int) -> None:
             if callable(getattr(ls, "set_avoid_top", None)):
-                ls.set_avoid_top(0)
-            ls.avoid_top = 0
+                ls.set_avoid_top(top_px)
+            ls.avoid_top = top_px
+            if callable(getattr(ls, "set_avoid_bottom", None)):
+                ls.set_avoid_bottom(bottom_px)
+            ls.avoid_bottom = bottom_px
+
+        # ── Ringless mode: layout margin owns the top/bottom spacing ──
+        if self.cfg.get("hideHueRing", False):
+            _apply_avoid(0, 0)
             return
 
+        scale = self.cfg.get("uiScale", 100) / 100.0
+        pad = max(2, int(round(4 * scale)))
+
+        # Reserve bottom clearance when any of the floating LAB buttons
+        # (harmony / shape / mode toggle) are shown at the bottom-right.
+        has_lab_buttons = any(
+            bool(self.cfg.get(k, True))
+            for k in ("showLabToggleButton", "showLabShapeButton", "showLabHarmonyButton")
+        )
+        new_avoid_bottom = 0
+        if has_lab_buttons:
+            pane_lab = getattr(self, "pane_lab", None)
+            btn_size = int(getattr(pane_lab, "_btn_size", 0) or round(28 * scale))
+            btn_margin = int(getattr(pane_lab, "_btn_margin", 0) or round(6 * scale))
+            new_avoid_bottom = btn_size + btn_margin + pad
+
         if pb.position_mode != "top-left" or pb.isHidden():
-            if callable(getattr(ls, "set_avoid_top", None)):
-                ls.set_avoid_top(0)
-            ls.avoid_top = 0
+            # Keep a small top breathing margin when the plane is pushed up by
+            # bottom button avoidance so it doesn't touch the top edge.
+            top_pad = int(round(6 * scale)) if new_avoid_bottom > 0 else 0
+            _apply_avoid(top_pad, new_avoid_bottom)
             return
         # Both rectangles come from the layout, not from mapFromGlobal on the
         # two widgets: the LAB page keeps its construction-time geometry until
         # it is first shown, so mapping through it produced a bogus offset
         # whenever the wheel page was in front.
-        scale = self.cfg.get("uiScale", 100) / 100.0
         try:
             picker = self.window_layout(scale).picker
             box = pb.geometry()
         except (AttributeError, RuntimeError, TypeError, ValueError):
-            if callable(getattr(ls, "set_avoid_top", None)):
-                ls.set_avoid_top(0)
-            ls.avoid_top = 0
+            _apply_avoid(0, new_avoid_bottom)
             return
         # Only avoid while the cluster actually overlaps the plane's column.
         lab_margins = self.lab_layout.contentsMargins()
         plane_top = picker.y + lab_margins.top()
         if box.right() <= picker.x or box.x() >= picker.right:
-            if callable(getattr(ls, "set_avoid_top", None)):
-                ls.set_avoid_top(0)
-            ls.avoid_top = 0
+            _apply_avoid(0, new_avoid_bottom)
             return
-        pad = int(4 * scale)
         new_avoid_top = max(0, int(box.bottom() - plane_top + pad))
-        if callable(getattr(ls, "set_avoid_top", None)):
-            ls.set_avoid_top(new_avoid_top)
-        ls.avoid_top = new_avoid_top
+        _apply_avoid(new_avoid_top, new_avoid_bottom)
 
     def showEvent(self, event):
         """On show, run any content-height adjustment deferred while hidden."""

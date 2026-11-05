@@ -123,6 +123,9 @@ class LabSquare(QWidget):
         # so the ab plane isn't hidden behind it. Set by MainWindow based on
         # the preview box geometry. 0 = no avoidance (plane centered).
         self.avoid_top = 0
+        # Height of the bottom strip to keep clear of the floating bottom-right
+        # mode/shape/harmony buttons (and bottom-left preview box).
+        self.avoid_bottom = 0
 
         # Vertical lightness bar sharing the LAB pane with this widget.
         # ``side_total`` is the FULL pane width that the plane and the bar have
@@ -183,7 +186,7 @@ class LabSquare(QWidget):
         return max(0.0, min(self._plane_gap(size), self.width() - size))
 
     def _square_plane_size(self) -> int:
-        avail_h = max(0, self.height() - self.avoid_top)
+        avail_h = max(0, self.height() - self.avoid_top - self.avoid_bottom)
         return int(max(0, min(self._plane_width_budget(), avail_h, self.width())))
 
     def _plane_size(self) -> int:
@@ -204,7 +207,7 @@ class LabSquare(QWidget):
             diameter = radius * 2.0
             return self._plane_gap(diameter), cx - radius, cy - radius, diameter
         size = self._square_plane_size()
-        avail_h = max(0, self.height() - self.avoid_top)
+        avail_h = max(0, self.height() - self.avoid_top - self.avoid_bottom)
         return (self._plane_gap(size), self._plane_left(size),
                 self.avoid_top + (avail_h - size) / 2.0, float(size))
 
@@ -243,6 +246,15 @@ class LabSquare(QWidget):
         if value == self.avoid_top:
             return
         self.avoid_top = value
+        self._invalidate_full_cache()
+        self.planeGeometryChanged.emit()
+        self.update()
+
+    def set_avoid_bottom(self, value: int) -> None:
+        value = max(0, int(value))
+        if value == self.avoid_bottom:
+            return
+        self.avoid_bottom = value
         self._invalidate_full_cache()
         self.planeGeometryChanged.emit()
         self.update()

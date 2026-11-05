@@ -16,6 +16,7 @@ _MOCK_MODS = [
     "win32com.client.dynamic", "win32com.client.gencache",
     "win32com.client.CLSIDToClass", "pythoncom",
 ]
+_PREV_MODS = {_m: sys.modules.get(_m) for _m in _MOCK_MODS}
 for _m in _MOCK_MODS:
     sys.modules[_m] = MagicMock()
 setattr(sys.modules["brush_color_spaces"], "PSColorSpace", MagicMock())
@@ -26,6 +27,12 @@ for _a in ("GetForegroundWindow", "GetWindowText", "GetWindowLong", "SetWindowLo
     setattr(sys.modules["win32gui"], _a, MagicMock(return_value=False))
 
 from ui.main_window import MainWindow
+
+for _m, _orig in _PREV_MODS.items():
+    if _orig is None:
+        sys.modules.pop(_m, None)
+    else:
+        sys.modules[_m] = _orig
 
 # ── Shared fixture factories ────────────────────────────────────────────────
 

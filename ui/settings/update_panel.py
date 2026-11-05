@@ -441,8 +441,10 @@ class UpdatePanelMixin:
         return card_config
 
     def _build_about_page(self, page_about):
-        self._build_about_card(page_about)
+        if hasattr(self, "_build_system_env_card"):
+            self._build_system_env_card(page_about)
         self._build_config_card(page_about)
+        self._build_about_card(page_about)
 
 
 class _UpdateWorker(QThread):

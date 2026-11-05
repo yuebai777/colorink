@@ -86,6 +86,7 @@ def default_hotkey_config():
         "hideWindowKey": "Ctrl+Alt+Y",
         "toggleTitleBarKey": "Ctrl+Alt+K",  # 全局快捷键: 切换标题栏（设置/最小化/关闭那一栏）显隐
         "grayscaleFilterKey": "Ctrl+Alt+D",
+        "regionGrayscaleKey": "Ctrl+Alt+G",  # 全局快捷键: 开关窗口/区域灰度滤镜
         "toggleLabKey": "Space",          # 本地快捷键: 悬停色轮/LAB区域切换视图，悬停标签页切换到下一个标签页
         "toggleLabGlobalKey": "Ctrl+Alt+L",   # 全局快捷键: 任意位置切换色轮/LAB视图
         "showLabToggleButton": True,      # 显示/隐藏色轮与LAB之间的浮动切换按钮
@@ -99,6 +100,7 @@ def default_hotkey_config():
         # native = DXGI Desktop Duplication + OpenGL 兼容层；
         # mag = Windows 系统颜色矩阵（仅 Luma，作用于全部屏幕）
         "grayscaleFilterBackend": "dcomp",
+        "grayscaleFilterRegion": None,    # 区域灰度滤镜自定义矩形 {"x", "y", "width", "height"}，None 表示默认最大化无边框窗口
         "showTaskbarIcon": False,
         "lockWindowSize": False,
         "lockWindowPosition": False,

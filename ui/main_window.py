@@ -1,3 +1,4 @@
+import os
 import sys
 
 from PyQt6.QtCore import QSize, Qt, QTimer
@@ -34,7 +35,7 @@ from ui.color_wheel import ColorWheel
 from ui.lab_visualizer import LabSlider, LabSquare
 from ui.picker_panes import LabPane, WheelPane
 from ui.settings_sidebar import SettingsSidebar
-from ui.widgets import TitleBar, _title_bar_content_offset  # noqa: F401  (re-export)
+from ui.widgets import PickerIconButton, TitleBar, _title_bar_content_offset  # noqa: F401  (re-export)
 from ui.window import (
     ColorSlotsMixin,
     ColorUpdatesMixin,
@@ -229,27 +230,27 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
 
         screen_target = self.cfg.get("grayscaleFilterScreen", "all")
         self.grayscale_overlay.set_target(screen_target)
-        if backend != "mag":
-            def _prepare_and_check():
-                prepare = getattr(self.grayscale_overlay, "prepare", None)
-                if callable(prepare):
-                    prepare()
-                if not getattr(self.grayscale_overlay, "is_healthy", True):
-                    print("[Grayscale] Backend failed health check after prepare — falling back to Mag")
-                    from core.mag_grayscale import MagFilterController
-                    mag_ctrl = MagFilterController(mode="luma")
-                    if mag_ctrl.is_available:
-                        try:
-                            close_fn = getattr(self.grayscale_overlay, "close", None)
-                            if callable(close_fn):
-                                close_fn()
-                        except Exception:
-                            pass
-                        self.grayscale_overlay = mag_ctrl
-                        self.cfg["grayscaleFilterBackend"] = "mag"
 
+        # Window / Region grayscale filter (默认最大化无边框无任务栏窗口，支持自定义框选区域)
+        from core.region_grayscale import RegionGrayscaleController
+        from ui.region_grayscale_selector import RegionGrayscaleSelector
+        region_backend = "mag" if backend == "mag" else "auto"
+        self.region_grayscale_overlay = RegionGrayscaleController(
+            mode=mode,
+            backend=region_backend,
+            region=self.cfg.get("grayscaleFilterRegion"),
+        )
+        self.region_grayscale_overlay.set_target(screen_target)
+        self.region_grayscale_selector = RegionGrayscaleSelector(None)
+        self.region_grayscale_selector.regionSelected.connect(self._on_grayscale_region_selected)
+        self.region_grayscale_selector.regionReset.connect(self._on_grayscale_region_reset)
+
+        self._dcomp_warmup_timer = QTimer(self)
+        self._dcomp_warmup_timer.setSingleShot(True)
+        self._dcomp_warmup_timer.timeout.connect(self._prepare_grayscale_backend)
+        if backend != "mag" and not os.environ.get("PYTEST_CURRENT_TEST"):
             # grayscale_overlay.prepare runs once the window is up:
-            QTimer.singleShot(800, _prepare_and_check)
+            self._dcomp_warmup_timer.start(800)
             # Pre-import dxcam off the GUI thread so the first Ctrl+Alt+D does not
             # pay the one-time ~0.4s module/D3D11/comtypes import cost.
             if sys.modules.get("dxcam") is None:
@@ -289,7 +290,30 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         # Deferred background update check → tray notification, not a modal.
         self._startup_update_checked = False
         self._pending_update = None
-        QTimer.singleShot(4000, self._check_updates_silently)
+        self._update_check_timer = QTimer(self)
+        self._update_check_timer.setSingleShot(True)
+        self._update_check_timer.timeout.connect(self._check_updates_silently)
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            self._update_check_timer.start(4000)
+
+    def _prepare_grayscale_backend(self):
+        """Warm up the grayscale filter backend and fall back to Mag if unhealthy."""
+        prepare = getattr(self.grayscale_overlay, "prepare", None)
+        if callable(prepare):
+            prepare()
+        if not getattr(self.grayscale_overlay, "is_healthy", True):
+            print("[Grayscale] Backend failed health check after prepare — falling back to Mag")
+            from core.mag_grayscale import MagFilterController
+            mag_ctrl = MagFilterController(mode="luma")
+            if mag_ctrl.is_available:
+                try:
+                    close_fn = getattr(self.grayscale_overlay, "close", None)
+                    if callable(close_fn):
+                        close_fn()
+                except Exception:
+                    pass
+                self.grayscale_overlay = mag_ctrl
+                self.cfg["grayscaleFilterBackend"] = "mag"
 
     def init_ui(self):
         # Frameless, transparent, stays on top, taskbar icon based on config
@@ -356,7 +380,7 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self._bg_source_values = None
 
         # Floating mode buttons parented to their respective views
-        self.btn_mode_wheel = QPushButton("☉", self.pane_wheel)
+        self.btn_mode_wheel = PickerIconButton("☉", self.pane_wheel, icon_kind="mode:lab")
         self.btn_mode_wheel.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_mode_wheel.setToolTip("切换模式 (色轮 / LAB)")
         self.btn_mode_wheel.clicked.connect(self.toggle_picker_mode)
@@ -411,7 +435,7 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.lab_layout.setSpacing(0)
         
         # Floating mode button parented directly to self.pane_lab
-        self.btn_mode_lab = QPushButton("△", self.pane_lab)
+        self.btn_mode_lab = PickerIconButton("△", self.pane_lab, icon_kind="mode:wheel")
         self.btn_mode_lab.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_mode_lab.setToolTip("切换模式 (色轮 / LAB)")
         self.btn_mode_lab.clicked.connect(self.toggle_picker_mode)
@@ -489,6 +513,7 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         # Apply persisted ringless state after all components and button
         # visibility are known
         self._sync_ringless_mode()
+        self._update_lab_avoid()
         self.color_wheel.schedule_slice_prewarm(350)
         self._schedule_lab_prerender(100)
 

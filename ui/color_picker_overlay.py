@@ -13,7 +13,7 @@ from typing import Any, cast
 
 import win32api
 import win32con
-from PyQt6.QtCore import QPoint, QRect, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QPoint, QRect, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QCursor, QImage, QPainter, QPen
 from PyQt6.QtWidgets import QApplication, QWidget
 
@@ -729,12 +729,10 @@ class ColorPickerOverlay(QWidget):
         try:
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             w, h = self._panel_w, self._panel_h
-            p.setPen(Qt.PenStyle.NoPen)
+            panel_rect = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
+            p.setPen(QPen(QColor(90, 90, 90, 60), 1.0))
             p.setBrush(QBrush(QColor(40, 40, 40, 240)))
-            p.drawRoundedRect(0, 0, w, h, _BR, _BR)
-            p.setPen(QPen(QColor(90, 90, 90, 60), 1))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(0, 0, w - 1, h - 1, _BR, _BR)
+            p.drawRoundedRect(panel_rect, _BR, _BR)
 
             # Viewport for the magnified grid is fixed to _GRID_PX × _GRID_PX
             cell = self._zoom
@@ -743,6 +741,7 @@ class ColorPickerOverlay(QWidget):
             cy_ = mr.y() + _GRID_PX // 2
 
             p.save()
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
             p.setClipRect(mr)
             p.setPen(Qt.PenStyle.NoPen)
             half = len(self._pixel_grid) // 2
@@ -757,9 +756,12 @@ class ColorPickerOverlay(QWidget):
             p.restore()
 
             # Viewport subtle inner border
+            p.save()
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
             p.setPen(QPen(QColor(90, 90, 90, 60), 1))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRect(mr)
+            p.drawRect(mr.adjusted(0, 0, -1, -1))
+            p.restore()
 
             # Crosshair (hidden if Space is held) — perfectly stable at center (cx_, cy_)
             if not self._hide_reticle:
@@ -771,8 +773,8 @@ class ColorPickerOverlay(QWidget):
 
             r_, g_, b_ = self._center_color
             pry = _PAD + mr.height() + _PAD
-            pr = QRect(_PAD, pry, _PREVIEW, _PREVIEW)
-            p.setPen(QPen(QColor(80, 80, 80), 1))
+            pr = QRectF(_PAD + 0.5, pry + 0.5, _PREVIEW - 1.0, _PREVIEW - 1.0)
+            p.setPen(QPen(QColor(80, 80, 80), 1.0))
             p.setBrush(QBrush(QColor(r_, g_, b_)))
             p.drawEllipse(pr)
 

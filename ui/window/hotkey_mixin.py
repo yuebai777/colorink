@@ -33,8 +33,8 @@ class HotkeyMixin:
         # not suppressed, so the app under the cursor still gets the click).
         for hotkey_type in ("pickKey", "hideWindowKey", "toggleTitleBarKey",
                             "followMouseKey", "grayscaleFilterKey",
-                            "toggleLabGlobalKey"):
-            value = cast(str, self.cfg.get(hotkey_type))
+                            "regionGrayscaleKey", "toggleLabGlobalKey"):
+            value = cast(str, self.cfg.get(hotkey_type) or "")
             if is_mouse_hotkey(value):
                 global_hotkeys.bind_mouse_hotkey(hotkey_type, value)
             else:
@@ -115,6 +115,9 @@ class HotkeyMixin:
         elif hotkey_type == "grayscaleFilterKey":
             print("[Hotkeys] Grayscale Filter toggled")
             try:
+                region_ctrl = getattr(self, "region_grayscale_overlay", None)
+                if region_ctrl is not None and region_ctrl.is_active:
+                    region_ctrl.set_active(False)
                 result = self.grayscale_overlay.toggle()
                 if result is False:
                     # Current backend failed: auto-fallback to Mag backend
@@ -161,6 +164,11 @@ class HotkeyMixin:
                         pass
                 from PyQt6.QtWidgets import QMessageBox
                 QMessageBox.warning(self, "灰度滤镜", f"切换失败: {e}")
+        elif hotkey_type == "regionGrayscaleKey":
+            print("[Hotkeys] Region Grayscale Filter toggled")
+            toggle_fn = getattr(self, "toggle_region_grayscale", None)
+            if callable(toggle_fn):
+                toggle_fn()
 
     def _on_picker_activated(self):
         """Picker overlay is up — pause the sync thread so its GIL

@@ -513,7 +513,7 @@ class TestEntryPoint:
     def test_button_exists_and_is_not_a_nav_page(self, sidebar):
         assert hasattr(sidebar, "btn_sponsors")
         # Bookkeeping guard for the "no new rail page" constraint.
-        assert sidebar.stack.count() == 5
+        assert sidebar.stack.count() == 10
 
     def test_button_text(self, sidebar):
         assert sidebar.btn_sponsors.text() == i18n.tr("鸣谢赞助者")

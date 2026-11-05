@@ -114,6 +114,21 @@ def test_sai_section_has_no_ui_refresh_selector(sidebar):
     assert not hasattr(sidebar, "row_sai_refresh_widget")
 
 
+def test_sai_panel_mode_row_visibility_follows_software_selection(sidebar):
+    assert hasattr(sidebar, "row_sai_panel_widget")
+    idx_sai = sidebar.combo_software.findData("sai")
+    idx_ps = sidebar.combo_software.findData("ps")
+    assert idx_sai >= 0 and idx_ps >= 0
+
+    sidebar.combo_software.setCurrentIndex(idx_sai)
+    sidebar.update_version_visibility()
+    assert not sidebar.row_sai_panel_widget.isHidden()
+
+    sidebar.combo_software.setCurrentIndex(idx_ps)
+    sidebar.update_version_visibility()
+    assert sidebar.row_sai_panel_widget.isHidden()
+
+
 def test_saving_settings_writes_no_mode_key(sidebar):
     # Saving from the UI must not resurrect a mode key.
     assert "saiUiRefresh" not in sidebar.cfg

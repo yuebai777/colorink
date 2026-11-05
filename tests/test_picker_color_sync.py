@@ -59,6 +59,18 @@ def test_companion_recv_messages_is_non_blocking_on_drain():
     assert elapsed < 0.05
 
 
+def test_memory_sync_stop_aborts_companion_sync():
+    """MemorySyncThread.stop() must call companion_sync.abort() so blocking socket
+    operations are immediately cancelled on shutdown."""
+    st = MemorySyncThread(None)
+    aborted = []
+    st.companion_sync.abort = lambda: aborted.append(True)
+    st.stop(timeout_ms=100)
+    assert aborted == [True]
+    assert st.running is False
+    assert st.sync_enabled is False
+
+
 def test_overlay_sample_pos(qapp):
     """_sample_pos extracts the exact pixel from cached snapshots."""
     overlay = ColorPickerOverlay(None)
@@ -76,14 +88,27 @@ def test_overlay_sample_pos(qapp):
 
 
 @pytest.fixture(scope="module")
-def shared_win(qapp):
+def shared_win(qapp, tmp_path_factory):
+    from core import config as _config
     from ui.main_window import MainWindow
-    win = MainWindow()
-    win.sync_thread.sync_enabled = False
-    yield win
-    win.sync_thread.stop()
-    win.sync_thread.wait(500)
-    win.close()
+
+    mod_tmp = tmp_path_factory.mktemp("picker_sync_mod")
+    mp = pytest.MonkeyPatch()
+    mp.setattr(_config, "get_user_data_dir", lambda: str(mod_tmp))
+    mp.setattr(CSPCompanionSync, "_session_path", lambda *args, **kwargs: str(mod_tmp / "test_session.json"))
+    mp.setattr(CSPCompanionSync, "connect", lambda *args, **kwargs: False)
+    mp.setattr("core.global_hotkeys.bind_hotkey", lambda *args, **kwargs: None)
+    mp.setattr("core.global_hotkeys.bind_mouse_hotkey", lambda *args, **kwargs: None)
+    mp.setattr("core.global_hotkeys.unbind_all", lambda *args, **kwargs: None)
+    try:
+        win = MainWindow()
+        win.sync_thread.sync_enabled = False
+        yield win
+        win.sync_thread.stop()
+        win.sync_thread.wait(500)
+        win.close()
+    finally:
+        mp.undo()
 
 
 def test_picker_color_picked_flow_preserves_hsv_and_flushes(shared_win, monkeypatch):

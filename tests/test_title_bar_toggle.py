@@ -10,6 +10,7 @@ _MODS = [
     "win32com.client.dynamic", "win32com.client.gencache",
     "win32com.client.CLSIDToClass", "pythoncom",
 ]
+_PREV_MODS = {_m: sys.modules.get(_m) for _m in _MODS}
 for _m in _MODS:
     sys.modules[_m] = MagicMock()
 
@@ -22,6 +23,12 @@ for _a in ("GetForegroundWindow", "GetWindowText", "GetWindowLong",
     setattr(sys.modules["win32gui"], _a, MagicMock(return_value=False))
 
 from ui.main_window import MainWindow, _title_bar_content_offset
+
+for _m, _orig in _PREV_MODS.items():
+    if _orig is None:
+        sys.modules.pop(_m, None)
+    else:
+        sys.modules[_m] = _orig
 
 
 class FakeTitleBar:

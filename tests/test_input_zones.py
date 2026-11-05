@@ -317,6 +317,27 @@ def test_update_hotkey_bindings_registers_the_fallback(monkeypatch, qapp):
     assert ("__openSettings", "ctrl+alt+shift+,", True) in bound
 
 
+def test_bind_hotkey_translates_trailing_comma_for_keyboard_parser(monkeypatch):
+    """Real ``keyboard.parse_hotkey_combinations`` splits on raw ',' and raises
+    ValueError unless ',' is translated to 'comma'."""
+    import keyboard as kb
+
+    registered = []
+
+    def validating_add_hotkey(name, cb, suppress=False):
+        kb.parse_hotkey_combinations(name)
+        registered.append(name)
+
+    monkeypatch.setattr(global_hotkeys, "_bound_hotkeys", {})
+    monkeypatch.setattr(global_hotkeys.keyboard, "add_hotkey", validating_add_hotkey)
+    monkeypatch.setattr(global_hotkeys.keyboard, "remove_hotkey", lambda name: None)
+
+    global_hotkeys.bind_hotkey("__openSettings", "ctrl+alt+shift+,", force=True)
+
+    assert registered == ["ctrl+alt+shift+comma"]
+    assert global_hotkeys._bound_hotkeys["__openSettings"] == "ctrl+alt+shift+,"
+
+
 def test_update_hotkey_bindings_pushes_the_zone_filter_flag(monkeypatch, qapp):
     """Toggling the checkbox must reach the live gate without a restart."""
     from ui.window.hotkey_mixin import HotkeyMixin

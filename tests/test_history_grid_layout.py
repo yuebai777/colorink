@@ -119,3 +119,93 @@ def test_no_swatch_gap_wider_than_one_pixel(qapp):
                 1 for x in range(x0, x1 + 1)
                 if image.pixelColor(x, y).rgb() not in (left, right))
             assert gap_px == 1, (width, a.color.name(), b.color.name(), gap_px)
+
+
+@pytest.mark.parametrize("dpr", [1.0, 1.5])
+@pytest.mark.parametrize("width", [301, 304, 313, 331])
+def test_hover_and_selection_frames_align_exactly_with_swatches(qapp, dpr, width):
+    """回归：当列宽存在余数（spare > 0）或高分屏缩放（如 150%）时，
+    蓝/红选中框必须完整包裹该色块（包括左邻缝隙补色的 1px 竖条和四边
+    1px 分隔线），框外侧绝不能漏出哪怕 1px 的本色块颜色，且四边款宽对称。"""
+    from unittest.mock import patch
+    from PyQt6.QtGui import QColor, QImage, QPainter
+    from PyQt6.QtWidgets import QWidget
+
+    grid = ColorHistoryWidget()
+    grid.configure(8, 2)
+    palette = [
+        QColor(220, 30, 30), QColor(30, 220, 30), QColor(30, 180, 220),
+        QColor(220, 160, 30), QColor(160, 30, 220), QColor(30, 220, 160),
+        QColor(220, 90, 140), QColor(90, 140, 220),
+        QColor(190, 60, 40), QColor(40, 190, 60), QColor(60, 140, 190),
+        QColor(190, 140, 40), QColor(140, 40, 190), QColor(40, 190, 140),
+        QColor(190, 80, 120), QColor(80, 120, 190),
+    ]
+    grid.resize(width, grid.height())
+    grid._relayout()
+    grid.set_colors(palette)
+
+    hover_rgb = QColor(55, 88, 255).rgb()
+    cells = grid._visible_cells()
+
+    with patch.object(QWidget, "devicePixelRatioF", return_value=float(dpr)):
+        for idx, cell in enumerate(cells):
+            grid._on_cell_hovered(cell)
+            w_px = int(round(grid.width() * dpr))
+            h_px = int(round(grid.height() * dpr))
+            img = QImage(w_px, h_px, QImage.Format.Format_ARGB32_Premultiplied)
+            img.setDevicePixelRatio(dpr)
+            painter = QPainter(img)
+            grid.render(painter)
+            painter.end()
+
+            cell_rgb = QColor(cell.color.rgb()).rgb()
+            mid_y = int((cell.y() + cell.height() / 2.0) * dpr + 0.5)
+            frame_xs = [x for x in range(w_px) if img.pixelColor(x, mid_y).rgb() == hover_rgb]
+            assert len(frame_xs) == 4, (dpr, width, idx, frame_xs)
+            fx0, fx1 = frame_xs[0], frame_xs[-1]
+            # Left 2px and right 2px of frame
+            assert frame_xs == [fx0, fx0 + 1, fx1 - 1, fx1]
+            # Inside the frame is the cell's own colour on both sides
+            assert img.pixelColor(fx0 + 2, mid_y).rgb() == cell_rgb
+            assert img.pixelColor(fx1 - 2, mid_y).rgb() == cell_rgb
+            # Outside the frame on left/right must NOT leak this cell's colour
+            if fx0 > 0:
+                assert img.pixelColor(fx0 - 1, mid_y).rgb() != cell_rgb, (
+                    f"Cell {idx} colour leaked left of hover frame at width={width}, dpr={dpr}"
+                )
+            if fx1 + 1 < w_px:
+                assert img.pixelColor(fx1 + 1, mid_y).rgb() != cell_rgb, (
+                    f"Cell {idx} colour leaked right of hover frame at width={width}, dpr={dpr}"
+                )
+
+            mid_x = (fx0 + fx1) // 2
+            frame_ys = [y for y in range(h_px) if img.pixelColor(mid_x, y).rgb() == hover_rgb]
+            assert len(frame_ys) == 4, (dpr, width, idx, frame_ys)
+            fy0, fy1 = frame_ys[0], frame_ys[-1]
+            assert frame_ys == [fy0, fy0 + 1, fy1 - 1, fy1]
+            assert img.pixelColor(mid_x, fy0 + 2).rgb() == cell_rgb
+            assert img.pixelColor(mid_x, fy1 - 2).rgb() == cell_rgb
+            if fy0 > 0:
+                assert img.pixelColor(mid_x, fy0 - 1).rgb() != cell_rgb
+            if fy1 + 1 < h_px:
+                assert img.pixelColor(mid_x, fy1 + 1).rgb() != cell_rgb
+
+
+def test_spare_strip_resolves_to_right_neighbor_cell(qapp):
+    """鼠标落在余数列缝隙（视觉上归属右侧色块的 1px 竖条）上时，
+    命中目标应为右侧色块。"""
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtGui import QColor
+
+    grid = ColorHistoryWidget()
+    grid.configure(8, 2)
+    grid.resize(301, grid.height())
+    grid._relayout()
+    grid.set_colors([QColor(200, 10, 10), QColor(10, 200, 10), QColor(10, 10, 200)])
+    assert grid._spare > 0
+
+    cells = grid._visible_cells()
+    c0, c1 = cells[0], cells[1]
+    strip_pt = QPoint(c0.x() + c0.width(), c0.y() + c0.height() // 2)
+    assert grid._spare_strip_cell_at(strip_pt) is c1

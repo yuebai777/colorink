@@ -19,6 +19,7 @@ from core.foreground import (
     resolve_auto_sync_mode,
 )
 from ui.lab_harmony import HARMONY_MODE_NAMES
+from ui.widgets.picker_icon_button import PickerIconButton
 from ui.window.module_defs import _MODULE_DEFS, _MODULE_NAMES, _MODULE_ORDER
 
 
@@ -26,7 +27,7 @@ class PickerActionsMixin:
 
     def _init_module_button(self):
         """Create a floating button next to ⊙/△ to cycle HSV→HLS→LCH modules."""
-        btn = QPushButton("HSV", self.pane_wheel)
+        btn = PickerIconButton("HSV", self.pane_wheel, icon_kind="module:hsv")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setToolTip("切换色彩空间模块 (HSV / HLS / LCH)")
         btn.clicked.connect(self._next_module)
@@ -44,7 +45,7 @@ class PickerActionsMixin:
         Both are optional floating buttons on ``pane_lab`` (left of the
         existing wheel/LAB toggle) and are only visible on the LAB pane.
         """
-        self.btn_lab_shape = QPushButton("□", self.pane_lab)
+        self.btn_lab_shape = PickerIconButton("□", self.pane_lab, icon_kind="lab:square")
         self.btn_lab_shape.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_lab_shape.setToolTip("切换 LAB 视图形状 (方形 / 圆形)")
         self.btn_lab_shape.clicked.connect(self.toggle_lab_view_shape)
@@ -106,6 +107,8 @@ class PickerActionsMixin:
             return
         is_disc = getattr(self.lab_square, "shape", "square") == "disc"
         self.btn_lab_shape.setText("◯" if is_disc else "□")
+        if hasattr(self.btn_lab_shape, "set_icon_kind"):
+            self.btn_lab_shape.set_icon_kind("lab:disc" if is_disc else "lab:square")
         self.btn_lab_shape.setToolTip(
             "切换 LAB 视图形状 (方形 / 圆形)" if not is_disc else "切换 LAB 视图形状 (圆形 / 方形)")
 
@@ -123,6 +126,8 @@ class PickerActionsMixin:
         if hasattr(self, "btn_module"):
             name = {"hsv": "◉", "vhsv": "◩", "hls": "△", "rgb": "■", "lch": "◈"}.get(self._current_module, "◉")
             self.btn_module.setText(name)
+            if hasattr(self.btn_module, "set_icon_kind"):
+                self.btn_module.set_icon_kind(f"module:{self._current_module}")
             self.btn_module.setToolTip(f"模块: {_MODULE_NAMES.get(self._current_module, 'HSV')} (点击切换)")
 
     def update_mode_buttons_visibility(self):
@@ -685,6 +690,12 @@ class PickerActionsMixin:
         self.grayscale_overlay.set_mode(
             "luma" if new_backend == "mag" else new_mode
         )
+        region_ctrl = getattr(self, "region_grayscale_overlay", None)
+        if region_ctrl is not None:
+            region_ctrl.set_backend("mag" if new_backend == "mag" else "auto")
+            region_ctrl.set_target(screen_target)
+            region_ctrl.set_mode("luma" if new_backend == "mag" else new_mode)
+            region_ctrl.set_region(self.cfg.get("grayscaleFilterRegion"))
 
         # Update window flags dynamically
         self.update_window_flags()
@@ -803,6 +814,9 @@ class PickerActionsMixin:
         # Reapply ringless layout after config/settings reload.
         # Mode OFF restores full ring/circles/bottom-right immediately.
         self._sync_ringless_mode()
+        update_lab_avoid = getattr(self, "_update_lab_avoid", None)
+        if callable(update_lab_avoid):
+            update_lab_avoid()
         # Windows already torn off must follow the no-focus setting too.
         refresh_focus = getattr(self, "refresh_floating_focus", None)
         if callable(refresh_focus):
@@ -894,3 +908,77 @@ class PickerActionsMixin:
         if hasattr(self, 'title_bar'):
             for btn in [self.title_bar.btn_settings, self.title_bar.btn_close, self.title_bar.btn_min]:
                 btn.setFocusPolicy(policy)
+
+    # ── Window / Region Grayscale Filter ─────────────────────────────────
+
+    def toggle_region_grayscale(self) -> bool:
+        """Toggle the window/region grayscale filter (maximized by default or custom region)."""
+        region_ctrl = getattr(self, "region_grayscale_overlay", None)
+        if region_ctrl is None:
+            return False
+        try:
+            # Deactivate fullscreen grayscale first if we are about to activate region grayscale
+            if not region_ctrl.is_active:
+                fs_ctrl = getattr(self, "grayscale_overlay", None)
+                if fs_ctrl is not None and fs_ctrl.is_active:
+                    fs_ctrl.set_active(False)
+            ok = region_ctrl.toggle()
+            if not ok and region_ctrl.last_error:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "区域灰度滤镜", region_ctrl.last_error)
+            return ok
+        except Exception as exc:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "区域灰度滤镜", f"切换区域灰度失败: {exc}")
+            return False
+
+    def start_select_grayscale_region(self) -> None:
+        """Launch the interactive fullscreen rubber-band selector for the grayscale region."""
+        selector = getattr(self, "region_grayscale_selector", None)
+        if selector is None:
+            from ui.region_grayscale_selector import RegionGrayscaleSelector
+            selector = RegionGrayscaleSelector(None)
+            selector.regionSelected.connect(self._on_grayscale_region_selected)
+            selector.regionReset.connect(self._on_grayscale_region_reset)
+            self.region_grayscale_selector = selector
+        selector.start_selection()
+
+    def _on_grayscale_region_selected(self, x: int, y: int, width: int, height: int) -> None:
+        """Persist the selected grayscale rectangle and activate region grayscale."""
+        from core.region_grayscale import region_to_config_dict
+        rect_dict = region_to_config_dict((x, y, width, height))
+        self.cfg["grayscaleFilterRegion"] = rect_dict
+        config.save_hotkey_config(self.cfg)
+        region_ctrl = getattr(self, "region_grayscale_overlay", None)
+        if region_ctrl is not None:
+            fs_ctrl = getattr(self, "grayscale_overlay", None)
+            if fs_ctrl is not None and fs_ctrl.is_active:
+                fs_ctrl.set_active(False)
+            region_ctrl.set_region(rect_dict)
+            if not region_ctrl.is_active:
+                region_ctrl.set_active(True)
+        sidebar = getattr(self, "settings_sidebar", None)
+        if sidebar is not None:
+            sidebar.cfg["grayscaleFilterRegion"] = rect_dict
+            refresh_region = getattr(sidebar, "_refresh_grayscale_region_ui", None)
+            if callable(refresh_region):
+                refresh_region()
+
+    def _on_grayscale_region_reset(self) -> None:
+        """Callback when user double-clicks or presses Space in the region selector."""
+        self.reset_grayscale_region_to_maximized()
+
+    def reset_grayscale_region_to_maximized(self) -> None:
+        """Reset the region grayscale filter to its default frameless maximized window."""
+        self.cfg["grayscaleFilterRegion"] = None
+        config.save_hotkey_config(self.cfg)
+        region_ctrl = getattr(self, "region_grayscale_overlay", None)
+        if region_ctrl is not None:
+            region_ctrl.clear_region()
+        sidebar = getattr(self, "settings_sidebar", None)
+        if sidebar is not None:
+            sidebar.cfg["grayscaleFilterRegion"] = None
+            refresh_region = getattr(sidebar, "_refresh_grayscale_region_ui", None)
+            if callable(refresh_region):
+                refresh_region()
+

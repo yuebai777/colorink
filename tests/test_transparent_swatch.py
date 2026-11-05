@@ -374,3 +374,51 @@ class TestHighlightExclusivity:
             for x in range(img.width())
         )
         assert blue, "ringless transparent tile highlight not painted"
+
+
+class TestTransparentTileAntialiasingAndAlignment:
+    """Regression tests for capsule border clipping / staircase artifacts on
+    High-DPI screens (e.g. 150% DPI)."""
+
+    def test_tile_never_uses_1bit_widget_mask(self, qapp):
+        """A QRegion widget mask on TransparentTile is 1-bit integer-clipped
+        and shaves the left/top antialiased border on 150% DPI."""
+        box = make_preview_box()
+        box.resize(80, 90)
+        box.resize_and_position(304, 30, 400, 100, "fg")
+        tile = _tile(box)
+        assert tile.mask().isEmpty()
+
+        box_rl = make_preview_box(canonical_layout())
+        tile_rl = _tile(box_rl)
+        assert tile_rl.mask().isEmpty()
+
+    @pytest.mark.parametrize("dpr", [1.0, 1.5, 2.0])
+    def test_legacy_capsule_border_is_symmetric_across_dpr(self, qapp, dpr):
+        box = make_preview_box()
+        box.resize(80, 90)
+        box.resize_and_position(304, 30, 400, 100, "fg")
+        box.set_transparent("fg", True)
+        tile = _tile(box)
+
+        w_px = int(round(tile.width() * dpr))
+        h_px = int(round(tile.height() * dpr))
+        img = QImage(w_px, h_px, QImage.Format.Format_ARGB32_Premultiplied)
+        img.setDevicePixelRatio(dpr)
+        img.fill(Qt.GlobalColor.transparent)
+        tile.render(img)
+
+        def is_blue_border(c: QColor) -> bool:
+            return c.alpha() > 80 and (c.blue() - c.red()) >= 25
+
+        mid_y = h_px // 2
+        left_blue = [x for x in range(w_px // 2) if is_blue_border(img.pixelColor(x, mid_y))]
+        right_blue = [x for x in range(w_px // 2, w_px) if is_blue_border(img.pixelColor(x, mid_y))]
+        assert left_blue and right_blue
+        assert abs(len(left_blue) - len(right_blue)) <= 1, (dpr, left_blue, right_blue)
+
+        mid_x = w_px // 2
+        top_blue = [y for y in range(h_px // 2) if is_blue_border(img.pixelColor(mid_x, y))]
+        bot_blue = [y for y in range(h_px // 2, h_px) if is_blue_border(img.pixelColor(mid_x, y))]
+        assert top_blue and bot_blue
+        assert abs(len(top_blue) - len(bot_blue)) <= 1, (dpr, top_blue, bot_blue)

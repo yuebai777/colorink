@@ -83,7 +83,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         # ── Left rail: category navigation (like CSP 環境設定) ──
         self.nav = QListWidget()
         self.nav.setObjectName("NavRail")
-        self.nav.setFixedWidth(100)
+        self.nav.setFixedWidth(108)
         self.nav.setIconSize(QSize(18, 18))
         self.nav.setUniformItemSizes(True)
         self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -93,13 +93,18 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         for text, kind in [
             ("快捷键", "hotkeys"),
             ("界面", "interface"),
-            ("取色器", "picker"),
+            ("窗口", "window"),
+            ("色环", "picker"),
+            ("LAB", "lab"),
+            ("滑块", "sliders"),
             ("面板", "panels"),
+            ("灰度滤镜", "filter"),
             ("同步", "software"),
+            ("系统", "about"),
         ]:
             item = QListWidgetItem(i18n.tr(text))
             item.setData(Qt.ItemDataRole.UserRole, kind)
-            item.setSizeHint(QSize(0, 32))
+            item.setSizeHint(QSize(0, 30))
             self.nav.addItem(item)
         self.nav.currentRowChanged.connect(self._on_nav_changed)
         body.addWidget(self.nav)
@@ -112,12 +117,17 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
 
         self._page_layouts = {}
 
-        # Create 5 core pages
+        # Create 10 categorized pages
         page_hotkeys   = self._make_page("快捷键")
         page_interface = self._make_page("界面")
-        page_picker    = self._make_page("取色器")
+        page_window    = self._make_page("窗口")
+        page_picker    = self._make_page("色环")
+        page_lab       = self._make_page("LAB")
+        page_sliders   = self._make_page("滑块")
         page_panels    = self._make_page("面板")
+        page_filter    = self._make_page("灰度滤镜")
         page_sync      = self._make_page("同步")
+        page_about     = self._make_page("系统")
 
         # ═══════════════════ Page 1: 快捷键 ═══════════════════
         card_hk, cl_hk = self._begin_card(page_hotkeys, i18n.tr("全局热键"))
@@ -158,23 +168,29 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
             self.save_hotkeys, allow_mouse=True)
         grid_hotkeys.addWidget(row_grayscale, 3, 1)
 
-        grid_hotkeys.addWidget(QLabel(i18n.tr("视图切换（色轮/标签页）")), 4, 0)
+        grid_hotkeys.addWidget(QLabel(i18n.tr("区域灰度滤镜")), 4, 0)
+        row_region_grayscale, self.btn_region_grayscale, self.btn_region_grayscale_none = self._make_hotkey_row(
+            "regionGrayscaleKey", self.cfg.get("regionGrayscaleKey", "Ctrl+Alt+G"),
+            self.save_hotkeys, allow_mouse=True)
+        grid_hotkeys.addWidget(row_region_grayscale, 4, 1)
+
+        grid_hotkeys.addWidget(QLabel(i18n.tr("视图切换（色轮/标签页）")), 5, 0)
         row_lab_toggle, self.btn_lab_toggle, self.btn_lab_toggle_none = self._make_hotkey_row(
             "toggleLabKey", self.cfg.get("toggleLabKey", "Space"),
             self.save_hotkeys, allow_mouse=True)
-        grid_hotkeys.addWidget(row_lab_toggle, 4, 1)
+        grid_hotkeys.addWidget(row_lab_toggle, 5, 1)
 
-        grid_hotkeys.addWidget(QLabel(i18n.tr("LAB 切换（全局）")), 5, 0)
+        grid_hotkeys.addWidget(QLabel(i18n.tr("LAB 切换（全局）")), 6, 0)
         row_lab_global, self.btn_lab_global, self.btn_lab_global_none = self._make_hotkey_row(
             "toggleLabGlobalKey", self.cfg.get("toggleLabGlobalKey", "Ctrl+Alt+L"),
             self.save_hotkeys, allow_mouse=True)
-        grid_hotkeys.addWidget(row_lab_global, 5, 1)
+        grid_hotkeys.addWidget(row_lab_global, 6, 1)
 
-        grid_hotkeys.addWidget(QLabel(i18n.tr("标题栏显示/隐藏")), 6, 0)
+        grid_hotkeys.addWidget(QLabel(i18n.tr("标题栏显示/隐藏")), 7, 0)
         row_title_bar, self.btn_title_bar, self.btn_title_bar_none = self._make_hotkey_row(
             "toggleTitleBarKey", self.cfg.get("toggleTitleBarKey", "Ctrl+Alt+K"),
             self.save_hotkeys, allow_mouse=True)
-        grid_hotkeys.addWidget(row_title_bar, 6, 1)
+        grid_hotkeys.addWidget(row_title_bar, 7, 1)
 
         cl_hk.addLayout(grid_hotkeys)
 
@@ -220,14 +236,29 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         # ═══════════════════ Page 2: 界面 ═══════════════════
         self._build_interface_page(page_interface)
 
-        # ═══════════════════ Page 3: 取色器 ═══════════════════
+        # ═══════════════════ Page 3: 窗口 ═══════════════════
+        self._build_window_page(page_window)
+
+        # ═══════════════════ Page 4: 取色器 ═══════════════════
         self._build_picker_page(page_picker)
 
-        # ═══════════════════ Page 4: 面板 ═══════════════════
+        # ═══════════════════ Page 5: LAB ═══════════════════
+        self._build_lab_page(page_lab)
+
+        # ═══════════════════ Page 6: 滑块 ═══════════════════
+        self._build_sliders_page(page_sliders)
+
+        # ═══════════════════ Page 7: 面板 ═══════════════════
         self._build_panels_page(page_panels)
 
-        # ═══════════════════ Page 5: 同步 ═══════════════════
+        # ═══════════════════ Page 8: 灰度滤镜 ═══════════════════
+        self._build_filter_page(page_filter)
+
+        # ═══════════════════ Page 9: 同步 ═══════════════════
         self._build_sync_page(page_sync)
+
+        # ═══════════════════ Page 10: 系统 ═══════════════════
+        self._build_about_page(page_about)
         # Keep section cards at their natural size, top-aligned: one trailing
         # stretch absorbs the fixed window's leftover height on short pages.
         for page_layout in self._page_layouts.values():
@@ -272,6 +303,10 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.btn_grayscale.setText(display_hotkey(_gray) if _gray else i18n.tr("未绑定"))
         self.btn_grayscale.val = _gray
 
+        _region_gray = self.cfg.get("regionGrayscaleKey", "Ctrl+Alt+G")
+        self.btn_region_grayscale.setText(display_hotkey(_region_gray) if _region_gray else i18n.tr("未绑定"))
+        self.btn_region_grayscale.val = _region_gray
+
         _lab_key = self.cfg.get("toggleLabKey", "Space")
         self.btn_lab_toggle.setText(display_hotkey(_lab_key) if _lab_key else i18n.tr("未绑定"))
         self.btn_lab_toggle.val = _lab_key
@@ -298,6 +333,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         _idx = self.combo_grayscale_backend.findData(backend)
         self.combo_grayscale_backend.setCurrentIndex(_idx if _idx >= 0 else 0)
         self.combo_grayscale_backend.blockSignals(False)
+        self._refresh_grayscale_region_ui()
         
         self.cb_follow_mouse.blockSignals(True)
         self.cb_follow_mouse.setChecked(self.cfg.get("followMouseEnabled", False))
@@ -559,8 +595,8 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         from ``refresh_ui`` and ``save_hotkeys`` — both run after the widgets
         exist, so ``setVisible`` has a parent to take effect against.
         """
-        for name in ("pick", "hide", "follow", "grayscale", "lab_toggle",
-                     "lab_global", "title_bar"):
+        for name in ("pick", "hide", "follow", "grayscale", "region_grayscale",
+                     "lab_toggle", "lab_global", "title_bar"):
             button = getattr(self, f"btn_{name}", None)
             none_btn = getattr(self, f"btn_{name}_none", None)
             if button is None or none_btn is None:
@@ -574,6 +610,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cfg["hideWindowKey"] = self.btn_hide.val
         self.cfg["followMouseKey"] = self.btn_follow.val
         self.cfg["grayscaleFilterKey"] = self.btn_grayscale.val
+        self.cfg["regionGrayscaleKey"] = self.btn_region_grayscale.val
         self.cfg["toggleLabKey"] = self.btn_lab_toggle.val
         self.cfg["toggleLabGlobalKey"] = self.btn_lab_global.val
         self.cfg["toggleTitleBarKey"] = self.btn_title_bar.val

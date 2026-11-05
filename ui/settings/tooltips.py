@@ -20,6 +20,7 @@ _SETTINGS_TOOLTIPS: dict[str, str] = {
     "cb_zone_filter": "勾选后，绑定到鼠标按键的全局热键在任务栏、托盘图标及系统弹出菜单上"
                       "不会触发，让系统原生右键菜单正常弹出；键盘热键不受影响",
     "btn_grayscale": "设置开关全屏灰度滤镜的快捷键",
+    "btn_region_grayscale": "设置开关窗口/区域灰度滤镜的快捷键（默认最大化无边框窗口，支持框选局部灰度区域）",
     "btn_lab_toggle": "鼠标悬停在色轮或LAB区域时，按此键/鼠标键切换色轮/LAB视图；"
                       "悬停在标签页上（分页叠放的滑块组/面板）时切换到下一个标签页；"
                       "支持键盘、鼠标按键或数位板笔按键（建议侧键/中键，左键会与色轮操作冲突）；"
@@ -31,9 +32,14 @@ _SETTINGS_TOOLTIPS: dict[str, str] = {
     "btn_hide_none": "解绑「隐藏窗口」快捷键（设为「无」），让该键位不再被占用",
     "btn_follow_none": "解绑「跟随鼠标」快捷键（设为「无」），让该键位不再被占用",
     "btn_grayscale_none": "解绑「灰度滤镜」快捷键（设为「无」），让该键位不再被占用",
+    "btn_region_grayscale_none": "解绑「区域灰度滤镜」快捷键（设为「无」），让该键位不再被占用",
     "btn_lab_toggle_none": "解绑「视图切换（色轮/标签页）」快捷键（设为「无」），让该键位不再被占用",
     "btn_lab_global_none": "解绑「LAB 切换（全局）」快捷键（设为「无」），让该键位不再被占用",
     "btn_title_bar_none": "解绑「标题栏显示/隐藏」快捷键（设为「无」），让该键位不再被占用",
+    "btn_select_grayscale_region": "在屏幕上拖拽框选灰度滤镜生效区域；框选时双击或按空格可恢复默认最大化",
+    "btn_reset_grayscale_region": "将区域灰度滤镜重置为默认最大化无边框窗口（铺满屏幕且不显示任务栏图标）",
+    "btn_toggle_fullscreen_grayscale": "立即开启或关闭全屏灰度滤镜",
+    "btn_toggle_region_grayscale": "立即开启或关闭窗口化区域灰度滤镜",
     # ── Interface page ──────────────────────────────────────────────────
     "combo_theme": "选择界面主题：自动匹配绘画软件、屏幕取色或固定灰/白/黑",
     "combo_slider_style": "选择色彩滑块的外观样式",

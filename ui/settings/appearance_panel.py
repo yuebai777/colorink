@@ -149,6 +149,56 @@ class AppearancePanelMixin:
         self._update_grayscale_screen_options(backend)
         self.save_settings()
 
+    def _format_grayscale_region_text(self) -> str:
+        from core.region_grayscale import normalize_region_tuple
+        norm = normalize_region_tuple(self.cfg.get("grayscaleFilterRegion"))
+        if norm is None:
+            return i18n.tr("默认最大化")
+        rx, ry, rw, rh = norm
+        return f"{rw}×{rh} ({rx}, {ry})"
+
+    def _refresh_grayscale_region_ui(self) -> None:
+        if not hasattr(self, "lbl_grayscale_region"):
+            return
+        from core.region_grayscale import normalize_region_tuple
+        norm = normalize_region_tuple(self.cfg.get("grayscaleFilterRegion"))
+        self.lbl_grayscale_region.setText(self._format_grayscale_region_text())
+        self._set_label_state(
+            self.lbl_grayscale_region,
+            "muted" if norm is None else "accent",
+        )
+        if hasattr(self, "btn_reset_grayscale_region"):
+            self.btn_reset_grayscale_region.setEnabled(norm is not None)
+
+    def _on_select_grayscale_region(self) -> None:
+        if hasattr(self, "_parent") and self._parent is not None:
+            start_fn = getattr(self._parent, "start_select_grayscale_region", None)
+            if callable(start_fn):
+                start_fn()
+
+    def _on_reset_grayscale_region(self) -> None:
+        if hasattr(self, "_parent") and self._parent is not None:
+            reset_fn = getattr(self._parent, "reset_grayscale_region_to_maximized", None)
+            if callable(reset_fn):
+                reset_fn()
+                self._refresh_grayscale_region_ui()
+                return
+        self.cfg["grayscaleFilterRegion"] = None
+        self._refresh_grayscale_region_ui()
+        self.save_settings()
+
+    def _on_toggle_fullscreen_grayscale(self) -> None:
+        if hasattr(self, "_parent") and self._parent is not None:
+            toggle_fn = getattr(self._parent, "toggle_grayscale_filter", None)
+            if callable(toggle_fn):
+                toggle_fn()
+
+    def _on_toggle_region_grayscale(self) -> None:
+        if hasattr(self, "_parent") and self._parent is not None:
+            toggle_fn = getattr(self._parent, "toggle_region_grayscale_filter", None)
+            if callable(toggle_fn):
+                toggle_fn()
+
     def theme_colors(self):
         """Resolve active theme colors dynamically based on parent window.
 
@@ -839,10 +889,10 @@ class AppearancePanelMixin:
         row.addStretch()
         return row
 
-    def _build_panels_page(self, page_panels):
-        # ═══════════════════ Page 4: 面板 ═══════════════════
+    def _build_sliders_page(self, page_sliders):
+        # ═══════════════════ Page: 滑块 ═══════════════════
         # ── Card 1: 色彩滑块 ──
-        card_sl_order, cl_sl_order = self._begin_card(page_panels, i18n.tr("色彩滑块"))
+        card_sl_order, cl_sl_order = self._begin_card(page_sliders, i18n.tr("色彩滑块"))
 
         self._MODULE_SLIDER_MAP = {
             "hsv":  ALL_SLIDERS,
@@ -867,11 +917,11 @@ class AppearancePanelMixin:
             self.slider_rows[key] = (cb, row_layout)
 
         self._sl_order_layout = cl_sl_order
-        page_panels.addWidget(card_sl_order)
+        page_sliders.addWidget(card_sl_order)
         self._refresh_module_sliders()
 
         # ── Card 2: 高级（步长调节）──
-        card_sp, cl_sp = self._begin_card(page_panels, i18n.tr("高级"))
+        card_sp, cl_sp = self._begin_card(page_sliders, i18n.tr("高级"))
         grid_sp = QGridLayout()
         grid_sp.setSpacing(8)
         grid_sp.setColumnMinimumWidth(0, 110)
@@ -895,10 +945,10 @@ class AppearancePanelMixin:
         grid_sp.addLayout(row_scroll, 0, 1)
 
         cl_sp.addLayout(grid_sp)
-        page_panels.addWidget(card_sp)
+        page_sliders.addWidget(card_sp)
 
         # ── Card 3: 颜色历史 ──
-        card_hist, cl_hist = self._begin_card(page_panels, i18n.tr("颜色历史"))
+        card_hist, cl_hist = self._begin_card(page_sliders, i18n.tr("颜色历史"))
 
         self.cb_history = QCheckBox(i18n.tr("显示颜色历史"))
         self.cb_history.stateChanged.connect(self.save_settings)
@@ -928,9 +978,11 @@ class AppearancePanelMixin:
         grid_hist.addWidget(self.combo_history_rows, 1, 1)
 
         cl_hist.addLayout(grid_hist)
-        page_panels.addWidget(card_hist)
+        page_sliders.addWidget(card_hist)
 
-        # ── Card 4: 排布模式 ──
+    def _build_panels_page(self, page_panels):
+        # ═══════════════════ Page: 面板 ═══════════════════
+        # ── Card 1: 排布模式 ──
         card_panels, cl_panels = self._begin_card(page_panels, i18n.tr("排布模式"))
 
         self.cb_panel_drag = QCheckBox(i18n.tr("面板抓手"))
@@ -954,7 +1006,7 @@ class AppearancePanelMixin:
         ))
         page_panels.addWidget(card_panels)
 
-        # ── Card 5: 独立窗口 ──
+        # ── Card 2: 独立窗口 ──
         card_float, cl_float = self._begin_card(page_panels, i18n.tr("独立窗口"))
         self.lbl_floating_panels = QLabel(i18n.tr("浮出的面板：无"))
         self.lbl_floating_panels.setWordWrap(True)
@@ -976,7 +1028,7 @@ class AppearancePanelMixin:
         cl_float.addLayout(row_panel_actions)
         page_panels.addWidget(card_float)
 
-        # ── Card 6: 间距微调 ──
+        # ── Card 3: 间距微调 ──
         card_gap, cl_gap = self._begin_card(page_panels, i18n.tr("间距"))
         grid_gap = QGridLayout()
         grid_gap.setSpacing(8)
@@ -992,7 +1044,7 @@ class AppearancePanelMixin:
         page_panels.addWidget(card_gap)
 
     def _build_interface_page(self, page_interface):
-        # ═══════════════════ Page 2: 界面 ═══════════════════
+        # ═══════════════════ Page: 界面 ═══════════════════
         card_appear, cl_appear = self._begin_card(page_interface, i18n.tr("外观与主题"))
         self._card_layout_interface_bg = cl_appear  # stored for _make_eyedropper_row
 
@@ -1101,8 +1153,10 @@ class AppearancePanelMixin:
         cl_scale.addLayout(grid_scale)
         page_interface.addWidget(card_scale)
 
-        # ── Card 3: 取色交互与焦点 ──
-        card_focus, cl_focus = self._begin_card(page_interface, i18n.tr("取色交互与焦点"))
+    def _build_window_page(self, page_window):
+        # ═══════════════════ Page: 窗口 ═══════════════════
+        # ── Card 1: 取色交互与焦点 ──
+        card_focus, cl_focus = self._begin_card(page_window, i18n.tr("取色交互与焦点"))
 
         self.cb_no_focus = QCheckBox(i18n.tr("无焦点取色模式"))
         self.cb_no_focus.setToolTip(i18n.tr("开启后不会抢占绘画软件的键盘焦点，适合边画边取色"))
@@ -1122,10 +1176,10 @@ class AppearancePanelMixin:
             self.cb_only_drawing
         ))
 
-        page_interface.addWidget(card_focus)
+        page_window.addWidget(card_focus)
 
-        # ── Card 4: 窗口显示与锁定 ──
-        card_frame, cl_frame = self._begin_card(page_interface, i18n.tr("窗口显示与锁定"))
+        # ── Card 2: 窗口显示与锁定 ──
+        card_frame, cl_frame = self._begin_card(page_window, i18n.tr("窗口显示与锁定"))
 
         self.cb_show_title_bar = QCheckBox(i18n.tr("显示标题栏"))
         self.cb_show_title_bar.setToolTip(i18n.tr("隐藏后顶部边框与四周一致；可通过快捷键或托盘菜单恢复"))
@@ -1154,10 +1208,11 @@ class AppearancePanelMixin:
             self.cb_lock_size
         ))
 
-        page_interface.addWidget(card_frame)
+        page_window.addWidget(card_frame)
 
-        # ── Card 5: 系统与环境 ──
-        card_env, cl_env = self._begin_card(page_interface, i18n.tr("系统与环境"))
+    def _build_system_env_card(self, parent_layout):
+        # ── Card: 系统与环境 ──
+        card_env, cl_env = self._begin_card(parent_layout, i18n.tr("系统与环境"))
 
         self.cb_taskbar_icon = QCheckBox(i18n.tr("任务栏图标"))
         self.cb_taskbar_icon.setToolTip(i18n.tr("在任务栏显示 Colorink 图标；关闭后只保留托盘图标"))
@@ -1194,10 +1249,11 @@ class AppearancePanelMixin:
             self.cmb_language
         ))
 
-        page_interface.addWidget(card_env)
+        parent_layout.addWidget(card_env)
+        return card_env
 
     def _build_grayscale_card(self, parent_layout):
-        # ═══════════════════ 全屏灰度滤镜 ═══════════════════
+        # ═══════════════════ 全屏/区域灰度滤镜 ═══════════════════
         card_gray, cl_gray = self._begin_card(parent_layout, i18n.tr("灰度滤镜"))
 
         grid_gray = QGridLayout()
@@ -1231,6 +1287,21 @@ class AppearancePanelMixin:
         self.combo_grayscale_backend.currentTextChanged.connect(self._on_grayscale_backend_changed)
         grid_gray.addWidget(self.combo_grayscale_backend, 2, 1)
 
+        grid_gray.addWidget(QLabel(i18n.tr("窗口区域")), 3, 0)
+        row_region = QHBoxLayout()
+        row_region.setContentsMargins(0, 0, 0, 0)
+        row_region.setSpacing(6)
+        self.lbl_grayscale_region = QLabel(i18n.tr("默认最大化"))
+        self._set_label_state(self.lbl_grayscale_region, "muted")
+        self.btn_select_grayscale_region = QPushButton(i18n.tr("框选区域"))
+        self.btn_select_grayscale_region.clicked.connect(self._on_select_grayscale_region)
+        self.btn_reset_grayscale_region = QPushButton(i18n.tr("重置最大化"))
+        self.btn_reset_grayscale_region.clicked.connect(self._on_reset_grayscale_region)
+        row_region.addWidget(self.lbl_grayscale_region, 1)
+        row_region.addWidget(self.btn_select_grayscale_region)
+        row_region.addWidget(self.btn_reset_grayscale_region)
+        grid_gray.addLayout(row_region, 3, 1)
+
         cl_gray.addLayout(grid_gray)
         parent_layout.addWidget(card_gray)
         return card_gray
@@ -1238,43 +1309,29 @@ class AppearancePanelMixin:
     def _build_filter_page(self, page_filter):
         self._build_grayscale_card(page_filter)
 
+        card_quick, cl_quick = self._begin_card(page_filter, i18n.tr("快捷开关"))
+        row_quick = QHBoxLayout()
+        row_quick.setSpacing(8)
+        self.btn_toggle_fullscreen_grayscale = QPushButton(i18n.tr("开关全屏灰度"))
+        self.btn_toggle_fullscreen_grayscale.clicked.connect(self._on_toggle_fullscreen_grayscale)
+        self.btn_toggle_region_grayscale = QPushButton(i18n.tr("开关区域灰度"))
+        self.btn_toggle_region_grayscale.clicked.connect(self._on_toggle_region_grayscale)
+        row_quick.addWidget(self.btn_toggle_fullscreen_grayscale)
+        row_quick.addWidget(self.btn_toggle_region_grayscale)
+        row_quick.addStretch()
+        cl_quick.addLayout(row_quick)
+
+        lbl_filter_hint = QLabel(i18n.tr(
+            "全屏灰度滤镜作用于整个屏幕；区域灰度滤镜以无边框穿透窗口呈现，仅对上方设定的窗口区域生效。"
+        ))
+        lbl_filter_hint.setObjectName("TipDesc")
+        lbl_filter_hint.setWordWrap(True)
+        cl_quick.addWidget(lbl_filter_hint)
+        page_filter.addWidget(card_quick)
+
     def _build_picker_page(self, page_picker):
-        # ═══════════════════ Page 3: 取色器 ═══════════════════
-        # ── Card 1: 取色器 ──
-        card_pz, cl_pz = self._begin_card(page_picker, i18n.tr("取色器"))
-        grid_pz = QGridLayout()
-        grid_pz.setSpacing(8)
-        grid_pz.setColumnMinimumWidth(0, 110)
-        grid_pz.setColumnStretch(1, 1)
-
-        grid_pz.addWidget(QLabel(i18n.tr("取色放大倍率")), 0, 0)
-        row_picker_zoom = QHBoxLayout()
-        row_picker_zoom.setSpacing(4)
-        self.btn_zoom_dec = self._make_step_button("-")
-        self.btn_zoom_dec.clicked.connect(self.zoom_decrease)
-        self.lbl_picker_zoom = QLabel("6×")
-        self.lbl_picker_zoom.setObjectName("StepValueLabel")
-        self.lbl_picker_zoom.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_picker_zoom.setFixedSize(48, 26)
-        self.btn_zoom_inc = self._make_step_button("+")
-        self.btn_zoom_inc.clicked.connect(self.zoom_increase)
-        row_picker_zoom.addWidget(self.btn_zoom_dec)
-        row_picker_zoom.addWidget(self.lbl_picker_zoom)
-        row_picker_zoom.addWidget(self.btn_zoom_inc)
-        row_picker_zoom.addStretch()
-        grid_pz.addLayout(row_picker_zoom, 0, 1)
-
-        grid_pz.addWidget(QLabel(i18n.tr("前景/背景色位置")), 1, 0)
-        self.combo_pos = NonScrollComboBox()
-        self.combo_pos.addItem(i18n.tr("左上角"), "top-left")
-        self.combo_pos.addItem(i18n.tr("左下角"), "bottom-left")
-        self.combo_pos.currentTextChanged.connect(self.save_settings)
-        grid_pz.addWidget(self.combo_pos, 1, 1)
-
-        cl_pz.addLayout(grid_pz)
-        page_picker.addWidget(card_pz)
-
-        # ── Card 2: 色环与切片 ──
+        # ═══════════════════ Page: 色环 ═══════════════════
+        # ── Card 1: 色环与切片 ──
         card_wheel, cl_wheel = self._begin_card(page_picker, i18n.tr("色环与切片"))
         grid_wheel = QGridLayout()
         grid_wheel.setSpacing(8)
@@ -1286,6 +1343,14 @@ class AppearancePanelMixin:
         self.combo_module.addItems(["HSV", "VHSV", "HLS", "RGB", "LCH"])
         self.combo_module.currentTextChanged.connect(self.save_settings)
         grid_wheel.addWidget(self.combo_module, 0, 1)
+
+        grid_wheel.addWidget(QLabel(i18n.tr("前景/背景色位置")), 1, 0)
+        self.combo_pos = NonScrollComboBox()
+        self.combo_pos.addItem(i18n.tr("左上角"), "top-left")
+        self.combo_pos.addItem(i18n.tr("左下角"), "bottom-left")
+        self.combo_pos.currentTextChanged.connect(self.save_settings)
+        grid_wheel.addWidget(self.combo_pos, 1, 1)
+
         cl_wheel.addLayout(grid_wheel)
 
         self.cb_show_module_btn = QCheckBox(i18n.tr("显示色环模块切换按钮"))
@@ -1313,8 +1378,43 @@ class AppearancePanelMixin:
 
         page_picker.addWidget(card_wheel)
 
-        # ── Card 3: LAB 视图与调和 ──
-        card_lab, cl_lab = self._begin_card(page_picker, i18n.tr("LAB 视图与调和"))
+        # ── Card 2: 全局屏幕取色 ──
+        card_pz, cl_pz = self._begin_card(page_picker, i18n.tr("全局屏幕取色"))
+        grid_pz = QGridLayout()
+        grid_pz.setSpacing(8)
+        grid_pz.setColumnMinimumWidth(0, 110)
+        grid_pz.setColumnStretch(1, 1)
+
+        grid_pz.addWidget(QLabel(i18n.tr("吸管放大镜倍率")), 0, 0)
+        row_picker_zoom = QHBoxLayout()
+        row_picker_zoom.setSpacing(4)
+        self.btn_zoom_dec = self._make_step_button("-")
+        self.btn_zoom_dec.clicked.connect(self.zoom_decrease)
+        self.lbl_picker_zoom = QLabel("6×")
+        self.lbl_picker_zoom.setObjectName("StepValueLabel")
+        self.lbl_picker_zoom.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_picker_zoom.setFixedSize(48, 26)
+        self.btn_zoom_inc = self._make_step_button("+")
+        self.btn_zoom_inc.clicked.connect(self.zoom_increase)
+        row_picker_zoom.addWidget(self.btn_zoom_dec)
+        row_picker_zoom.addWidget(self.lbl_picker_zoom)
+        row_picker_zoom.addWidget(self.btn_zoom_inc)
+        row_picker_zoom.addStretch()
+        grid_pz.addLayout(row_picker_zoom, 0, 1)
+
+        cl_pz.addLayout(grid_pz)
+        lbl_pz_hint = QLabel(i18n.tr(
+            "按下「全局取色」快捷键取色时，鼠标跟随放大镜的默认缩放倍率（取色时也可滚轮调节 2× ~ 20×）"
+        ))
+        lbl_pz_hint.setObjectName("TipDesc")
+        lbl_pz_hint.setWordWrap(True)
+        cl_pz.addWidget(lbl_pz_hint)
+        page_picker.addWidget(card_pz)
+
+    def _build_lab_page(self, page_lab):
+        # ═══════════════════ Page: LAB ═══════════════════
+        # ── Card 1: LAB 视图与调和 ──
+        card_lab, cl_lab = self._begin_card(page_lab, i18n.tr("LAB 视图与调和"))
         grid_lab = QGridLayout()
         grid_lab.setSpacing(8)
         grid_lab.setColumnMinimumWidth(0, 110)
@@ -1387,7 +1487,7 @@ class AppearancePanelMixin:
             self.cb_show_lab_checkerboard
         ))
 
-        page_picker.addWidget(card_lab)
+        page_lab.addWidget(card_lab)
 
 
 

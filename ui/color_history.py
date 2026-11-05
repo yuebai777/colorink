@@ -208,7 +208,6 @@ class _HoverOverlay(QWidget):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
     def paintEvent(self, event):
         parent = self.parentWidget()
@@ -230,31 +229,63 @@ class _HoverOverlay(QWidget):
             if sel_idx >= 0:
                 cells = parent._visible_cells()
                 if sel_idx < len(cells):
-                    self._draw_frame(painter, cells[sel_idx], dev_edge,
+                    self._draw_frame(painter, parent, cells[sel_idx], dev_edge,
                                      QColor(220, 40, 40), 2)
 
             # Hover blue frame (2 device px) — drawn after red so it takes
             # visual priority when the hovered cell is also selected.
             hovered = getattr(parent, "_hovered_cell", None)
-            if hovered is not None and hovered.isVisible():
-                self._draw_frame(painter, hovered, dev_edge,
+            if hovered is not None and not hovered.isHidden():
+                self._draw_frame(painter, parent, hovered, dev_edge,
                                  QColor(55, 88, 255), 2)
         finally:
             painter.end()
 
-    def _draw_frame(self, painter, cell, dev_edge, color, width):
+    def _draw_frame(self, painter, parent, cell, dev_edge, color, width):
         """Draw a square frame of *width* device pixels around *cell*.
 
         Coordinates are converted to overlay-local device pixels so the
-        frame aligns exactly with the color tile regardless of where the
-        history widget sits inside the window.
+        frame aligns exactly with the visual colour tile (including any
+        spare-column strip to its left and the 1px seams on all four sides)
+        regardless of where the history widget sits inside the window.
         """
-        cell_origin = cell.mapTo(cell.window(), QPoint(0, 0))
-        overlay_origin = self.mapTo(self.window(), QPoint(0, 0))
-        x0 = dev_edge(cell_origin.x()) - dev_edge(overlay_origin.x())
-        y0 = dev_edge(cell_origin.y()) - dev_edge(overlay_origin.y())
-        x1 = dev_edge(cell_origin.x() + cell.width()) - dev_edge(overlay_origin.x())
-        y1 = dev_edge(cell_origin.y() + cell.height()) - dev_edge(overlay_origin.y())
+        win = self.window()
+        cell_origin = cell.mapTo(win, QPoint(0, 0))
+        overlay_origin = self.mapTo(win, QPoint(0, 0))
+        ox0 = dev_edge(overlay_origin.x())
+        oy0 = dev_edge(overlay_origin.y())
+
+        color_x0 = dev_edge(cell_origin.x()) - ox0
+        color_y0 = dev_edge(cell_origin.y()) - oy0
+        x1 = dev_edge(cell_origin.x() + cell.width()) - ox0
+        y1 = dev_edge(cell_origin.y() + cell.height()) - oy0
+
+        # Locate (r, c) in the visible grid so we include any 1px spare strip
+        # painted with this cell's colour immediately to its left.
+        cols = getattr(parent, "_cols", 0)
+        spare = getattr(parent, "_spare", 0)
+        gap = getattr(parent, "_gap", 0)
+        cells = getattr(parent, "_cells", ())
+        visible = parent._visible_cells() if hasattr(parent, "_visible_cells") else []
+        try:
+            vis_idx = visible.index(cell)
+        except ValueError:
+            vis_idx = -1
+
+        if vis_idx >= 0 and cols > 0:
+            r = vis_idx // cols
+            c = vis_idx % cols
+            if c > 0 and (c - 1) < spare and gap == 0:
+                left_idx = r * MAX_COLS + (c - 1)
+                if left_idx < len(cells):
+                    left_cell = cells[left_idx]
+                    left_origin = left_cell.mapTo(win, QPoint(0, 0))
+                    color_x0 = dev_edge(left_origin.x() + left_cell.width()) - ox0
+
+        # Cover the 1px left/top seam (or border) just like x1/y1 cover the
+        # 1px right/bottom seam inside the cell.
+        x0 = max(0, color_x0 - 1)
+        y0 = max(0, color_y0 - 1)
         dw = max(1, x1 - x0)
         dh = max(1, y1 - y0)
 
@@ -294,6 +325,7 @@ class ColorHistoryWidget(QWidget):
         super().__init__(parent)
         self.setObjectName("ColorHistoryWidget")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setMouseTracking(True)
         # Theme colors — pushed by MainWindow. Defaults match the gray theme
         # so the widget looks reasonable before apply_theme runs.
         self._bg = QColor(178, 178, 178)
@@ -406,9 +438,72 @@ class ColorHistoryWidget(QWidget):
 
     def _on_cell_hovered(self, cell):
         """Track the hovered cell and repaint the overlay frame."""
+        if cell is None and self.isVisible():
+            local_pos = self.mapFromGlobal(QCursor.pos())
+            spare_cell = self._spare_strip_cell_at(local_pos)
+            if spare_cell is not None:
+                cell = spare_cell
         self._hovered_cell = cell
         if hasattr(self, "_overlay"):
             self._overlay.update()
+
+    def _spare_strip_cell_at(self, pos: QPoint):
+        """Return the right-hand ``_SwatchCell`` if *pos* falls on its 1px
+        left spare strip (which is painted with that cell's colour)."""
+        col_x = getattr(self, "_column_x", None)
+        spare = getattr(self, "_spare", 0)
+        if not col_x or spare <= 0 or self._gap != 0:
+            return None
+        px, py = pos.x(), pos.y()
+        swatch = self._swatch_size
+        for r in range(self._rows):
+            y0 = self._pad + r * (swatch + self._gap)
+            if not (y0 <= py < y0 + swatch):
+                continue
+            for c in range(1, min(self._cols, spare + 1)):
+                strip_x = self._left_pad + col_x[c - 1] + swatch
+                if strip_x <= px < self._left_pad + col_x[c]:
+                    idx = r * MAX_COLS + c
+                    if idx < len(self._cells):
+                        cell = self._cells[idx]
+                        if not cell.isHidden() and not cell.is_empty():
+                            return cell
+        return None
+
+    def mouseMoveEvent(self, event):
+        cell = self._spare_strip_cell_at(event.position().toPoint())
+        if cell is not None:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            if self._hovered_cell is not cell:
+                self._hovered_cell = cell
+                if hasattr(self, "_overlay"):
+                    self._overlay.update()
+        else:
+            self.unsetCursor()
+            if self._hovered_cell is not None and not self._hovered_cell.underMouse():
+                self._hovered_cell = None
+                if hasattr(self, "_overlay"):
+                    self._overlay.update()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self.unsetCursor()
+        if self._hovered_cell is not None:
+            self._hovered_cell = None
+            if hasattr(self, "_overlay"):
+                self._overlay.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        cell = self._spare_strip_cell_at(event.position().toPoint())
+        if cell is not None and not cell.is_empty():
+            if event.button() == Qt.MouseButton.LeftButton:
+                cell.clicked.emit(QColor(cell.color))
+            elif event.button() == Qt.MouseButton.RightButton:
+                cell._show_color_context_menu()
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
     def _relayout(self):
         """Reposition + resize + show/hide cells to fill the *current* width.
@@ -598,27 +693,50 @@ class ColorHistoryWidget(QWidget):
             col_x = getattr(self, "_column_x", None)
             spare = getattr(self, "_spare", 0)
             n_colors = len(self._colors)
-            swatch = self._swatch_size
-            gap = self._gap
             if col_x and spare > 0 and n_colors:
+                dpr = self.devicePixelRatioF()
+                if dpr <= 0:
+                    dpr = 1.0
+
+                def dev_edge(v):
+                    return int(v * dpr + 0.5)
+
+                win = self.window()
+                panel_origin = self.mapTo(win, QPoint(0, 0))
+                px0 = dev_edge(panel_origin.x())
+                py0 = dev_edge(panel_origin.y())
+
+                painter.save()
+                painter.scale(1.0 / dpr, 1.0 / dpr)
+                painter.setPen(Qt.PenStyle.NoPen)
                 for r in range(self._rows):
-                    y = self._pad + r * (swatch + gap)
                     for c in range(1, self._cols):
                         if c - 1 >= spare:
                             continue
                         right_idx = r * self._cols + c
                         if 0 <= right_idx < n_colors:
                             right = self._colors[n_colors - 1 - right_idx]
-                            x = self._left_pad + col_x[c - 1] + swatch + gap
-                            # Fill the spare strip with the right neighbour's
-                            # colour, but keep the last row grey so the
-                            # horizontal seam stays continuous across the
-                            # strip (otherwise the row seam has a 1px notch).
-                            gap_h = max(1, swatch - 1)
-                            painter.setBrush(QColor(right.rgb()))
-                            painter.drawRect(QRectF(x, y, 1, gap_h))
-                            painter.setBrush(QBrush(_SEAM))
-                            painter.drawRect(QRectF(x, y + gap_h, 1, 1))
+                            left_cell = self._cells[r * MAX_COLS + (c - 1)]
+                            right_cell = self._cells[r * MAX_COLS + c]
+                            left_origin = left_cell.mapTo(win, QPoint(0, 0))
+                            right_origin = right_cell.mapTo(win, QPoint(0, 0))
+                            gx0 = dev_edge(left_origin.x() + left_cell.width()) - px0
+                            gx1 = dev_edge(right_origin.x()) - px0
+                            gy0 = dev_edge(right_origin.y()) - py0
+                            gy1 = dev_edge(right_origin.y() + right_cell.height()) - py0
+                            gw = max(0, gx1 - gx0)
+                            gh = max(0, gy1 - gy0)
+                            if gw > 0 and gh > 0:
+                                # Fill the spare strip with the right neighbour's
+                                # colour, but keep the last device row grey so the
+                                # horizontal seam stays continuous across the
+                                # strip (otherwise the row seam has a 1px notch).
+                                color_h = max(1, gh - 1)
+                                painter.setBrush(QColor(right.rgb()))
+                                painter.drawRect(QRectF(gx0, gy0, gw, color_h))
+                                painter.setBrush(QBrush(_SEAM))
+                                painter.drawRect(QRectF(gx0, gy1 - 1, gw, 1))
+                painter.restore()
 
             # Border
             painter.setBrush(Qt.BrushStyle.NoBrush)

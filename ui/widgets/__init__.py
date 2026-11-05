@@ -6,12 +6,14 @@ color-picking orchestration instead of control rendering details.
 
 from ui.widgets.clickable_frame import ClickableFrame
 from ui.widgets.gradient_slider import GradientSlider
+from ui.widgets.picker_icon_button import PickerIconButton
 from ui.widgets.slider_value_label import SliderValueLabel
 from ui.widgets.title_bar import TitleBar, _title_bar_content_offset, _visible_title_bar_height
 
 __all__ = [
     "ClickableFrame",
     "GradientSlider",
+    "PickerIconButton",
     "SliderValueLabel",
     "TitleBar",
     "_title_bar_content_offset",

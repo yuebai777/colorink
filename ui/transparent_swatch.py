@@ -14,10 +14,19 @@ yet).
 
 from __future__ import annotations
 
+import math
 from typing import cast
 
 from PyQt6.QtCore import QRect, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QRegion
+from PyQt6.QtGui import (
+    QBrush,
+    QColor,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QRegion,
+)
 from PyQt6.QtWidgets import QWidget
 
 # Legacy circles layout: the widget box is 60px at wheel_scale=1.0.
@@ -69,39 +78,54 @@ def apply_preview_mouse_mask(box) -> None:
         # the mask radius gets a small pad for the border stroke. Using the
         # padded radius as the centre offset shifted the ellipse 3px away
         # from the drawn circle and swallowed clicks on its edge arc.
-        for cx_, cy_, r in ((fg_cx, fg_cy, fg_r + 3.0), (bg_cx, bg_cy, bg_r + 3.0)):
+        for cx_, cy_, r in ((fg_cx, fg_cy, fg_r + 4.0), (bg_cx, bg_cy, bg_r + 4.0)):
             region = region.united(QRegion(
                 QRectF(cx_ - r, cy_ - r, r * 2, r * 2).toRect(),
                 QRegion.RegionType.Ellipse,
             ))
     tile = box._trans_tile.geometry()
     if tile.isValid() and not tile.isEmpty():
-        if box._ringless_layout is not None and box._ringless_layout.controls_enabled:
-            region = region.united(QRegion(tile.adjusted(-3, -3, 3, 3)))
-        else:
-            region = region.united(_capsule_region(tile.adjusted(-3, -3, 3, 3)))
+        region = region.united(QRegion(tile.adjusted(-4, -4, 4, 4)))
     if region.isEmpty():
         box.clearMask()
     else:
         box.setMask(region)
 
 
+def _checker_pixmap(cell: int = 4, dpr: float = 1.0) -> QPixmap:
+    """Build a crisp High-DPI 2×2 checkerboard tile for QBrush."""
+    ratio = max(1.0, float(dpr))
+    cell_px = max(1, int(round(cell * ratio)))
+    pm = QPixmap(cell_px * 2, cell_px * 2)
+    pm.setDevicePixelRatio(ratio)
+    pm.fill(QColor(255, 255, 255))
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+    logical_cell = cell_px / ratio
+    gray = QColor(196, 196, 196)
+    p.fillRect(QRectF(0.0, 0.0, logical_cell, logical_cell), gray)
+    p.fillRect(QRectF(logical_cell, logical_cell, logical_cell, logical_cell), gray)
+    p.end()
+    return pm
+
+
 def draw_checker(painter: QPainter, rect: QRectF, cell: int = 4) -> None:
     """Fill *rect* with a light checkerboard (transparency indicator)."""
     painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(QBrush(QColor(255, 255, 255)))
     painter.drawRect(rect)
     painter.setBrush(QBrush(QColor(196, 196, 196)))
-    cols = max(1, int(rect.width()) // cell)
-    rows = max(1, int(rect.height()) // cell)
+    cols = max(1, int(math.ceil(rect.width() / cell)))
+    rows = max(1, int(math.ceil(rect.height() / cell)))
     for r in range(rows):
         for c in range(cols):
             if (r + c) % 2 == 0:
                 x = rect.x() + c * cell
                 y = rect.y() + r * cell
-                w = min(cell, rect.right() - x + 1)
-                h = min(cell, rect.bottom() - y + 1)
+                w = min(float(cell), rect.right() - x)
+                h = min(float(cell), rect.bottom() - y)
                 if w > 0 and h > 0:
                     painter.drawRect(QRectF(x, y, w, h))
     painter.restore()
@@ -149,14 +173,10 @@ class TransparentTile(QWidget):
         w = max(1, int(round(swatch_w)))
         h = max(1, int(round(swatch_h)))
         self.setGeometry(int(round(x_pos)), int(round(y_pos)), w, h)
-        # Rounded-rect hit region matching the painted shape.
-        parent = cast(QWidget, self.parent())
-        layout = getattr(parent, "_ringless_layout", None)
-        radius = float(layout.corner_radius) if layout is not None else 4.0
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0),
-                            radius, radius)
-        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
+        # Never call setMask on TransparentTile itself: QWidget.setMask uses a
+        # 1-bit integer-pixel QRegion that hard-clips the antialiased rounded
+        # border into a jagged staircase (especially visible at 125%/150% DPI).
+        self.clearMask()
 
     def place_legacy(self, box_dim: float, scale: float = 1.0,
                      above: bool = False) -> None:
@@ -181,9 +201,7 @@ class TransparentTile(QWidget):
         else:
             y = box_dim + t_gap - 2.0 * scale
         self.setGeometry(int(round(x)), int(round(y)), int(w), int(t_h))
-        # Only the pill itself is interactive — clicks in the capsule's
-        # corner notches fall through to whatever is underneath.
-        self.setMask(_capsule_region(self.rect()))
+        self.clearMask()
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
         painter = QPainter(self)
@@ -199,30 +217,38 @@ class TransparentTile(QWidget):
                 False,
             ))
             inactive = QColor(getattr(parent, "inactive_border_color", "#cccccc"))
-            rect = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
+            if transparent:
+                stroke_w = 2.5
+                border_color = TRANSPARENT_ACTIVE_COLOR
+            elif self._hover:
+                stroke_w = 2.0
+                border_color = TRANSPARENT_ACTIVE_COLOR
+            else:
+                stroke_w = 1.0
+                border_color = inactive
+
+            # Inset by half the stroke width so the entire pen stays inside the
+            # widget bounding box (no flat-clipped edges or corner bulges) and
+            # only one unified border path is stroked.
+            inset = stroke_w / 2.0
+            rect = QRectF(
+                inset,
+                inset,
+                max(1.0, self.width() - stroke_w),
+                max(1.0, self.height() - stroke_w),
+            )
             layout = getattr(parent, "_ringless_layout", None)
             if layout is not None and bool(
                 getattr(layout, "controls_enabled", False)
             ):
-                radius = float(layout.corner_radius)
+                radius = max(0.0, float(layout.corner_radius) - inset + 0.5)
             else:
                 radius = rect.height() / 2.0
-            path = QPainterPath()
-            path.addRoundedRect(rect, radius, radius)
-            painter.save()
-            painter.setClipPath(path)
-            draw_checker(painter, rect.adjusted(1.0, 1.0, -1.0, -1.0))
-            painter.restore()
-            if transparent:
-                painter.setPen(QPen(TRANSPARENT_ACTIVE_COLOR, 4.0))
-            else:
-                painter.setPen(QPen(inactive, 1.0))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
+
+            dpr = self.devicePixelRatioF() if hasattr(self, "devicePixelRatioF") else 1.0
+            painter.setBrush(QBrush(_checker_pixmap(4, dpr)))
+            painter.setPen(QPen(border_color, stroke_w))
             painter.drawRoundedRect(rect, radius, radius)
-            if self._hover and not transparent:
-                painter.setPen(QPen(TRANSPARENT_ACTIVE_COLOR, 2.0))
-                painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5),
-                                        radius, radius)
         finally:
             painter.end()
 

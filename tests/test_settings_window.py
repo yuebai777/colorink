@@ -266,10 +266,10 @@ class TestTabStructure:
     def test_pages_exist(self, sidebar):
         assert hasattr(sidebar, "stack")
         assert sidebar.stack is not None
-        assert sidebar.stack.count() == 5
+        assert sidebar.stack.count() == 10
 
     def test_nav_labels(self, sidebar):
-        expected = ["快捷键", "界面", "取色器", "面板", "同步"]
+        expected = ["快捷键", "界面", "窗口", "色环", "LAB", "滑块", "面板", "灰度滤镜", "同步", "系统"]
         for i, text in enumerate(expected):
             assert sidebar.nav.item(i).text() == text
 
@@ -279,8 +279,8 @@ class TestTabStructure:
             assert isinstance(sidebar.stack.widget(i), QScrollArea)
 
     def test_combo_module_in_picker_page(self, sidebar):
-        # Page index 2 = "取色器"
-        picker_page = sidebar.stack.widget(2)
+        # Page index 3 = "取色器"
+        picker_page = sidebar.stack.widget(3)
         assert picker_page.isAncestorOf(sidebar.combo_module)
 
     def test_combo_theme_in_interface_page(self, sidebar):
@@ -288,14 +288,14 @@ class TestTabStructure:
         interface_page = sidebar.stack.widget(1)
         assert interface_page.isAncestorOf(sidebar.combo_theme)
 
-    def test_language_combo_in_interface_page(self, sidebar):
-        # 语言已从“关于”移到“界面”
-        interface_page = sidebar.stack.widget(1)
-        assert interface_page.isAncestorOf(sidebar.cmb_language)
+    def test_language_combo_in_system_page(self, sidebar):
+        # 语言放在“系统”页
+        system_page = sidebar.stack.widget(9)
+        assert system_page.isAncestorOf(sidebar.cmb_language)
 
     def test_grayscale_in_filter_page(self, sidebar):
-        # Page index 3 = "滤镜"
-        filter_page = sidebar.stack.widget(4)
+        # Page index 7 = "灰度滤镜"
+        filter_page = sidebar.stack.widget(7)
         assert filter_page.isAncestorOf(sidebar.combo_grayscale_backend)
 
     def test_btn_pick_in_hotkeys_page(self, sidebar):
@@ -364,16 +364,16 @@ class TestReorganizedSettings:
         assert hotkeys_page.isAncestorOf(sidebar.cb_follow_mouse)
 
     def test_picker_zoom_in_picker_page(self, sidebar):
-        picker_page = sidebar.stack.widget(2)
+        picker_page = sidebar.stack.widget(3)
         assert picker_page.isAncestorOf(sidebar.btn_zoom_dec)
 
     def test_history_settings_merged(self, sidebar):
         assert "History" not in sidebar.slider_rows
         assert hasattr(sidebar, "cb_history")
-        panels_page = sidebar.stack.widget(3)
-        assert panels_page.isAncestorOf(sidebar.cb_history)
-        assert panels_page.isAncestorOf(sidebar.combo_history_cols)
-        assert panels_page.isAncestorOf(sidebar.combo_history_rows)
+        sliders_page = sidebar.stack.widget(5)
+        assert sliders_page.isAncestorOf(sidebar.cb_history)
+        assert sliders_page.isAncestorOf(sidebar.combo_history_cols)
+        assert sliders_page.isAncestorOf(sidebar.combo_history_rows)
 
     def test_slider_rows_are_show_switches_only(self, sidebar):
         """顺序改成拖面板了，这里只剩"显示/隐藏"。"""
@@ -385,16 +385,18 @@ class TestReorganizedSettings:
     def test_advanced_is_regular_section(self, sidebar):
         """高级 is a plain section (no collapse toggle) with its controls."""
         from PyQt6.QtWidgets import QLabel
-        panels_page = sidebar.stack.widget(3)
+        sliders_page = sidebar.stack.widget(5)
+        panels_page = sidebar.stack.widget(6)
         headers = [
-            lbl.text() for lbl in panels_page.findChildren(QLabel)
+            lbl.text() for lbl in sliders_page.findChildren(QLabel)
             if lbl.objectName() == "SectionHeader"
         ]
         assert "高级" in headers
-        assert panels_page.isAncestorOf(sidebar.btn_scroll_dec)
+        assert sliders_page.isAncestorOf(sidebar.btn_scroll_dec)
         assert panels_page.isAncestorOf(sidebar.lbl_same_space)
         assert panels_page.isAncestorOf(sidebar.lbl_diff_space)
         # No collapsible headers remain anywhere
+        assert not sliders_page.findChildren(QPushButton, "CollapseHeader")
         assert not panels_page.findChildren(QPushButton, "CollapseHeader")
 
     def test_last_tab_is_remembered(self, sidebar):
@@ -404,8 +406,8 @@ class TestReorganizedSettings:
     def test_title_bar_toggle_controls_exist(self, sidebar):
         hotkeys_page = sidebar.stack.widget(0)
         assert hotkeys_page.isAncestorOf(sidebar.btn_title_bar)
-        interface_page = sidebar.stack.widget(1)
-        assert interface_page.isAncestorOf(sidebar.cb_show_title_bar)
+        window_page = sidebar.stack.widget(2)
+        assert window_page.isAncestorOf(sidebar.cb_show_title_bar)
         assert sidebar.cb_show_title_bar.isChecked() is True
 
     def test_title_bar_hotkey_and_visibility_are_saved(self, sidebar):
@@ -437,7 +439,7 @@ class TestReorganizedSettings:
         assert not hasattr(sidebar, "btn_hist_down")
 
     def test_sync_and_versions_share_one_card(self, sidebar):
-        software_page = sidebar.stack.widget(4)
+        software_page = sidebar.stack.widget(8)
         assert software_page.isAncestorOf(sidebar.combo_software)
         assert software_page.isAncestorOf(sidebar.combo_csp)
 

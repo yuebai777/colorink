@@ -19,6 +19,7 @@ HOTKEY_WIDGETS = {
     "hideWindowKey": "hide",
     "followMouseKey": "follow",
     "grayscaleFilterKey": "grayscale",
+    "regionGrayscaleKey": "region_grayscale",
     "toggleLabKey": "lab_toggle",
     "toggleLabGlobalKey": "lab_global",
     "toggleTitleBarKey": "title_bar",
