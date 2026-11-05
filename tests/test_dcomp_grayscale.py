@@ -89,3 +89,39 @@ def test_hotkey_mixin_grayscale_fallback_to_mag(monkeypatch):
     assert isinstance(host.grayscale_overlay, MagFilterController)
     assert host.cfg["grayscaleFilterBackend"] == "mag"
 
+
+def test_dcomp_set_active_checks_delta_stats_not_cumulative():
+    """If present_frames was > 0 from an earlier session and the current activation
+    becomes unhealthy on the second poll, set_active(True) must not break early on
+    stale cumulative present_frames."""
+    class StaleStatsThenUnhealthyDLL:
+        def __init__(self):
+            self.health_checks = 0
+
+        def dcomp_filter_set_active(self, active):
+            return True
+
+        def dcomp_filter_set_mode(self, mode):
+            pass
+
+        def dcomp_filter_set_target(self, target):
+            return True
+
+        def dcomp_filter_is_healthy(self):
+            self.health_checks += 1
+            # First check is healthy, second check fails (as when DuplicateOutput fails after retry)
+            return self.health_checks == 1
+
+        def dcomp_filter_cleanup(self):
+            pass
+
+        def dcomp_filter_get_stats(self, buf):
+            # Cumulative present_frames is stuck at 10 (no new frame in this activation)
+            buf[4] = 10
+
+    c = DCompGrayscaleController()
+    c._dll = StaleStatsThenUnhealthyDLL()
+    assert not c.set_active(True)
+    assert c._dll.health_checks >= 2
+
+

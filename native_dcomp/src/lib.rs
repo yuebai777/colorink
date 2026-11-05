@@ -21,7 +21,7 @@ use windows::Win32::Graphics::Direct3D::Fxc::*;
 use windows::Win32::Graphics::DirectComposition::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
-use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
+use windows::Win32::Graphics::Gdi::{BeginPaint, BitBlt, EndPaint, GetDC, ReleaseDC, PAINTSTRUCT, SRCCOPY};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -125,6 +125,7 @@ struct D3DResources {
     input_layout: ID3D11InputLayout,
     vbo: ID3D11Buffer,
     sampler: ID3D11SamplerState,
+    raster_state: ID3D11RasterizerState,
     dcomp_device: IDCompositionDevice,
 }
 
@@ -135,9 +136,7 @@ struct ScreenChannels {
     output_idx: usize,
     rect: RECT,
     hwnd: HWND,
-    _dcomp_target: IDCompositionTarget,
-    _dcomp_visual: IDCompositionVisual,
-    swapchain: IDXGISwapChain1,
+    dxgi_surf1: IDXGISurface1,
     rtv: ID3D11RenderTargetView,
     ping_pong_srv: ID3D11ShaderResourceView,
     has_new_frame: Arc<AtomicBool>,
@@ -160,6 +159,11 @@ static SESSION: Mutex<Option<ActiveSession>> = Mutex::new(None);
 static IS_HEALTHY: AtomicBool = AtomicBool::new(true);
 static TARGET_SCREEN: AtomicI32 = AtomicI32::new(-1);
 static FILTER_MODE: AtomicI32 = AtomicI32::new(0);
+static REGION_ENABLED: AtomicBool = AtomicBool::new(false);
+static REGION_X: AtomicI32 = AtomicI32::new(0);
+static REGION_Y: AtomicI32 = AtomicI32::new(0);
+static REGION_W: AtomicI32 = AtomicI32::new(0);
+static REGION_H: AtomicI32 = AtomicI32::new(0);
 static FRAME_COUNT: AtomicU64 = AtomicU64::new(0);
 static CNT_ACQ_OK: AtomicU64 = AtomicU64::new(0);
 static CNT_ACQ_TIMEOUT: AtomicU64 = AtomicU64::new(0);
@@ -207,8 +211,7 @@ pub fn create_screen_overlay_window(x: i32, y: i32, w: i32, h: i32) -> windows::
             | WS_EX_TOOLWINDOW
             | WS_EX_TRANSPARENT
             | WS_EX_LAYERED
-            | WS_EX_NOACTIVATE
-            | WS_EX_NOREDIRECTIONBITMAP;
+            | WS_EX_NOACTIVATE;
 
         let hwnd = CreateWindowExW(
             ex_style,
@@ -237,7 +240,7 @@ pub fn create_screen_overlay_window(x: i32, y: i32, w: i32, h: i32) -> windows::
 pub extern "C" fn dcomp_filter_init() -> bool {
     let mut guard = RESOURCES.lock().unwrap();
     if guard.is_some() {
-        return true;
+        return IS_HEALTHY.load(Ordering::SeqCst);
     }
 
     match init_resources_internal() {
@@ -265,7 +268,7 @@ fn init_resources_internal() -> windows::core::Result<D3DResources> {
                 while adapter.EnumOutputs(out_count).is_ok() {
                     out_count += 1;
                 }
-                println!("[DComp] Found adapter {}: {} (outputs: {})", idx, name.trim_matches(' '), out_count);
+                println!("[DComp] Found adapter {}: {} (outputs: {})", idx, name.trim_matches('\0'), out_count);
                 if out_count > 0 && chosen_adapter.is_none() {
                     chosen_adapter = Some(adapter);
                 }
@@ -278,7 +281,7 @@ fn init_resources_internal() -> windows::core::Result<D3DResources> {
         };
         if let Ok(desc) = adapter.GetDesc1() {
             let name = String::from_utf16_lossy(&desc.Description);
-            println!("[DComp] Selected adapter: {}", name.trim_matches(' '));
+            println!("[DComp] Selected adapter: {}", name.trim_matches('\0'));
         }
 
         let feature_levels = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
@@ -402,6 +405,18 @@ fn init_resources_internal() -> windows::core::Result<D3DResources> {
         device.CreateSamplerState(&sampler_desc, Some(&mut sampler))?;
         let sampler = sampler.unwrap();
 
+        // Scissor-enabled rasterizer state so regional grayscale only shades the active region
+        let rast_desc = D3D11_RASTERIZER_DESC {
+            FillMode: D3D11_FILL_SOLID,
+            CullMode: D3D11_CULL_NONE,
+            ScissorEnable: windows::Win32::Foundation::TRUE,
+            DepthClipEnable: windows::Win32::Foundation::TRUE,
+            ..Default::default()
+        };
+        let mut raster_state = None;
+        device.CreateRasterizerState(&rast_desc, Some(&mut raster_state))?;
+        let raster_state = raster_state.unwrap();
+
         // DirectComposition Device
         let dxgi_device: IDXGIDevice = device.cast()?;
         let dcomp_device: IDCompositionDevice = DCompositionCreateDevice(&dxgi_device)?;
@@ -415,6 +430,7 @@ fn init_resources_internal() -> windows::core::Result<D3DResources> {
             input_layout,
             vbo,
             sampler,
+            raster_state,
             dcomp_device,
         })
     }
@@ -454,10 +470,27 @@ pub extern "C" fn dcomp_filter_set_active(active: bool) -> bool {
 
     let mut session_guard = SESSION.lock().unwrap();
     if active {
+        if !IS_HEALTHY.load(Ordering::SeqCst) {
+            return false;
+        }
         if let Some(session) = session_guard.as_ref() {
-            session.active.store(true, Ordering::SeqCst);
-            session.cv.notify_all();
-            return true;
+            if session.running.load(Ordering::SeqCst) && IS_HEALTHY.load(Ordering::SeqCst) {
+                session.active.store(true, Ordering::SeqCst);
+                session.cv.notify_all();
+                return true;
+            }
+        }
+        // Clean up any dead session before proceeding
+        if let Some(mut dead_session) = session_guard.take() {
+            dead_session.running.store(false, Ordering::SeqCst);
+            dead_session.active.store(false, Ordering::SeqCst);
+            dead_session.cv.notify_all();
+            if let Some(h) = dead_session.render_handle.take() {
+                let _ = h.join();
+            }
+        }
+        if !IS_HEALTHY.load(Ordering::SeqCst) {
+            return false;
         }
 
         let res = match RESOURCES.lock().unwrap().as_ref() {
@@ -514,9 +547,11 @@ fn capture_worker_thread(
     device: ID3D11Device,
     context: Arc<Mutex<ContextWrapper>>,
     output1: IDXGIOutput1,
+    screen_rect: RECT,
     ping_pong_tex: ID3D11Texture2D,
     has_new_frame: Arc<AtomicBool>,
     notify: Arc<Condvar>,
+    lock: Arc<Mutex<()>>,
     running: Arc<AtomicBool>,
     active: Arc<AtomicBool>,
     target_screen: Arc<AtomicI32>,
@@ -542,13 +577,16 @@ fn capture_worker_thread(
             continue;
         }
 
-        let req_target = target_screen.load(Ordering::Relaxed);
-        if req_target >= 0 && req_target as usize != output_idx {
-            if dup.is_some() {
-                dup = None;
+        let reg_en = REGION_ENABLED.load(Ordering::Relaxed);
+        if !reg_en {
+            let req_target = target_screen.load(Ordering::Relaxed);
+            if req_target >= 0 && req_target as usize != output_idx {
+                if dup.is_some() {
+                    dup = None;
+                }
+                thread::sleep(Duration::from_millis(50));
+                continue;
             }
-            thread::sleep(Duration::from_millis(50));
-            continue;
         }
 
         if dup.is_none() {
@@ -573,14 +611,15 @@ fn capture_worker_thread(
                     }
                     None => {
                         dup_fail_count += 1;
-                        println!("[Capture {}] DuplicateOutput failed (attempt {}/5)", output_idx, dup_fail_count);
-                        if dup_fail_count >= 5 {
+                        println!("[Capture {}] DuplicateOutput failed (attempt {}/3)", output_idx, dup_fail_count);
+                        if dup_fail_count >= 3 {
                             IS_HEALTHY.store(false, Ordering::SeqCst);
+                            running.store(false, Ordering::SeqCst);
                             notify.notify_one();
                             println!("[Capture {}] DuplicateOutput failed repeatedly, marked DComp as unhealthy.", output_idx);
                             break;
                         }
-                        thread::sleep(Duration::from_millis(50));
+                        thread::sleep(Duration::from_millis(20));
                         continue;
                     }
                 }
@@ -591,7 +630,7 @@ fn capture_worker_thread(
         let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut desktop_resource: Option<IDXGIResource> = None;
 
-        let acq_res = unsafe { duplication.AcquireNextFrame(16, &mut frame_info, &mut desktop_resource) };
+        let acq_res = unsafe { duplication.AcquireNextFrame(8, &mut frame_info, &mut desktop_resource) };
 
         match acq_res {
             Ok(_) => {
@@ -602,14 +641,52 @@ fn capture_worker_thread(
                         {
                             let ctx = context.lock().unwrap();
                             unsafe {
-                                ctx.0.CopyResource(&ping_pong_tex, &tex);
+                                if REGION_ENABLED.load(Ordering::Relaxed) {
+                                    let rx = REGION_X.load(Ordering::Relaxed);
+                                    let ry = REGION_Y.load(Ordering::Relaxed);
+                                    let rw = REGION_W.load(Ordering::Relaxed);
+                                    let rh = REGION_H.load(Ordering::Relaxed);
+                                    let ix1 = rx.max(screen_rect.left);
+                                    let iy1 = ry.max(screen_rect.top);
+                                    let ix2 = (rx + rw).min(screen_rect.right);
+                                    let iy2 = (ry + rh).min(screen_rect.bottom);
+                                    if ix2 > ix1 && iy2 > iy1 {
+                                        let left = (ix1 - screen_rect.left) as u32;
+                                        let top = (iy1 - screen_rect.top) as u32;
+                                        let right = (ix2 - screen_rect.left) as u32;
+                                        let bottom = (iy2 - screen_rect.top) as u32;
+                                        let src_box = D3D11_BOX {
+                                            left,
+                                            top,
+                                            front: 0,
+                                            right,
+                                            bottom,
+                                            back: 1,
+                                        };
+                                        ctx.0.CopySubresourceRegion(
+                                            &ping_pong_tex,
+                                            0,
+                                            left,
+                                            top,
+                                            0,
+                                            &tex,
+                                            0,
+                                            Some(&src_box),
+                                        );
+                                    }
+                                } else {
+                                    ctx.0.CopyResource(&ping_pong_tex, &tex);
+                                }
                             }
                         }
                         drop(tex);
                         drop(res);
                         let _ = unsafe { duplication.ReleaseFrame() };
-                        has_new_frame.store(true, Ordering::Release);
-                        notify.notify_one();
+                        {
+                            let _lk = lock.lock().unwrap();
+                            has_new_frame.store(true, Ordering::Release);
+                            notify.notify_one();
+                        }
                     } else {
                         drop(res);
                         let _ = unsafe { duplication.ReleaseFrame() };
@@ -631,6 +708,43 @@ fn capture_worker_thread(
     }
     dup = None;
     println!("[Capture {}] Exiting cleanly.", output_idx);
+}
+
+fn compute_screen_window_rect(
+    screen_rect: &RECT,
+    output_idx: usize,
+    req_target: i32,
+) -> Option<(i32, i32, i32, i32, i32, i32, bool)> {
+    if REGION_ENABLED.load(Ordering::Relaxed) {
+        let rx = REGION_X.load(Ordering::Relaxed);
+        let ry = REGION_Y.load(Ordering::Relaxed);
+        let rw = REGION_W.load(Ordering::Relaxed);
+        let rh = REGION_H.load(Ordering::Relaxed);
+        if rw <= 0 || rh <= 0 {
+            return None;
+        }
+        let ix1 = rx.max(screen_rect.left);
+        let iy1 = ry.max(screen_rect.top);
+        let ix2 = (rx + rw).min(screen_rect.right);
+        let iy2 = (ry + rh).min(screen_rect.bottom);
+        if ix2 <= ix1 || iy2 <= iy1 {
+            return None;
+        }
+        let win_w = ix2 - ix1;
+        let win_h = iy2 - iy1;
+        let local_left = ix1 - screen_rect.left;
+        let local_top = iy1 - screen_rect.top;
+        Some((ix1, iy1, win_w, win_h, local_left, local_top, true))
+    } else {
+        if req_target >= 0 && req_target as usize != output_idx {
+            return None;
+        }
+        let x = screen_rect.left;
+        let y = screen_rect.top;
+        let win_w = (screen_rect.right - screen_rect.left).max(1);
+        let win_h = (screen_rect.bottom - screen_rect.top).max(1);
+        Some((x, y, win_w, win_h, 0, 0, false))
+    }
 }
 
 fn render_worker_thread(
@@ -659,7 +773,8 @@ fn render_worker_thread(
     let input_layout = res.input_layout;
     let vbo = res.vbo;
     let sampler = res.sampler;
-    let dcomp_device = res.dcomp_device;
+    let raster_state = res.raster_state;
+    let _dcomp_device = res.dcomp_device;
 
     let mut screens: Vec<ScreenChannels> = Vec::new();
     let mut capture_threads: Vec<JoinHandle<()>> = Vec::new();
@@ -667,108 +782,100 @@ fn render_worker_thread(
     unsafe {
         if let Ok(dxgi_device) = device.cast::<IDXGIDevice>() {
             if let Ok(adapter) = dxgi_device.GetAdapter() {
-                if let Ok(factory2) = adapter.GetParent::<IDXGIFactory2>() {
-                    let mut out_idx = 0;
-                    while let Ok(output) = adapter.EnumOutputs(out_idx) {
-                        if let Ok(desc) = output.GetDesc() {
-                            let x = desc.DesktopCoordinates.left;
-                            let y = desc.DesktopCoordinates.top;
-                            let w = (desc.DesktopCoordinates.right - desc.DesktopCoordinates.left).max(1) as u32;
-                            let h = (desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top).max(1) as u32;
+                let mut out_idx = 0;
+                while let Ok(output) = adapter.EnumOutputs(out_idx) {
+                    if let Ok(desc) = output.GetDesc() {
+                        let x = desc.DesktopCoordinates.left;
+                        let y = desc.DesktopCoordinates.top;
+                        let w = (desc.DesktopCoordinates.right - desc.DesktopCoordinates.left).max(1) as u32;
+                        let h = (desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top).max(1) as u32;
 
-                            if let Ok(output1) = output.cast::<IDXGIOutput1>() {
-                                if let Ok(hwnd) = create_screen_overlay_window(x, y, w as i32, h as i32) {
-                                    if let Ok(target) = dcomp_device.CreateTargetForHwnd(hwnd, true) {
-                                        if let Ok(visual) = dcomp_device.CreateVisual() {
-                                            let sc_desc = DXGI_SWAP_CHAIN_DESC1 {
-                                                Width: w,
-                                                Height: h,
-                                                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                                                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-                                                BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-                                                BufferCount: 2,
-                                                Scaling: DXGI_SCALING_STRETCH,
-                                                SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
-                                                AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
-                                                Flags: 0,
-                                                ..Default::default()
-                                            };
+                        if let Ok(output1) = output.cast::<IDXGIOutput1>() {
+                            if let Ok(hwnd) = create_screen_overlay_window(x, y, w as i32, h as i32) {
+                                let rt_desc = D3D11_TEXTURE2D_DESC {
+                                    Width: w,
+                                    Height: h,
+                                    MipLevels: 1,
+                                    ArraySize: 1,
+                                    Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                                    Usage: D3D11_USAGE_DEFAULT,
+                                    BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+                                    CPUAccessFlags: 0,
+                                    MiscFlags: D3D11_RESOURCE_MISC_GDI_COMPATIBLE.0 as u32,
+                                };
 
-                                            if let Ok(sc) = factory2.CreateSwapChainForComposition(&device, &sc_desc, None) {
-                                                let _ = visual.SetContent(&sc);
-                                                let _ = target.SetRoot(&visual);
-                                                let _ = dcomp_device.Commit();
+                                let mut rt_tex_opt = None;
+                                if device.CreateTexture2D(&rt_desc, None, Some(&mut rt_tex_opt)).is_ok() {
+                                    let rt_tex = rt_tex_opt.unwrap();
+                                    if let Ok(dxgi_surf1) = rt_tex.cast::<IDXGISurface1>() {
+                                        let mut rtv_opt = None;
+                                        if device.CreateRenderTargetView(&rt_tex, None, Some(&mut rtv_opt)).is_ok() {
+                                            if let Some(rtv) = rtv_opt {
+                                                let ping_pong_desc = D3D11_TEXTURE2D_DESC {
+                                                    Width: w,
+                                                    Height: h,
+                                                    MipLevels: 1,
+                                                    ArraySize: 1,
+                                                    Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                                                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                                                    Usage: D3D11_USAGE_DEFAULT,
+                                                    BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                                                    CPUAccessFlags: 0,
+                                                    MiscFlags: 0,
+                                                };
 
-                                                if let Ok(back_buffer) = sc.GetBuffer::<ID3D11Texture2D>(0) {
-                                                    let mut rtv_opt = None;
-                                                    if device.CreateRenderTargetView(&back_buffer, None, Some(&mut rtv_opt)).is_ok() {
-                                                        if let Some(rtv) = rtv_opt {
-                                                            let ping_pong_desc = D3D11_TEXTURE2D_DESC {
-                                                                Width: w,
-                                                                Height: h,
-                                                                MipLevels: 1,
-                                                                ArraySize: 1,
-                                                                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                                                                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-                                                                Usage: D3D11_USAGE_DEFAULT,
-                                                                BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
-                                                                CPUAccessFlags: 0,
-                                                                MiscFlags: 0,
-                                                            };
+                                                let mut ping_pong_tex = None;
+                                                if device.CreateTexture2D(&ping_pong_desc, None, Some(&mut ping_pong_tex)).is_ok() {
+                                                    let ping_pong_tex = ping_pong_tex.unwrap();
+                                                    let mut ping_pong_srv = None;
+                                                    if device.CreateShaderResourceView(&ping_pong_tex, None, Some(&mut ping_pong_srv)).is_ok() {
+                                                        let ping_pong_srv = ping_pong_srv.unwrap();
+                                                        let has_new_frame = Arc::new(AtomicBool::new(false));
+                                                        let notify = Arc::new(Condvar::new());
+                                                        let lock = Arc::new(Mutex::new(()));
 
-                                                            let mut ping_pong_tex = None;
-                                                            if device.CreateTexture2D(&ping_pong_desc, None, Some(&mut ping_pong_tex)).is_ok() {
-                                                                let ping_pong_tex = ping_pong_tex.unwrap();
-                                                                let mut ping_pong_srv = None;
-                                                                if device.CreateShaderResourceView(&ping_pong_tex, None, Some(&mut ping_pong_srv)).is_ok() {
-                                                                    let ping_pong_srv = ping_pong_srv.unwrap();
-                                                                    let has_new_frame = Arc::new(AtomicBool::new(false));
-                                                                    let notify = Arc::new(Condvar::new());
-                                                                    let lock = Arc::new(Mutex::new(()));
+                                                        let dev_c = device.clone();
+                                                        let ctx_c = Arc::clone(&context);
+                                                        let out1_c = output1.clone();
+                                                        let rect_c = desc.DesktopCoordinates;
+                                                        let tex_c = ping_pong_tex.clone();
+                                                        let has_frame_c = Arc::clone(&has_new_frame);
+                                                        let notify_c = Arc::clone(&notify);
+                                                        let lock_c = Arc::clone(&lock);
+                                                        let r_c = Arc::clone(&running);
+                                                        let a_c = Arc::clone(&active);
+                                                        let t_c = Arc::clone(&target_screen);
 
-                                                                    // Spawn dedicated capture thread for this output
-                                                                    let dev_c = device.clone();
-                                                                    let ctx_c = Arc::clone(&context);
-                                                                    let out1_c = output1.clone();
-                                                                    let tex_c = ping_pong_tex.clone();
-                                                                    let has_frame_c = Arc::clone(&has_new_frame);
-                                                                    let notify_c = Arc::clone(&notify);
-                                                                    let r_c = Arc::clone(&running);
-                                                                    let a_c = Arc::clone(&active);
-                                                                    let t_c = Arc::clone(&target_screen);
+                                                        let cap_handle = thread::spawn(move || {
+                                                            capture_worker_thread(
+                                                                dev_c,
+                                                                ctx_c,
+                                                                out1_c,
+                                                                rect_c,
+                                                                tex_c,
+                                                                has_frame_c,
+                                                                notify_c,
+                                                                lock_c,
+                                                                r_c,
+                                                                a_c,
+                                                                t_c,
+                                                                out_idx as usize,
+                                                            );
+                                                        });
+                                                        capture_threads.push(cap_handle);
 
-                                                                    let cap_handle = thread::spawn(move || {
-                                                                        capture_worker_thread(
-                                                                            dev_c,
-                                                                            ctx_c,
-                                                                            out1_c,
-                                                                            tex_c,
-                                                                            has_frame_c,
-                                                                            notify_c,
-                                                                            r_c,
-                                                                            a_c,
-                                                                            t_c,
-                                                                            out_idx as usize,
-                                                                        );
-                                                                    });
-                                                                    capture_threads.push(cap_handle);
-
-                                                                    screens.push(ScreenChannels {
-                                                                        output_idx: out_idx as usize,
-                                                                        rect: desc.DesktopCoordinates,
-                                                                        hwnd,
-                                                                        _dcomp_target: target,
-                                                                        _dcomp_visual: visual,
-                                                                        swapchain: sc,
-                                                                        rtv,
-                                                                        ping_pong_srv,
-                                                                        has_new_frame,
-                                                                        notify,
-                                                                        lock,
-                                                                    });
-                                                                }
-                                                            }
-                                                        }
+                                                        screens.push(ScreenChannels {
+                                                            output_idx: out_idx as usize,
+                                                            rect: desc.DesktopCoordinates,
+                                                            hwnd,
+                                                            dxgi_surf1,
+                                                            rtv,
+                                                            ping_pong_srv,
+                                                            has_new_frame,
+                                                            notify,
+                                                            lock,
+                                                        });
                                                     }
                                                 }
                                             }
@@ -777,8 +884,8 @@ fn render_worker_thread(
                                 }
                             }
                         }
-                        out_idx += 1;
                     }
+                    out_idx += 1;
                 }
             }
         }
@@ -786,10 +893,16 @@ fn render_worker_thread(
 
     if screens.is_empty() {
         IS_HEALTHY.store(false, Ordering::SeqCst);
+        running.store(false, Ordering::SeqCst);
+        for handle in capture_threads {
+            let _ = handle.join();
+        }
         return;
     }
 
-    let mut screen_visibilities = vec![false; screens.len()];
+    let mut screen_applied_rects: Vec<Option<(i32, i32, i32, i32, bool)>> = vec![None; screens.len()];
+    let mut screen_applied_modes: Vec<i32> = vec![-1; screens.len()];
+    let mut screen_has_presented = vec![false; screens.len()];
 
     while running.load(Ordering::Relaxed) {
         // Window message pump for all windows and thread messages on this thread
@@ -806,11 +919,11 @@ fn render_worker_thread(
 
         if !is_act {
             for (idx, screen) in screens.iter().enumerate() {
-                if screen_visibilities[idx] {
+                if screen_applied_rects[idx].is_some() {
                     unsafe {
                         let _ = ShowWindow(screen.hwnd, SW_HIDE);
                     }
-                    screen_visibilities[idx] = false;
+                    screen_applied_rects[idx] = None;
                 }
             }
 
@@ -827,31 +940,32 @@ fn render_worker_thread(
         // Check backend health
         if !IS_HEALTHY.load(Ordering::Relaxed) {
             println!("[Render] Backend became unhealthy, exiting render loop.");
+            running.store(false, Ordering::SeqCst);
             break;
         }
 
-        // For each screen that should NOT be shown, hide if visible
-        for (idx, screen) in screens.iter().enumerate() {
-            let should_show = req_target < 0 || req_target as usize == screen.output_idx;
-            if !should_show && screen_visibilities[idx] {
-                unsafe {
-                    let _ = ShowWindow(screen.hwnd, SW_HIDE);
-                }
-                screen_visibilities[idx] = false;
-            }
-        }
-
-        // For each screen that should be shown, check if a new frame is ready and render it
+        // For each screen, check if it should be shown and render/position it
         let mut any_rendered = false;
+        let cur_mode = mode.load(Ordering::Relaxed);
 
         for (idx, screen) in screens.iter().enumerate() {
-            let should_show = req_target < 0 || req_target as usize == screen.output_idx;
-            if !should_show {
+            let target_geom = compute_screen_window_rect(&screen.rect, screen.output_idx, req_target);
+            let Some((win_x, win_y, win_w, win_h, local_left, local_top, is_clipped)) = target_geom else {
+                if screen_applied_rects[idx].is_some() {
+                    unsafe {
+                        let _ = ShowWindow(screen.hwnd, SW_HIDE);
+                    }
+                    screen_applied_rects[idx] = None;
+                }
                 continue;
-            }
+            };
 
+            let geom_changed = screen_applied_rects[idx] != Some((win_x, win_y, win_w, win_h, is_clipped));
+            let mode_changed = screen_applied_modes[idx] != cur_mode;
             let has_frame = screen.has_new_frame.swap(false, Ordering::AcqRel);
-            if has_frame {
+            let should_draw = has_frame || (screen_has_presented[idx] && (geom_changed || mode_changed));
+
+            if should_draw {
                 any_rendered = true;
                 let w = (screen.rect.right - screen.rect.left).max(1) as f32;
                 let h = (screen.rect.bottom - screen.rect.top).max(1) as f32;
@@ -867,7 +981,15 @@ fn render_worker_thread(
                             MinDepth: 0.0,
                             MaxDepth: 1.0,
                         };
+                        let scissor = RECT {
+                            left: local_left,
+                            top: local_top,
+                            right: local_left + win_w,
+                            bottom: local_top + win_h,
+                        };
+                        ctx.0.RSSetState(&raster_state);
                         ctx.0.RSSetViewports(Some(&[vp]));
+                        ctx.0.RSSetScissorRects(Some(&[scissor]));
                         ctx.0.OMSetRenderTargets(Some(&[Some(screen.rtv.clone())]), None);
                         ctx.0.IASetInputLayout(&input_layout);
                         ctx.0.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -877,7 +999,6 @@ fn render_worker_thread(
                         ctx.0.VSSetShader(&vs, None);
                         ctx.0.PSSetSamplers(0, Some(&[Some(sampler.clone())]));
 
-                        let cur_mode = mode.load(Ordering::Relaxed);
                         if cur_mode == 1 {
                             ctx.0.PSSetShader(&ps_luma, None);
                         } else {
@@ -890,32 +1011,45 @@ fn render_worker_thread(
                     }
                 }
 
-                unsafe {
-                    let pres_params = DXGI_PRESENT_PARAMETERS::default();
-                    let pres = screen.swapchain.Present1(0, DXGI_PRESENT(0), &pres_params);
-                    let _ = dcomp_device.Commit();
-                    if pres.is_ok() {
-                        FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
-                        CNT_PRESENT_OK.fetch_add(1, Ordering::Relaxed);
+                // Ensure window bounds match before blitting into its redirection surface
+                if geom_changed {
+                    unsafe {
+                        let _ = SetWindowPos(
+                            screen.hwnd,
+                            HWND_TOPMOST,
+                            win_x,
+                            win_y,
+                            win_w,
+                            win_h,
+                            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                        );
+                    }
+                    screen_applied_rects[idx] = Some((win_x, win_y, win_w, win_h, is_clipped));
+                }
 
-                        // Reveal window ONLY AFTER the first frame is successfully presented!
-                        // Sized with 1-pixel margin on the horizontal edges so Windows 11 shell
-                        // does not falsely classify it as borderless fullscreen and trigger Focus Assist.
-                        if !screen_visibilities[idx] {
-                            let x = screen.rect.left - 1;
-                            let y = screen.rect.top;
-                            let win_w = (screen.rect.right - screen.rect.left).max(1) + 2;
-                            let win_h = (screen.rect.bottom - screen.rect.top).max(1);
-                            let _ = SetWindowPos(
-                                screen.hwnd,
-                                HWND_TOPMOST,
-                                x,
-                                y,
-                                win_w,
-                                win_h,
-                                SWP_NOACTIVATE | SWP_SHOWWINDOW,
-                            );
-                            screen_visibilities[idx] = true;
+                unsafe {
+                    if let Ok(dxgi_hdc) = screen.dxgi_surf1.GetDC(false) {
+                        let win_hdc = GetDC(screen.hwnd);
+                        let blt_res = BitBlt(
+                            win_hdc,
+                            0,
+                            0,
+                            win_w,
+                            win_h,
+                            dxgi_hdc,
+                            local_left,
+                            local_top,
+                            SRCCOPY,
+                        );
+                        let _ = ReleaseDC(screen.hwnd, win_hdc);
+                        let _ = screen.dxgi_surf1.ReleaseDC(None);
+                        if blt_res.is_ok() {
+                            FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+                            CNT_PRESENT_OK.fetch_add(1, Ordering::Relaxed);
+                            screen_has_presented[idx] = true;
+                            screen_applied_modes[idx] = cur_mode;
+                        } else {
+                            CNT_PRESENT_ERR.fetch_add(1, Ordering::Relaxed);
                         }
                     } else {
                         CNT_PRESENT_ERR.fetch_add(1, Ordering::Relaxed);
@@ -931,14 +1065,16 @@ fn render_worker_thread(
             }) {
                 let lk = first_vis.lock.lock().unwrap();
                 if !first_vis.has_new_frame.load(Ordering::Acquire) {
-                    let _ = first_vis.notify.wait_timeout(lk, Duration::from_millis(8));
+                    let _ = first_vis.notify.wait_timeout(lk, Duration::from_millis(1));
                 }
             } else {
-                thread::sleep(Duration::from_millis(8));
+                thread::sleep(Duration::from_millis(1));
             }
         }
     }
 
+    running.store(false, Ordering::SeqCst);
+    active.store(false, Ordering::SeqCst);
     println!("[Render] Loop exited. Waiting for capture threads...");
     for (i, handle) in capture_threads.into_iter().enumerate() {
         println!("[Render] Joining capture thread {}...", i);
@@ -978,10 +1114,34 @@ pub extern "C" fn dcomp_filter_set_target(screen_index: i32) -> bool {
 }
 
 #[no_mangle]
+pub extern "C" fn dcomp_filter_set_region(x: i32, y: i32, w: i32, h: i32) -> bool {
+    if w > 0 && h > 0 {
+        REGION_X.store(x, Ordering::SeqCst);
+        REGION_Y.store(y, Ordering::SeqCst);
+        REGION_W.store(w, Ordering::SeqCst);
+        REGION_H.store(h, Ordering::SeqCst);
+        REGION_ENABLED.store(true, Ordering::SeqCst);
+    } else {
+        REGION_ENABLED.store(false, Ordering::SeqCst);
+        REGION_X.store(0, Ordering::SeqCst);
+        REGION_Y.store(0, Ordering::SeqCst);
+        REGION_W.store(0, Ordering::SeqCst);
+        REGION_H.store(0, Ordering::SeqCst);
+    }
+    let session_guard = SESSION.lock().unwrap();
+    if let Some(session) = session_guard.as_ref() {
+        session.cv.notify_all();
+    }
+    true
+}
+
+#[no_mangle]
 pub extern "C" fn dcomp_filter_is_active() -> bool {
     let session_guard = SESSION.lock().unwrap();
     if let Some(session) = session_guard.as_ref() {
         session.active.load(Ordering::SeqCst)
+            && session.running.load(Ordering::SeqCst)
+            && IS_HEALTHY.load(Ordering::SeqCst)
     } else {
         false
     }
@@ -1083,7 +1243,7 @@ mod tests {
             while let Ok(output) = adapter.EnumOutputs(out_idx) {
                 let out_desc = output.GetDesc().unwrap();
                 let out_name = String::from_utf16_lossy(&out_desc.DeviceName);
-                let out_name = out_name.trim_matches(' ');
+                let out_name = out_name.trim_matches('\0');
                 println!("Testing Output [{}]: {} ({:?})", out_idx, out_name, out_desc.DesktopCoordinates);
 
                 let output1: IDXGIOutput1 = output.cast().unwrap();

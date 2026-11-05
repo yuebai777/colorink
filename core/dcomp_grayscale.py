@@ -20,6 +20,7 @@ class DCompGrayscaleController:
         self._mode = mode if mode in ("oklch", "luma") else "oklch"
         self._target = "all"
         self._target_index = -1
+        self._region: tuple[int, int, int, int] | None = None
         self.last_error = ""
 
         if self._dll_path:
@@ -82,6 +83,15 @@ class DCompGrayscaleController:
         if hasattr(dll, "dcomp_filter_get_stats"):
             dll.dcomp_filter_get_stats.argtypes = [ctypes.POINTER(ctypes.c_uint64)]
             dll.dcomp_filter_get_stats.restype = None
+
+        if hasattr(dll, "dcomp_filter_set_region"):
+            dll.dcomp_filter_set_region.argtypes = [
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+            ]
+            dll.dcomp_filter_set_region.restype = ctypes.c_bool
 
         self._dll = dll
 
@@ -155,6 +165,49 @@ class DCompGrayscaleController:
     def target(self) -> str:
         return self._target
 
+    @property
+    def region(self) -> tuple[int, int, int, int] | None:
+        return self._region
+
+    def set_region(self, region: tuple[int, int, int, int] | list[int] | dict | None) -> bool:
+        """设置灰度窗口区域 (x, y, width, height)，传 None 恢复最大化铺满."""
+        parsed: tuple[int, int, int, int] | None = None
+        if isinstance(region, dict):
+            try:
+                rx = int(region.get("x", 0))
+                ry = int(region.get("y", 0))
+                rw = int(region.get("width", region.get("w", 0)))
+                rh = int(region.get("height", region.get("h", 0)))
+                if rw > 0 and rh > 0:
+                    parsed = (rx, ry, rw, rh)
+            except (TypeError, ValueError):
+                parsed = None
+        elif isinstance(region, (tuple, list)) and len(region) == 4:
+            try:
+                rx, ry, rw, rh = (int(v) for v in region)
+                if rw > 0 and rh > 0:
+                    parsed = (rx, ry, rw, rh)
+            except (TypeError, ValueError):
+                parsed = None
+        self._region = parsed
+        return self._sync_region()
+
+    def clear_region(self) -> bool:
+        """清除自定义区域，恢复默认最大化无边框窗口."""
+        return self.set_region(None)
+
+    def _sync_region(self) -> bool:
+        if not self._dll or not hasattr(self._dll, "dcomp_filter_set_region"):
+            return False
+        try:
+            if self._region is not None:
+                rx, ry, rw, rh = self._region
+                return bool(self._dll.dcomp_filter_set_region(rx, ry, rw, rh))
+            return bool(self._dll.dcomp_filter_set_region(0, 0, 0, 0))
+        except Exception as exc:
+            self.last_error = f"设置灰度区域失败: {exc}"
+            return False
+
     @staticmethod
     def available_screens() -> list[str]:
         screens = ["all"]
@@ -185,10 +238,15 @@ class DCompGrayscaleController:
 
         try:
             if active:
-                # 激活前确保同步当前模式和屏幕设置
+                # 激活前确保同步当前模式、屏幕和区域设置
                 mode_code = 1 if self._mode == "luma" else 0
                 self._dll.dcomp_filter_set_mode(mode_code)
                 self._dll.dcomp_filter_set_target(self._target_index)
+                self._sync_region()
+
+                initial_stats = self.get_stats()
+                initial_presents = initial_stats.get("present_frames", 0)
+                initial_timeouts = initial_stats.get("capture_timeouts", 0)
 
                 ok = bool(self._dll.dcomp_filter_set_active(True))
                 if not ok:
@@ -196,8 +254,9 @@ class DCompGrayscaleController:
                     return False
                 self._dll.dcomp_filter_set_target(self._target_index)
                 self._dll.dcomp_filter_set_mode(mode_code)
+                self._sync_region()
 
-                # 快速验证后台抓取是否健康：等待确认捕获状态
+                # 快速验证后台抓取是否健康：等待确认本次激活捕获状态
                 import time
                 t0 = time.monotonic()
                 while time.monotonic() - t0 < 0.15:
@@ -205,7 +264,9 @@ class DCompGrayscaleController:
                         self.last_error = "DComp 屏幕捕获失败（可能是 HDR 屏幕或图形驱动限制）"
                         self.set_active(False)
                         return False
-                    if self.get_stats().get("present_frames", 0) > 0:
+                    stats = self.get_stats()
+                    if (stats.get("present_frames", 0) > initial_presents
+                            or stats.get("capture_timeouts", 0) > initial_timeouts):
                         break
                     time.sleep(0.015)
 
