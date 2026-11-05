@@ -10,7 +10,7 @@ import time
 from typing import Any, Mapping
 
 try:
-    from brush_color_spaces import (
+    from core.brush_color_spaces import (
         SPACE_ORDER,
         any_space_has_nonzero_raws,
         decode_space_raws,
@@ -24,7 +24,7 @@ try:
         space_to_rgb_values,
     )
 except ImportError:
-    from core.brush_color_spaces import (
+    from brush_color_spaces import (
         SPACE_ORDER,
         any_space_has_nonzero_raws,
         decode_space_raws,

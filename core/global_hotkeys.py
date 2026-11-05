@@ -74,6 +74,16 @@ def _zone_gate_active():
     except Exception:
         return False
 
+def _to_keyboard_hotkey(normalized: str) -> str:
+    """Translate literal ',' key to 'comma' for the ``keyboard`` library,
+    which splits raw ',' as a multi-step sequence delimiter."""
+    if normalized == ",":
+        return "comma"
+    if normalized.endswith("+,"):
+        return normalized[:-1] + "comma"
+    return normalized
+
+
 def bind_hotkey(hotkey_type: str, hotkey_str: str, force: bool = False):
     if not hotkey_str:
         return
@@ -104,6 +114,16 @@ def bind_hotkey(hotkey_type: str, hotkey_str: str, force: bool = False):
     # 可用热键不会被先删掉（旧实现先 remove 再 add，失败即丢失）。
     try:
         keyboard.add_hotkey(normalized, callback, suppress=False)
+    except ValueError as e:
+        kb_key = _to_keyboard_hotkey(normalized)
+        if kb_key == normalized:
+            print(f"[Hotkeys] Failed to bind global hotkey {hotkey_type} ({hotkey_str}): {e}")
+            return
+        try:
+            keyboard.add_hotkey(kb_key, callback, suppress=False)
+        except Exception as e2:
+            print(f"[Hotkeys] Failed to bind global hotkey {hotkey_type} ({hotkey_str}): {e2}")
+            return
     except Exception as e:
         print(f"[Hotkeys] Failed to bind global hotkey {hotkey_type} ({hotkey_str}): {e}")
         return
@@ -111,7 +131,10 @@ def bind_hotkey(hotkey_type: str, hotkey_str: str, force: bool = False):
         try:
             keyboard.remove_hotkey(old_key)
         except Exception:
-            pass
+            try:
+                keyboard.remove_hotkey(_to_keyboard_hotkey(old_key))
+            except Exception:
+                pass
     _bound_hotkeys[hotkey_type] = normalized
     print(f"[Hotkeys] Bound global hotkey: {hotkey_type} -> {normalized}")
 

@@ -325,6 +325,7 @@ class CSPCompanionSync:
         self._recv_buf: bytes = b""
         self._serial: int = 0
         self._connected: bool = False
+        self._aborting: bool = False
         self._last_heartbeat: float = 0.0
         self._host: str = ""
         self._port: int = 0
@@ -443,6 +444,9 @@ class CSPCompanionSync:
         If *host*/*port*/*password* are provided, use them directly.
         Otherwise, attempt reconnection with the saved session.
         """
+        if getattr(self, "_aborting", False):
+            return False
+
         if host:
             self._host = host
             self._port = int(port)
@@ -464,19 +468,27 @@ class CSPCompanionSync:
 
         try:
             _log(f"Connecting to {self._host}:{self._port}...")
-            self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._sock.settimeout(5.0)
-            self._sock.connect((self._host, self._port))
-            self._sock.settimeout(0.5)  # Non-blocking-ish for polling
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._sock = sock
+            sock.settimeout(2.0)
+            sock.connect((self._host, self._port))
+            if getattr(self, "_aborting", False):
+                self._disconnect()
+                return False
+            sock.settimeout(0.5)  # Non-blocking-ish for polling
             self._recv_buf = b""
             self._serial = 0
 
             # Try reconnection marker first; if it fails, do fresh auth
             if not self._try_reconnect():
-                if not self._authenticate():
+                if getattr(self, "_aborting", False) or not self._authenticate():
                     _log("connect: auth failed")
                     self._disconnect()
                     return False
+
+            if getattr(self, "_aborting", False):
+                self._disconnect()
+                return False
 
             # Activation ritual
             self._activate()
@@ -492,14 +504,28 @@ class CSPCompanionSync:
             self._disconnect()
             return False
 
+    def abort(self) -> None:
+        """Abort any in-flight blocking socket operation immediately (thread-safe)."""
+        self._aborting = True
+        self._disconnect()
+
+    def reset_abort(self) -> None:
+        """Clear the abort flag so future connections can proceed."""
+        self._aborting = False
+
     def _disconnect(self) -> None:
         self._connected = False
-        if self._sock:
+        sock = self._sock
+        self._sock = None
+        if sock is not None:
             try:
-                self._sock.close()
+                sock.shutdown(socket.SHUT_RDWR)
             except Exception:
                 pass
-        self._sock = None
+            try:
+                sock.close()
+            except Exception:
+                pass
         self._recv_buf = b""
         self._current_color = {}
 
@@ -509,7 +535,7 @@ class CSPCompanionSync:
         CSP accepts ``reconnect_marker`` as currentAuthToken and the
         existing password as newAuthToken for session resumption.
         """
-        if not self._password:
+        if not self._password or getattr(self, "_aborting", False):
             return False
         try:
             curr_token = _xor_hex(
@@ -521,18 +547,27 @@ class CSPCompanionSync:
                 curr_token,
                 new_token,
             ]))
-            msgs = self._recv_messages(timeout=2.0)
+            msgs = self._recv_messages(timeout=1.5)
             for _type, _cmd, _detail in msgs:
                 if _type == _TYPE_SUCCESS and _cmd == "Authenticate":
                     _log("Reconnect: OK")
                     return True
+            if getattr(self, "_aborting", False):
+                self._disconnect()
+                return False
             _log("Reconnect: server rejected marker, falling back to fresh auth")
             # Reconnect failed — close and reopen for fresh auth
             self._disconnect()
-            self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._sock.settimeout(5.0)
-            self._sock.connect((self._host, self._port))
-            self._sock.settimeout(0.5)
+            if getattr(self, "_aborting", False):
+                return False
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._sock = sock
+            sock.settimeout(2.0)
+            sock.connect((self._host, self._port))
+            if getattr(self, "_aborting", False):
+                self._disconnect()
+                return False
+            sock.settimeout(0.5)
             self._recv_buf = b""
         except Exception as exc:
             _log(f"Reconnect attempt failed: {exc}")
@@ -541,6 +576,8 @@ class CSPCompanionSync:
 
     def _authenticate(self) -> bool:
         """Perform fresh authentication with CSP."""
+        if getattr(self, "_aborting", False):
+            return False
         try:
             curr_token = _xor_hex(self._password, _AUTH_KEY)
             new_token = _xor_hex(self._password, _AUTH_KEY)
@@ -549,7 +586,7 @@ class CSPCompanionSync:
                 curr_token,
                 new_token,
             ]))
-            msgs = self._recv_messages(timeout=3.0)
+            msgs = self._recv_messages(timeout=2.0)
             for _type, _cmd, _detail in msgs:
                 if _type == _TYPE_SUCCESS and _cmd == "Authenticate":
                     _log("Auth: OK")
@@ -606,9 +643,10 @@ class CSPCompanionSync:
     # ------------------------------------------------------------------
 
     def _send_raw(self, data: bytes) -> None:
-        if self._sock is None:
+        sock = self._sock
+        if sock is None or getattr(self, "_aborting", False):
             raise ConnectionError("Not connected")
-        self._sock.sendall(data)
+        sock.sendall(data)
 
     def _recv_messages(self, timeout: float = 0.5) -> list[tuple[int, str, str]]:
         """Read and parse available messages from the socket.
@@ -616,16 +654,19 @@ class CSPCompanionSync:
         Non-blocking within *timeout*; returns all parsed messages.
         Always parses any buffered data (even on timeout / no new data).
         """
-        if self._sock is None:
+        sock = self._sock
+        if sock is None or getattr(self, "_aborting", False):
             return []
         try:
-            self._sock.settimeout(timeout)
-            chunk = self._sock.recv(65536)
+            sock.settimeout(timeout)
+            chunk = sock.recv(65536)
         except socket.timeout:
             chunk = None
         except Exception as exc:
             _log(f"recv error: {exc}")
             self._connected = False
+            return []
+        if getattr(self, "_aborting", False):
             return []
         # A graceful close by the peer (user closed CSP's "connect smartphone"
         # dialog, CSP exited) arrives as an empty recv, NOT as an exception.
@@ -644,10 +685,13 @@ class CSPCompanionSync:
                 self._recv_buf += chunk
             # Collect any remaining fragmented TCP data non-blockingly without stalling
             while True:
-                rlist, _, _ = select.select([self._sock], [], [], 0)
+                sock = self._sock
+                if sock is None or getattr(self, "_aborting", False):
+                    break
+                rlist, _, _ = select.select([sock], [], [], 0)
                 if not rlist:
                     break
-                more = self._sock.recv(65536)
+                more = sock.recv(65536)
                 if not more:
                     break
                 self._recv_buf += more

@@ -31,7 +31,7 @@ from pymem import Pymem
 from pymem.process import module_from_name
 
 try:
-    from brush_color_spaces import (
+    from core.brush_color_spaces import (
         SPACE_ORDER,
         any_space_has_nonzero_raws,
         build_space_addresses,
@@ -45,7 +45,7 @@ try:
         space_to_rgb_float,
     )
 except ImportError:
-    from core.brush_color_spaces import (
+    from brush_color_spaces import (
         SPACE_ORDER,
         any_space_has_nonzero_raws,
         build_space_addresses,

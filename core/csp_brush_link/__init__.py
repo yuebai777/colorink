@@ -21,9 +21,9 @@ import os
 from typing import Any
 
 try:
-    from brush_color_spaces import build_space_offsets
-except ImportError:
     from core.brush_color_spaces import build_space_offsets
+except ImportError:
+    from brush_color_spaces import build_space_offsets
 
 from core.csp_brush_link.memory import (
     MemoryMixin,

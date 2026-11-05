@@ -7,6 +7,8 @@
 # helper (in both _pytest.pathlib and _pytest.tmpdir, which import it as
 # a module global) to fall back to rmdir.
 
+import os
+import pytest
 import _pytest.pathlib as _pathlib
 import _pytest.tmpdir as _tmpdir
 
@@ -25,3 +27,20 @@ def _cleanup_dead_symlinks(root):
 
 _pathlib.cleanup_dead_symlinks = _cleanup_dead_symlinks
 _tmpdir.cleanup_dead_symlinks = _cleanup_dead_symlinks
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_session_appdata(tmp_path_factory):
+    """Redirect APPDATA for the test session so no test reads or overwrites the
+    user's real %APPDATA%\\Colorink configuration or companion session files."""
+    old_appdata = os.environ.get("APPDATA")
+    session_appdata = tmp_path_factory.mktemp("colorink_appdata")
+    os.environ["APPDATA"] = str(session_appdata)
+    try:
+        yield session_appdata
+    finally:
+        if old_appdata is None:
+            os.environ.pop("APPDATA", None)
+        else:
+            os.environ["APPDATA"] = old_appdata
+

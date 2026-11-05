@@ -13,9 +13,9 @@ import sys
 from dataclasses import dataclass
 
 try:
-    from brush_color_spaces import build_space_offsets
-except ImportError:
     from core.brush_color_spaces import build_space_offsets
+except ImportError:
+    from brush_color_spaces import build_space_offsets
 
 # ---------------------------------------------------------------------------
 # Build-specific technical constants (objective facts from CLIPStudioPaint.exe)

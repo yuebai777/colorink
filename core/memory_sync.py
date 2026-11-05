@@ -296,30 +296,44 @@ class MemorySyncThread(QThread):
     def stop(self, timeout_ms: int = 3000):
         """Signal the thread to stop, then wait with a timeout.
 
-        If the thread is blocked on a hung COM call (e.g. Photoshop died),
-        waiting forever would freeze the main thread.  After *timeout_ms*
-        we terminate the thread to unblock the caller.
+        Aborts any in-flight Companion TCP socket operations first so the
+        worker loop can exit immediately instead of waiting on socket timeouts.
         """
         self.running = False
+        self.sync_enabled = False
         self._wake_event.set()
+        try:
+            if hasattr(self.companion_sync, "abort"):
+                self.companion_sync.abort()
+            elif hasattr(self.companion_sync, "_disconnect"):
+                self.companion_sync._disconnect()
+        except Exception:
+            pass
         try:
             if hasattr(self.ps_sync, "cleanup_runtime_flags"):
                 self.ps_sync.cleanup_runtime_flags()
         except Exception:
             pass
-        if not self.wait(timeout_ms):
-            # Thread is stuck — likely in a hung COM RPC call
-            self.terminate()
-            self.wait(500)
+        if self.isRunning() and not self.wait(timeout_ms):
+            # Detach from parent QObject so Qt never destroys a still-running
+            # QThread if a third-party COM call is hung.
+            try:
+                self.setParent(None)
+            except Exception:
+                pass
         
     def run(self):
         last_status = None
+        if hasattr(self.companion_sync, "reset_abort"):
+            self.companion_sync.reset_abort()
         
         while self.running:
             # Wake up immediately when a write is queued; otherwise poll every 100ms
             self._wake_event.wait(timeout=0.1)
             self._wake_event.clear()
             
+            if not self.running:
+                break
             if not self.sync_enabled or self.paused:
                 continue
                 
