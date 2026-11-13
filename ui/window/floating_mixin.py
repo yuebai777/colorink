@@ -20,6 +20,10 @@ from ui.panels.transitions import (
     cancel_window_animations,
     capture_widget_snapshot,
     capture_window_snapshot,
+    consume_tear_handoff,
+    finish_tear_reveal,
+    has_pending_drag_handoff,
+    register_tear_snapshot,
     spawn_dock_ghost,
 )
 
@@ -65,6 +69,22 @@ class FloatingPanelsMixin:
 
     # ── out ──────────────────────────────────────────────────────────────
 
+    def _present_torn_window(self, window, handoff, fallback_snap,
+                             no_focus: bool) -> None:
+        """Show the permanent floating window smoothly from preview or ghost."""
+        if handoff is not None and handoff.has_visible_preview():
+            if not getattr(window, "_foreground_hidden", False):
+                window.setWindowOpacity(1.0)
+                window.show_without_stealing_focus()
+        else:
+            window.reveal_animated()
+        finish_tear_reveal(
+            window,
+            handoff=handoff,
+            fallback_snapshot=fallback_snap,
+            no_focus=no_focus,
+        )
+
     def float_panel(self, panel_id: str, position=None, persist: bool = True,
                     refresh: bool = True, fallback_size=None,
                     defer_refresh: bool = False) -> bool:
@@ -83,7 +103,8 @@ class FloatingPanelsMixin:
         wheel_key = registry.wheel_panel_key(panel_id)
         if wheel_key is not None:
             return self.float_wheel_module(
-                wheel_key, position=position, persist=persist, refresh=refresh)
+                wheel_key, position=position, persist=persist, refresh=refresh,
+                fallback_size=fallback_size)
         windows = self.floating_windows()
         if panel_id in windows:
             old_win = windows[panel_id]
@@ -97,6 +118,9 @@ class FloatingPanelsMixin:
         host = getattr(self, "panel_host", None)
         if widget is None or host is None:
             return False
+        fallback_snap = capture_widget_snapshot(widget)
+        handoff = consume_tear_handoff(panel_id)
+        tear_origin = handoff.drag_origin() if handoff is not None else None
         # Measure it before anything detaches it. A panel's live size is only
         # meaningful while it is laid out in a column: set_floating_panels
         # re-mounts the whole host (every remaining panel is re-parented and
@@ -141,9 +165,10 @@ class FloatingPanelsMixin:
             original.setWidth(hint.width())
         spec = registry.panel(panel_id)
         saved = store.load_floating_from(getattr(self, "cfg", None))
+        no_focus = bool(getattr(self, "cfg", {}).get("noFocusMode", False))
         window = FloatingPanelWindow(
             panel_id, spec.title if spec else panel_id, self,
-            no_focus=bool(getattr(self, "cfg", {}).get("noFocusMode", False)))
+            no_focus=no_focus)
         self._wire_floating_window(window)
         windows[panel_id] = window
         # Unmount first: the host detaches every panel it holds when it
@@ -161,7 +186,7 @@ class FloatingPanelsMixin:
         if pdrop is not None and pdrop.owns_panel(panel_id):
             pdrop.remove_panel(panel_id)
 
-        rect = self._floating_geometry(panel_id, original, position)
+        rect = self._floating_geometry(panel_id, original, position, origin=tear_origin)
         with window.batch_setup():
             if panel_id in saved and getattr(saved[panel_id], "user_resized", False):
                 # Restoring a window the user sized by hand: mark it before any
@@ -200,7 +225,7 @@ class FloatingPanelsMixin:
                                 max(MIN_FLOATING_SIZE[0], window.width() + fix_w),
                                 max(MIN_FLOATING_SIZE[1], window.height() + fix_h),
                             )
-        window.reveal_animated()
+        self._present_torn_window(window, handoff, fallback_snap, no_focus)
         # Only now: a window that is still being assembled must not be able
         # to write its half-built geometry over the record it was restored
         # from.
@@ -374,7 +399,8 @@ class FloatingPanelsMixin:
 
     def float_wheel_module(self, key: str, position=None,
                             persist: bool = True,
-                            refresh: bool = True) -> bool:
+                            refresh: bool = True,
+                            fallback_size=None) -> bool:
         """Tear one wheel page off into its own window.
 
         The page's wheel is reparented, so the tab strip loses that page (the
@@ -390,6 +416,10 @@ class FloatingPanelsMixin:
         panel = panels.get(str(key).lower())
         if panel is None:
             return False
+        fallback_snap = capture_widget_snapshot(panel)
+        handoff = consume_tear_handoff(panel_id)
+        tear_origin = handoff.drag_origin() if handoff is not None else None
+        no_focus = bool(getattr(self, "cfg", {}).get("noFocusMode", False))
         sync_page = getattr(self, "_sync_wheel_page", None)
         if callable(sync_page):
             sync_page(panel.wheel)
@@ -400,6 +430,9 @@ class FloatingPanelsMixin:
         main_stack = getattr(self, "stack", None)
         if panel.isVisible() and panel.width() > 1 and panel.height() > 1:
             original = QSize(panel.size())
+        elif fallback_size and fallback_size[0] > 1:
+            fw, fh = int(fallback_size[0]), int(fallback_size[1])
+            original = QSize(fw, fh if fh > 1 else fw)
         elif main_stack is not None and main_stack.width() > 1 and main_stack.height() > 1:
             original = QSize(main_stack.width(), main_stack.width())
         else:
@@ -412,7 +445,7 @@ class FloatingPanelsMixin:
         spec = registry.panel(panel_id)
         window = FloatingPanelWindow(
             panel_id, spec.title if spec else str(key).upper(), self,
-            no_focus=bool(getattr(self, "cfg", {}).get("noFocusMode", False)))
+            no_focus=no_focus)
         self._wire_floating_window(window)
         windows[panel_id] = window
         host = getattr(self, "panel_host", None)
@@ -443,7 +476,7 @@ class FloatingPanelsMixin:
         origins[panel_id] = origin
         saved = store.load_floating_from(getattr(self, "cfg", None)).get(panel_id)
         size = QSize(max(180, original.width()), max(180, original.height()))
-        rect = self._floating_geometry(panel_id, size, position)
+        rect = self._floating_geometry(panel_id, size, position, origin=tear_origin)
         wrapper = self._wrap_floating_wheel(panel_id, panel)
         with window.batch_setup():
             if saved is not None and getattr(saved, "user_resized", False):
@@ -471,7 +504,7 @@ class FloatingPanelsMixin:
             if saved is not None and not saved.on_top:
                 window.set_always_on_top(False)
             wrapper.sync_from_owner()
-        window.reveal_animated()
+        self._present_torn_window(window, handoff, fallback_snap, no_focus)
         window.geometry_changed.connect(lambda _pid: self._save_floating_state())
         if persist:
             self._save_floating_state()
@@ -494,15 +527,43 @@ class FloatingPanelsMixin:
         windows = self.floating_windows()
         existing = windows.get(LAB_FLOAT_ID)
         if existing is not None:
+            handoff = consume_tear_handoff(LAB_FLOAT_ID) if state is None else None
+            no_focus = bool(getattr(self, "cfg", {}).get("noFocusMode", False))
+            if existing.isMinimized():
+                existing.showNormal()
             existing.show()
-            existing.raise_()
+            if not no_focus:
+                existing.raise_()
+                existing.activateWindow()
+            if handoff is not None:
+                finish_tear_reveal(existing, handoff=handoff, no_focus=no_focus)
             return False
+        no_focus = bool(getattr(self, "cfg", {}).get("noFocusMode", False))
+        fallback_snap = None
+        handoff = None
+        tear_origin = None
+        src_size = None
+        if state is None:
+            src_widget = getattr(self, "pane_lab", None)
+            if src_widget is None or not src_widget.isVisible():
+                src_widget = getattr(self, "stack", None)
+            fallback_snap = capture_widget_snapshot(src_widget)
+            if (
+                src_widget is not None
+                and src_widget.isVisible()
+                and src_widget.width() > 1
+                and src_widget.height() > 1
+            ):
+                src_size = QSize(src_widget.size())
+            handoff = consume_tear_handoff(LAB_FLOAT_ID)
+            if handoff is not None:
+                tear_origin = handoff.drag_origin()
         page = FloatingLabPage(self)
         lab_mode = str(getattr(self, "cfg", {}).get("visualizerMode", "lab")).lower()
         lab_title = "OKLab" if lab_mode == "oklab" else "LAB"
         window = FloatingPanelWindow(
             LAB_FLOAT_ID, lab_title, self,
-            no_focus=bool(getattr(self, "cfg", {}).get("noFocusMode", False)))
+            no_focus=no_focus)
         window._title_override = lab_title
         window.dock_requested.connect(self.dock_panel)
         window.dropped_at.connect(self._floating_dropped)
@@ -524,8 +585,13 @@ class FloatingPanelsMixin:
         if page.preview not in previews:
             previews.append(page.preview)
 
-        hint = QSize(max(300, page.sizeHint().width()),
-                     max(300, page.sizeHint().height()))
+        min_w = 300
+        min_h = 300
+        if handoff is not None and handoff.from_drag and src_size is not None:
+            min_w = max(min_w, src_size.width())
+            min_h = max(min_h, src_size.height())
+        hint = QSize(max(min_w, page.sizeHint().width()),
+                     max(min_h, page.sizeHint().height()))
         on_top = True
         if state is not None:
             rect = state.rect
@@ -535,7 +601,7 @@ class FloatingPanelsMixin:
         else:
             saved = store.load_floating_from(
                 getattr(self, "cfg", None)).get(LAB_FLOAT_ID)
-            rect = self._floating_geometry(LAB_FLOAT_ID, hint, position)
+            rect = self._floating_geometry(LAB_FLOAT_ID, hint, position, origin=tear_origin)
             if saved is not None and getattr(saved, "user_resized", False):
                 window._user_resized = True
         with window.batch_setup():
@@ -557,7 +623,10 @@ class FloatingPanelsMixin:
             window.adjust_size_for_content(min_content_h=max(260, hint.height()))
             window.setGeometry(*rect)
             page.sync_from_owner()
-        window.reveal_animated()
+        if state is None:
+            self._present_torn_window(window, handoff, fallback_snap, no_focus)
+        else:
+            window.reveal_animated()
         window.geometry_changed.connect(lambda _pid: self._save_floating_state())
         if persist:
             self._save_floating_state()
@@ -696,7 +765,7 @@ class FloatingPanelsMixin:
             )
         return True
 
-    def _floating_geometry(self, panel_id, size, position):
+    def _floating_geometry(self, panel_id, size, position, *, origin=None):
         """Where and how big the torn-off window should be.
 
         *size* is the panel's size in the column, measured before it left:
@@ -704,23 +773,30 @@ class FloatingPanelsMixin:
         moment it becomes a window. Only the chrome is added on top.
         """
         saved = store.load_floating_from(getattr(self, "cfg", None))
-        if panel_id in saved:
+        if origin is None and panel_id in saved:
             rect = saved[panel_id].rect
         else:
-            chrome = getattr(self, "_floating_chrome", None)
-            border = chrome.border_width if chrome is not None else BORDER
-            bar = (max(12, int(round(PanelTitleBar.FLOATING_HEIGHT * chrome.scale)))
-                   if chrome is not None else PanelTitleBar.FLOATING_HEIGHT)
-            pad = (chrome.content_margins if chrome is not None else (4, 6, 4, 6))
-            width = (max(MIN_FLOATING_SIZE[0], size.width())
-                     + border * 2 + int(pad[0]) + int(pad[2]))
-            gap = chrome.grip_gap if chrome is not None else 4
-            height = (max(MIN_FLOATING_SIZE[1], size.height())
-                      + bar + border + int(pad[1]) + int(gap) + int(pad[3]))
-            point = position if position is not None else QCursor.pos()
-            rx, ry = point.x() - 24, point.y() - 8
-            if position is None:
-                scr = QApplication.screenAt(point) or QApplication.primaryScreen()
+            if panel_id in saved:
+                width, height = saved[panel_id].rect[2], saved[panel_id].rect[3]
+            else:
+                chrome = getattr(self, "_floating_chrome", None)
+                border = chrome.border_width if chrome is not None else BORDER
+                bar = (max(12, int(round(PanelTitleBar.FLOATING_HEIGHT * chrome.scale)))
+                       if chrome is not None else PanelTitleBar.FLOATING_HEIGHT)
+                pad = (chrome.content_margins if chrome is not None else (4, 6, 4, 6))
+                width = (max(MIN_FLOATING_SIZE[0], size.width())
+                         + border * 2 + int(pad[0]) + int(pad[2]))
+                gap = chrome.grip_gap if chrome is not None else 4
+                height = (max(MIN_FLOATING_SIZE[1], size.height())
+                          + bar + border + int(pad[1]) + int(gap) + int(pad[3]))
+            if origin is not None:
+                rx, ry = int(origin.x()), int(origin.y())
+            else:
+                point = position if position is not None else QCursor.pos()
+                rx, ry = point.x() - 24, point.y() - 8
+            if origin is not None or position is None:
+                anchor_pt = origin if origin is not None else QCursor.pos()
+                scr = QApplication.screenAt(anchor_pt) or QApplication.primaryScreen()
                 if scr is not None:
                     pg = scr.availableGeometry()
                     rx = max(pg.x(), min(rx, pg.right() - width + 1))
@@ -1282,6 +1358,27 @@ class FloatingPanelsMixin:
             margins = layout.contentsMargins()
             source_size = (max(1, source_window.width() - margins.left()
                                - margins.right()), 0)
+        snap_src = None
+        src_host = getattr(source_window, "panel_host", None)
+        if src_host is not None:
+            snap_src = src_host.frame_for(panel_id) or src_host.widget_for(panel_id)
+        if registry.is_wheel_panel(panel_id):
+            wheel_key = registry.wheel_panel_key(panel_id)
+            live_panel = (
+                (getattr(self, "wheel_panels", None) or {}).get(str(wheel_key).lower())
+                if wheel_key is not None
+                else None
+            )
+            if (
+                live_panel is not None
+                and live_panel.isVisible()
+                and live_panel.width() > 1
+                and live_panel.height() > 1
+            ):
+                source_size = (live_panel.width(), live_panel.height())
+        register_tear_snapshot(
+            panel_id, capture_widget_snapshot(snap_src or source_window)
+        )
         widget = source_window.take_panel(panel_id)
         if widget is None:
             return
@@ -1303,7 +1400,7 @@ class FloatingPanelsMixin:
                 old_page.deleteLater()
         windows = self.floating_windows()
         windows.pop(panel_id, None)
-        pos = QCursor.pos()
+        pos = None if has_pending_drag_handoff(panel_id) else QCursor.pos()
         self.float_panel(panel_id, position=pos, fallback_size=source_size)
 
     def _on_panel_dropped_into_floating(self, panel_id: str, target: tuple,

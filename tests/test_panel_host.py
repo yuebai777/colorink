@@ -430,3 +430,29 @@ def test_a_rebuild_keeps_hidden_groups_hidden_and_visible_ones_visible(panels):
     assert host.frame_for(registry.HISTORY).isHidden() is False
     assert host.widget_for(rgb).parent() is not None
     assert host.visible_panels() == (registry.HISTORY,)
+
+
+def test_tabs_hint_preserves_tab_bar_height_after_tab_switch(panels):
+    """切换滑条标签页后 column_hint() 不能丢失 tabBar 高度。"""
+    provider, _made = panels
+    host = PanelHost(provider)
+    host.apply_chrome(_dummy_chrome(top_gap=6))
+    host.set_drag_enabled(True)
+    node = dock.Tabs(
+        pages=(
+            (registry.slider_panel_id("OKLCh"), registry.HISTORY),
+            (registry.slider_panel_id("OKLab"), registry.slider_panel_id("HSV")),
+        ),
+        current=0,
+    )
+    host.set_tree(node)
+    tabs_widget = host._tabs[0][0]
+    hint_before = host.column_hint()
+    assert hint_before == tabs_widget.sizeHint().height()
+
+    tabs_widget.setCurrentIndex(1)
+    assert host.column_hint() == hint_before, (
+        f"column_hint dropped after tab switch: {hint_before} -> {host.column_hint()}"
+    )
+    tabs_widget.setCurrentIndex(0)
+    assert host.column_hint() == hint_before

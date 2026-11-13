@@ -367,6 +367,28 @@ class LayoutMixin:
         else:
             self.stack.setMinimumHeight(0)
 
+    def _lock_picker_stack_square(self, margins=None, extra_side: int | None = None) -> None:
+        """Keep the non-ringless picker stack locked to a square across layout syncs."""
+        if getattr(self, "cfg", {}).get("hideHueRing", False):
+            return
+        stack = getattr(self, "stack", None)
+        if stack is None or stack.isHidden() is True:
+            return
+        pdrop = getattr(self, "picker_drop", None)
+        if pdrop is not None and not pdrop.center_shows_picker():
+            return
+        if margins is None:
+            margins = self.main_layout.contentsMargins()
+        if extra_side is None:
+            extra_side = pdrop.extra_side_width() if pdrop is not None else 0
+        eff_w = max(160, self.width() - extra_side)
+        square = window_layout.picker_square_height(
+            eff_w, margins.left(), margins.right(), 0)
+        if stack.minimumHeight() != square:
+            stack.setMinimumHeight(square)
+        if stack.maximumHeight() != square:
+            stack.setMaximumHeight(square)
+
     def window_layout(self, scale=None):
         """This window's bands, computed from plain numbers.
 
@@ -833,6 +855,9 @@ class LayoutMixin:
         # On LAB page: same rectangle controls + top bar, with layout margin.
         # Do NOT call _adjust_content_height() from resize-driven sync.
         self._sync_ringless_mode(wheel_size=wheel_size, title_bar_height=title_offset)
+        lock_fn = getattr(self, "_lock_picker_stack_square", None)
+        if callable(lock_fn):
+            lock_fn(margins=margins, extra_side=extra_side)
 
         # ── Step 4: LAB avoidance observes FINAL preview geometry ──
         # Must run AFTER ringless sync so it sees the page-appropriate

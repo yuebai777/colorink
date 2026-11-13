@@ -738,6 +738,15 @@ class PanelHost(QWidget):
                     return max(0, box.spacing())
         return int(node.spacing)
 
+    def _matching_tabs(self, node: Tabs) -> QTabWidget | None:
+        """Return the QTabWidget built for *node* even after tab-index updates replace its wrapper."""
+        for tabs, source in self._tabs:
+            if source is node or (
+                hasattr(source, "pages") and source.pages == node.pages
+            ):
+                return tabs
+        return None
+
     def _tabs_hint(self, node: Tabs) -> int:
         """Only one page shows at a time: the tallest one, plus the tab bar."""
         pages = []
@@ -760,12 +769,11 @@ class PanelHost(QWidget):
 
         bar = 0
         top_gap = max(0, int(getattr(self._chrome, "top_gap", 0) or 0))
-        for tabs, source in self._tabs:
-            if source is node and tabs.tabBar() is not None:
-                tab_bar = tabs.tabBar()
-                bar = max(int(tab_bar.sizeHint().height()),
-                          int(tab_bar.height()))
-                break
+        tabs = self._matching_tabs(node)
+        if tabs is not None and tabs.tabBar() is not None:
+            tab_bar = tabs.tabBar()
+            bar = max(int(tab_bar.sizeHint().height()),
+                      int(tab_bar.height()))
         if not pages:
             # Nothing is mounted on any page. The pane's top gap is chrome for
             # content that is not there; billing it kept a band of nothing
@@ -1469,11 +1477,11 @@ class PanelHost(QWidget):
             return Split(node.orientation, children, sizes, node.resizable,
                          node.spacing, node.margins)
         if isinstance(node, Tabs):
-            for tabs, source in self._tabs:
-                if source is node or (hasattr(source, "pages") and source.pages == node.pages):
-                    # Keep the pages: rebuilding from *items* alone would
-                    # break a page holding several panels into one tab each.
-                    return Tabs((), max(0, tabs.currentIndex()), node.pages)
+            tabs = self._matching_tabs(node)
+            if tabs is not None:
+                # Keep the pages: rebuilding from *items* alone would
+                # break a page holding several panels into one tab each.
+                return Tabs((), max(0, tabs.currentIndex()), node.pages)
         return node
 
     def widget_for(self, panel_id: str) -> QWidget | None:

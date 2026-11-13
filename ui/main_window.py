@@ -550,13 +550,13 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.panel_host.float_requested.connect(self.float_panel)
         self.panel_host.menu_requested.connect(self.show_panel_menu)
 
-        from ui.window.picker_drop import PickerDropController
-        self.picker_drop = PickerDropController(self)
-
         # Overlapping swatches box (Floating on MainWindow to avoid clipping)
         self.preview_box = ColorPreviewBox(self)
         self.preview_box.position_mode = self.cfg.get("previewBoxPosition", "top-left")
         self.preview_box.set_colors(QColor(*self.current_rgb), QColor(255, 255, 255))
+
+        from ui.window.picker_drop import PickerDropController
+        self.picker_drop = PickerDropController(self)
         
 
 

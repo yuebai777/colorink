@@ -9,7 +9,9 @@ destroyed so DWM never sees stale geometry or alpha state on Windows.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 import os
+import time
 import weakref
 
 from PyQt6.QtCore import (
@@ -18,11 +20,24 @@ from PyQt6.QtCore import (
     QPoint,
     QPointF,
     QRect,
+    QRectF,
+    QSize,
     Qt,
+    QTimer,
     QVariantAnimation,
 )
-from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtGui import (
+    QColor,
+    QCursor,
+    QFont,
+    QFontMetrics,
+    QPainter,
+    QPainterPath,
+    QPalette,
+    QPen,
+    QPixmap,
+)
+from PyQt6.QtWidgets import QApplication, QWidget
 
 _ANIMATIONS_OVERRIDE: bool | None = None
 _ACTIVE_GHOSTS: list[QWidget] = []
@@ -221,14 +236,16 @@ def animate_window_geometry(
 
 
 class _DockTransitionGhost(QWidget):
-    """Non-activating translucent snapshot that glides toward a dock target."""
+    """Non-activating translucent snapshot that glides toward a dock or tear target."""
 
-    def __init__(self, pixmap: QPixmap, start_rect: QRect, target_rect: QRect, no_focus: bool):
+    def __init__(self, pixmap: QPixmap, start_rect: QRect, target_rect: QRect,
+                 no_focus: bool, *, lerp_full: bool = False, start_opacity: float = 0.88):
         super().__init__(
             None,
             Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowTransparentForInput
             | Qt.WindowType.WindowDoesNotAcceptFocus,
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -239,6 +256,8 @@ class _DockTransitionGhost(QWidget):
         self._start_rect = QRect(start_rect)
         self._end_rect = QRect(target_rect) if target_rect.isValid() else QRect(start_rect)
         self._no_focus = bool(no_focus)
+        self._lerp_full = bool(lerp_full)
+        self._start_opacity = float(start_opacity)
         self.setGeometry(self._start_rect)
 
     def paintEvent(self, _event) -> None:
@@ -250,7 +269,7 @@ class _DockTransitionGhost(QWidget):
 
     def play(self, duration_ms: int = 165) -> None:
         _ACTIVE_GHOSTS.append(self)
-        self.setWindowOpacity(0.88)
+        self.setWindowOpacity(self._start_opacity)
         self.show()
         if self._no_focus:
             try:
@@ -269,14 +288,17 @@ class _DockTransitionGhost(QWidget):
         def _lerp(a: int, b: int, t: float) -> int:
             return int(round(a + (b - a) * t))
 
-        # Glide ~75% toward the center of the dock slot while shrinking gently
-        # rather than collapsing all the way to zero width/height.
         s = self._start_rect
         e = self._end_rect
-        end_w = max(48, int(s.width() * 0.55 + e.width() * 0.45))
-        end_h = max(32, int(s.height() * 0.55 + e.height() * 0.45))
-        ec = e.center()
-        target_end = QRect(ec.x() - end_w // 2, ec.y() - end_h // 2, end_w, end_h)
+        if self._lerp_full:
+            target_end = e
+        else:
+            # Glide ~75% toward the center of the dock slot while shrinking gently
+            # rather than collapsing all the way to zero width/height.
+            end_w = max(48, int(s.width() * 0.55 + e.width() * 0.45))
+            end_h = max(32, int(s.height() * 0.55 + e.height() * 0.45))
+            ec = e.center()
+            target_end = QRect(ec.x() - end_w // 2, ec.y() - end_h // 2, end_w, end_h)
 
         def _on_val(val) -> None:
             w = ref()
@@ -284,7 +306,7 @@ class _DockTransitionGhost(QWidget):
                 return
             t = float(val)
             try:
-                w.setWindowOpacity(max(0.0, 0.88 * (1.0 - t)))
+                w.setWindowOpacity(max(0.0, w._start_opacity * (1.0 - t)))
                 w.setGeometry(QRect(
                     _lerp(s.x(), target_end.x(), t),
                     _lerp(s.y(), target_end.y(), t),
@@ -297,17 +319,31 @@ class _DockTransitionGhost(QWidget):
         def _cleanup() -> None:
             w = ref()
             if w is not None:
-                try:
-                    _ACTIVE_GHOSTS.remove(w)
-                except ValueError:
-                    pass
-                w.hide()
-                w.deleteLater()
+                w.stop()
 
         anim.valueChanged.connect(_on_val)
         anim.finished.connect(_cleanup)
         self._anim = anim
         anim.start()
+
+    def stop(self) -> None:
+        anim = getattr(self, "_anim", None)
+        self._anim = None
+        if anim is not None:
+            try:
+                anim.stop()
+                anim.deleteLater()
+            except RuntimeError:
+                pass
+        try:
+            _ACTIVE_GHOSTS.remove(self)
+        except ValueError:
+            pass
+        try:
+            self.hide()
+            self.deleteLater()
+        except RuntimeError:
+            pass
 
 
 def capture_window_snapshot(window: QWidget | None) -> tuple[QPixmap, QRect] | None:
@@ -339,6 +375,30 @@ def spawn_dock_ghost(
     if pixmap.isNull() or not start_rect.isValid():
         return
     ghost = _DockTransitionGhost(pixmap, start_rect, target_global_rect, no_focus)
+    ghost.play(duration_ms=duration_ms)
+
+
+def spawn_tear_ghost(
+    snapshot: tuple[QPixmap, QRect] | None,
+    target_global_rect: QRect,
+    *,
+    no_focus: bool = True,
+    duration_ms: int = 185,
+) -> None:
+    """Play an outward glide+fade ghost when tearing a docked panel into floating."""
+    if snapshot is None or not animations_enabled():
+        return
+    pixmap, start_rect = snapshot
+    if pixmap.isNull() or not start_rect.isValid() or not target_global_rect.isValid():
+        return
+    ghost = _DockTransitionGhost(
+        pixmap,
+        start_rect,
+        target_global_rect,
+        no_focus,
+        lerp_full=True,
+        start_opacity=0.78,
+    )
     ghost.play(duration_ms=duration_ms)
 
 
@@ -628,3 +688,763 @@ def animate_panel_landing(
         return True
     except RuntimeError:
         return False
+
+
+@dataclass
+class TearHandoff:
+    """Tear-out preview geometry and snapshot handed off to FloatingPanelWindow."""
+
+    panel_id: str
+    target_rect: QRect
+    snapshot: QPixmap | None = None
+    source_rect: QRect = field(default_factory=QRect)
+    preview: _DragTearPreview | None = None
+    from_drag: bool = False
+    created_at: float = 0.0
+
+    def drag_origin(self) -> QPoint | None:
+        """Top-left point of the active drag tear preview, if any."""
+        if self.from_drag and self.target_rect.isValid():
+            return self.target_rect.topLeft()
+        return None
+
+    def has_visible_preview(self) -> bool:
+        """True when a temporary preview window is currently displayed."""
+        return self.preview is not None and self.preview.isVisible()
+
+
+_PENDING_TEAR_HANDOFFS: dict[str, TearHandoff] = {}
+
+
+def _clear_pending_handoff(panel_id: str) -> None:
+    existing = _PENDING_TEAR_HANDOFFS.pop(str(panel_id), None)
+    if existing is not None and existing.preview is not None:
+        try:
+            existing.preview.dismiss_immediate()
+        except RuntimeError:
+            pass
+
+
+def register_tear_handoff(
+    panel_id: str,
+    target_rect: QRect,
+    snapshot: QPixmap | None = None,
+    *,
+    source_rect: QRect | None = None,
+    preview: _DragTearPreview | None = None,
+    from_drag: bool = False,
+) -> TearHandoff:
+    """Record a tear-out handoff to align/cross-fade the new floating window."""
+    key = str(panel_id)
+    _clear_pending_handoff(key)
+    handoff = TearHandoff(
+        panel_id=key,
+        target_rect=QRect(target_rect) if target_rect.isValid() else QRect(),
+        snapshot=snapshot,
+        source_rect=QRect(source_rect) if source_rect is not None else QRect(),
+        preview=preview,
+        from_drag=bool(from_drag),
+        created_at=time.monotonic(),
+    )
+    _PENDING_TEAR_HANDOFFS[key] = handoff
+    return handoff
+
+
+def register_tear_snapshot(
+    panel_id: str,
+    snapshot: tuple[QPixmap, QRect] | None,
+) -> TearHandoff | None:
+    """Save a fallback snapshot before detaching (preserves any active drag handoff)."""
+    if snapshot is None or not animations_enabled():
+        return None
+    key = str(panel_id)
+    existing = _PENDING_TEAR_HANDOFFS.get(key)
+    if existing is not None and existing.from_drag:
+        return existing
+    pixmap, rect = snapshot
+    if pixmap.isNull() or not rect.isValid():
+        return None
+    return register_tear_handoff(
+        key,
+        QRect(),
+        pixmap,
+        source_rect=rect,
+        preview=None,
+        from_drag=False,
+    )
+
+
+def has_pending_drag_handoff(panel_id: str) -> bool:
+    """True if an active drag tear handoff awaits *panel_id*."""
+    existing = _PENDING_TEAR_HANDOFFS.get(str(panel_id))
+    return existing is not None and existing.from_drag
+
+
+def consume_tear_handoff(
+    panel_id: str,
+    *,
+    max_age_s: float = 2.5,
+) -> TearHandoff | None:
+    """Pop and validate a pending tear-out handoff for *panel_id*."""
+    key = str(panel_id)
+    handoff = _PENDING_TEAR_HANDOFFS.pop(key, None)
+    if handoff is None:
+        return None
+    if handoff.preview is not None:
+        try:
+            handoff.preview.disarm_safety_fade()
+        except RuntimeError:
+            handoff.preview = None
+    if (time.monotonic() - handoff.created_at) > max_age_s:
+        if handoff.preview is not None:
+            try:
+                handoff.preview.dismiss_immediate()
+            except RuntimeError:
+                pass
+        return None
+    return handoff
+
+
+def _floating_size_from_chrome(content_size: QSize, chrome) -> QSize:
+    """Compute the real FloatingPanelWindow outer dimensions for *content_size*."""
+    from ui.panels.drag import PanelTitleBar
+    from ui.panels.floating import BORDER, MIN_FLOATING_SIZE
+
+    border = chrome.border_width if chrome is not None else BORDER
+    bar = (
+        max(12, int(round(PanelTitleBar.FLOATING_HEIGHT * chrome.scale)))
+        if chrome is not None and chrome.scale
+        else PanelTitleBar.FLOATING_HEIGHT
+    )
+    pad = chrome.content_margins if chrome is not None else (4, 6, 4, 6)
+    gap = chrome.grip_gap if chrome is not None else 4
+    w = max(MIN_FLOATING_SIZE[0], content_size.width()) + border * 2 + int(pad[0]) + int(pad[2])
+    h = max(MIN_FLOATING_SIZE[1], content_size.height()) + bar + border + int(pad[1]) + int(gap) + int(pad[3])
+    return QSize(w, h)
+
+
+def _clamp_tear_card_rect(cursor_pos: QPoint, anchor: QPoint, card_size: QSize) -> QRect:
+    w = card_size.width()
+    h = card_size.height()
+    rx = int(cursor_pos.x() - anchor.x())
+    ry = int(cursor_pos.y() - anchor.y())
+    scr = QApplication.screenAt(cursor_pos) or QApplication.primaryScreen()
+    if scr is not None:
+        pg = scr.availableGeometry()
+        if pg.width() >= w:
+            rx = max(pg.x(), min(rx, pg.right() - w + 1))
+        if pg.height() >= h:
+            ry = max(pg.y(), min(ry, pg.bottom() - h + 1))
+    return QRect(rx, ry, w, h)
+
+
+def capture_preview_content(
+    source_widget: QWidget | None,
+    overlay_widget: QWidget | None = None,
+) -> tuple[QPixmap, QRect, QSize] | None:
+    """Render *source_widget* 1:1 on a transparent backing so chrome opacity matches."""
+    if source_widget is None or not animations_enabled():
+        return None
+    try:
+        if (
+            not source_widget.isVisible()
+            or source_widget.width() <= 0
+            or source_widget.height() <= 0
+        ):
+            return None
+        dpr = max(1.0, float(source_widget.devicePixelRatioF() or 1.0))
+        w_px = max(1, int(round(source_widget.width() * dpr)))
+        h_px = max(1, int(round(source_widget.height() * dpr)))
+        pm = QPixmap(w_px, h_px)
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        source_widget.render(pm, QPoint(0, 0), flags=QWidget.RenderFlag.DrawChildren)
+        if (
+            overlay_widget is not None
+            and overlay_widget.isVisible()
+            and overlay_widget.width() > 0
+            and overlay_widget.height() > 0
+        ):
+            src_global = QRect(
+                source_widget.mapToGlobal(QPoint(0, 0)), source_widget.size()
+            )
+            ov_global = QRect(
+                overlay_widget.mapToGlobal(QPoint(0, 0)), overlay_widget.size()
+            )
+            if src_global.intersects(ov_global):
+                rel = source_widget.mapFromGlobal(ov_global.topLeft())
+                overlay_widget.render(pm, rel, flags=QWidget.RenderFlag.DrawChildren)
+        global_rect = QRect(
+            source_widget.mapToGlobal(QPoint(0, 0)), source_widget.size()
+        )
+        return (pm, global_rect, QSize(source_widget.size()))
+    except RuntimeError:
+        return None
+
+
+class _SnapshotBodyWidget(QWidget):
+    """Transparent 1:1 widget canvas displaying a rendered panel without rescaling."""
+
+    def __init__(self, pixmap: QPixmap | None, logical_size: QSize, parent=None):
+        super().__init__(parent)
+        self._pixmap = pixmap
+        self._logical_size = QSize(max(120, logical_size.width()), max(24, logical_size.height()))
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setFixedSize(self._logical_size)
+
+    def sizeHint(self) -> QSize:
+        return QSize(self._logical_size)
+
+    def paintEvent(self, _event) -> None:
+        if self._pixmap is None or self._pixmap.isNull():
+            return
+        painter = QPainter(self)
+        painter.drawPixmap(0, 0, self._pixmap)
+
+
+class _DragTearPreview:
+    """Disposable real FloatingPanelWindow preview shown while dragging out."""
+
+    def __init__(
+        self,
+        panel_id: str,
+        title: str,
+        snapshot: QPixmap | None,
+        content_size: QSize,
+        chrome,
+        grab_offset: QPoint,
+        initial_cursor: QPoint,
+        *,
+        no_focus: bool = True,
+    ):
+        from ui.panels.drag import PanelTitleBar
+        from ui.panels.floating import BORDER, FloatingPanelWindow
+
+        self._panel_id = str(panel_id)
+        self._no_focus = bool(no_focus)
+        self._active = False
+        self._handed_off = False
+        self._anim: QVariantAnimation | None = None
+        self._safety_timer: QTimer | None = None
+
+        win = FloatingPanelWindow(
+            self._panel_id,
+            str(title or panel_id),
+            None,
+            no_focus=True,
+            preview_only=True,
+        )
+        win._title_override = str(title or panel_id)
+        body = _SnapshotBodyWidget(snapshot, content_size, win)
+        with win.batch_setup():
+            win.set_panel(body, self._panel_id)
+            body.show()
+            if chrome is not None:
+                win.apply_chrome(chrome)
+            target_size = _floating_size_from_chrome(content_size, chrome)
+            win.resize(target_size)
+            win.adjust_size_for_content(min_content_h=content_size.height())
+
+        self.window = win
+        self._card_size = QSize(win.size())
+        edge = max(0, chrome.border_width if chrome is not None else BORDER)
+        bar_h = (
+            max(12, int(round(PanelTitleBar.FLOATING_HEIGHT * chrome.scale)))
+            if chrome is not None and chrome.scale
+            else PanelTitleBar.FLOATING_HEIGHT
+        )
+        top_inset_pad = edge if (chrome is not None and chrome.title_inset) else 0
+        ax = max(18, min(int(grab_offset.x()) + edge, max(24, self._card_size.width() - 40)))
+        ay = max(6, min(int(grab_offset.y()) + top_inset_pad, bar_h + top_inset_pad - 3))
+        self._anchor = QPoint(ax, ay)
+        self._card_rect = _clamp_tear_card_rect(
+            initial_cursor, self._anchor, self._card_size
+        )
+        # Never spawn a HWND at (0, 0) if/when shown.
+        win.setWindowOpacity(0.0)
+        win.setGeometry(self._card_rect)
+
+    def isVisible(self) -> bool:
+        try:
+            return bool(self.window.isVisible())
+        except RuntimeError:
+            return False
+
+    def windowFlags(self):
+        return self.window.windowFlags()
+
+    def geometry(self) -> QRect:
+        return self.window.geometry()
+
+    def card_rect_for_cursor(self, cursor_pos: QPoint) -> QRect:
+        return _clamp_tear_card_rect(cursor_pos, self._anchor, self._card_size)
+
+    def card_target_rect(self) -> QRect:
+        return QRect(self._card_rect)
+
+    def is_tear_active(self) -> bool:
+        return self._active
+
+    def follow_cursor(self, cursor_pos: QPoint) -> None:
+        if self._handed_off:
+            return
+        new_card = self.card_rect_for_cursor(cursor_pos)
+        self._card_rect = new_card
+        try:
+            if self.window.isVisible() and self.window.geometry() != new_card:
+                self.window.setGeometry(new_card)
+        except RuntimeError:
+            pass
+
+    def set_tear_active(self, active: bool) -> None:
+        if self._handed_off:
+            return
+        active = bool(active)
+        if active == self._active:
+            return
+        self._active = active
+        self._stop_anim()
+        win = self.window
+
+        if active:
+            if not win.isVisible():
+                win.setWindowOpacity(0.0)
+                win.setGeometry(self._card_rect)
+                win.show()
+                try:
+                    from ui.panels.floating import apply_no_activate
+                    apply_no_activate(win, True)
+                except Exception:
+                    pass
+            self._animate_opacity(target=1.0, duration_ms=115, hide_on_done=False)
+        else:
+            if not win.isVisible():
+                return
+            self._animate_opacity(target=0.0, duration_ms=85, hide_on_done=True)
+
+    def arm_safety_fade(self, timeout_ms: int = 420) -> None:
+        self.disarm_safety_fade()
+        timer = QTimer(self.window)
+        timer.setSingleShot(True)
+        timer.setInterval(max(100, int(timeout_ms)))
+        ref = weakref.ref(self)
+
+        def _on_timeout() -> None:
+            p = ref()
+            if p is None or p._handed_off:
+                return
+            _PENDING_TEAR_HANDOFFS.pop(p._panel_id, None)
+            p.handoff_to_window(None, duration_ms=95)
+
+        timer.timeout.connect(_on_timeout)
+        self._safety_timer = timer
+        timer.start()
+
+    def disarm_safety_fade(self) -> None:
+        timer = self._safety_timer
+        self._safety_timer = None
+        if timer is not None:
+            try:
+                timer.stop()
+                timer.deleteLater()
+            except RuntimeError:
+                pass
+
+    def handoff_to_window(
+        self,
+        window: QWidget | None,
+        duration_ms: int = 70,
+    ) -> None:
+        """Dissolve and discard the temporary preview once the permanent window appears."""
+        self.disarm_safety_fade()
+        if self._handed_off:
+            return
+        self._handed_off = True
+        self._stop_anim()
+        win = self.window
+        if not win.isVisible():
+            self.dismiss_immediate()
+            return
+        if self not in _ACTIVE_GHOSTS:
+            _ACTIVE_GHOSTS.append(self)
+
+        start_rect = QRect(win.geometry())
+        target_rect = start_rect
+        if window is not None:
+            try:
+                wg = window.geometry()
+                if wg.isValid():
+                    target_rect = QRect(wg)
+            except RuntimeError:
+                pass
+
+        start_opacity = max(0.05, float(win.windowOpacity()))
+        anim = QVariantAnimation(win)
+        anim.setDuration(max(50, int(duration_ms)))
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        ref = weakref.ref(self)
+
+        def _lerp(a: int, b: int, t: float) -> int:
+            return int(round(a + (b - a) * t))
+
+        def _on_val(val) -> None:
+            p = ref()
+            if p is None:
+                return
+            t = float(val)
+            try:
+                p.window.setWindowOpacity(max(0.0, start_opacity * (1.0 - t)))
+                if start_rect != target_rect:
+                    p.window.setGeometry(
+                        QRect(
+                            _lerp(start_rect.x(), target_rect.x(), t),
+                            _lerp(start_rect.y(), target_rect.y(), t),
+                            _lerp(start_rect.width(), target_rect.width(), t),
+                            _lerp(start_rect.height(), target_rect.height(), t),
+                        )
+                    )
+            except RuntimeError:
+                pass
+
+        def _on_done() -> None:
+            p = ref()
+            if p is not None:
+                p.dismiss_immediate()
+
+        anim.valueChanged.connect(_on_val)
+        anim.finished.connect(_on_done)
+        self._anim = anim
+        anim.start()
+
+    def dismiss_immediate(self) -> None:
+        self.disarm_safety_fade()
+        self._stop_anim()
+        try:
+            _ACTIVE_GHOSTS.remove(self)
+        except ValueError:
+            pass
+        try:
+            self.window.hide()
+            self.window.deleteLater()
+        except RuntimeError:
+            pass
+
+    stop = dismiss_immediate
+
+    def _stop_anim(self) -> None:
+        anim = self._anim
+        self._anim = None
+        if anim is not None:
+            try:
+                anim.stop()
+                anim.deleteLater()
+            except RuntimeError:
+                pass
+
+    def _animate_opacity(
+        self,
+        *,
+        target: float,
+        duration_ms: int,
+        hide_on_done: bool,
+    ) -> None:
+        win = self.window
+        start_op = max(0.0, min(1.0, float(win.windowOpacity())))
+        anim = QVariantAnimation(win)
+        anim.setDuration(max(45, int(duration_ms)))
+        anim.setStartValue(start_op)
+        anim.setEndValue(float(target))
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        ref = weakref.ref(self)
+
+        def _on_val(val) -> None:
+            p = ref()
+            if p is None or p._handed_off:
+                return
+            try:
+                p.window.setWindowOpacity(max(0.0, min(1.0, float(val))))
+            except RuntimeError:
+                pass
+
+        def _on_done() -> None:
+            p = ref()
+            if p is None or p._handed_off:
+                return
+            if hide_on_done and not p._active:
+                try:
+                    p.window.hide()
+                except RuntimeError:
+                    pass
+
+        anim.valueChanged.connect(_on_val)
+        anim.finished.connect(_on_done)
+        self._anim = anim
+        anim.start()
+
+
+class DragTearSession:
+    """Tracks QDrag cursor/target state to preview floating tear-out with a real window."""
+
+    DEBOUNCE_INSIDE_S = 0.11
+
+    def __init__(
+        self,
+        panel_id: str,
+        title: str,
+        snapshot: QPixmap | None,
+        content_size: QSize,
+        source_rect: QRect,
+        source_win_rect: QRect,
+        grab_offset: QPoint,
+        *,
+        chrome=None,
+        no_focus: bool = True,
+        drag: object | None = None,
+    ):
+        self.panel_id = str(panel_id)
+        self._snapshot = snapshot
+        self._source_rect = QRect(source_rect)
+        self._source_win_rect = QRect(source_win_rect)
+        self._drag_ref = weakref.ref(drag) if drag is not None else None
+        self._none_since: float | None = None
+        self._finished = False
+        self._preview: _DragTearPreview | None = None
+        self._poll_timer: QTimer | None = None
+        self._target_cb = None
+
+        if animations_enabled():
+            cursor = QCursor.pos()
+            self._preview = _DragTearPreview(
+                self.panel_id,
+                title,
+                snapshot,
+                content_size,
+                chrome,
+                grab_offset,
+                cursor,
+                no_focus=no_focus,
+            )
+            self._card_size = self._preview.card_target_rect().size()
+            self._anchor = QPoint(self._preview._anchor)
+            ref = weakref.ref(self)
+            if drag is not None:
+                timer = QTimer(self._preview.window)
+                timer.setInterval(16)
+
+                def _poll() -> None:
+                    sess = ref()
+                    if sess is None or sess._finished:
+                        return
+                    d = sess._drag_ref() if sess._drag_ref is not None else None
+                    try:
+                        tgt = d.target() if d is not None else None
+                    except RuntimeError:
+                        tgt = None
+                    sess.update_state(tgt, QCursor.pos())
+
+                timer.timeout.connect(_poll)
+                self._poll_timer = timer
+                timer.start()
+
+                if hasattr(drag, "targetChanged"):
+                    def _on_target(tgt) -> None:
+                        sess = ref()
+                        if sess is not None and not sess._finished:
+                            sess.update_state(tgt, QCursor.pos())
+
+                    self._target_cb = _on_target
+                    drag.targetChanged.connect(_on_target)
+        else:
+            self._card_size = _floating_size_from_chrome(content_size, chrome)
+            self._anchor = QPoint(24, 8)
+
+    @property
+    def preview(self) -> _DragTearPreview | None:
+        return self._preview
+
+    def on_target_changed(self, target: object | None) -> None:
+        if not self._finished:
+            self.update_state(target, QCursor.pos())
+
+    def update_state(
+        self,
+        target: object | None,
+        cursor_pos: QPoint | None = None,
+        *,
+        now: float | None = None,
+        force_immediate: bool = False,
+    ) -> None:
+        if self._finished or self._preview is None:
+            return
+        pos = cursor_pos if cursor_pos is not None else QCursor.pos()
+        ts = time.monotonic() if now is None else float(now)
+
+        if target is not None:
+            self._none_since = None
+            self._preview.set_tear_active(False)
+            return
+
+        if self._none_since is None:
+            self._none_since = ts
+
+        inside_source = (
+            self._source_win_rect.isValid()
+            and self._source_win_rect.adjusted(4, 4, -4, -4).contains(pos)
+        )
+        should_show = (
+            force_immediate
+            or not inside_source
+            or (ts - self._none_since) >= self.DEBOUNCE_INSIDE_S
+        )
+        self._preview.follow_cursor(pos)
+        if should_show:
+            self._preview.set_tear_active(True)
+
+    def finish(
+        self,
+        *,
+        accepted: bool,
+        cursor_pos: QPoint | None = None,
+    ) -> TearHandoff | None:
+        if self._finished:
+            return None
+        self._finished = True
+        if self._poll_timer is not None:
+            try:
+                self._poll_timer.stop()
+                self._poll_timer.deleteLater()
+            except RuntimeError:
+                pass
+            self._poll_timer = None
+        if self._target_cb is not None and self._drag_ref is not None:
+            d = self._drag_ref()
+            if d is not None:
+                try:
+                    d.targetChanged.disconnect(self._target_cb)
+                except (RuntimeError, TypeError):
+                    pass
+            self._target_cb = None
+
+        if accepted:
+            if self._preview is not None:
+                self._preview.dismiss_immediate()
+                self._preview = None
+            return None
+
+        pos = cursor_pos if cursor_pos is not None else QCursor.pos()
+        if self._preview is not None:
+            self._preview.follow_cursor(pos)
+            target_rect = self._preview.card_target_rect()
+            keep_preview: _DragTearPreview | None = (
+                self._preview if self._preview.isVisible() else None
+            )
+            if keep_preview is None:
+                self._preview.dismiss_immediate()
+            else:
+                keep_preview.arm_safety_fade(420)
+            self._preview = None
+        else:
+            target_rect = _clamp_tear_card_rect(pos, self._anchor, self._card_size)
+            keep_preview = None
+
+        return register_tear_handoff(
+            self.panel_id,
+            target_rect,
+            self._snapshot,
+            source_rect=self._source_rect,
+            preview=keep_preview,
+            from_drag=True,
+        )
+
+
+def start_drag_tear_preview(
+    panel_id: str,
+    title: str,
+    source_widget: QWidget | None,
+    grab_offset: QPoint,
+    *,
+    chrome=None,
+    overlay_widget: QWidget | None = None,
+    crop_top: int = 0,
+    no_focus: bool = True,
+    drag: object | None = None,
+) -> DragTearSession:
+    """Start tracking a panel drag with a disposable real FloatingPanelWindow preview."""
+    snap = capture_preview_content(source_widget, overlay_widget=overlay_widget)
+    pixmap = snap[0] if snap is not None else None
+    source_rect = snap[1] if snap is not None else QRect()
+    content_size = snap[2] if snap is not None else QSize(240, 140)
+    if chrome is None and source_widget is not None:
+        top = source_widget.window()
+        chrome = getattr(top, "_floating_chrome", None) or getattr(top, "_chrome", None)
+    source_win_rect = QRect()
+    if source_widget is not None:
+        try:
+            top = source_widget.window()
+            if top is not None and top.isVisible():
+                source_win_rect = QRect(top.frameGeometry())
+        except RuntimeError:
+            pass
+    return DragTearSession(
+        panel_id=panel_id,
+        title=title,
+        snapshot=pixmap,
+        content_size=content_size,
+        source_rect=source_rect,
+        source_win_rect=source_win_rect,
+        grab_offset=grab_offset,
+        chrome=chrome,
+        no_focus=no_focus,
+        drag=drag,
+    )
+
+
+def finish_tear_reveal(
+    window: QWidget | None,
+    *,
+    handoff: TearHandoff | None = None,
+    fallback_snapshot: tuple[QPixmap, QRect] | None = None,
+    no_focus: bool = True,
+) -> bool:
+    """Discard the temporary preview over the real window or play an outward ghost."""
+    if window is None or not animations_enabled():
+        if handoff is not None and handoff.preview is not None:
+            try:
+                handoff.preview.dismiss_immediate()
+            except RuntimeError:
+                pass
+        return False
+
+    used = False
+    if handoff is not None and handoff.preview is not None:
+        try:
+            handoff.preview.handoff_to_window(window, duration_ms=70)
+            used = True
+        except RuntimeError:
+            pass
+
+    if not used:
+        snap = fallback_snapshot
+        if (
+            snap is None
+            and handoff is not None
+            and handoff.snapshot is not None
+            and not handoff.snapshot.isNull()
+            and handoff.source_rect.isValid()
+        ):
+            snap = (handoff.snapshot, handoff.source_rect)
+        if snap is not None:
+            try:
+                wg = QRect(window.geometry())
+                if wg.isValid():
+                    spawn_tear_ghost(snap, wg, no_focus=no_focus, duration_ms=185)
+                    used = True
+            except RuntimeError:
+                pass
+        target_body = getattr(window, "body", None) or window
+        animate_panel_landing(target_body, duration_ms=170)
+    return used

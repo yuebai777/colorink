@@ -168,16 +168,17 @@ class FloatingPanelWindow(PanelHolder, QWidget):
     panel_dropped_here = pyqtSignal(str, object)
 
     def __init__(self, panel_id: str, title: str, parent=None, *,
-                 no_focus: bool = False):
+                 no_focus: bool = False, preview_only: bool = False):
         super().__init__(parent)
         self.panel_id = panel_id
         self._panel: QWidget | None = None
         self._panels: dict[str, QWidget] = {}
         self._title_override: str | None = None
         self._tree: Node = Leaf(panel_id)
-        self._no_focus = bool(no_focus)
+        self._no_focus = bool(no_focus or preview_only)
+        self._preview_only = bool(preview_only)
         self._chrome = None
-        self._drag_enabled_pref = True
+        self._drag_enabled_pref = not self._preview_only
         self._provider = getattr(parent, "panel_provider", None) if parent else None
         if callable(self._provider):
             self._provider_func = self._provider()
@@ -187,15 +188,20 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         flags = (Qt.WindowType.FramelessWindowHint
                  | Qt.WindowType.WindowStaysOnTopHint
                  | Qt.WindowType.Tool)
-        if no_focus:
+        if self._no_focus:
             flags |= Qt.WindowType.WindowDoesNotAcceptFocus
+        if self._preview_only:
+            flags |= Qt.WindowType.WindowTransparentForInput
         self.setWindowFlags(flags)
         # The chrome background carries opacity, which only means anything
         # over a translucent window. Without these the half-transparent
         # background composites over solid black — "调透明度会变黑"。
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, no_focus)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, self._no_focus)
+        if self._preview_only:
+            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setWindowTitle(title)
         self.setMinimumSize(*MIN_FLOATING_SIZE)
 
@@ -212,8 +218,8 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         self._foreground_hidden = False
         self._suppress_auto_show = False
         self._drag_dimmed = False
-        self.setMouseTracking(True)
-        self.setAcceptDrops(True)
+        self.setMouseTracking(not self._preview_only)
+        self.setAcceptDrops(not self._preview_only)
 
         self.title_bar = PanelTitleBar(
             panel_id, title, self, closable=True, moves_window=True,

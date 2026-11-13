@@ -651,6 +651,9 @@ class PickerActionsMixin:
         # apply_theme() would rebuild every slider stylesheet and gradient while
         # the user is only asking for a pane switch.
         self._sync_ringless_mode()
+        lock_fn = getattr(self, "_lock_picker_stack_square", None)
+        if callable(lock_fn):
+            lock_fn()
         self._update_lab_avoid()
         if not self.cfg.get("hideHueRing", False):
             refit = getattr(self, "_refit_preview_box", None)

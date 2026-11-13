@@ -24,7 +24,15 @@ from PyQt6.QtCore import (
     QVariantAnimation,
     pyqtSignal,
 )
-from PyQt6.QtGui import QColor, QDrag, QFont, QPainter, QPainterPath, QPalette, QPixmap
+from PyQt6.QtGui import (
+    QColor,
+    QDrag,
+    QFont,
+    QPainter,
+    QPainterPath,
+    QPalette,
+    QPixmap,
+)
 from PyQt6.QtWidgets import QApplication, QStackedWidget, QVBoxLayout, QWidget
 
 #: Payload of a panel drag: the panel id, UTF-8.
@@ -221,41 +229,82 @@ class PanelTitleBar(QWidget):
         drag = QDrag(self)
         drag.setMimeData(self.mime_data())
         self._dress_drag(drag, grab)
-        action = drag.exec(Qt.DropAction.MoveAction)
+
+        from ui.panels.transitions import start_drag_tear_preview
+        source_widget, overlay_widget = self._drag_source_widget()
+        top = self.window()
+        no_focus = bool(getattr(top, "_no_focus", False))
+        cfg = getattr(top, "cfg", None)
+        if isinstance(cfg, dict):
+            no_focus = bool(cfg.get("noFocusMode", no_focus))
+        chrome = (
+            getattr(top, "_floating_chrome", None)
+            or getattr(top, "_chrome", None)
+            or getattr(self, "_chrome", None)
+        )
+        tear_session = start_drag_tear_preview(
+            self.panel_id,
+            self.title,
+            source_widget,
+            grab,
+            chrome=chrome,
+            overlay_widget=overlay_widget,
+            no_focus=no_focus,
+            drag=drag,
+        )
+        action = Qt.DropAction.IgnoreAction
+        completed = False
+        try:
+            action = drag.exec(Qt.DropAction.MoveAction)
+            completed = True
+        finally:
+            tear_session.finish(
+                accepted=(not completed) or (action != Qt.DropAction.IgnoreAction)
+            )
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(0, lambda a=action: self._finish_reorder_drag(a))
 
-    def _dress_drag(self, drag, grab: QPoint) -> None:
-        """Give the drag something to show under the cursor.
+    def _drag_source_widget(self) -> tuple[QWidget | None, QWidget | None]:
+        """Return (live content widget, optional overlay widget) for tear preview."""
+        parent = self.parentWidget()
+        if isinstance(parent, PanelHolder):
+            panel = parent.panel()
+            if panel is not None and panel.isVisible() and panel.width() > 0:
+                return panel, None
+            if parent.isVisible() and parent.width() > 0:
+                return parent, None
+            return panel, None
+        top = self.window()
+        if top is not None and getattr(top, "wheel_grip_bar", None) is self:
+            stack = getattr(top, "stack", None)
+            if stack is not None and stack.isVisible() and stack.width() > 0:
+                overlay = (
+                    None
+                    if self.panel_id == "lab.visualizer"
+                    else getattr(top, "preview_box", None)
+                )
+                return stack, overlay
+        if parent is not None and parent.isVisible() and parent.width() > 0:
+            return parent, None
+        return None, None
 
-        Without a pixmap Qt draws a default drag image and anchors it at its
-        own top-left, so the moment a drag starts the cursor appears to jump
-        away from the grip. A small strip of the bar itself, hotspot on the
-        pixel that was pressed, keeps the gesture visually attached to the
-        panel being moved.
+    def _dress_drag(self, drag, grab: QPoint) -> None:
+        """Suppress Qt's default drag box without drawing a duplicate title pill.
+
+        Leaving ``drag.pixmap()`` null makes Qt fall back to its opaque default
+        drag rectangle anchored at the cursor's top-left; drawing a miniature
+        title pill here leaves a redundant "HSV" sticker glued to the cursor on
+        top of the real FloatingPanelWindow preview. Passing a 1x1 transparent
+        pixmap keeps Qt's cursor hotspot valid while letting the real preview
+        window and dock drop indicators carry all visual feedback.
         """
+        _ = grab
         try:
-            scale = 1.0
-            chrome = getattr(self, "_chrome", None)
-            if chrome is not None:
-                scale = float(getattr(chrome, "scale", 1.0) or 1.0)
-            width = max(40, int(self.width() * 0.6))
-            height = max(10, int(round(self.height() * 0.9)))
-            pixmap = self.grab(QRect(0, 0, width, self.height()))
-            if pixmap.isNull():
-                return
-            pixmap = pixmap.scaled(
-                int(width), int(height),
-                Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.SmoothTransformation)
+            pixmap = QPixmap(1, 1)
+            pixmap.fill(Qt.GlobalColor.transparent)
             drag.setPixmap(pixmap)
-            drag.setHotSpot(QPoint(
-                min(max(0, int(grab.x() * 0.6)), pixmap.width() - 1),
-                min(max(0, int(grab.y() * 0.9)), pixmap.height() - 1)))
+            drag.setHotSpot(QPoint(0, 0))
         except (RuntimeError, AttributeError, ValueError):
-            # A grip that was torn down or a chrome value that is not a
-            # number: no cursor art is a cosmetic loss, never a reason to
-            # fail the drag.
             return
 
     def mouseReleaseEvent(self, event):
@@ -627,9 +676,19 @@ class DropIndicator(QWidget):
         from ui.panels.transitions import animations_enabled, zone_label
 
         target = QRect(rect)
-        self._zone = str(zone or "")
-        self._label = zone_label(self._zone) if label is None else str(label)
+        new_zone = str(zone or "")
+        new_label = zone_label(new_zone) if label is None else str(label)
         was_visible = self.isVisible() and not self.isHidden() and self.geometry().isValid()
+        if (
+            was_visible
+            and target == self._target_rect
+            and new_zone == self._zone
+            and new_label == self._label
+            and (self._rect_anim is not None or self.geometry() == target)
+        ):
+            return
+        self._zone = new_zone
+        self._label = new_label
         start_rect = QRect(self.geometry()) if was_visible else QRect(target)
         self._target_rect = QRect(target)
 

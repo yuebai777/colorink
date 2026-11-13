@@ -12,16 +12,21 @@ from PyQt6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropE
 from PyQt6.QtWidgets import QApplication, QLabel, QWidget
 
 from ui.panels import rearrange, registry
-from ui.panels.drag import PANEL_MIME, DropIndicator, PanelFrame
+from ui.panels.drag import PANEL_MIME, DropIndicator, PanelFrame, PanelTitleBar
 from ui.panels.floating import FloatingPanelWindow
 from ui.panels.host import PanelHost
 from ui.panels.transitions import (
+    _ACTIVE_GHOSTS,
     animate_panel_landing,
     animations_enabled,
     capture_widget_snapshot,
     capture_window_snapshot,
+    consume_tear_handoff,
+    finish_tear_reveal,
     set_animations_enabled_for_test,
     spawn_dock_ghost,
+    spawn_tear_ghost,
+    start_drag_tear_preview,
 )
 
 
@@ -337,7 +342,7 @@ with patch('core.config.load_hotkey_config', side_effect=lambda: copy.deepcopy(b
         # install a spy verifying zero stray top-level QWindow / PanelFrame shows.
         from PyQt6.QtCore import QEvent, QObject
         from PyQt6.QtGui import QWindow
-        from ui.panels import rearrange
+        from ui.panels import rearrange, registry
         from ui.panels.drag import PanelFrame
         from ui.panels.transitions import set_animations_enabled_for_test
 
@@ -376,10 +381,170 @@ with patch('core.config.load_hotkey_config', side_effect=lambda: copy.deepcopy(b
             assert top_target is not None
             assert getattr(top_target, '_landing_overlay', None) is not None
             assert spy.bad == [], f"Unexpected top-level PanelFrame flash events: {spy.bad}"
+
+            # Phase 3: Drag tear-out preview (real disposable FloatingPanelWindow) -> exact swap + wheel outward ghost
+            from ui.panels.transitions import start_drag_tear_preview, _ACTIVE_GHOSTS
+            scr_pg = app.primaryScreen().availableGeometry()
+            win2.setMinimumWidth(0)
+            win2.resize(300, 520)
+            win2.move(scr_pg.x() + 16, scr_pg.y() + 16)
+            app.processEvents()
+            src_panel_id = mounted[0]
+            src_widget = win2.panel_widget(src_panel_id)
+            assert src_widget is not None
+            sess = start_drag_tear_preview(
+                src_panel_id,
+                src_panel_id,
+                src_widget,
+                QPoint(32, 8),
+                chrome=getattr(win2, '_floating_chrome', None),
+                no_focus=True,
+            )
+            outside_pt = QPoint(win2.frameGeometry().right() + 48, scr_pg.y() + 60)
+            sess.update_state(None, outside_pt, now=10.0)
+            app.processEvents()
+            assert sess.preview is not None and sess.preview.isVisible()
+            assert isinstance(sess.preview.window, FloatingPanelWindow)
+            assert sess.preview.window._preview_only is True
+            assert sess.preview.window._chrome is getattr(win2, '_floating_chrome', None)
+            preview_size = sess.preview.window.size()
+            expected_origin = sess.preview.card_rect_for_cursor(outside_pt).topLeft()
+            handoff = sess.finish(accepted=False, cursor_pos=outside_pt)
+            assert handoff is not None and handoff.from_drag is True
+            assert win2.float_panel(src_panel_id) is True
+            app.processEvents()
+            fwin = win2.floating_windows().get(src_panel_id)
+            assert fwin is not None
+            assert fwin is not handoff.preview.window
+            assert fwin.pos() == expected_origin
+            assert fwin.size() == preview_size
+            assert handoff.preview._handed_off is True
+
+            ghost_before = len(_ACTIVE_GHOSTS)
+            assert win2.float_wheel_module('hls') is True
+            app.processEvents()
+            wheel_pid = registry.wheel_panel_id('hls')
+            wheel_fwin = win2.floating_windows().get(wheel_pid)
+            assert wheel_fwin is not None
+            assert len(_ACTIVE_GHOSTS) > ghost_before or getattr(wheel_fwin.body, '_landing_overlay', None) is not None
+
+            # Audit regressions:
+            # (a) preview_box over Color Map accepts drops and clears hover without Blocking.
+            assert win2.preview_box.acceptDrops() is True
+            assert win2.preview_box.isVisible()
+            before_mounted = list(win2.panel_host.mounted_panels())
+            assert before_mounted, before_mounted
+            preview_drop_pid = before_mounted[0]
+            _send_panel_drag_and_drop(
+                win2.preview_box,
+                win2.preview_box.rect().center(),
+                preview_drop_pid,
+                lambda: pdrop2._indicator,
+            )
+
+            # (b) Split tree in center_host emits a single composite page tab (no dead extra tabs).
+            from ui.panels import tree as _dock
+            split_pids = [
+                p for p in win2.panel_host.tree().panels()
+                if p not in win2.floating_windows()
+            ][:2]
+            assert len(split_pids) == 2, split_pids
+            pdrop2.center_host.set_tree(
+                _dock.Split(_dock.VERTICAL, (_dock.Leaf(split_pids[0]), _dock.Leaf(split_pids[1])))
+            )
+            pdrop2._sync_center_tabs()
+            app.processEvents()
+            assert pdrop2.center_tab_bar.count() == 2, (
+                f"Expected ['色图', composite] (2 tabs) for Split center_host, got {[pdrop2.center_tab_bar.tabText(i) for i in range(pdrop2.center_tab_bar.count())]}"
+            )
+            assert pdrop2.center_tab_bar.tabText(0) == '色图'
+            assert '/' in pdrop2.center_tab_bar.tabText(1), pdrop2.center_tab_bar.tabText(1)
+            pdrop2.center_tab_bar.setCurrentIndex(0)
+            app.processEvents()
+
+            # (c) float_lab_view consumes & dismisses TearHandoff when LAB window is already open.
+            from ui.lab_float import LAB_FLOAT_ID
+            from ui.panels.transitions import consume_tear_handoff
+            assert win2.float_lab_view() is True
+            app.processEvents()
+            assert LAB_FLOAT_ID in win2.floating_windows()
+            assert win2.stack.isVisible()
+            outside_lab = QPoint(win2.frameGeometry().right() + 80, scr_pg.y() + 60)
+            sess_lab = start_drag_tear_preview(
+                LAB_FLOAT_ID,
+                'LAB',
+                win2.stack,
+                QPoint(24, 8),
+                chrome=getattr(win2, '_floating_chrome', None),
+                no_focus=True,
+            )
+            sess_lab.update_state(None, outside_lab, now=20.0)
+            app.processEvents()
+            assert sess_lab.preview is not None and sess_lab.preview.isVisible()
+            handoff_lab = sess_lab.finish(accepted=False, cursor_pos=outside_lab)
+            assert handoff_lab is not None
+            assert win2.float_lab_view() is False
+            app.processEvents()
+            assert consume_tear_handoff(LAB_FLOAT_ID) is None
+            assert handoff_lab.preview._handed_off is True
         finally:
             set_animations_enabled_for_test(None)
             app.removeEventFilter(spy)
         win2.close()
+
+        # (d) Switching slider tabs in panelDrag + slidersTabs mode must not change picker/wheel height.
+        cfg_tabs = copy.deepcopy(base_cfg)
+        cfg_tabs.update({
+            'panelDrag': True,
+            'slidersTabs': True,
+            'hideHueRing': False,
+            'showSlidersRGB': False,
+            'showSlidersHSV': True,
+            'showSlidersHSL': False,
+            'showSlidersLAB': False,
+            'showSlidersOKLAB': True,
+            'showSlidersOKLCH': True,
+            'showHistory': True,
+            'floatingPanels': {},
+            'pickerDocks': {},
+        })
+        from ui.panels import store as _store
+        _store.save_into(
+            cfg_tabs,
+            _dock.Tabs(
+                pages=(('sliders.oklch', 'history'), ('sliders.oklab', 'sliders.hsv')),
+                current=0,
+            ),
+            'tabs',
+        )
+        with patch('core.config.load_hotkey_config', side_effect=lambda: copy.deepcopy(cfg_tabs)):
+            win3 = main_window.MainWindow()
+            win3.show()
+            for _ in range(8):
+                app.processEvents()
+            tabs3 = win3.panel_host._tabs[0][0]
+            base_win_h = win3.height()
+            base_stack_h = win3.stack.height()
+            base_col_hint = win3.panel_host.column_hint()
+            base_wheel_geom = win3.color_wheel.get_wheel_geometry()
+            for target_idx in (1, 0, 1):
+                tabs3.setCurrentIndex(target_idx)
+                for _ in range(8):
+                    app.processEvents()
+                assert win3.panel_host.column_hint() == base_col_hint
+                assert win3.height() == base_win_h
+                assert win3.stack.height() == base_stack_h
+                assert win3.stack.minimumHeight() == base_stack_h
+                assert win3.color_wheel.get_wheel_geometry() == base_wheel_geom
+            win3.toggle_picker_mode()
+            for _ in range(4):
+                app.processEvents()
+            assert win3.stack.minimumHeight() == base_stack_h
+            win3.toggle_picker_mode()
+            for _ in range(4):
+                app.processEvents()
+            assert win3.stack.height() == base_stack_h
+            win3.close()
 
 print("COLOR MAP DROP AND TRANSITIONS OK")
 sys.stdout.flush()
@@ -512,3 +677,157 @@ def test_color_map_drops_anti_flicker_and_persistence():
     )
     assert result.returncode == 0, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     assert "COLOR MAP DROP AND TRANSITIONS OK" in result.stdout
+
+
+def test_drag_tear_preview_session_and_handoff(qapp):
+    from PyQt6.QtGui import QDrag
+    from ui.panels.floating import PanelChrome
+
+    src_win = QWidget()
+    src_win.setGeometry(100, 100, 300, 360)
+    bar = PanelTitleBar("sliders.hsv", "HSV", src_win)
+    bar.setGeometry(12, 12, 240, 16)
+    body = QLabel("HSV Content", src_win)
+    body.setGeometry(12, 28, 240, 150)
+    src_win.show()
+    qapp.processEvents()
+
+    chrome = PanelChrome(
+        background="rgba(240,240,240,0.700)",
+        border_color="rgba(224,224,224,0.700)",
+        border_width=4,
+        radius=0,
+        text="#222222",
+        bar_bg="#e0e0e0",
+        bar_text="#666666",
+        divider_color="#e0e0e0",
+        divider_width=0,
+        opacity=0.7,
+    )
+    bar._chrome = chrome
+
+    shown_geoms = []
+
+    class _ShowSpy(QObject):
+        def eventFilter(self, obj, ev):
+            if ev.type() == QEvent.Type.Show and isinstance(obj, QWidget) and obj.isWindow():
+                shown_geoms.append((type(obj).__name__, obj.geometry().getRect()))
+            return False
+
+    spy = _ShowSpy()
+    qapp.installEventFilter(spy)
+    set_animations_enabled_for_test(True)
+    try:
+        # 1. Verify transparent 1x1 drag pixmap suppresses Qt default box and redundant title pill.
+        drag = QDrag(bar)
+        drag.setMimeData(bar.mime_data())
+        bar._dress_drag(drag, QPoint(40, 8))
+        pm = drag.pixmap()
+        assert not pm.isNull()
+        assert pm.rect().contains(drag.hotSpot())
+        assert pm.size().width() == 1 and pm.size().height() == 1
+        assert pm.toImage().pixelColor(0, 0).alpha() == 0
+
+        # 2. Tear preview session creates a real disposable FloatingPanelWindow wearing chrome.
+        sess = start_drag_tear_preview(
+            "sliders.hsv",
+            "HSV",
+            body,
+            QPoint(36, 8),
+            chrome=chrome,
+            no_focus=True,
+            drag=drag,
+        )
+        preview = sess.preview
+        assert preview is not None
+        assert isinstance(preview.window, FloatingPanelWindow)
+        assert preview.window._preview_only is True
+        assert preview.window._chrome is chrome
+        assert not preview.isVisible()
+        flags = preview.windowFlags()
+        assert bool(flags & Qt.WindowType.WindowTransparentForInput)
+        assert bool(flags & Qt.WindowType.WindowDoesNotAcceptFocus)
+
+        # Hover inside gap (< 110ms) must NOT flicker preview open.
+        inside_pt = QPoint(200, 220)
+        sess.update_state(None, inside_pt, now=1.00)
+        sess.update_state(None, inside_pt, now=1.05)
+        assert not preview.isVisible()
+
+        # Dwell inside (> 110ms) or exit outside source window -> blooms at clamped rect (never 0,0).
+        outside_pt = QPoint(520, 260)
+        sess.update_state(None, outside_pt, now=1.06)
+        qapp.processEvents()
+        assert preview.isVisible()
+        assert preview.is_tear_active()
+        assert all(g[0] != 0 or g[1] != 0 for _name, g in shown_geoms)
+
+        # Re-entering valid dock target yields immediately.
+        sess.update_state(src_win, QPoint(200, 150), now=1.10)
+        assert not preview.is_tear_active()
+
+        # Exit again and finish with IgnoreAction -> registers TearHandoff consumed cleanly.
+        sess.update_state(None, outside_pt, now=1.15)
+        qapp.processEvents()
+        handoff = sess.finish(accepted=False, cursor_pos=outside_pt)
+        assert handoff is not None and handoff.from_drag is True
+        popped = consume_tear_handoff("sliders.hsv")
+        assert popped is handoff
+
+        # Seamless swap onto real floating window and dispose temporary preview ("拖完就作废").
+        target_win = FloatingPanelWindow("sliders.hsv", "HSV", no_focus=True)
+        target_win.setGeometry(popped.target_rect)
+        target_win.show()
+        qapp.processEvents()
+        assert finish_tear_reveal(target_win, handoff=popped, no_focus=True) is True
+        assert preview._handed_off is True
+        target_win.close()
+
+        # Accepted drop discards preview immediately without registering handoff.
+        sess2 = start_drag_tear_preview("sliders.hsv", "HSV", body, QPoint(24, 8), chrome=chrome, no_focus=True)
+        sess2.update_state(None, outside_pt, now=2.0)
+        assert sess2.finish(accepted=True) is None
+        assert consume_tear_handoff("sliders.hsv") is None
+
+        # Outward ghost helper (used for double-click/menu tear-off) spawns safely.
+        snap = capture_widget_snapshot(body)
+        before_ghosts = len(_ACTIVE_GHOSTS)
+        spawn_tear_ghost(snap, QRect(480, 240, 260, 180), no_focus=True, duration_ms=110)
+        assert len(_ACTIVE_GHOSTS) >= before_ghosts + 1
+        for g in list(_ACTIVE_GHOSTS):
+            try:
+                g.stop()
+            except RuntimeError:
+                pass
+        _ACTIVE_GHOSTS.clear()
+        qapp.processEvents()
+    finally:
+        set_animations_enabled_for_test(None)
+        qapp.removeEventFilter(spy)
+        src_win.close()
+
+
+def test_drop_indicator_show_drop_preserves_running_animation(qapp):
+    parent = QWidget()
+    parent.resize(320, 320)
+    parent.show()
+    ind = DropIndicator(parent)
+
+    set_animations_enabled_for_test(True)
+    try:
+        r1 = QRect(10, 10, 120, 80)
+        r2 = QRect(40, 180, 200, 100)
+        ind.show_drop(r1, zone=rearrange.TOP)
+        ind.show_drop(r2, zone=rearrange.BOTTOM)
+        running_anim = ind._rect_anim
+        assert running_anim is not None
+        # Repeated dragMove updates inside the same zone/rect must NOT kill & restart the glide.
+        ind.show_drop(QRect(r2), zone=rearrange.BOTTOM)
+        assert ind._rect_anim is running_anim
+        # Switching zone stops and updates cleanly.
+        ind.show_drop(QRect(r2), zone=rearrange.CENTER)
+        assert ind._label == "堆叠"
+    finally:
+        ind.hide()
+        set_animations_enabled_for_test(None)
+        parent.close()

@@ -34,6 +34,7 @@ from ui.panels.transitions import (
     animate_panel_landing,
     capture_widget_snapshot,
     capture_window_snapshot,
+    register_tear_snapshot,
     snap_widget_update,
     spawn_dock_ghost,
 )
@@ -290,13 +291,21 @@ class PickerDropController(QObject):
             SLOT_CENTER: self.center_container,
         }
 
-    def _install_drop_filters(self) -> None:
+    def _drop_targets(self) -> tuple[QWidget, ...]:
         owner = self.owner
-        for target in (owner.stack, owner.picker_tab_container, self.center_tab_bar):
-            if target is not None:
-                target.setAcceptDrops(True)
-                target.installEventFilter(self)
-        tab_bar = getattr(owner, "picker_tab_bar", None)
+        candidates = (
+            owner.stack,
+            owner.picker_tab_container,
+            self.center_tab_bar,
+            getattr(owner, "preview_box", None),
+        )
+        return tuple(target for target in candidates if target is not None)
+
+    def _install_drop_filters(self) -> None:
+        for target in self._drop_targets():
+            target.setAcceptDrops(True)
+            target.installEventFilter(self)
+        tab_bar = getattr(self.owner, "picker_tab_bar", None)
         if tab_bar is not None and hasattr(tab_bar, "set_drop_controller"):
             tab_bar.set_drop_controller(self)
 
@@ -595,8 +604,7 @@ class PickerDropController(QObject):
         ):
             return super().eventFilter(obj, event)
 
-        owner = self.owner
-        if obj not in (owner.stack, owner.picker_tab_container, self.center_tab_bar):
+        if obj not in self._drop_targets():
             return super().eventFilter(obj, event)
 
         if etype == QEvent.Type.DragLeave:
@@ -1104,9 +1112,9 @@ class PickerDropController(QObject):
                 if vis_in_page:
                     title = "/".join(_title_of(p) for p in vis_in_page)
                     pages.append((title, vis_in_page))
-        else:
-            for pid in visible_pids:
-                pages.append((_title_of(pid), (pid,)))
+        elif visible_pids:
+            title = "/".join(_title_of(p) for p in visible_pids)
+            pages.append((title, tuple(visible_pids)))
 
         # Suppress duplicate inner PanelTabWidget tab bar when mirrored above.
         for tab_widget, _ in getattr(host, "_tabs", ()):
@@ -1210,10 +1218,18 @@ class PickerDropController(QObject):
             adjust()
 
     def _on_dock_float_requested(self, panel_id: str) -> None:
+        # Capture visual before detaching so double-click/menu tear-off also animates.
+        fallback_size: tuple[int, int] | None = None
+        widget_fn = getattr(self.owner, "panel_widget", None)
+        if callable(widget_fn):
+            w = widget_fn(panel_id)
+            if w is not None and w.isVisible() and w.width() > 0 and w.height() > 0:
+                fallback_size = (w.width(), w.height())
+            register_tear_snapshot(panel_id, capture_widget_snapshot(w))
         # Take ownership out of edge/center dock FIRST so refreshing the main
         # slider column preserves the cleaned dock tree cleanly.
         self.remove_panel(panel_id)
-        self.owner.float_panel(panel_id)
+        self.owner.float_panel(panel_id, fallback_size=fallback_size)
 
     def _finalize_arrangement(self, *, touched_wheel: bool) -> None:
         owner = self.owner
