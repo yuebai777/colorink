@@ -353,6 +353,503 @@ class _GUITHREADINFO(ctypes.Structure):
     ]
 
 
+class _MENUBARINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcBar", wintypes.RECT),
+        ("hMenu", wintypes.HMENU),
+        ("hwndMenu", wintypes.HWND),
+        ("fBarFocused_fFocused", wintypes.DWORD),
+    ]
+
+
+# Win32 GUIThreadInfo flags for active menu / popup menu loops
+GUI_INMENUMODE = 0x00000004
+GUI_SYSTEMMENUMODE = 0x00000008
+GUI_POPUPMENUMODE = 0x00000010
+_GUI_MENU_FLAGS = GUI_INMENUMODE | GUI_SYSTEMMENUMODE | GUI_POPUPMENUMODE
+
+# Window classes that represent native or toolkit dropdown / popup menus
+_POPUP_MENU_CLASSES = {
+    "#32768",      # Standard Win32 popup menu (CSP menu bar, right-click menus, SAI, UDM)
+    "combolbox",   # Standard Win32 ComboBox dropdown list
+    "owl.menu",    # Adobe Photoshop menu bar / context menu popup
+}
+
+_POPUP_MENU_CLASS_MARKERS = (
+    "popupmenu",
+    "dropdown",
+    "menusite",
+    "qwindowpopup",
+    "popupsavebits",
+    "contextmenu",
+)
+
+# Helper/system popup classes that are never user-opened dropdown menus
+_NON_MENU_POPUP_CLASSES = {
+    "tooltips_class32",
+    "#32774",
+    "sysshadow",
+    "ime",
+    "msctfime ui",
+    "uac_inputindicatoroverlaywnd",
+    "uac input indicator",
+    "workerw",
+    "progman",
+    "static",
+    "button",
+    "d3dproxywindow",
+    "cicerouiwndframe",
+}
+
+_NON_MENU_CLASS_PREFIXES = (
+    "uac_",
+    "uac ",
+)
+
+_WS_POPUP = 0x80000000
+_WS_CHILD = 0x40000000
+_WS_BORDER = 0x00800000
+_WS_DLGFRAME = 0x00400000
+_WS_CAPTION = _WS_BORDER | _WS_DLGFRAME
+_WS_THICKFRAME = 0x00040000
+_WS_SYSMENU = 0x00080000
+_WS_MINIMIZEBOX = 0x00020000
+_WS_MAXIMIZEBOX = 0x00010000
+# Check _WS_DLGFRAME rather than _WS_CAPTION so popup menus styled with
+# WS_POPUP | WS_BORDER (1px border, no title bar) are not rejected.
+_NON_MENU_STYLE_MASK = (
+    _WS_CHILD
+    | _WS_DLGFRAME
+    | _WS_THICKFRAME
+    | _WS_SYSMENU
+    | _WS_MINIMIZEBOX
+    | _WS_MAXIMIZEBOX
+)
+_WS_EX_TOPMOST = 0x00000008
+_WS_EX_TRANSPARENT = 0x00000020
+_WS_EX_TOOLWINDOW = 0x00000080
+_WS_EX_APPWINDOW = 0x00040000
+_WS_EX_NOACTIVATE = 0x08000000
+_GWL_STYLE = -16
+_GWL_EXSTYLE = -20
+_GCL_STYLE = -26
+_CS_SAVEBITS = 0x00000800
+_CS_DROPSHADOW = 0x00020000
+_MENU_CLASS_STYLE_FLAGS = _CS_SAVEBITS | _CS_DROPSHADOW
+_GW_OWNER = 4
+_OBJID_MENU = -3
+
+
+def _menu_debug(*parts) -> None:
+    """COLORINK_DEBUG_MENU=1 时打印下拉菜单检测的诊断日志。"""
+    if os.environ.get("COLORINK_DEBUG_MENU"):
+        print("[menu]", *parts, flush=True)
+
+
+def _is_popup_menu_class(cls_name: str, *, same_process: bool = False) -> bool:
+    """True if *cls_name* identifies a popup/dropdown menu window."""
+    if not cls_name:
+        return False
+    lowered = cls_name.strip().lower()
+    if lowered in _POPUP_MENU_CLASSES:
+        return True
+    if same_process and any(marker in lowered for marker in _POPUP_MENU_CLASS_MARKERS):
+        return True
+    return False
+
+
+def _get_class_style(hwnd: int, win32gui_module=None) -> int:
+    """Return GCL_STYLE bitmask for *hwnd*, or 0 if unavailable."""
+    get_cls_long = getattr(win32gui_module, "GetClassLong", None) if win32gui_module else None
+    if callable(get_cls_long):
+        try:
+            return int(get_cls_long(int(hwnd), _GCL_STYLE) or 0) & 0xFFFFFFFF
+        except Exception:
+            pass
+    try:
+        user32 = ctypes.windll.user32
+        fn = getattr(user32, "GetClassLongPtrW", None) or getattr(user32, "GetClassLongW", None)
+        if fn is not None:
+            return int(fn(wintypes.HWND(int(hwnd)), _GCL_STYLE) or 0) & 0xFFFFFFFF
+    except Exception:
+        pass
+    return 0
+
+
+def _get_window_owner(hwnd: int, win32gui_module=None) -> int:
+    """Return owner HWND (GW_OWNER) for *hwnd*, or 0 if none/unavailable."""
+    get_window = getattr(win32gui_module, "GetWindow", None) if win32gui_module else None
+    if callable(get_window):
+        try:
+            return int(get_window(int(hwnd), _GW_OWNER) or 0)
+        except Exception:
+            pass
+    try:
+        return int(ctypes.windll.user32.GetWindow(wintypes.HWND(int(hwnd)), _GW_OWNER) or 0)
+    except Exception:
+        return 0
+
+
+def _query_menu_bar_open(fg_hwnd: int, win32gui_module=None) -> bool:
+    """Return True if *fg_hwnd*'s native Win32 menu bar currently owns an open submenu HWND."""
+    if not fg_hwnd:
+        return False
+    get_mbi = getattr(win32gui_module, "GetMenuBarInfo", None) if win32gui_module else None
+    if callable(get_mbi):
+        try:
+            info = get_mbi(int(fg_hwnd), _OBJID_MENU, 0)
+            if isinstance(info, dict):
+                return bool(info.get("hwndMenu"))
+            return bool(getattr(info, "hwndMenu", 0))
+        except Exception:
+            pass
+    try:
+        mbi = _MENUBARINFO()
+        mbi.cbSize = ctypes.sizeof(_MENUBARINFO)
+        if ctypes.windll.user32.GetMenuBarInfo(
+            wintypes.HWND(int(fg_hwnd)), _OBJID_MENU, 0, ctypes.byref(mbi)
+        ):
+            return bool(mbi.hwndMenu)
+    except Exception:
+        pass
+    return False
+
+
+def _rects_match_shadow(
+    popup_rect: tuple[int, int, int, int],
+    shadow_rect: tuple[int, int, int, int],
+) -> bool:
+    """True when *shadow_rect* aligns with a SysShadow window cast by *popup_rect*."""
+    pl, pt, pr, pb = popup_rect
+    sl, st, sr, sb = shadow_rect
+    if sr <= pl or sb <= pt or pr <= pl or pb <= pt:
+        return False
+    return (
+        abs(sl - pl) <= 12
+        and abs(st - pt) <= 12
+        and 0 <= (sr - pr) <= 24
+        and 0 <= (sb - pb) <= 24
+    )
+
+
+def _query_thread_menu_info(tid: int, win32gui_module=None) -> tuple[bool, int, int, int]:
+    """Query GUI thread menu state and active/focus/capture HWNDs for *tid*.
+
+    Returns ``(in_menu_mode, hwnd_active, hwnd_focus, hwnd_capture)``.
+    """
+    if win32gui_module and hasattr(win32gui_module, "GetGUIThreadInfo"):
+        try:
+            info = win32gui_module.GetGUIThreadInfo(int(tid or 0))
+            flags = int(getattr(info, "flags", 0) or 0)
+            menu_owner = int(getattr(info, "hwndMenuOwner", 0) or 0)
+            active = int(getattr(info, "hwndActive", 0) or 0)
+            focus = int(getattr(info, "hwndFocus", 0) or 0)
+            capture = int(getattr(info, "hwndCapture", 0) or 0)
+            return bool((flags & _GUI_MENU_FLAGS) or menu_owner), active, focus, capture
+        except Exception:
+            pass
+    try:
+        gui = _GUITHREADINFO()
+        gui.cbSize = ctypes.sizeof(_GUITHREADINFO)
+        if ctypes.windll.user32.GetGUIThreadInfo(int(tid or 0), ctypes.byref(gui)):
+            flags = int(gui.flags or 0)
+            menu_owner = int(gui.hwndMenuOwner or 0)
+            active = int(gui.hwndActive or 0)
+            focus = int(gui.hwndFocus or 0)
+            capture = int(gui.hwndCapture or 0)
+            return bool((flags & _GUI_MENU_FLAGS) or menu_owner), active, focus, capture
+    except Exception:
+        pass
+    return False, 0, 0, 0
+
+
+def _is_custom_popup_menu(
+    hwnd_int: int,
+    fg_hwnd_int: int,
+    style: int,
+    ex_style: int,
+    cls_style: int,
+    owner: int,
+    title: str,
+    above_fg: bool,
+    input_hwnds: set[int],
+    *,
+    is_fg: bool = False,
+) -> bool:
+    """Classify whether a non-child, non-captioned WS_POPUP window is a menu dropdown."""
+    if ex_style & _WS_EX_APPWINDOW:
+        return False
+    has_menu_class_style = bool(cls_style & _MENU_CLASS_STYLE_FLAGS)
+    if is_fg:
+        # Toolkits like CLIP STUDIO PAINT activate/focus the dropdown popup
+        # HWND itself so it becomes GetForegroundWindow(). Require positive menu
+        # traits so frameless main windows or test mocks are never misclassified.
+        return bool(
+            (has_menu_class_style and (owner != 0 or not title))
+            or (owner != 0 and not title)
+        )
+    is_topmost_menu = bool(
+        (ex_style & _WS_EX_TOPMOST)
+        and (
+            not title
+            or has_menu_class_style
+            or (ex_style & (_WS_EX_TOOLWINDOW | _WS_EX_NOACTIVATE))
+        )
+    )
+    is_input_popup = hwnd_int in input_hwnds
+    is_menu_class_style = bool(
+        has_menu_class_style
+        and (above_fg or (fg_hwnd_int and owner == fg_hwnd_int))
+    )
+    is_owned_noactivate = bool(
+        fg_hwnd_int
+        and owner == fg_hwnd_int
+        and above_fg
+        and (ex_style & _WS_EX_NOACTIVATE)
+    )
+    return is_topmost_menu or is_input_popup or is_menu_class_style or is_owned_noactivate
+
+
+def is_drawing_app_menu_open(
+    fg_hwnd: int = 0,
+    tid: int = 0,
+    pid: int = 0,
+    win32gui_module=None,
+    win32process_module=None,
+) -> bool:
+    """True when the foreground drawing app has a dropdown or popup menu open.
+
+    Combines complementary Win32 signals so both native Win32 menus (CSP menu
+    bar ``#32768``, SAI menus, UDM menus) and custom toolkit dropdowns
+    (ComboLBox, Photoshop ``OWL.Menu``, Qt ``QWindowPopupSaveBits``, CSP custom
+    dropdowns with ``WS_BORDER``/``CS_DROPSHADOW``/``SysShadow``) are detected
+    without false-triggering on hover tooltips or persistent floating palettes:
+    1. ``GetGUIThreadInfo`` menu flags (``GUI_INMENUMODE``, ``GUI_POPUPMENUMODE``,
+       ``GUI_SYSTEMMENUMODE``) or a non-zero ``hwndMenuOwner``.
+    2. ``GetMenuBarInfo`` active submenu HWND on *fg_hwnd*.
+    3. Foreground/focus/capture window class matching a popup menu class.
+    4. Visible top-level popup menu / ``CS_DROPSHADOW`` / ``SysShadow``-paired
+       captionless dropdown windows owned by the drawing app process.
+    """
+    my_pid = os.getpid()
+    if pid and int(pid) == my_pid:
+        return False
+
+    if win32gui_module is None:
+        try:
+            import win32gui as win32gui_module
+        except ImportError:
+            win32gui_module = None
+    if win32process_module is None:
+        try:
+            import win32process as win32process_module
+        except ImportError:
+            win32process_module = None
+
+    fg_hwnd_int = int(fg_hwnd or 0)
+
+    # 1. Check GUI thread menu mode flags & menu owner
+    in_menu, hwnd_active, hwnd_focus, hwnd_capture = _query_thread_menu_info(
+        tid, win32gui_module
+    )
+    if in_menu:
+        _menu_debug("hit=GetGUIThreadInfo", f"tid={tid}", f"fg={fg_hwnd_int:#x}")
+        return True
+    if tid:
+        in_menu_fg, act0, foc0, cap0 = _query_thread_menu_info(0, win32gui_module)
+        if in_menu_fg:
+            _menu_debug("hit=GetGUIThreadInfo(0)", f"fg={fg_hwnd_int:#x}")
+            return True
+        hwnd_active = hwnd_active or act0
+        hwnd_focus = hwnd_focus or foc0
+        hwnd_capture = hwnd_capture or cap0
+
+    # 1b. Native Win32 menu bar currently owns a dropped submenu HWND
+    if _query_menu_bar_open(fg_hwnd_int, win32gui_module):
+        _menu_debug("hit=GetMenuBarInfo", f"fg={fg_hwnd_int:#x}")
+        return True
+
+    if win32gui_module is None:
+        return False
+
+    # 2. Check classes of the foreground / active / focus / capture windows
+    get_class = getattr(win32gui_module, "GetClassName", None)
+    if callable(get_class):
+        for candidate_hwnd in (fg_hwnd_int, hwnd_active, hwnd_focus, hwnd_capture):
+            if not candidate_hwnd:
+                continue
+            try:
+                cls_name = get_class(int(candidate_hwnd)) or ""
+            except Exception:
+                cls_name = ""
+            if _is_popup_menu_class(cls_name, same_process=True):
+                _menu_debug("hit=input_hwnd_class", f"hwnd={int(candidate_hwnd):#x}", f"cls={cls_name!r}")
+                return True
+
+    # 3. Scan visible top-level windows for active popup menus / dropdowns
+    enum_windows = getattr(win32gui_module, "EnumWindows", None)
+    is_visible = getattr(win32gui_module, "IsWindowVisible", None)
+    if not callable(enum_windows) or not callable(is_visible):
+        return False
+
+    is_iconic = getattr(win32gui_module, "IsIconic", None)
+    get_rect = getattr(win32gui_module, "GetWindowRect", None)
+    get_long = getattr(win32gui_module, "GetWindowLong", None)
+    get_text = getattr(win32gui_module, "GetWindowText", None)
+    get_tid_pid = (
+        getattr(win32process_module, "GetWindowThreadProcessId", None)
+        if win32process_module is not None
+        else None
+    )
+
+    state = {"open": False, "fg_seen": False}
+    seen_tids = {int(tid)} if tid else set()
+    input_hwnds = {h for h in (hwnd_active, hwnd_focus, hwnd_capture) if h}
+    shadows: list[tuple[int, tuple[int, int, int, int]]] = []
+    shadow_candidates: list[tuple[int, tuple[int, int, int, int], str]] = []
+
+    def _cb(hwnd, _extra):
+        if state["open"]:
+            return False
+        try:
+            hwnd_int = int(hwnd)
+            if not is_visible(hwnd):
+                return True
+            if callable(is_iconic) and is_iconic(hwnd):
+                return True
+
+            w_tid, w_pid = 0, 0
+            if callable(get_tid_pid):
+                raw_tid, raw_pid = get_tid_pid(hwnd)
+                w_tid = int(raw_tid or 0)
+                w_pid = int(raw_pid or 0)
+            if w_pid == my_pid:
+                return True
+
+            is_fg_window = bool(fg_hwnd_int and hwnd_int == fg_hwnd_int)
+            if is_fg_window:
+                state["fg_seen"] = True
+
+            above_fg = (not fg_hwnd_int) or ((not is_fg_window) and (not state["fg_seen"]))
+            same_proc = bool(pid and w_pid == int(pid))
+
+            if same_proc and w_tid and w_tid not in seen_tids:
+                seen_tids.add(w_tid)
+                t_menu, t_act, t_foc, t_cap = _query_thread_menu_info(w_tid, win32gui_module)
+                if t_menu:
+                    state["open"] = True
+                    _menu_debug("hit=secondary_tid_menu", f"tid={w_tid}")
+                    return False
+                for th in (t_act, t_foc, t_cap):
+                    if th:
+                        input_hwnds.add(th)
+
+            cls_name = (get_class(hwnd) or "") if callable(get_class) else ""
+            cls_lower = cls_name.strip().lower()
+
+            if cls_lower == "sysshadow":
+                if (same_proc or not pid) and callable(get_rect):
+                    l, t, r, b = get_rect(hwnd)
+                    shadows.append((w_pid, (int(l), int(t), int(r), int(b))))
+                return True
+
+            if _is_popup_menu_class(cls_name, same_process=same_proc):
+                # Native #32768 menu or same-process dropdown class
+                if same_proc or not pid or cls_lower == "#32768":
+                    if callable(get_rect):
+                        l, t, r, b = get_rect(hwnd)
+                        if (r - l) <= 0 or (b - t) <= 0:
+                            return True
+                    state["open"] = True
+                    _menu_debug("hit=popup_class", f"hwnd={hwnd_int:#x}", f"cls={cls_name!r}")
+                    return False
+
+            # Custom toolkit captionless non-resizable dropdown owned by the drawing app
+            # (may either sit above fg_hwnd or take foreground itself, as CSP menus do)
+            if same_proc and callable(get_long):
+                if (
+                    cls_lower in _NON_MENU_POPUP_CLASSES
+                    or cls_lower.startswith(_NON_MENU_CLASS_PREFIXES)
+                    or "inputindicator" in cls_lower
+                ):
+                    return True
+                style = int(get_long(hwnd, _GWL_STYLE) or 0) & 0xFFFFFFFF
+                ex_style = int(get_long(hwnd, _GWL_EXSTYLE) or 0) & 0xFFFFFFFF
+                # Ignore click-through overlays (IME/TSF indicators, OSDs)
+                if ex_style & _WS_EX_TRANSPARENT:
+                    return True
+                if (style & _WS_POPUP) and not (style & _NON_MENU_STYLE_MASK):
+                    l, t, r, b = (0, 0, 100, 100)
+                    if callable(get_rect):
+                        l, t, r, b = get_rect(hwnd)
+                    w, h = r - l, b - t
+                    # Exclude 1-line hover tooltips (h < 48) and empty helpers
+                    if w >= 40 and h >= 48:
+                        title = (get_text(hwnd) or "") if callable(get_text) else ""
+                        cls_style = _get_class_style(hwnd_int, win32gui_module)
+                        owner = _get_window_owner(hwnd_int, win32gui_module)
+                        if _is_custom_popup_menu(
+                            hwnd_int,
+                            fg_hwnd_int,
+                            style,
+                            ex_style,
+                            cls_style,
+                            owner,
+                            title,
+                            above_fg,
+                            input_hwnds,
+                            is_fg=is_fg_window,
+                        ):
+                            state["open"] = True
+                            _menu_debug(
+                                "hit=custom_popup",
+                                f"hwnd={hwnd_int:#x}",
+                                f"is_fg={is_fg_window}",
+                                f"cls={cls_name!r}",
+                                f"st={style:#x}",
+                                f"ex={ex_style:#x}",
+                                f"cst={cls_style:#x}",
+                                f"own={owner:#x}",
+                                f"rect={(l, t, r, b)}",
+                            )
+                            return False
+                        if (not (ex_style & _WS_EX_APPWINDOW)) and (
+                            not is_fg_window or owner != 0 or not title
+                        ):
+                            shadow_candidates.append(
+                                (w_pid, (int(l), int(t), int(r), int(b)), cls_name)
+                            )
+        except Exception:
+            pass
+        return True
+
+    try:
+        enum_windows(_cb, None)
+    except Exception:
+        # win32gui.EnumWindows raises pywintypes.error when the callback stops
+        # early via `return False` while a prior Win32 API call left
+        # GetLastError() non-zero; preserve any hit already stored in `state`.
+        pass
+
+    if state["open"]:
+        return True
+
+    if shadows and shadow_candidates:
+        for c_pid, c_rect, c_cls in shadow_candidates:
+            for s_pid, s_rect in shadows:
+                if (c_pid == s_pid or not pid) and _rects_match_shadow(c_rect, s_rect):
+                    _menu_debug(
+                        "hit=sysshadow_pair",
+                        f"cls={c_cls!r}",
+                        f"rect={c_rect}",
+                        f"shadow={s_rect}",
+                    )
+                    return True
+
+    return False
+
+
 def _resolve_thread_focus(tid: int, win32gui_module=None) -> int:
     """跨进程获取指定 GUI 线程的键盘焦点窗口 HWND。
 
