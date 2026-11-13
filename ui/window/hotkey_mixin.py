@@ -96,7 +96,11 @@ class HotkeyMixin:
                 self._run_local_view_shortcut()
         elif hotkey_type == "toggleLabGlobalKey":
             print("[Hotkeys] Toggle LAB view (global)")
-            self.toggle_picker_mode()
+            toggle = getattr(self, "toggle_lab_global", None)
+            if callable(toggle):
+                toggle()
+            else:
+                self.toggle_picker_mode()
         elif hotkey_type == "pickKey":
             if self.picker_overlay.is_active:
                 self.picker_overlay.stop()

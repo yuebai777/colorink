@@ -105,6 +105,7 @@ def default_hotkey_config():
         "lockWindowSize": False,
         "lockWindowPosition": False,
         "onlyShowInCsp": True,
+        "hideOnPopupMenu": False,
         "openAtLogin": False,
         "checkUpdatesOnStartup": True,
         # Latest release tag the user chose to skip, so the startup tray
@@ -141,7 +142,13 @@ def default_hotkey_config():
         "labHarmonyMode": "analogous",
         "colorWheelMode": "hsv",
         "colorSpaceModule": "hsv",          # "hsv" | "vhsv" | "hls" | "rgb" | "lch"
-        "showModuleSwitchButton": True,     # floating button next to ⊙/△
+        "showModuleSwitchButton": True,     # show/hide picker module tab bar
+        "wheelModuleTabs": ["hsv", "vhsv", "hls", "rgb", "lch"],
+        "wheelModuleOrder": ["hsv", "vhsv", "hls", "rgb", "lch"],
+        "labVisualizerOrder": ["lab", "oklab"],
+        "floatingWheelShowSwatches": True,  # floating colour map: fg/bg + transparent
+        "floatingWheelShowButtons": True,   # floating colour map: mode button
+        "floatingWheelPageOptions": {},     # per-page overrides: view/swatches/buttons
         "sliderScrollStep": 1,
         "sliderSameSpace": 6,
         "sliderDiffSpace": 8,
@@ -308,7 +315,7 @@ _BOOL_KEYS = frozenset({
     "slidersTabs", "panelDrag",
     "flipColorWheelHorizontally", "hideHueRing", "showModuleSwitchButton",
     "showLabToggleButton", "showLabShapeButton", "showLabHarmonyButton",
-    "showLabCheckerboard",
+    "showLabCheckerboard", "floatingWheelShowSwatches", "floatingWheelShowButtons",
 })
 _INT_KEYS = frozenset({
     "uiScale", "pickerZoom", "historyColumns", "historyRows",

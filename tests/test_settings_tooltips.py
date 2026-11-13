@@ -124,3 +124,13 @@ def test_all_new_tips_have_english_translations(qapp):
     finally:
         i18n.set_language(i18n.LANG_ZH)
     assert not missing, f"untranslated tooltips: {missing}"
+
+
+def test_hide_on_menu_checkbox_persists_to_config(sidebar):
+    assert sidebar.cb_hide_on_menu.isChecked() is False
+    sidebar.cb_hide_on_menu.setChecked(True)
+    reloaded = load_hotkey_config()
+    assert reloaded.get("hideOnPopupMenu") is True
+    sidebar.cb_hide_on_menu.setChecked(False)
+    assert load_hotkey_config().get("hideOnPopupMenu") is False
+

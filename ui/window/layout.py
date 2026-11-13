@@ -18,6 +18,7 @@ from core import config
 from core.foreground import focus_guard
 from ui import preview_clearance, window_layout
 from ui.hotkey_button import MOUSE_BUTTON_NAME_BY_QT, capture_active, parse_key_event
+from ui.picker_panes import visible_picker_chrome_height
 from ui.ringless_mode import RinglessConfig, resolve_ringless_layout
 from ui.widgets import _title_bar_content_offset, _visible_title_bar_height
 
@@ -172,7 +173,8 @@ class LayoutMixin:
             self.main_layout.activate()
             margins = self.main_layout.contentsMargins()
             stack_msh = 0
-            if hasattr(self, "stack") and self.stack is not None:
+            if (hasattr(self, "stack") and self.stack is not None
+                    and self.stack.isVisible()):
                 msh = getattr(self.stack, "minimumSizeHint", None)
                 if callable(msh):
                     try:
@@ -185,19 +187,36 @@ class LayoutMixin:
                         stack_msh = max(stack_msh, int(mh()))
                     except Exception:
                         pass
-            visualizer_h = self._required_visualizer_height(
-                self.width(),
+            stack_visible = (hasattr(self, "stack")
+                             and self.stack is not None
+                             and self.stack.isVisible())
+            pdrop = getattr(self, "picker_drop", None)
+            extra_top = pdrop.extra_top_height() if pdrop is not None else 0
+            extra_side = pdrop.extra_side_width() if pdrop is not None else 0
+            eff_width = max(160, self.width() - extra_side)
+            visualizer_h = (self._required_visualizer_height(
+                eff_width,
                 margins.left(),
                 margins.right(),
                 stack_msh,
-            )
+            ) if stack_visible else 0)
+            if pdrop is not None and not pdrop.center_shows_picker():
+                visualizer_h = max(
+                    visualizer_h,
+                    pdrop.center_host.column_hint(),
+                    pdrop.center_container.sizeHint().height(),
+                )
             # Protect stack height so Qt layout cannot compress the color wheel!
-            self.stack.setMinimumHeight(visualizer_h)
-            cfg = getattr(self, "cfg", {})
-            if not cfg.get("hideHueRing", False):
-                self.stack.setMaximumHeight(visualizer_h)
-            else:
-                self.stack.setMaximumHeight(16777215)
+            if stack_visible:
+                self.stack.setMinimumHeight(visualizer_h)
+                cfg = getattr(self, "cfg", {})
+                if not cfg.get("hideHueRing", False):
+                    self.stack.setMaximumHeight(visualizer_h)
+                else:
+                    self.stack.setMaximumHeight(16777215)
+            elif hasattr(self, "stack") and self.stack is not None:
+                self.stack.setMinimumHeight(0)
+                self.stack.setMaximumHeight(0)
 
             host = getattr(self, "panel_host", None)
             if host is not None:
@@ -241,7 +260,9 @@ class LayoutMixin:
                         except (TypeError, ValueError, AttributeError):
                             pass
             required = self._required_content_height(
-                _visible_title_bar_height(self.title_bar),
+                _visible_title_bar_height(self.title_bar)
+                + visible_picker_chrome_height(self)
+                + extra_top,
                 visualizer_h,
                 hint,
                 margins.top(), margins.bottom(), self.main_layout.spacing(),
@@ -303,11 +324,28 @@ class LayoutMixin:
         layout = resolve_ringless_layout(config, wheel_page_active, scale)
 
         # ── Push layout to every ringless-aware component ──
-        self.color_wheel.set_ringless_layout(layout)
+        _wheel_panels = getattr(self, "wheel_panels", None)
+        _floating_pages = getattr(self, "_floating_wheel_pages", None) or {}
+        if _wheel_panels:
+            disabled_layout = resolve_ringless_layout(
+                RinglessConfig(enabled=False, controls_side=config.controls_side),
+                wheel_page_active, scale,
+            )
+            for _key, _wheel_panel in _wheel_panels.items():
+                pid = f"wheel.{_key}"
+                if pid in _floating_pages:
+                    _wheel_panel.wheel.set_ringless_layout(disabled_layout)
+                else:
+                    _wheel_panel.wheel.set_ringless_layout(layout)
+        else:
+            self.color_wheel.set_ringless_layout(layout)
 
         _ws = wheel_size if wheel_size is not None else self.width() - int(16 * scale)
-        _tbh = title_bar_height if title_bar_height is not None else _title_bar_content_offset(
-            self.title_bar, getattr(self, "main_layout", None)
+        _tbh = title_bar_height if title_bar_height is not None else (
+            _title_bar_content_offset(
+                self.title_bar, getattr(self, "main_layout", None)
+            )
+            + visible_picker_chrome_height(self)
         )
         self.preview_box.set_ringless_layout(
             layout, self.width(), _tbh, self.stack.height()
@@ -350,17 +388,37 @@ class LayoutMixin:
         sliders_height = 0
         if container is not None and container.isVisible():
             sliders_height = container.sizeHint().height()
-        return window_layout.resolve_window_layout(
-            window_width=self.width(),
+        pdrop = getattr(self, "picker_drop", None)
+        extra_top = pdrop.extra_top_height() if pdrop is not None else 0
+        extra_side = pdrop.extra_side_width() if pdrop is not None else 0
+        left_offset = pdrop.left_side_offset() if pdrop is not None else 0
+        res = window_layout.resolve_window_layout(
+            window_width=max(160, self.width() - extra_side),
             window_height=self.height(),
             margins=(margins.left(), margins.top(),
                      margins.right(), margins.bottom()),
-            title_height=_visible_title_bar_height(self.title_bar),
+            title_height=(
+                _visible_title_bar_height(self.title_bar)
+                + visible_picker_chrome_height(self)
+                + extra_top
+            ),
             sliders_height=sliders_height,
             spacing=int(4 * scale),
             ui_scale=scale,
             picker_minimum=self.stack.minimumSizeHint().height(),
         )
+        if left_offset > 0:
+            from dataclasses import replace as _replace
+            res = _replace(
+                res,
+                picker=res.picker.translated(left_offset, 0),
+                picker_circle=window_layout.Circle(
+                    res.picker_circle.x + left_offset,
+                    res.picker_circle.y,
+                    res.picker_circle.radius,
+                ),
+            )
+        return res
 
     def _picker_circles(self, layout=None):
         """Round picker areas in window coordinates: hue ring + LAB disc.
@@ -408,6 +466,10 @@ class LayoutMixin:
             max(16, int(wheel_size * factor)), title_offset, window_h,
             sliders_h, self.active_slot,
         )
+        pdrop = getattr(self, "picker_drop", None)
+        left_off = pdrop.left_side_offset() if pdrop is not None else 0
+        if left_off > 0:
+            preview.move(preview.x() + left_off, preview.y())
         if not circles:
             return 0.0
         self._anchor_preview_to_circle(preview, circles[0], bounds)
@@ -706,8 +768,12 @@ class LayoutMixin:
         # what used to make the drag stutter.
         self.apply_layout(dynamic_scale)
         
-        title_h = _visible_title_bar_height(self.title_bar)
-        title_offset = _title_bar_content_offset(self.title_bar, self.main_layout)
+        pdrop = getattr(self, "picker_drop", None)
+        extra_top = pdrop.extra_top_height() if pdrop is not None else 0
+        extra_side = pdrop.extra_side_width() if pdrop is not None else 0
+        picker_tab_h = visible_picker_chrome_height(self) + extra_top
+        title_h = _visible_title_bar_height(self.title_bar) + picker_tab_h
+        title_offset = _title_bar_content_offset(self.title_bar, self.main_layout) + picker_tab_h
         sliders_h = self.sliders_container.sizeHint().height()
         margins = self.main_layout.contentsMargins()
         
@@ -725,9 +791,10 @@ class LayoutMixin:
         # collapses. Capping it keeps the picker square the whole way through
         # and parks the surplus below, where the settle removes it.
         ringless_enabled = bool(getattr(self, "cfg", {}).get("hideHueRing", False))
+        eff_w = max(160, w - extra_side)
         if not ringless_enabled:
             square = window_layout.picker_square_height(
-                w, margins.left(), margins.right(), 0)
+                eff_w, margins.left(), margins.right(), 0)
             if self.stack.minimumHeight() != square:
                 self.stack.setMinimumHeight(square)
             if self.stack.maximumHeight() != square:
@@ -738,10 +805,13 @@ class LayoutMixin:
             # This restores legacy circle sizing/position when ringless is disabled,
             # and provides a baseline that ringless may override below.
             self._place_preview_box(layout, title_offset, h, sliders_h)
-            self.preview_box.raise_()
+            if pdrop is None or pdrop.center_shows_picker():
+                self.preview_box.raise_()
+            else:
+                self.preview_box.hide()
         else:
             square = window_layout.picker_square_height(
-                w, margins.left(), margins.right(), 0)
+                eff_w, margins.left(), margins.right(), 0)
             cb_h = max(1, round(30 * dynamic_scale))
             ringless_min_h = square + cb_h
             if self.stack.minimumHeight() != ringless_min_h:
@@ -810,18 +880,38 @@ class LayoutMixin:
                         slider.setDown(False)
                         is_slider_down = True
             
-            wheel_dragging = hasattr(self, 'color_wheel') and self.color_wheel.dragging
-            lab_dragging = hasattr(self, 'lab_square') and self.lab_square.dragging
+            wheel_dragging = hasattr(self, 'color_wheel') and bool(self.color_wheel.dragging)
+            for _wp in (getattr(self, 'wheel_panels', None) or {}).values():
+                if getattr(getattr(_wp, 'wheel', None), 'dragging', None):
+                    wheel_dragging = True
+            lab_dragging = hasattr(self, 'lab_square') and bool(self.lab_square.dragging)
+            flab_fn = getattr(self, '_floating_lab_squares', None)
+            for _sq in (flab_fn() if callable(flab_fn) else ()):
+                if getattr(_sq, 'dragging', False):
+                    lab_dragging = True
+            _flab_page = getattr(self, '_floating_lab_page', None)
+            if _flab_page is not None and getattr(getattr(_flab_page, 'lab_square', None), 'dragging', False):
+                lab_dragging = True
             
             if is_slider_down or wheel_dragging or lab_dragging:
                 if wheel_dragging:
                     try:
-                        self.color_wheel.mouseReleaseEvent(None)
+                        if hasattr(self, 'color_wheel') and self.color_wheel.dragging:
+                            self.color_wheel.mouseReleaseEvent(None)
+                        for _wp in (getattr(self, 'wheel_panels', None) or {}).values():
+                            if getattr(getattr(_wp, 'wheel', None), 'dragging', None):
+                                _wp.wheel.mouseReleaseEvent(None)
                     except Exception:
                         pass
                 if lab_dragging:
                     try:
-                        self.lab_square.mouseReleaseEvent(None)
+                        if hasattr(self, 'lab_square') and self.lab_square.dragging:
+                            self.lab_square.mouseReleaseEvent(None)
+                        for _sq in (flab_fn() if callable(flab_fn) else ()):
+                            if getattr(_sq, 'dragging', False):
+                                _sq.mouseReleaseEvent(None)
+                        if _flab_page is not None and getattr(getattr(_flab_page, 'lab_square', None), 'dragging', False):
+                            _flab_page.lab_square.mouseReleaseEvent(None)
                     except Exception:
                         pass
                 self.on_interaction_finished()
@@ -931,6 +1021,42 @@ class LayoutMixin:
             pass
         return False
 
+    def _floating_wheel_page_at(self, global_pos: QPoint | None = None,
+                                require_lab: bool = True):
+        """The floating wheel page under the cursor, if its LAB view is on."""
+        try:
+            if global_pos is None:
+                global_pos = QCursor.pos()
+            seen = set()
+            windows_of = getattr(self, "floating_windows", None)
+            windows = windows_of() if callable(windows_of) else {}
+            under = QApplication.widgetAt(global_pos)
+            top = under.window() if under is not None else None
+            ordered = sorted(
+                (windows or {}).values(),
+                key=lambda w: 0 if w is top else 1)
+            for window in ordered:
+                if id(window) in seen or not window.isVisible():
+                    continue
+                if under is not None and under.window() is not window:
+                    continue
+                seen.add(id(window))
+                try:
+                    page = window.panel(window.current_panel_id())
+                except RuntimeError:
+                    continue
+                if (page is None
+                        or not getattr(page, "is_floating_wheel_page", False)):
+                    continue
+                if require_lab and not getattr(page, "lab_enabled", True):
+                    continue
+                pos = page.mapFromGlobal(global_pos)
+                if page.rect().contains(pos):
+                    return page
+        except Exception:
+            pass
+        return None
+
     def _tab_toggle_hosts(self) -> list:
         """Every panel host whose tab stacks the local shortcut may switch.
 
@@ -953,8 +1079,30 @@ class LayoutMixin:
             hosts.append(host)
         return hosts
 
+    def _picker_tab_target(self, global_pos: QPoint):
+        """The wheel-page picker tab bar under *global_pos*, or None.
+
+        The LAB page is deliberately excluded: its LAB / OKLab tabs keep the
+        old behaviour and never take over the view-switch shortcut.
+        """
+        bar = getattr(self, "picker_tab_bar", None)
+        stack = getattr(self, "stack", None)
+        if bar is None or stack is None or stack.currentIndex() != 0:
+            return None
+        try:
+            if not bar.isVisible() or bar.count() < 2:
+                return None
+            under = QApplication.widgetAt(global_pos)
+            if under is not None and under is not bar and not bar.isAncestorOf(under):
+                return None
+            if not bar.rect().contains(bar.mapFromGlobal(global_pos)):
+                return None
+        except (RuntimeError, TypeError):
+            return None
+        return bar
+
     def _tab_toggle_target(self, global_pos: QPoint | None = None):
-        """The ``(host, tabs)`` pair under the cursor, or None.
+        """The (host, tabs) pair under the cursor, or None.
 
         Covers the whole tab stack — the header strip and the page showing
         below it — and only returns stacks with something to switch to (two
@@ -965,6 +1113,13 @@ class LayoutMixin:
         try:
             if global_pos is None:
                 global_pos = QCursor.pos()
+            # The picker's own wheel-module tabs behave like the slider tab
+            # stack: hovering the strip and pressing the local shortcut goes
+            # to the next module. Returned as (window, bar) so the caller can
+            # use the bar's advance_tab().
+            picker_bar = self._picker_tab_target(global_pos)
+            if picker_bar is not None:
+                return self, picker_bar
             under = QApplication.widgetAt(global_pos)
             top = under.window() if under is not None else None
             hosts = self._tab_toggle_hosts()
@@ -985,7 +1140,14 @@ class LayoutMixin:
         this as a precondition — with the cursor anywhere else the bound
         button has to keep passing through to the painting app untouched.
         """
+        if (self._floating_wheel_page_at(global_pos, require_lab=False)
+                is not None
+                and self._floating_wheel_page_at(global_pos) is None):
+            # LAB is disabled on this page: the local shortcut must pass
+            # through instead of silently switching a tab behind the cursor.
+            return False
         return (self._tab_toggle_target(global_pos) is not None
+                or self._floating_wheel_page_at(global_pos) is not None
                 or self._is_lab_toggle_zone(global_pos))
 
     def _run_local_view_shortcut(self, global_pos: QPoint | None = None) -> bool:
@@ -995,10 +1157,20 @@ class LayoutMixin:
         wheel ⇄ LAB. Both ride the one local shortcut: the region under the
         cursor decides which view switches.
         """
+        page = self._floating_wheel_page_at(global_pos)
+        if page is not None:
+            page.toggle_view()
+            print("[Hotkeys] Local shortcut: floating wheel/LAB")
+            return True
+        if self._floating_wheel_page_at(global_pos, require_lab=False) is not None:
+            return False
         target = self._tab_toggle_target(global_pos)
         if target is not None:
             host, tabs = target
-            if not host.advance_tab(tabs):
+            if host is self:
+                if not tabs.advance_tab():
+                    return False
+            elif not host.advance_tab(tabs):
                 return False
             print(f"[Hotkeys] Local shortcut: tab "
                   f"{tabs.currentIndex() + 1}/{tabs.count()}")
@@ -1284,6 +1456,11 @@ class LayoutMixin:
 
             # During an active drag the widgets blank the cursor themselves.
             wheel_dragging = hasattr(self, "color_wheel") and bool(self.color_wheel.dragging)
+            if not wheel_dragging:
+                for _wp in (getattr(self, "wheel_panels", None) or {}).values():
+                    if getattr(getattr(_wp, "wheel", None), "dragging", None):
+                        wheel_dragging = True
+                        break
             slider_down = False
             for _chan, (slider, _) in getattr(self, "slider_widgets", {}).items():
                 if slider.isSliderDown():
@@ -1292,6 +1469,21 @@ class LayoutMixin:
             lab_s = getattr(self, "lab_slider", None)
             if lab_s is not None and getattr(lab_s, "dragging", False):
                 slider_down = True
+            if not slider_down:
+                lab_sq = getattr(self, "lab_square", None)
+                if lab_sq is not None and getattr(lab_sq, "dragging", False):
+                    slider_down = True
+                flab_fn = getattr(self, "_floating_lab_squares", None)
+                for _sq in (flab_fn() if callable(flab_fn) else ()):
+                    if getattr(_sq, "dragging", False):
+                        slider_down = True
+                        break
+                _flab_page = getattr(self, "_floating_lab_page", None)
+                if _flab_page is not None and (
+                    getattr(getattr(_flab_page, "lab_square", None), "dragging", False)
+                    or getattr(getattr(_flab_page, "lab_slider", None), "dragging", False)
+                ):
+                    slider_down = True
             if wheel_dragging or slider_down:
                 _pen_debug("  dragging, blank")
                 self._force_cursor_shape(Qt.CursorShape.BlankCursor)
@@ -1319,7 +1511,10 @@ class LayoutMixin:
             # it is reliable even when Qt's mouse state is stale for pens.
             w = QApplication.widgetAt(global_pos)
             _pen_debug("  widgetAt ->", type(w).__name__ if w else None)
-            if w is None or self.window() != w.window():
+            top_win = w.window() if w is not None else None
+            floating_fn = getattr(self, "floating_windows", None)
+            floating_wins = set(floating_fn().values()) if callable(floating_fn) else set()
+            if w is None or (top_win != self.window() and top_win not in floating_wins):
                 _pen_debug("  not our window / none -> arrow")
                 self._force_cursor_shape(Qt.CursorShape.ArrowCursor)
                 return

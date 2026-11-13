@@ -135,6 +135,31 @@ def test_dpi_change_restores_logical_size_and_suppresses_height_settle(qapp):
     assert host.calls == 0  # 没有触发高度重置
 
 
+def _cleanup_window(w, qapp):
+    from core import global_hotkeys
+
+    global_hotkeys.unbind_all()
+    if hasattr(w, "foreground_timer"):
+        w.foreground_timer.stop()
+    if hasattr(w, "grayscale_overlay"):
+        w.grayscale_overlay.set_active(False)
+        close_fn = getattr(w.grayscale_overlay, "close", None)
+        if callable(close_fn):
+            close_fn()
+    if hasattr(w, "region_grayscale_overlay"):
+        w.region_grayscale_overlay.set_active(False)
+        close_fn = getattr(w.region_grayscale_overlay, "close", None)
+        if callable(close_fn):
+            close_fn()
+    if hasattr(w, "tray_icon"):
+        w.tray_icon.hide()
+    w.sync_thread.stop()
+    w.sync_thread.wait(500)
+    w.close()
+    w.deleteLater()
+    qapp.processEvents()
+
+
 def test_native_event_adapts_dpi_changed_rect(qapp):
     """Windows WM_DPICHANGED 消息到达时，根据用户设定的逻辑尺寸计算物理尺寸并改写建议矩形。"""
     import sys
@@ -165,9 +190,7 @@ def test_native_event_adapts_dpi_changed_rect(qapp):
         assert rect.right - rect.left == 400
         assert rect.bottom - rect.top == 875
     finally:
-        w.sync_thread.stop()
-        w.sync_thread.wait(500)
-        w.close()
+        _cleanup_window(w, qapp)
 
 
 
@@ -352,9 +375,7 @@ def test_wm_getdpiscaledsize_native_event(qapp):
         assert size.cx == int(round(320 * 1.5))   # 480
         assert size.cy == int(round(800 * 1.5))   # 1200
     finally:
-        w.sync_thread.stop()
-        w.sync_thread.wait(500)
-        w.close()
+        _cleanup_window(w, qapp)
 
 
 def test_multi_cycle_dpi_invariance(qapp):
@@ -388,6 +409,4 @@ def test_multi_cycle_dpi_invariance(qapp):
             # 内部保存的逻辑宽度必须零漂移
             assert w._user_logical_width == initial_user_w
     finally:
-        w.sync_thread.stop()
-        w.sync_thread.wait(500)
-        w.close()
+        _cleanup_window(w, qapp)

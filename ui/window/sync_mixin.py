@@ -91,6 +91,15 @@ class SyncMixin:
                 self._bg_source_space = "rgb"
                 self._bg_source_values = rgb_values
             self.preview_box.set_transparent(slot, False)
+            iter_previews = getattr(self, "_iter_floating_previews", None)
+            boxes = iter_previews() if callable(iter_previews) else getattr(self, "_floating_preview_boxes", ())
+            for box in boxes:
+                try:
+                    box.set_colors(QColor(self.preview_box.fg_color),
+                                   QColor(self.preview_box.bg_color))
+                    box.set_transparent(slot, False)
+                except RuntimeError:
+                    continue
             return
         self.current_rgb = (r, g, b)
         # Companion mode reports its own HSV: honour it so picking a
@@ -136,6 +145,13 @@ class SyncMixin:
             col = self.preview_box.bg_color
         self.active_slot = slot
         self.preview_box.update_slot_borders(slot)
+        iter_previews = getattr(self, "_iter_floating_previews", None)
+        boxes = iter_previews() if callable(iter_previews) else getattr(self, "_floating_preview_boxes", ())
+        for box in boxes:
+            try:
+                box.update_slot_borders(slot)
+            except RuntimeError:
+                continue
         # Rebuild the active slot's full Color and fan it out to every widget
         # (wheel, LAB, sliders, current_rgb, color_state).  `_project_color`
         # updates color_state.current as well, so later UI actions and the
@@ -178,6 +194,13 @@ class SyncMixin:
             else:
                 self._bg_transparent = False
         self.preview_box.set_transparent(slot, transparent)
+        iter_previews = getattr(self, "_iter_floating_previews", None)
+        boxes = iter_previews() if callable(iter_previews) else getattr(self, "_floating_preview_boxes", ())
+        for box in boxes:
+            try:
+                box.set_transparent(slot, transparent)
+            except RuntimeError:
+                continue
         if slot != self.active_slot:
             if slot == "fg":
                 self.select_fg_slot()
@@ -188,7 +211,7 @@ class SyncMixin:
     def on_sync_status_changed(self, mode, connected):
         self._sync_status = (mode, connected)
         # Optionally update title bar text or border to show connection status
-        mode_display = {"csp": "CSP", "sai": "SAI", "udm": "UDM", "ps": "PS", "companion": "手机"}.get(mode, mode.upper())
+        mode_display = {"csp": "CSP", "sai": "SAI", "udm": "UDM", "ps": "PS", "companion": "csp_c"}.get(mode, mode.upper())
         status_text = f"Colorink ({mode_display} {'✓' if connected else '×'})"
         self.title_bar.title_label.setText(status_text)
         if mode == "companion" and hasattr(self, 'settings_sidebar'):
@@ -259,7 +282,7 @@ class SyncMixin:
             else:
                 self.sync_thread.set_software_mode("companion")
             if hasattr(self, 'title_bar') and hasattr(self.title_bar, 'title_label'):
-                self.title_bar.title_label.setText("Colorink (手机 — 连接中...)")
+                self.title_bar.title_label.setText("Colorink (csp_c — 连接中...)")
         if hasattr(self, 'settings_sidebar'):
             self.settings_sidebar._refresh_companion_status()
             self.settings_sidebar._refresh_sync_status()
@@ -336,6 +359,12 @@ class SyncMixin:
             wheel = getattr(self, "color_wheel", None)
             if wheel is not None and getattr(wheel, "dragging", None):
                 is_dragging = True
+            if not is_dragging:
+                for p in (getattr(self, "wheel_panels", None) or {}).values():
+                    w = getattr(p, "wheel", None)
+                    if w is not None and getattr(w, "dragging", None):
+                        is_dragging = True
+                        break
         elif source == "lab":
             lab = getattr(self, "lab_square", None)
             if lab is not None and getattr(lab, "dragging", False):
@@ -343,6 +372,23 @@ class SyncMixin:
             lab_s = getattr(self, "lab_slider", None)
             if lab_s is not None and getattr(lab_s, "dragging", False):
                 is_dragging = True
+            if not is_dragging:
+                flab_fn = getattr(self, "_floating_lab_squares", None)
+                if callable(flab_fn):
+                    for sq in flab_fn():
+                        if getattr(sq, "dragging", False):
+                            is_dragging = True
+                            break
+                lab_page = getattr(self, "_floating_lab_page", None)
+                if lab_page is not None and (
+                    getattr(getattr(lab_page, "lab_square", None), "dragging", False)
+                    or getattr(getattr(lab_page, "lab_slider", None), "dragging", False)
+                ):
+                    is_dragging = True
+                for wpage in (getattr(self, "_floating_wheel_pages", None) or {}).values():
+                    if getattr(getattr(wpage, "lab_slider", None), "dragging", False):
+                        is_dragging = True
+                        break
         if is_dragging:
             return
         hsv_ov = None

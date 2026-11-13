@@ -13,17 +13,453 @@ from PyQt6.QtWidgets import QMenu, QPushButton
 from core import config
 from core.foreground import (
     _exe_matches_drawing_app,
+    _is_popup_menu_class,
     _resolve_process_exe,
     _title_matches_drawing_app,
     identify_drawing_app,
+    is_drawing_app_menu_open,
     resolve_auto_sync_mode,
 )
 from ui.lab_harmony import HARMONY_MODE_NAMES
+from ui.panels import registry
 from ui.widgets.picker_icon_button import PickerIconButton
-from ui.window.module_defs import _MODULE_DEFS, _MODULE_NAMES, _MODULE_ORDER
+from ui.window.module_defs import (
+    _LAB_VIZ_NAMES,
+    _MODULE_DEFS,
+    _MODULE_NAMES,
+    _MODULE_ORDER,
+    normalize_lab_visualizer_order,
+    normalize_wheel_module_order,
+    normalize_wheel_module_tabs,
+)
 
 
 class PickerActionsMixin:
+
+    def _init_picker_tab_bar(self):
+        """Wire the top picker tab bar for wheel-module and LAB/OKLab switching."""
+        tab_bar = getattr(self, "picker_tab_bar", None)
+        if tab_bar is None:
+            return
+        tab_bar.currentChanged.connect(self._on_picker_tab_changed)
+        tab_bar.tabMoved.connect(self._on_picker_tab_moved)
+        tab_bar.wheelGripDropped.connect(self._on_wheel_grip_dropped)
+        grip = getattr(self, "wheel_grip_bar", None)
+        if grip is not None:
+            grip.float_requested.connect(
+                lambda _pid: self._float_active_wheel_page())
+            grip.toggled.connect(
+                lambda _pid: self._float_active_wheel_page())
+            grip.menu_requested.connect(self._show_wheel_grip_menu)
+        _sync_tabs = getattr(self, "_sync_picker_tab_bar", None)
+        if callable(_sync_tabs):
+            _sync_tabs()
+
+    def _wheel_visible_keys(self) -> list[str]:
+        """Enabled module keys whose page is not currently floating."""
+        cfg = getattr(self, "cfg", {})
+        keys = normalize_wheel_module_tabs(
+            cfg.get("wheelModuleTabs"),
+            cfg.get("wheelModuleOrder"),
+            getattr(self, "_current_module", "hsv"),
+        )
+        windows = {}
+        windows_of = getattr(self, "floating_windows", None)
+        if callable(windows_of):
+            try:
+                windows = windows_of()
+            except Exception:
+                windows = {}
+        host = getattr(self, "panel_host", None)
+        pdrop = getattr(self, "picker_drop", None)
+        result = []
+        for key in keys:
+            panel_id = registry.wheel_panel_id(key)
+            if panel_id in windows:
+                continue
+            if host is not None:
+                try:
+                    if host.widget_for(panel_id) is not None:
+                        # Dragged into the shared slider host: it is a panel
+                        # there now, so it must not stay in the picker stack.
+                        continue
+                except RuntimeError:
+                    pass
+            if pdrop is not None and pdrop.owns_panel(panel_id):
+                continue
+            result.append(key)
+        return result
+
+    def _sync_wheel_stack(self) -> list[str]:
+        """Keep the wheel page stack in tab order; floating pages are absent."""
+        stack = getattr(self, "wheel_stack", None)
+        panels = getattr(self, "wheel_panels", None)
+        if stack is None or not panels:
+            return []
+        keys = self._wheel_visible_keys()
+        for key, panel in panels.items():
+            if key not in keys and stack.indexOf(panel) >= 0:
+                stack.removeWidget(panel)
+        for index, key in enumerate(keys):
+            panel = panels.get(key)
+            if panel is None:
+                continue
+            current = stack.indexOf(panel)
+            if current < 0:
+                stack.insertWidget(index, panel)
+            elif current != index:
+                stack.removeWidget(panel)
+                stack.insertWidget(index, panel)
+        active = str(getattr(self, "_current_module", "hsv")).lower()
+        target = active if active in keys else (keys[0] if keys else None)
+        if target is not None:
+            panels[target].show()
+            stack.setCurrentWidget(panels[target])
+        return keys
+
+    def _sync_wheel_grip(self) -> None:
+        """Show the grip strip for the docked wheel page or docked LAB page."""
+        from ui.lab_float import LAB_FLOAT_ID
+        grip = getattr(self, "wheel_grip_bar", None)
+        if grip is None:
+            return
+        cfg = getattr(self, "cfg", {})
+        stack = getattr(self, "stack", None)
+        on_wheel = stack is not None and stack.currentIndex() == 0
+        on_lab = stack is not None and stack.currentIndex() == 1
+        active = str(getattr(self, "_current_module", "hsv")).lower()
+        lab_visible = (on_lab and getattr(self, "pane_lab", None) is not None
+                       and self.pane_lab.isVisible())
+        show = (bool(cfg.get("panelDrag", False))
+                and ((on_wheel and active in self._wheel_visible_keys())
+                     or lab_visible))
+        if show:
+            if on_lab:
+                mode = str(cfg.get("visualizerMode", "lab")).lower()
+                grip.panel_id = LAB_FLOAT_ID
+                grip.set_title("OKLab" if mode == "oklab" else "LAB")
+            else:
+                grip.panel_id = registry.wheel_panel_id(active)
+                grip.set_title(_MODULE_NAMES.get(active, active.upper()))
+        grip.setVisible(show)
+
+    def _sync_picker_tab_bar(self) -> bool:
+        """Populate and show/hide the top tabs for the current picker page."""
+        tab_bar = getattr(self, "picker_tab_bar", None)
+        if tab_bar is None:
+            return False
+        cfg = getattr(self, "cfg", {})
+        show_tabs = bool(cfg.get("showModuleSwitchButton", True))
+        stack = getattr(self, "stack", None)
+        on_lab = stack is not None and stack.currentIndex() == 1
+        items = []
+        active_key = ""
+        if on_lab:
+            # LAB/OKLab switching keeps its existing click/scroll behaviour.
+            order = normalize_lab_visualizer_order(cfg.get("labVisualizerOrder"))
+            items = [(k, _LAB_VIZ_NAMES[k]) for k in order]
+            active_key = str(cfg.get("visualizerMode", "lab")).lower()
+            if active_key not in _LAB_VIZ_NAMES:
+                active_key = "lab"
+        else:
+            visible = self._sync_wheel_stack()
+            active_key = str(
+                getattr(self, "_current_module", cfg.get("colorSpaceModule", "hsv"))
+            ).lower()
+            if active_key not in visible and visible:
+                # The active module was floated or switched off: follow the
+                # first page that is still docked. _apply_module is re-entrant
+                # here only once — the second pass sees active in visible.
+                if hasattr(self, "_apply_module"):
+                    self._apply_module(visible[0])
+                    visible = self._wheel_visible_keys()
+                    active_key = str(getattr(self, "_current_module", "hsv")).lower()
+            if active_key not in visible and visible:
+                active_key = visible[0]
+            items = [(k, _MODULE_NAMES[k]) for k in visible]
+        tab_bar.set_tabs(items, active_key)
+        host_owned = self._host_owned_wheel() if not on_lab else False
+        show_bar = show_tabs and (bool(items) or host_owned)
+        was_visible = not tab_bar.isHidden()
+        tab_bar.setVisible(show_bar)
+        gap = getattr(self, "picker_top_gap", None)
+        if gap is not None:
+            gap.setVisible(show_bar)
+        self._sync_wheel_grip()
+        self._sync_main_picker_visibility()
+        return was_visible != tab_bar.isVisible()
+
+    def _host_owned_wheel(self) -> bool:
+        host = getattr(self, "panel_host", None)
+        if host is None:
+            return False
+        cfg = getattr(self, "cfg", {}) or {}
+        try:
+            return any(
+                host.widget_for(registry.wheel_panel_id(k)) is not None
+                for k in normalize_wheel_module_tabs(
+                    cfg.get("wheelModuleTabs"),
+                    cfg.get("wheelModuleOrder"),
+                    "hsv"))
+        except RuntimeError:
+            return False
+
+    def _sync_main_picker_visibility(self) -> None:
+        """When every wheel page is docked elsewhere, collapse the blank top.
+
+        Dragging all colour pages into the slider host or into floating
+        windows used to leave an empty square at the top of the main window.
+        The picker is a view of the wheel pages, so when none are here it
+        disappears; bringing one back restores it.
+        """
+        stack = getattr(self, "stack", None)
+        if stack is None:
+            return
+        on_lab = stack.currentIndex() == 1
+        show = on_lab or bool(self._wheel_visible_keys())
+        container = getattr(self, "picker_tab_container", None)
+        preview = getattr(self, "preview_box", None)
+        tab_bar = getattr(self, "picker_tab_bar", None)
+        grip = getattr(self, "wheel_grip_bar", None)
+        if not show:
+            if not stack.isHidden():
+                stack.hide()
+            stack.setMinimumHeight(0)
+            stack.setMaximumHeight(0)
+            if container is not None:
+                # If the pages live in the slider host, keep the (empty) tab
+                # strip as the drop target that brings them back. With all
+                # pages floating there is nothing to drop on, so hide it.
+                keep_return_strip = (self._host_owned_wheel()
+                                     and tab_bar is not None
+                                     and not tab_bar.isHidden())
+                container.setVisible(keep_return_strip)
+            if preview is not None:
+                preview.hide()
+        else:
+            if stack.isHidden():
+                stack.show()
+                stack.setMaximumHeight(16777215)
+            if preview is not None:
+                preview.show()
+            if container is not None:
+                has_chrome = ((tab_bar is not None and not tab_bar.isHidden())
+                              or (grip is not None and not grip.isHidden())
+                              or (getattr(self, "picker_top_gap", None) is not None
+                                  and not self.picker_top_gap.isHidden()))
+                container.setVisible(has_chrome)
+        self._adjust_content_height()
+
+    def _on_picker_tab_changed(self, index: int) -> None:
+        tab_bar = getattr(self, "picker_tab_bar", None)
+        if tab_bar is None or index < 0:
+            return
+        raw_key = tab_bar.tabData(index)
+        if not raw_key:
+            return
+        key = str(raw_key).lower()
+        stack = getattr(self, "stack", None)
+        on_lab = stack is not None and stack.currentIndex() == 1
+        if on_lab:
+            if key != self.cfg.get("visualizerMode", "lab"):
+                self.set_lab_visualizer_mode(key)
+        else:
+            if key != getattr(self, "_current_module", None):
+                self._apply_module(key)
+
+    def _on_picker_tab_moved(self, _from_idx: int, _to_idx: int) -> None:
+        tab_bar = getattr(self, "picker_tab_bar", None)
+        if tab_bar is None:
+            return
+        visible_keys = tab_bar.tab_keys()
+        stack = getattr(self, "stack", None)
+        on_lab = stack is not None and stack.currentIndex() == 1
+        if on_lab:
+            self.cfg["labVisualizerOrder"] = normalize_lab_visualizer_order(visible_keys)
+            self._schedule_module_config_save()
+            return
+        full_order = normalize_wheel_module_order(self.cfg.get("wheelModuleOrder"))
+        vis_set = set(visible_keys)
+        vis_iter = iter(visible_keys)
+        merged = [next(vis_iter) if k in vis_set else k for k in full_order]
+        self.cfg["wheelModuleOrder"] = normalize_wheel_module_order(merged)
+        self.cfg["wheelModuleTabs"] = normalize_wheel_module_tabs(
+            self.cfg.get("wheelModuleTabs"),
+            self.cfg["wheelModuleOrder"],
+            getattr(self, "_current_module", "hsv"),
+        )
+        self._schedule_module_config_save()
+        self._sync_wheel_stack()
+        self._sync_wheel_grip()
+        if hasattr(self, "settings_sidebar") and self.settings_sidebar.isVisible():
+            self.settings_sidebar.notify_module_changed()
+
+    def _on_wheel_grip_dropped(self, panel_id: str, index: int) -> None:
+        """A wheel grip was dropped on the tab strip: reorder that module."""
+        stack = getattr(self, "stack", None)
+        if stack is None or stack.currentIndex() != 0:
+            return
+        key = registry.wheel_panel_key(panel_id)
+        tab_bar = getattr(self, "picker_tab_bar", None)
+        if key is None or tab_bar is None:
+            return
+        host = getattr(self, "panel_host", None)
+        if host is not None:
+            try:
+                owned = host.widget_for(panel_id) is not None
+            except RuntimeError:
+                owned = False
+            if owned:
+                # It was dragged into the shared slider host. Dropping its
+                # grip on the strip brings the page back to the picker.
+                from ui.panels import rearrange
+                tree = host.tree()
+                new_tree = rearrange.remove_panel(tree, panel_id)
+                if new_tree != tree:
+                    host.set_tree(new_tree)
+                    record = getattr(self, "save_panel_layout", None)
+                    if callable(record):
+                        record(new_tree)
+                    config.save_hotkey_config(self.cfg)
+                    self.refresh_slider_visibility_and_order()
+                    self._sync_picker_tab_bar()
+                return
+        pdrop = getattr(self, "picker_drop", None)
+        if pdrop is not None and pdrop.owns_panel(panel_id):
+            pdrop.remove_panel(panel_id)
+            config.save_hotkey_config(self.cfg)
+            self.refresh_slider_visibility_and_order()
+            self._sync_picker_tab_bar()
+            return
+        keys = tab_bar.tab_keys()
+        if key not in keys:
+            return
+        keys.remove(key)
+        index = max(0, min(int(index), len(keys)))
+        keys.insert(index, key)
+        full_order = normalize_wheel_module_order(self.cfg.get("wheelModuleOrder"))
+        vis_set = set(keys)
+        vis_iter = iter(keys)
+        merged = [next(vis_iter) if k in vis_set else k for k in full_order]
+        self.cfg["wheelModuleOrder"] = normalize_wheel_module_order(merged)
+        self.cfg["wheelModuleTabs"] = normalize_wheel_module_tabs(
+            self.cfg.get("wheelModuleTabs"),
+            self.cfg["wheelModuleOrder"],
+            key,
+        )
+        self._schedule_module_config_save()
+        self._apply_module(key)
+        if hasattr(self, "settings_sidebar") and self.settings_sidebar.isVisible():
+            self.settings_sidebar.notify_module_changed()
+
+    def _float_active_wheel_page(self) -> bool:
+        """Tear off the wheel page currently shown (grip drag / double-click)."""
+        stack = getattr(self, "stack", None)
+        if stack is None:
+            return False
+        if stack.currentIndex() == 1:
+            float_lab = getattr(self, "float_lab_view", None)
+            return bool(float_lab()) if callable(float_lab) else False
+        if stack.currentIndex() != 0:
+            return False
+        key = str(getattr(self, "_current_module", "")).lower()
+        if key not in getattr(self, "wheel_panels", {}):
+            return False
+        float_wheel = getattr(self, "float_wheel_module", None)
+        if not callable(float_wheel):
+            return False
+        return bool(float_wheel(key))
+
+    def _show_wheel_grip_menu(self, _panel_id=None, global_pos=None) -> None:
+        """Right-click on the wheel grip: the same shortcuts as sliders."""
+        from PyQt6.QtWidgets import QMenu
+        popup = QMenu(self)
+        float_action = popup.addAction("浮出为独立窗口")
+        stack = getattr(self, "stack", None)
+        on_lab = stack is not None and stack.currentIndex() == 1
+        reset_action = None if on_lab else popup.addAction("复位色图标签顺序")
+        picked = popup.exec(global_pos) if global_pos is not None else popup.exec()
+        if picked == float_action:
+            self._float_active_wheel_page()
+        elif reset_action is not None and picked == reset_action:
+            self.cfg["wheelModuleOrder"] = list(_MODULE_ORDER)
+            self.cfg["wheelModuleTabs"] = list(_MODULE_ORDER)
+            self._schedule_module_config_save()
+            self._sync_picker_tab_bar()
+
+    def _sync_floating_wheel_chrome(self) -> None:
+        """Push preview visibility/theme changes into open colour-map windows."""
+        pages = getattr(self, "_floating_wheel_pages", None)
+        if not pages:
+            return
+        cfg = getattr(self, "cfg", {}) or {}
+        chrome = getattr(self, "_floating_chrome", None)
+        for page in list(pages.values()):
+            try:
+                page.apply_visibility_defaults()
+                page.sync_lab_settings()
+                page.preview.position_mode = cfg.get(
+                    "previewBoxPosition", "top-left")
+                page.sync_from_owner()
+                if chrome is not None:
+                    page.apply_chrome(chrome)
+            except RuntimeError:
+                continue
+        lab_page = getattr(self, "_floating_lab_page", None)
+        if lab_page is not None:
+            try:
+                lab_page.sync_from_owner()
+                if chrome is not None:
+                    lab_page.apply_chrome(chrome)
+            except RuntimeError:
+                pass
+
+    def set_lab_visualizer_mode(self, mode: str) -> None:
+        """Switch the LAB visualizer between 'lab' and 'oklab'."""
+        mode = "oklab" if str(mode).lower() == "oklab" else "lab"
+        self.cfg["visualizerMode"] = mode
+        self._schedule_module_config_save()
+        if hasattr(self, "lab_square"):
+            self.lab_square.set_render_mode(mode)
+            r, g, b = getattr(self, "current_rgb", (255, 255, 255))
+            self.lab_square.set_color(r, g, b, block_signals=True)
+            if hasattr(self, "lab_slider") and self.lab_slider is not None:
+                self.lab_slider.set_lightness(self.lab_square.L)
+            lab_slider_column = getattr(self, "lab_slider_column", None)
+            if (lab_slider_column is not None and lab_slider_column.isVisible()
+                    and hasattr(self, "_schedule_lab_gamut_range")):
+                self._schedule_lab_gamut_range(50)
+        sync_lab = getattr(self, "_sync_floating_lab_settings", None)
+        if callable(sync_lab):
+            sync_lab()
+        _sync_tabs = getattr(self, "_sync_picker_tab_bar", None)
+        if callable(_sync_tabs):
+            _sync_tabs()
+        self._sync_settings_sidebar_lab_controls()
+        self.update()
+
+    def _sync_floating_lab_settings(self) -> None:
+        pages = getattr(self, "_floating_wheel_pages", None) or {}
+        for page in list(pages.values()):
+            try:
+                page.sync_lab_settings()
+                page._sync_lab_from_owner()
+            except RuntimeError:
+                continue
+        lab_page = getattr(self, "_floating_lab_page", None)
+        if lab_page is not None:
+            try:
+                lab_page.sync_lab_settings()
+                lab_page._sync_lab_from_owner()
+                window = lab_page.window()
+                mode = str(self.cfg.get("visualizerMode", "lab")).lower()
+                title = "OKLab" if mode == "oklab" else "LAB"
+                if getattr(window, "_title_override", None) != title:
+                    window._title_override = title
+                    window._update_window_title()
+            except (RuntimeError, AttributeError):
+                pass
+
 
     def _init_module_button(self):
         """Create a floating button next to ⊙/△ to cycle HSV→HLS→LCH modules."""
@@ -87,6 +523,9 @@ class PickerActionsMixin:
             self._sync_ringless_mode()
         else:
             self._refit_preview_box()
+        sync_lab = getattr(self, "_sync_floating_lab_settings", None)
+        if callable(sync_lab):
+            sync_lab()
         self._update_lab_shape_button()
         self._sync_settings_sidebar_lab_controls()
         self.update()
@@ -98,6 +537,9 @@ class PickerActionsMixin:
         self.cfg["labHarmonyMode"] = mode
         config.save_hotkey_config(self.cfg)
         self.lab_square.set_harmony_mode(mode)
+        sync_lab = getattr(self, "_sync_floating_lab_settings", None)
+        if callable(sync_lab):
+            sync_lab()
         self._update_lab_harmony_button()
         self._sync_settings_sidebar_lab_controls()
         self.update()
@@ -137,7 +579,11 @@ class PickerActionsMixin:
         show_lab_shape_btn = self.cfg.get("showLabShapeButton", True)
         show_lab_harmony_btn = self.cfg.get("showLabHarmonyButton", True)
         if hasattr(self, "pane_wheel"):
-            self.pane_wheel.set_module_slot_reserved(show_module)
+            has_mod_btn = hasattr(self, "btn_module") and self.btn_module is not None
+            self.pane_wheel.set_module_slot_reserved(show_module if has_mod_btn else False)
+        _sync_tabs = getattr(self, "_sync_picker_tab_bar", None)
+        if callable(_sync_tabs):
+            _sync_tabs()
         if hasattr(self, "pane_lab"):
             # The LAB pane keeps its shape toggle + harmony menu visible even
             # when the wheel module button is hidden, so always reserve the slot.
@@ -183,6 +629,19 @@ class PickerActionsMixin:
         if hasattr(self, "pane_lab"):
             self.pane_lab._reposition_mode_button()
 
+    def toggle_lab_global(self):
+        """The system-wide LAB shortcut: main pane plus opted-in floats."""
+        self.toggle_picker_mode()
+        stack = getattr(self, "stack", None)
+        target = "lab" if (stack is not None and stack.currentIndex() == 1) else "wheel"
+        pages = getattr(self, "_floating_wheel_pages", None) or {}
+        for page in list(pages.values()):
+            try:
+                if page.follow_global_lab and page.lab_enabled:
+                    page.set_view_mode(target)
+            except RuntimeError:
+                continue
+
     def toggle_picker_mode(self):
         """Switch picker panes without re-running the full theme/layout pass."""
         new_index = (self.stack.currentIndex() + 1) % 2
@@ -219,8 +678,14 @@ class PickerActionsMixin:
                 self.color_wheel.set_color(r, g, b, block_signals=True)
             else:
                 self.color_wheel.update()
+            sync_page = getattr(self, "_sync_wheel_page", None)
+            if callable(sync_page):
+                sync_page(self.color_wheel)
             if hasattr(self, "_schedule_lab_prerender"):
                 self._schedule_lab_prerender(50)
+        adjust = getattr(self, "_adjust_content_height", None)
+        if callable(adjust):
+            adjust()
         self.update()
 
     def _show_settings_window(self):
@@ -280,13 +745,28 @@ class PickerActionsMixin:
         # Persist and reflow on coalesced timers: rapid clicks update the wheel
         # and button immediately, while one final layout pass handles the burst.
         self._schedule_module_config_save()
-        # Update wheel mode
+        # Switch the page's own wheel. Each module keeps a separate wheel so a
+        # floating page does not have to share one with the docked view.
         wheel_mode = _MODULE_DEFS[module_name]["wheel"]
-        self.color_wheel.set_wheel_mode(wheel_mode)
+        panel = getattr(self, "wheel_panels", {}).get(module_name)
+        if panel is not None:
+            self.color_wheel = panel.wheel
+            self.color_wheel.set_wheel_mode(wheel_mode)
+            sync_page = getattr(self, "_sync_wheel_page", None)
+            if callable(sync_page):
+                sync_page(self.color_wheel)
+        else:
+            self.color_wheel.set_wheel_mode(wheel_mode)
         self.color_wheel.schedule_slice_prewarm(350)
         self._schedule_module_layout_refresh()
-        # Update module button label
+        # Update module button label & the page stack
         self._update_module_button_label()
+        sync_stack = getattr(self, "_sync_wheel_stack", None)
+        if callable(sync_stack):
+            sync_stack()
+        _sync_tabs = getattr(self, "_sync_picker_tab_bar", None)
+        if callable(_sync_tabs):
+            _sync_tabs()
         # Notify sidebar if it's open
         if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
             self.settings_sidebar.notify_module_changed()
@@ -364,6 +844,7 @@ class PickerActionsMixin:
             host.set_allow_tab_drops(bool(self.cfg.get("slidersTabs", False)))
             mounted = self._slider_column_tree_for(groups)
             host.set_tree(mounted)
+        desired_visibility: dict[str, bool] = {}
         for g in groups:
             if g == "History":
                 visible = self.cfg.get("showSlidersHistory", True)
@@ -371,9 +852,15 @@ class PickerActionsMixin:
                 visible = False  # force-hide: not in this module's set
             else:
                 visible = self.cfg.get(f"showSliders{g}", True)
-            self.slider_containers[g].setVisible(visible)
+            desired_visibility[g] = bool(visible)
+            cont = self.slider_containers[g]
+            # Never show a parentless container when a panel_host manages layout
+            # (e.g. while owned/about to be mounted by pickerDocks): showing a
+            # parentless QWidget promotes it into a top-level HWND at (0, 0).
+            if not visible or host is None or cont.parentWidget() is not None:
+                cont.setVisible(visible)
             if host is None:
-                self.sliders_layout.addWidget(self.slider_containers[g])
+                self.sliders_layout.addWidget(cont)
 
         # An empty column must take no room at all: with every panel torn
         # off — or with only switched-off groups left in it — its margins and
@@ -386,6 +873,15 @@ class PickerActionsMixin:
             visible = host.visible_panels()
             container.setVisible(bool(visible))
 
+        pdrop = getattr(self, "picker_drop", None)
+        if pdrop is not None:
+            pdrop.sync_docks(remount=True)
+            if host is not None:
+                for g, visible in desired_visibility.items():
+                    cont = self.slider_containers[g]
+                    if cont.parentWidget() is not None or not visible:
+                        cont.setVisible(visible)
+
         # Record what was actually mounted, so a drag-reorder survives a
         # restart. Without a host there is nothing assembled to record, and
         # the mixin falls back to the derived column.
@@ -396,6 +892,11 @@ class PickerActionsMixin:
         refresh_floating = getattr(self, "refresh_floating_panels_settings", None)
         if callable(refresh_floating):
             refresh_floating()
+
+        # The picker grip follows the same 面板抓手 switch as the sliders.
+        _sync_tabs = getattr(self, "_sync_picker_tab_bar", None)
+        if callable(_sync_tabs):
+            _sync_tabs()
 
         # Recalculate layout geometries since height changed
         self.update_geometries()
@@ -445,8 +946,17 @@ class PickerActionsMixin:
         if not callable(seed):
             return derived
         saved = store.load_from(self.cfg, seed())
-        if set(saved.panels()) == set(derived.panels()):
+        allowed = getattr(self, "_saved_panel_layout_allowed", None)
+        if callable(allowed):
+            if allowed(saved, derived):
+                return saved
+        elif set(saved.panels()) == set(derived.panels()):
             return saved
+        from ui.window.picker_drop import _subtree_without, picker_dock_panel_ids
+        dock_panels = picker_dock_panel_ids(self.cfg)
+        if dock_panels:
+            trimmed = _subtree_without(derived, dock_panels)
+            return trimmed if trimmed is not None else dock.Split(dock.VERTICAL, ())
         return derived
 
     def _slider_groups_in_layout_order(self):
@@ -513,16 +1023,19 @@ class PickerActionsMixin:
         self.foreground_timer = QTimer(self)
         self.foreground_timer.setInterval(100)
         self.foreground_timer.timeout.connect(self.check_foreground_window)
-        # Only poll while either onlyShowInCsp is enabled OR auto sync switching is active
+        # Poll while onlyShowInCsp, hideOnPopupMenu, or auto sync switching is active
         is_auto_sync = (self.cfg.get("syncSoftware", "auto") == "auto")
-        if self.cfg.get("onlyShowInCsp", False) or is_auto_sync:
+        if (self.cfg.get("onlyShowInCsp", False)
+                or self.cfg.get("hideOnPopupMenu", False)
+                or is_auto_sync):
             self.foreground_timer.start()
             self.check_foreground_window()
 
     def check_foreground_window(self):
         only_show_in_csp = bool(self.cfg.get("onlyShowInCsp", False))
+        hide_on_popup_menu = bool(self.cfg.get("hideOnPopupMenu", False))
         is_auto_sync = bool(self.cfg.get("syncSoftware", "auto") == "auto")
-        if not only_show_in_csp and not is_auto_sync:
+        if not only_show_in_csp and not hide_on_popup_menu and not is_auto_sync:
             return
 
         try:
@@ -533,7 +1046,9 @@ class PickerActionsMixin:
 
         hwnd = win32gui.GetForegroundWindow()
         is_drawing_active = False
+        tid = 0
         pid = 0
+        win_class = ""
         detected_app = None
 
         if hwnd:
@@ -548,7 +1063,7 @@ class PickerActionsMixin:
                 win_class = ""
 
             try:
-                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                tid, pid = win32process.GetWindowThreadProcessId(hwnd)
             except Exception:
                 pass
 
@@ -573,6 +1088,8 @@ class PickerActionsMixin:
             )
             if detected_app is not None:
                 is_drawing_active = True
+                if pid:
+                    self._last_drawing_pid = pid
 
         # A foreground window owned by this process (main window, settings
         # window or picker overlay) means the user is interacting with us.
@@ -605,8 +1122,43 @@ class PickerActionsMixin:
                     if callable(maybe_prompt):
                         maybe_prompt()
 
-        if only_show_in_csp:
-            should_be_visible = is_drawing_active or is_our_focused
+        menu_open = False
+        if hide_on_popup_menu and not is_our_focused:
+            # Never treat Colorink's own active QMenu popup as a drawing-app menu
+            app_has_popup = False
+            try:
+                from PyQt6.QtWidgets import QApplication
+                app = QApplication.instance()
+                if app is not None and app.activePopupWidget() is not None:
+                    app_has_popup = True
+            except Exception:
+                pass
+            if not app_has_popup:
+                last_drawing_pid = getattr(self, "_last_drawing_pid", None)
+                same_drawing_pid = bool(pid and last_drawing_pid and pid == last_drawing_pid)
+                is_menu_fg = bool(
+                    hwnd
+                    and _is_popup_menu_class(win_class, same_process=same_drawing_pid)
+                    and (not pid or same_drawing_pid or win_class.strip().lower() == "#32768")
+                )
+                probe_pid = pid or (last_drawing_pid if not hwnd else 0)
+                if is_drawing_active or is_menu_fg or (not hwnd and last_drawing_pid):
+                    menu_open = is_drawing_app_menu_open(
+                        hwnd,
+                        tid=tid,
+                        pid=probe_pid,
+                        win32gui_module=win32gui,
+                        win32process_module=win32process,
+                    )
+
+        if only_show_in_csp or hide_on_popup_menu:
+            if only_show_in_csp:
+                should_be_visible = is_drawing_active or is_our_focused
+            else:
+                should_be_visible = True
+
+            if hide_on_popup_menu and menu_open and not is_our_focused:
+                should_be_visible = False
 
             # Keep the window up during an active color pick
             picker = getattr(self, "picker_overlay", None)
@@ -615,13 +1167,27 @@ class PickerActionsMixin:
 
             # If follow_mouse_active is enabled and the window is visible, avoid auto-hiding it.
             if (getattr(self, "follow_mouse_active", False) and self.isVisible()
-                    and not only_show_in_csp):
+                    and not only_show_in_csp
+                    and not (hide_on_popup_menu and menu_open)):
                 should_be_visible = True
 
             if should_be_visible:
                 # 用户手动隐藏后不强制显示；再次手动显示时清除 _user_hidden。
                 if not self.isVisible() and not getattr(self, "_user_hidden", False):
-                    self.show()
+                    # Preserve drawing-app focus when auto-restoring the palette
+                    has_attr_api = hasattr(self, "testAttribute") and hasattr(self, "setAttribute")
+                    prev_no_activate = (
+                        self.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+                        if has_attr_api
+                        else None
+                    )
+                    if has_attr_api and not prev_no_activate:
+                        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+                    try:
+                        self.show()
+                    finally:
+                        if has_attr_api and prev_no_activate is False:
+                            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
                     self.raise_()
                 self.auto_hidden = False
             else:
@@ -701,10 +1267,14 @@ class PickerActionsMixin:
         self.update_window_flags()
         self.update_no_focus_policies()
 
-        # Keep the foreground tracker running while onlyShowInCsp or auto sync is on
+        # Keep the foreground tracker running while onlyShowInCsp, hideOnPopupMenu, or auto sync is on
         fg_timer = getattr(self, "foreground_timer", None)
         is_auto_sync = (self.cfg.get("syncSoftware", "auto") == "auto")
-        need_tracker = bool(self.cfg.get("onlyShowInCsp", False) or is_auto_sync)
+        need_tracker = bool(
+            self.cfg.get("onlyShowInCsp", False)
+            or self.cfg.get("hideOnPopupMenu", False)
+            or is_auto_sync
+        )
         if need_tracker:
             if fg_timer is not None and not fg_timer.isActive():
                 fg_timer.start()
@@ -715,13 +1285,16 @@ class PickerActionsMixin:
             if fg_timer is not None:
                 fg_timer.stop()
 
-        # Restore visibility if onlyShowInCsp is turned off while auto_hidden
-        if not self.cfg.get("onlyShowInCsp", False):
+        # Restore visibility if onlyShowInCsp and hideOnPopupMenu are turned off while auto_hidden
+        if not self.cfg.get("onlyShowInCsp", False) and not self.cfg.get("hideOnPopupMenu", False):
             if getattr(self, "auto_hidden", False) and not getattr(self, "_user_hidden", False):
                 show_fn = getattr(self, "show", None)
                 if callable(show_fn):
                     show_fn()
                 self.auto_hidden = False
+                sync_floating = getattr(self, "set_floating_foreground_visible", None)
+                if callable(sync_floating):
+                    sync_floating(True)
         
         # Update active software mode in thread
         mode = self.cfg.get("syncSoftware", "auto")
@@ -779,7 +1352,8 @@ class PickerActionsMixin:
             # individual toggles were changed
             self.refresh_slider_visibility_and_order()
 
-        self.color_wheel.reload_config()
+        for _wheel_panel in getattr(self, "wheel_panels", {}).values():
+            _wheel_panel.wheel.reload_config()
 
         # Update lab visualizer mode. The plane's own axis limit is owned by
         # LabSquare.set_render_mode (110.0 / 0.3); this used to also write a
@@ -787,22 +1361,41 @@ class PickerActionsMixin:
         # oklab value (0.4) disagreed with the real limit.
         viz_mode = self.cfg.get("visualizerMode", "lab")
         if hasattr(self, 'lab_square'):
+            old_viz_mode = getattr(self.lab_square, "render_mode", "lab")
             self.lab_square.set_render_mode(viz_mode)
+            if old_viz_mode != viz_mode and hasattr(self, "current_rgb"):
+                r, g, b = self.current_rgb
+                self.lab_square.set_color(r, g, b, block_signals=True)
+                if hasattr(self, "lab_slider") and self.lab_slider is not None:
+                    self.lab_slider.set_lightness(self.lab_square.L)
+                lab_slider_column = getattr(self, "lab_slider_column", None)
+                if (lab_slider_column is not None and lab_slider_column.isVisible()
+                        and hasattr(self, "_schedule_lab_gamut_range")):
+                    self._schedule_lab_gamut_range(50)
             self.lab_square.set_shape(self.cfg.get("labViewShape", "square"))
             self.lab_square.set_harmony_mode(self.cfg.get("labHarmonyMode", "analogous"))
             self._update_lab_shape_button()
             self._update_lab_harmony_button()
+        sync_lab = getattr(self, "_sync_floating_lab_settings", None)
+        if callable(sync_lab):
+            sync_lab()
         if hasattr(self, 'pane_lab'):
             self.pane_lab.set_show_checkerboard(self.cfg.get("showLabCheckerboard", True))
 
-        # Update module button visibility
+        # Update module button / tab bar visibility
         if hasattr(self, 'btn_module'):
             show_btn = self.cfg.get("showModuleSwitchButton", True)
             self.btn_module.setVisible(show_btn)
             self._update_module_button_label()
+        _sync_tabs = getattr(self, "_sync_picker_tab_bar", None)
+        if callable(_sync_tabs):
+            _sync_tabs()
 
         self.preview_box.position_mode = self.cfg.get("previewBoxPosition", "top-left")
         self.apply_theme()
+        _sync_float = getattr(self, "_sync_floating_wheel_chrome", None)
+        if callable(_sync_float):
+            _sync_float()
         
         # Apply scaling zoom factor only if the target scale configuration has changed
         target_scale = self.cfg.get("uiScale", 100)
@@ -892,6 +1485,8 @@ class PickerActionsMixin:
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, enabled)
 
         self.setFocusPolicy(policy)
+        for _wheel_panel in getattr(self, "wheel_panels", {}).values():
+            _wheel_panel.wheel.setFocusPolicy(policy)
         if hasattr(self, 'color_wheel'):
             self.color_wheel.setFocusPolicy(policy)
         if hasattr(self, 'lab_square'):

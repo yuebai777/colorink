@@ -1176,6 +1176,17 @@ class AppearancePanelMixin:
             self.cb_only_drawing
         ))
 
+        self.cb_hide_on_menu = QCheckBox(i18n.tr("下拉菜单展开时自动隐藏"))
+        self.cb_hide_on_menu.setToolTip(
+            i18n.tr("开启后，在 CSP 等绘画软件点开顶部下拉菜单、右键菜单或下拉列表时自动隐藏色环与浮窗，避免遮挡菜单项")
+        )
+        self.cb_hide_on_menu.stateChanged.connect(self.save_settings)
+        cl_focus.addWidget(self._make_setting_row(
+            i18n.tr("下拉菜单展开时自动隐藏"),
+            i18n.tr("绘画软件展开顶部菜单或右键下拉菜单时临时隐藏面板，关闭菜单后自动恢复"),
+            self.cb_hide_on_menu
+        ))
+
         page_window.addWidget(card_focus)
 
         # ── Card 2: 窗口显示与锁定 ──
@@ -1329,6 +1340,41 @@ class AppearancePanelMixin:
         cl_quick.addWidget(lbl_filter_hint)
         page_filter.addWidget(card_quick)
 
+    def _on_wheel_tab_check_changed(self, _state=None):
+        """Keep at least one wheel-module tab checked, then save."""
+        checks = getattr(self, "wheel_tab_checks", {})
+        if checks and not any(cb.isChecked() for cb in checks.values()):
+            sender = self.sender() if hasattr(self, "sender") else None
+            target = sender if sender in checks.values() else next(iter(checks.values()))
+            target.blockSignals(True)
+            target.setChecked(True)
+            target.blockSignals(False)
+            return
+        self.save_settings()
+
+    def _refresh_wheel_tab_checks(self):
+        checks = getattr(self, "wheel_tab_checks", None)
+        if not checks:
+            return
+        from ui.window.module_defs import normalize_wheel_module_tabs
+        enabled = set(normalize_wheel_module_tabs(
+            self.cfg.get("wheelModuleTabs"), self.cfg.get("wheelModuleOrder"),
+            self.cfg.get("colorSpaceModule", "hsv")))
+        for key, cb in checks.items():
+            cb.blockSignals(True)
+            cb.setChecked(key in enabled)
+            cb.blockSignals(False)
+
+    def _wheel_tabs_from_checks(self):
+        checks = getattr(self, "wheel_tab_checks", None)
+        if not checks:
+            return None
+        from ui.window.module_defs import normalize_wheel_module_tabs
+        enabled = [k for k, cb in checks.items() if cb.isChecked()]
+        return normalize_wheel_module_tabs(
+            enabled, self.cfg.get("wheelModuleOrder"),
+            self.cfg.get("colorSpaceModule", "hsv"))
+
     def _build_picker_page(self, page_picker):
         # ═══════════════════ Page: 色环 ═══════════════════
         # ── Card 1: 色环与切片 ──
@@ -1353,14 +1399,48 @@ class AppearancePanelMixin:
 
         cl_wheel.addLayout(grid_wheel)
 
-        self.cb_show_module_btn = QCheckBox(i18n.tr("显示色环模块切换按钮"))
-        self.cb_show_module_btn.setToolTip(i18n.tr("在色环区域显示色环模块切换按钮"))
+        self.cb_show_module_btn = QCheckBox(i18n.tr("显示色环模块标签栏"))
+        self.cb_show_module_btn.setToolTip(i18n.tr("在取色区顶部显示色环模块 / LAB 模式标签栏，可拖拽标签排序"))
         self.cb_show_module_btn.stateChanged.connect(self.save_settings)
         cl_wheel.addWidget(self._make_setting_row(
-            i18n.tr("显示模块切换按钮"),
-            i18n.tr("在色环区域显示 HSV/HLS/RGB/LCH 快速切换按钮"),
+            i18n.tr("显示模块标签栏"),
+            i18n.tr("在取色区顶部显示色环模块 / LAB 模式标签栏，可拖拽标签排序"),
             self.cb_show_module_btn
         ))
+
+        # Which wheel modules appear as tabs (at least one stays checked)
+        row_tabs = QHBoxLayout()
+        row_tabs.setSpacing(8)
+        row_tabs.addWidget(QLabel(i18n.tr("标签栏显示的模块")))
+        self.wheel_tab_checks = {}
+        for key, label in (("hsv", "HSV"), ("vhsv", "VHSV"), ("hls", "HLS"),
+                           ("rgb", "RGB"), ("lch", "LCH")):
+            cb = QCheckBox(label)
+            cb.stateChanged.connect(self._on_wheel_tab_check_changed)
+            row_tabs.addWidget(cb)
+            self.wheel_tab_checks[key] = cb
+        row_tabs.addStretch()
+        cl_wheel.addLayout(row_tabs)
+
+        # What travels with a wheel page when it is torn off. The wheel is
+        # always there; these two decorations can be switched off.
+        row_float = QHBoxLayout()
+        row_float.setSpacing(8)
+        row_float.addWidget(QLabel(i18n.tr("浮出色图窗口")))
+        self.cb_floating_wheel_swatches = QCheckBox(
+            i18n.tr("浮出色图显示前景/背景色"))
+        self.cb_floating_wheel_buttons = QCheckBox(
+            i18n.tr("浮出色图显示模式按钮"))
+        self.cb_floating_wheel_swatches.setToolTip(
+            i18n.tr("控制拖出后的色图浮窗里是否带前景/背景色、透明色块和模式按钮"))
+        self.cb_floating_wheel_buttons.setToolTip(
+            i18n.tr("控制拖出后的色图浮窗里是否带前景/背景色、透明色块和模式按钮"))
+        self.cb_floating_wheel_swatches.stateChanged.connect(self.save_settings)
+        self.cb_floating_wheel_buttons.stateChanged.connect(self.save_settings)
+        row_float.addWidget(self.cb_floating_wheel_swatches)
+        row_float.addWidget(self.cb_floating_wheel_buttons)
+        row_float.addStretch()
+        cl_wheel.addLayout(row_float)
 
         self.cb_flip_wheel = QCheckBox(i18n.tr("水平翻转色环"))
         self.cb_flip_wheel.setToolTip(i18n.tr("水平镜像色环（颜色排列左右翻转）"))

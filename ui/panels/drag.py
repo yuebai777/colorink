@@ -12,8 +12,19 @@ together, and *where a drop would land* is decided by ui/panels/rearrange
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QEvent, QMimeData, QPoint, QRect, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QDrag, QPainter, QPalette, QPixmap
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QMimeData,
+    QPoint,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QVariantAnimation,
+    pyqtSignal,
+)
+from PyQt6.QtGui import QColor, QDrag, QFont, QPainter, QPainterPath, QPalette, QPixmap
 from PyQt6.QtWidgets import QApplication, QStackedWidget, QVBoxLayout, QWidget
 
 #: Payload of a panel drag: the panel id, UTF-8.
@@ -61,6 +72,8 @@ class PanelTitleBar(QWidget):
     toggled = pyqtSignal(str)
     #: Right click — (panel id, global position) for the panel menu.
     menu_requested = pyqtSignal(str, object)
+    #: Floating title-bar left icon — (panel id, global position) for options.
+    dropdown_requested = pyqtSignal(str, object)
 
     def __init__(self, panel_id: str, title: str, parent=None, *,
                  closable: bool = False, moves_window: bool = False,
@@ -76,7 +89,8 @@ class PanelTitleBar(QWidget):
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setToolTip(
             f"{title} — 拖动可重新排列，拖到窗口外或双击可独立成窗口"
-            if not moves_window else f"{title} — 拖动移动窗口，双击收回")
+            if not moves_window
+            else f"{title} — 左上角菜单；拖动移动窗口，双击收回")
         self._press = None
         self._window_offset = None
         self._base_height = int(height or self.HEIGHT)
@@ -103,6 +117,12 @@ class PanelTitleBar(QWidget):
             self.setFixedHeight(max(12, int(round(self._base_height
                                                   * chrome.scale))))
         self.update()
+
+    def dropdown_rect(self) -> QRect:
+        """The clickable left icon on a floating title bar."""
+        if not self.moves_window:
+            return QRect()
+        return QRect(0, 0, 15, self.height())
 
     def close_rect(self) -> QRect:
         """Where the × is, or an empty rect when there is none."""
@@ -159,6 +179,11 @@ class PanelTitleBar(QWidget):
         point = event.position().toPoint()
         if self._on_window_edge(point):
             event.ignore()
+            return
+        if self.dropdown_rect().contains(point):
+            self._press = None
+            self.dropdown_requested.emit(
+                self.panel_id, self.mapToGlobal(point))
             return
         if self.close_rect().contains(point):
             self._press = None
@@ -294,10 +319,18 @@ class PanelTitleBar(QWidget):
                              self.width(), chrome.divider_width, div)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(ink.red(), ink.green(), ink.blue(), 110))
-        top = self.height() // 2 - 4
-        for row in range(3):
-            for col in range(2):
-                painter.drawRect(4 + col * 3, top + row * 3, 2, 2)
+        if self.moves_window:
+            # Floating window: the left icon is the options dropdown.
+            cx = 7
+            cy = self.height() // 2
+            painter.setPen(QColor(ink.red(), ink.green(), ink.blue(), 170))
+            painter.drawLine(cx - 3, cy - 1, cx, cy + 2)
+            painter.drawLine(cx, cy + 2, cx + 3, cy - 1)
+        else:
+            top = self.height() // 2 - 4
+            for row in range(3):
+                for col in range(2):
+                    painter.drawRect(4 + col * 3, top + row * 3, 2, 2)
         painter.setPen(QColor(ink.red(), ink.green(), ink.blue(), 220)
                        if chrome and chrome.bar_text
                        else QColor(ink.red(), ink.green(), ink.blue(), 165))
@@ -309,7 +342,8 @@ class PanelTitleBar(QWidget):
         painter.setFont(font)
         used = (self._BUTTON_WIDTH * bool(self.closable)
                 + self._BUTTON_WIDTH * bool(self.pinnable))
-        painter.drawText(self.rect().adjusted(14, 0, -(used or 4), 0),
+        left = 17 if self.moves_window else 14
+        painter.drawText(self.rect().adjusted(left, 0, -(used or 4), 0),
                          int(Qt.AlignmentFlag.AlignVCenter
                              | Qt.AlignmentFlag.AlignLeft),
                          self.title)
@@ -348,6 +382,11 @@ class PanelHolder:
     def panel(self):
         return getattr(self, "_panel", None)
 
+    @property
+    def fill_holder(self) -> bool:
+        panel = getattr(self, "_panel", None)
+        return bool(panel is not None and getattr(panel, "fill_holder", False))
+
     def set_panel(self, widget) -> None:
         """Adopt *widget* and mirror its visibility from now on.
 
@@ -370,7 +409,17 @@ class PanelHolder:
         self._ensure_bottom_stretch()
         # Read the flag only after re-parenting: setParent(None) marks a
         # widget hidden in passing, and adopting it clears that again.
-        self.setVisible(not widget.isHidden())
+        # Never show an unparented non-window holder (or one whose PanelHost
+        # is still assembling the layout): showing a parentless PanelFrame
+        # allocates an OS top-level window at top-left; PanelHost settles
+        # frame visibility right after layout attachment.
+        if widget.isHidden():
+            self.setVisible(False)
+        elif not getattr(self, "_suppress_auto_show", False) and (
+            self.isWindow()
+            or (self.parentWidget() is not None and not self._host_is_mounting())
+        ):
+            self.setVisible(True)
 
     def _ensure_bottom_stretch(self) -> None:
         """Park leftover holder height below the panel, not in the middle.
@@ -382,9 +431,22 @@ class PanelHolder:
         box = self._panel_layout()
         if box is None:
             return
+        # A wheel/LAB page opts into filling its holder. Everywhere else the
+        # content is content-sized and must stay top-anchored.
+        panel = getattr(self, "_panel", None)
+        if panel is not None and getattr(panel, "fill_holder", False):
+            box.setAlignment(Qt.AlignmentFlag(0))
+            for i in reversed(range(box.count())):
+                item = box.itemAt(i)
+                if item is not None and item.spacerItem() is not None:
+                    box.takeAt(i)
+            box.setStretchFactor(panel, 1)
+            return
         # Alignment keeps the content top-anchored even if the stretch below it
         # is ever removed by another pass.
         box.setAlignment(Qt.AlignmentFlag.AlignTop)
+        if panel is not None:
+            box.setStretchFactor(panel, 0)
         if box.count() and box.itemAt(box.count() - 1).spacerItem() is not None:
             return
         box.addStretch(1)
@@ -398,6 +460,7 @@ class PanelHolder:
         widget = getattr(self, "_panel", None)
         if widget is not None:
             widget.removeEventFilter(self)
+            widget.hide()
             self._panel_layout().removeWidget(widget)
             widget.setParent(None)
             self._panel = None
@@ -485,7 +548,12 @@ class PanelHolder:
                     and self.isHidden()
                     and self._in_non_current_tab_page()):
                 return super().eventFilter(obj, event)
-            self.setVisible(not obj.isHidden())
+            if getattr(self, "_suppress_auto_show", False):
+                return super().eventFilter(obj, event)
+            show = not obj.isHidden()
+            if show and not self.isWindow() and self.parentWidget() is None:
+                return super().eventFilter(obj, event)
+            self.setVisible(show)
         return super().eventFilter(obj, event)
 
 
@@ -513,7 +581,10 @@ class PanelFrame(PanelHolder, QWidget):
         panel = self._panel
         if panel is None:
             return
-        self.setVisible(not panel.isHidden())
+        show = not panel.isHidden()
+        if show and not self.isWindow() and self.parentWidget() is None:
+            return
+        self.setVisible(show)
 
     def sizeHint(self) -> QSize:
         """The panel's own hint plus the grip — no layout pass required.
@@ -536,18 +607,119 @@ class PanelFrame(PanelHolder, QWidget):
 
 
 class DropIndicator(QWidget):
-    """Where the dragged panel would land."""
+    """Where the dragged panel would land, with smooth zone interpolation."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._zone: str = ""
+        self._label: str = ""
+        self._target_rect: QRect = QRect()
+        self._rect_anim: QVariantAnimation | None = None
         self.hide()
+
+    def target_rect(self) -> QRect:
+        """Return the logical target rectangle (snapped final target)."""
+        return QRect(self._target_rect) if self._target_rect.isValid() else QRect(self.geometry())
+
+    def show_drop(self, rect: QRect, zone: str = "", label: str | None = None) -> None:
+        """Show or smoothly glide the preview overlay toward *rect*."""
+        from ui.panels.transitions import animations_enabled, zone_label
+
+        target = QRect(rect)
+        self._zone = str(zone or "")
+        self._label = zone_label(self._zone) if label is None else str(label)
+        was_visible = self.isVisible() and not self.isHidden() and self.geometry().isValid()
+        start_rect = QRect(self.geometry()) if was_visible else QRect(target)
+        self._target_rect = QRect(target)
+
+        if self._rect_anim is not None:
+            self._rect_anim.stop()
+            self._rect_anim.deleteLater()
+            self._rect_anim = None
+
+        if not was_visible or not animations_enabled() or start_rect == target:
+            self.setGeometry(target)
+            self.show()
+            self.raise_()
+            self.update()
+            return
+
+        self.show()
+        self.raise_()
+        anim = QVariantAnimation(self)
+        anim.setDuration(85)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        def _lerp(a: int, b: int, t: float) -> int:
+            return int(round(a + (b - a) * t))
+
+        def _step(val) -> None:
+            t = float(val)
+            self.setGeometry(QRect(
+                _lerp(start_rect.x(), target.x(), t),
+                _lerp(start_rect.y(), target.y(), t),
+                _lerp(start_rect.width(), target.width(), t),
+                _lerp(start_rect.height(), target.height(), t),
+            ))
+            self.update()
+
+        def _done() -> None:
+            if self._rect_anim is anim:
+                self._rect_anim = None
+            anim.deleteLater()
+
+        anim.valueChanged.connect(_step)
+        anim.finished.connect(_done)
+        self._rect_anim = anim
+        anim.start()
+
+    def hideEvent(self, event) -> None:
+        if self._rect_anim is not None:
+            self._rect_anim.stop()
+            self._rect_anim.deleteLater()
+            self._rect_anim = None
+        super().hideEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         accent = self.palette().color(QPalette.ColorRole.Highlight)
-        painter.fillRect(self.rect(), QColor(accent.red(), accent.green(),
-                                             accent.blue(), 70))
-        painter.setPen(QColor(accent.red(), accent.green(), accent.blue(), 200))
-        painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+        outer = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = min(8.0, outer.width() * 0.15, outer.height() * 0.15)
+        path = QPainterPath()
+        path.addRoundedRect(outer, radius, radius)
+        painter.fillPath(path, QColor(accent.red(), accent.green(), accent.blue(), 68))
+        pen_color = QColor(accent.red(), accent.green(), accent.blue(), 215)
+        painter.setPen(pen_color)
+        painter.drawPath(path)
+
+        if self._label and self.width() >= 84 and self.height() >= 38:
+            font = QFont(self.font())
+            font.setPointSizeF(max(8.5, min(11.0, font.pointSizeF() if font.pointSizeF() > 0 else 9.5)))
+            font.setWeight(QFont.Weight.DemiBold)
+            painter.setFont(font)
+            fm = painter.fontMetrics()
+            text_w = fm.horizontalAdvance(self._label)
+            text_h = fm.height()
+            pill_w = min(self.width() - 12, text_w + 18)
+            pill_h = min(self.height() - 8, text_h + 8)
+            if pill_w >= text_w + 8 and pill_h >= text_h + 4:
+                pill = QRectF(
+                    (self.width() - pill_w) / 2.0,
+                    (self.height() - pill_h) / 2.0,
+                    pill_w,
+                    pill_h,
+                )
+                pill_path = QPainterPath()
+                pill_path.addRoundedRect(pill, pill_h / 2.0, pill_h / 2.0)
+                painter.fillPath(
+                    pill_path,
+                    QColor(accent.darker(135).red(), accent.darker(135).green(),
+                           accent.darker(135).blue(), 220),
+                )
+                painter.setPen(QColor(255, 255, 255, 245))
+                painter.drawText(pill, Qt.AlignmentFlag.AlignCenter, self._label)
         painter.end()

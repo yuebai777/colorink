@@ -9,11 +9,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPixmap
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QTabBar, QWidget
 
 from ui.ringless_mode import centered_control_offset
+from ui.panels.drag import PANEL_MIME
+from ui.wheel_grip import WHEEL_GRIP_MIME
 
 if TYPE_CHECKING:
     from ui.ringless_mode import RinglessLayout
@@ -213,3 +215,247 @@ class LabPane(PaneWithModeButton):
             painter = QPainter(self)
             painter.drawTiledPixmap(self.rect(), self.checker_pixmap)
             painter.end()
+
+
+def _visible_picker_tab_height(tab_bar) -> int:
+    """Height of the picker tab bar when visible; 0 when absent or hidden."""
+    if tab_bar is None or not tab_bar.isVisible():
+        return 0
+    sh = getattr(tab_bar, "sizeHint", None)
+    if callable(sh):
+        try:
+            h = int(sh().height())
+            if h > 0:
+                return h
+        except (TypeError, ValueError):
+            pass
+    height = getattr(tab_bar, "height", None)
+    if callable(height):
+        try:
+            return max(0, int(height()))
+        except (TypeError, ValueError):
+            pass
+    return 0
+
+
+def visible_picker_chrome_height(owner) -> int:
+    """Tab strip + wheel grip strip: the chrome above the picker squared area."""
+    from ui.wheel_grip import visible_wheel_grip_height
+    total = (_visible_picker_tab_height(getattr(owner, "picker_tab_bar", None))
+             + visible_wheel_grip_height(getattr(owner, "wheel_grip_bar", None)))
+    gap = getattr(owner, "picker_top_gap", None)
+    if gap is not None and gap.isVisible():
+        total += max(0, int(gap.height()))
+    return total
+
+
+class PickerTabBar(QTabBar):
+    """Draggable tab strip at the top of the picker area.
+
+    Switches among enabled wheel modules (HSV / VHSV / HLS / RGB / LCH) on the
+    wheel page and between LAB / OKLab on the LAB page. Matches the visual
+    chrome of PanelHost's slider tab strip.
+    """
+
+    #: A wheel grip was dropped on the strip: (panel id, tab index).
+    wheelGripDropped = pyqtSignal(str, int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("PickerTabBar")
+        self.setAcceptDrops(True)
+        self.setMovable(True)
+        self.setExpanding(False)
+        self.setDrawBase(False)
+        self.setUsesScrollButtons(True)
+        self.setElideMode(Qt.TextElideMode.ElideRight)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._panel_css = None
+        self._drop_controller = None
+
+    def set_drop_controller(self, controller) -> None:
+        """Delegate drag hover preview and non-wheel drops to MainWindow's controller."""
+        self._drop_controller = controller
+
+    @staticmethod
+    def _wheel_payload(mime):
+        """The wheel panel id carried by a drag, or None."""
+        for fmt in (WHEEL_GRIP_MIME, PANEL_MIME):
+            if not mime.hasFormat(fmt):
+                continue
+            try:
+                panel_id = bytes(mime.data(fmt)).decode("utf-8")
+            except (TypeError, ValueError, UnicodeDecodeError):
+                continue
+            if panel_id.startswith("wheel."):
+                return panel_id
+        return None
+
+    def dragEnterEvent(self, event):
+        ctrl = getattr(self, "_drop_controller", None)
+        if ctrl is not None:
+            pid = ctrl._dragged_panel_from_mime(event.mimeData())
+            if pid:
+                gp = self.mapToGlobal(event.position().toPoint())
+                if ctrl.show_drop_hint(gp, (pid,), from_floating=False) is not None:
+                    event.acceptProposedAction()
+                    return
+                event.ignore()
+                return
+        if self._wheel_payload(event.mimeData()) is not None:
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        ctrl = getattr(self, "_drop_controller", None)
+        if ctrl is not None:
+            pid = ctrl._dragged_panel_from_mime(event.mimeData())
+            if pid:
+                gp = self.mapToGlobal(event.position().toPoint())
+                if ctrl.show_drop_hint(gp, (pid,), from_floating=False) is not None:
+                    event.acceptProposedAction()
+                    return
+                event.ignore()
+                return
+        if self._wheel_payload(event.mimeData()) is not None:
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dragLeaveEvent(self, event):
+        ctrl = getattr(self, "_drop_controller", None)
+        if ctrl is not None:
+            ctrl.hide_drop_hint(immediate=False)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        ctrl = getattr(self, "_drop_controller", None)
+        if ctrl is not None:
+            ctrl.hide_drop_hint(immediate=True)
+        panel_id = self._wheel_payload(event.mimeData())
+        if panel_id is not None:
+            index = self.tabAt(event.position().toPoint())
+            if index < 0:
+                index = max(0, self.count() - 1)
+            self.wheelGripDropped.emit(panel_id, index)
+            event.acceptProposedAction()
+            return
+        if ctrl is not None:
+            any_pid = ctrl._dragged_panel_from_mime(event.mimeData())
+            if any_pid:
+                gp = self.mapToGlobal(event.position().toPoint())
+                hit = ctrl.drop_target_at(gp, (any_pid,), from_floating=False)
+                if hit is not None:
+                    zone, _ = hit
+                    event.acceptProposedAction()
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(0, lambda pid=any_pid, z=zone: ctrl.apply_panel_drop((pid,), z))
+                    return
+        super().dropEvent(event)
+
+    def minimumTabSizeHint(self, index: int) -> QSize:
+        """Never compress a label below its preferred width.
+
+        The styled first tab otherwise lost a few pixels to the margin and
+        "LAB" was painted as "L..." even though the strip had room to spare.
+        """
+        hint = super().minimumTabSizeHint(index)
+        preferred = self.tabSizeHint(index)
+        return QSize(max(int(hint.width()), int(preferred.width())),
+                     max(int(hint.height()), int(preferred.height())))
+
+    def set_tabs(self, items: list[tuple[str, str]], active_key: str) -> None:
+        """Populate tabs with (key, label) pairs and select active_key."""
+        current_items = [
+            (str(self.tabData(i)), self.tabText(i))
+            for i in range(self.count())
+        ]
+        self.blockSignals(True)
+        try:
+            if current_items != items:
+                while self.count():
+                    self.removeTab(0)
+                for key, label in items:
+                    idx = self.addTab(label)
+                    self.setTabData(idx, key)
+                    self.setTabToolTip(idx, label)
+            target_idx = 0
+            for i in range(self.count()):
+                if str(self.tabData(i)) == str(active_key):
+                    target_idx = i
+                    break
+            if 0 <= target_idx < self.count():
+                self.setCurrentIndex(target_idx)
+        finally:
+            self.blockSignals(False)
+
+    def tab_keys(self) -> list[str]:
+        """Return the ordered list of tab keys currently in the bar."""
+        return [
+            str(self.tabData(i))
+            for i in range(self.count())
+            if self.tabData(i) is not None
+        ]
+
+    def current_key(self) -> str | None:
+        """Return the key of the currently selected tab, or None."""
+        idx = self.currentIndex()
+        if 0 <= idx < self.count() and self.tabData(idx) is not None:
+            return str(self.tabData(idx))
+        return None
+
+    def advance_tab(self) -> bool:
+        """Select the next tab (wrapping past the end). Returns True if moved."""
+        count = self.count()
+        current = self.currentIndex()
+        if count < 2 or current < 0:
+            return False
+        self.setCurrentIndex((current + 1) % count)
+        return True
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if delta != 0 and self.count() >= 2:
+            step = -1 if delta > 0 else 1
+            self.setCurrentIndex((self.currentIndex() + step) % self.count())
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def apply_chrome(self, chrome) -> None:
+        """Apply PanelChrome styling matching PanelHost._style_tabs."""
+        if chrome is None:
+            return
+        scale = max(0.5, float(getattr(chrome, "scale", 1.0) or 1.0))
+        pad_x = max(2, int(round(5 * scale)))
+        pad_y = max(2, int(round(3 * scale)))
+        font = max(7, int(round(
+            (getattr(chrome, "font_size", 0) or 11) * 0.85)))
+        bar_bg = getattr(chrome, "bar_bg", "") or "transparent"
+        bg = getattr(chrome, "background", "") or "transparent"
+        text = getattr(chrome, "text", "") or "#222222"
+        bar_text = getattr(chrome, "bar_text", "") or text
+        divider = getattr(chrome, "divider_color", "") or bar_bg
+        divider_w = max(1, int(getattr(chrome, "divider_width", 0) or 1))
+        css = (
+            "QTabBar#PickerTabBar { background: transparent;"
+            f" font-size: {font}px;"
+            " }"
+            "QTabBar#PickerTabBar::tab {"
+            f" background: {bar_bg}; color: {bar_text};"
+            f" padding: {pad_y}px {pad_x}px;"
+            f" font-size: {font}px; border: none;"
+            " }"
+            "QTabBar#PickerTabBar::tab:selected {"
+            f" background: {bg}; color: {text};"
+            f" border-top: {divider_w}px solid {divider};"
+            " }"
+            f"QTabBar#PickerTabBar::tab:hover:!selected {{ color: {text}; }}"
+        )
+        if self._panel_css == css:
+            return
+        self._panel_css = css
+        self.setStyleSheet(css)
+        self.updateGeometry()

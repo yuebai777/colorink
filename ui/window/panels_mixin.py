@@ -22,6 +22,10 @@ class PanelProviderMixin:
         """
         if panel_id == registry.PICKER:
             return getattr(self, "stack", None)
+        if registry.is_wheel_panel(panel_id):
+            key = registry.wheel_panel_key(panel_id)
+            panels = getattr(self, "wheel_panels", None) or {}
+            return panels.get(key)
         if panel_id == registry.LIGHTNESS:
             return getattr(self, "lab_slider_column", None)
         if panel_id == registry.SWATCHES:
@@ -81,22 +85,53 @@ class PanelProviderMixin:
             return "tabs"
         return "stack"
 
+    def _saved_panel_layout_allowed(self, saved, derived) -> bool:
+        """A saved tree may add wheel pages or omit panels placed in pickerDocks.
+
+        Sliders still have to match the derived set across the primary column
+        plus optional color-map edge/center docks; wheel pages are the extra
+        panels the shared host is allowed to own. Anything else (a panel from
+        a previous build, a picker/history mix-up) is rejected so the derivation
+        stays authoritative.
+        """
+        from ui.panels import registry
+        from ui.window.picker_drop import picker_dock_panel_ids
+
+        dock_panels = picker_dock_panel_ids(getattr(self, "cfg", None))
+        saved_panels = set(saved.panels())
+        derived_panels = set(derived.panels())
+        expected_in_main = derived_panels - dock_panels
+        if not expected_in_main:
+            # All panels live in pickerDocks or are filtered out.
+            return all(registry.is_wheel_panel(pid) or pid in derived_panels for pid in saved_panels)
+        if saved_panels == expected_in_main:
+            return True
+        if not expected_in_main <= saved_panels:
+            return False
+        extra = saved_panels - expected_in_main
+        return bool(extra) and all(
+            registry.is_wheel_panel(pid) for pid in extra)
+
     def panel_layout_tree(self):
         """The arrangement to assemble, tree first, config second.
 
-        A saved arrangement wins only when it places exactly the panels this
-        build would place anyway — that keeps the legacy per-group order keys
-        working today, while a future drag-reorder persists through
-        cfg["panelLayout"] without a second source of truth appearing behind
-        the user's back.
+        A saved arrangement wins when it places every slider this build would
+        place (across ``panel_host`` + ``pickerDocks``), plus (optionally)
+        wheel pages the user dragged into the host.
         """
         from ui.panels import store
+        from ui.window.picker_drop import _subtree_without, picker_dock_panel_ids
 
         derived = self.slider_column_tree()
         saved = store.load_from(getattr(self, "cfg", None),
                                 self.arrangement_seed())
-        if set(saved.panels()) == set(derived.panels()):
+        if self._saved_panel_layout_allowed(saved, derived):
             return saved
+        dock_panels = picker_dock_panel_ids(getattr(self, "cfg", None))
+        if dock_panels:
+            from ui.panels import tree as dock
+            trimmed = _subtree_without(derived, dock_panels)
+            return trimmed if trimmed is not None else dock.Split(dock.VERTICAL, ())
         return derived
 
     def save_panel_layout(self, tree=None) -> None:

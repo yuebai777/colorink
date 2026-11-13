@@ -36,6 +36,51 @@ def _slider_panels() -> dict[str, PanelSpec]:
     }
 
 
+LAB_FLOAT_ID = "lab.visualizer"
+
+#: The detached LAB visualizer is a real floatable window, but it is not a
+#: dock-tree panel and must not appear in the slider settings list.
+LAB_FLOAT_PANEL = PanelSpec(
+    id=LAB_FLOAT_ID,
+    title="LAB",
+    min_size=(200, 200),
+    aspect=1.0,
+)
+
+WHEEL_PREFIX = "wheel."
+
+#: One picker page per wheel module. These are real panel pages (the picker
+#: tab strip floats, reorders and tears them off), but they are not part of
+#: the slider column, so they stay out of panel_ids() and the settings page.
+WHEEL_MODULES = ("hsv", "vhsv", "hls", "rgb", "lch")
+_WHEEL_TITLES = {"hsv": "HSV", "vhsv": "VHSV", "hls": "HLS",
+                 "rgb": "RGB", "lch": "LCH"}
+WHEEL_PANELS: dict[str, PanelSpec] = {
+    f"{WHEEL_PREFIX}{key}": PanelSpec(
+        id=f"{WHEEL_PREFIX}{key}",
+        title=title,
+        min_size=(120, 120),
+        aspect=1.0,
+    )
+    for key, title in _WHEEL_TITLES.items()
+}
+
+
+def wheel_panel_id(key: str) -> str:
+    return f"{WHEEL_PREFIX}{str(key).lower()}"
+
+
+def wheel_panel_key(panel_id: str) -> str | None:
+    if not str(panel_id).startswith(WHEEL_PREFIX):
+        return None
+    key = str(panel_id)[len(WHEEL_PREFIX):].lower()
+    return key if key in WHEEL_MODULES else None
+
+
+def is_wheel_panel(panel_id: str) -> bool:
+    return wheel_panel_key(panel_id) is not None
+
+
 PANELS: dict[str, PanelSpec] = {
     PICKER: PanelSpec(
         id=PICKER,
@@ -73,7 +118,9 @@ def panel(panel_id: str) -> PanelSpec | None:
     A saved layout may name a panel that a later build dropped — the host
     prunes it rather than refusing to open.
     """
-    return PANELS.get(panel_id)
+    if panel_id == LAB_FLOAT_ID:
+        return LAB_FLOAT_PANEL
+    return PANELS.get(panel_id) or WHEEL_PANELS.get(panel_id)
 
 
 def panel_ids() -> tuple[str, ...]:

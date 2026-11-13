@@ -421,6 +421,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
             (self.cb_lock_position, "lockWindowPosition", False),
             (self.cb_autostart, "openAtLogin", False),
             (self.cb_only_drawing, "onlyShowInCsp", True),
+            (self.cb_hide_on_menu, "hideOnPopupMenu", False),
             (self.cb_no_focus, "noFocusMode", True)
         ]:
             cb.blockSignals(True)
@@ -461,6 +462,17 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cb_show_module_btn.blockSignals(True)
         self.cb_show_module_btn.setChecked(self.cfg.get("showModuleSwitchButton", True))
         self.cb_show_module_btn.blockSignals(False)
+        for _cb, _key in (
+            (getattr(self, "cb_floating_wheel_swatches", None),
+             "floatingWheelShowSwatches"),
+            (getattr(self, "cb_floating_wheel_buttons", None),
+             "floatingWheelShowButtons"),
+        ):
+            if _cb is not None:
+                _cb.blockSignals(True)
+                _cb.setChecked(self.cfg.get(_key, True))
+                _cb.blockSignals(False)
+        self._refresh_wheel_tab_checks()
 
         self.cb_show_lab_toggle.blockSignals(True)
         self.cb_show_lab_toggle.setChecked(self.cfg.get("showLabToggleButton", True))
@@ -672,6 +684,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
             self.cfg["openAtLogin"] = new_autostart
             
         self.cfg["onlyShowInCsp"] = self.cb_only_drawing.isChecked()
+        self.cfg["hideOnPopupMenu"] = self.cb_hide_on_menu.isChecked()
         self.cfg["showTaskbarIcon"] = self.cb_taskbar_icon.isChecked()
         self.cfg["showTitleBar"] = self.cb_show_title_bar.isChecked()
         self.cfg["noFocusMode"] = self.cb_no_focus.isChecked()
@@ -696,6 +709,22 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         module_val_map = {"HSV": "hsv", "VHSV": "vhsv", "HLS": "hls", "RGB": "rgb", "LCH": "lch"}
         self.cfg["colorSpaceModule"] = module_val_map.get(self.combo_module.currentText(), "hsv")
         self.cfg["showModuleSwitchButton"] = self.cb_show_module_btn.isChecked()
+        if getattr(self, "cb_floating_wheel_swatches", None) is not None:
+            self.cfg["floatingWheelShowSwatches"] = (
+                self.cb_floating_wheel_swatches.isChecked())
+        if getattr(self, "cb_floating_wheel_buttons", None) is not None:
+            self.cfg["floatingWheelShowButtons"] = (
+                self.cb_floating_wheel_buttons.isChecked())
+        wheel_tabs = self._wheel_tabs_from_checks()
+        if wheel_tabs is not None:
+            self.cfg["wheelModuleTabs"] = wheel_tabs
+            # The active module must be one of the visible tabs.
+            if self.cfg["colorSpaceModule"] not in wheel_tabs:
+                self.cfg["colorSpaceModule"] = wheel_tabs[0]
+                module_map = {"hsv": "HSV", "vhsv": "VHSV", "hls": "HLS", "rgb": "RGB", "lch": "LCH"}
+                self.combo_module.blockSignals(True)
+                self.combo_module.setCurrentText(module_map[wheel_tabs[0]])
+                self.combo_module.blockSignals(False)
         self.cfg["showLabToggleButton"] = self.cb_show_lab_toggle.isChecked()
         self.cfg["showLabShapeButton"] = self.cb_show_lab_shape_btn.isChecked()
         self.cfg["showLabHarmonyButton"] = self.cb_show_lab_harmony_btn.isChecked()
@@ -822,12 +851,18 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
     def notify_module_changed(self):
         """Called by MainWindow when the module changes externally."""
         self.cfg = config.load_hotkey_config()
+        module_map = {"hsv": "HSV", "vhsv": "VHSV", "hls": "HLS", "rgb": "RGB", "lch": "LCH"}
+        self.combo_module.blockSignals(True)
+        self.combo_module.setCurrentText(module_map.get(self.cfg.get("colorSpaceModule", "hsv"), "HSV"))
+        self.combo_module.blockSignals(False)
+        self._refresh_wheel_tab_checks()
         self._refresh_module_sliders()
 
     def notify_lab_settings_changed(self):
         """Called by MainWindow when the LAB shape/harmony change on the pane."""
         self.cfg = config.load_hotkey_config()
         for combo, key, default in (
+            (self.combo_viz_mode, "visualizerMode", "lab"),
             (self.combo_lab_shape, "labViewShape", "square"),
             (self.combo_lab_harmony, "labHarmonyMode", "analogous"),
         ):

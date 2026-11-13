@@ -23,19 +23,23 @@ from core.foreground import (
     _title_matches_drawing_app,  # noqa: F401  (re-export)
     bring_process_to_foreground,  # noqa: F401  (re-export)
     identify_drawing_app,  # noqa: F401  (re-export)
+    is_drawing_app_menu_open,  # noqa: F401  (re-export)
     is_known_non_drawing_exe,  # noqa: F401  (re-export)
     find_running_drawing_software,  # noqa: F401  (re-export)
 )
 from ui.color_model import ColorState
 from ui.color_session import ColorSession
+from ui.panels import registry
 from ui.panels.host import PanelHost
 from ui.color_picker_overlay import ColorPickerOverlay
 from ui.color_preview_box import ColorPreviewBox
-from ui.color_wheel import ColorWheel
 from ui.lab_visualizer import LabSlider, LabSquare
-from ui.picker_panes import LabPane, WheelPane
+from ui.picker_panes import LabPane, PickerTabBar, WheelPane
+from ui.wheel_grip import WheelGripBar
+from ui.wheel_modules import WheelModulePanel
 from ui.settings_sidebar import SettingsSidebar
 from ui.widgets import PickerIconButton, TitleBar, _title_bar_content_offset  # noqa: F401  (re-export)
+from ui.window.module_defs import _MODULE_DEFS, _MODULE_NAMES, _MODULE_ORDER
 from ui.window import (
     ColorSlotsMixin,
     ColorUpdatesMixin,
@@ -77,6 +81,20 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
             self.sliders_container.setVisible(bool(host.visible_panels()))
         self._adjust_content_height()
 
+    def _can_accept_external_panel(self, panel_id: str) -> bool:
+        """Accept docked wheel pages and panels moving from color-map dock slots."""
+        if panel_id == registry.LAB_FLOAT_ID:
+            return False
+        try:
+            if panel_id in self.floating_windows():
+                return False
+        except Exception:
+            pass
+        if registry.is_wheel_panel(panel_id):
+            return True
+        pdrop = getattr(self, "picker_drop", None)
+        return bool(pdrop is not None and pdrop.owns_panel(panel_id))
+
     def _sync_picker_mode_buttons(self):
         """The wheel/LAB toggle only makes sense while both pages are here."""
         both = self.stack.count() > 1
@@ -93,6 +111,9 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         and the height policy — the same one every other arrangement change
         goes through.
         """
+        pdrop = getattr(self, "picker_drop", None)
+        if pdrop is not None:
+            QTimer.singleShot(0, lambda: pdrop.deduplicate_hosts(self.panel_host))
         self.save_panel_layout(tree)
         config.save_hotkey_config(self.cfg)
         self.refresh_slider_visibility_and_order()
@@ -345,12 +366,43 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.main_layout.setContentsMargins(8, 0, 8, 8)  # Thin frame border
         self.main_layout.setSpacing(0)
 
+        # Top chrome (TitleBar + PickerTabBar stacked with 0px gap)
+        self.top_bar_layout = QVBoxLayout()
+        self.top_bar_layout.setContentsMargins(0, 0, 0, 0)
+        self.top_bar_layout.setSpacing(0)
+        self.main_layout.addLayout(self.top_bar_layout)
+
         # Title Bar
         self.title_bar = TitleBar(self)
         self.title_bar.setVisible(self.cfg.get("showTitleBar", True))
         self.title_bar.btn_close.clicked.connect(self.close_application)
         self.title_bar.btn_settings.clicked.connect(self.toggle_settings_sidebar)
-        self.main_layout.addWidget(self.title_bar)
+        self.top_bar_layout.addWidget(self.title_bar)
+
+        # Picker Tab Bar + grip strip share the same inset as the slider tab
+        # strip (4px inside the central widget) so both strips line up.
+        self.picker_tab_container = QWidget()
+        self.picker_tab_layout = QVBoxLayout(self.picker_tab_container)
+        self.picker_tab_layout.setContentsMargins(4, 0, 4, 0)
+        self.picker_tab_layout.setSpacing(0)
+        self.top_bar_layout.addWidget(self.picker_tab_container)
+
+        # Picker Tab Bar (wheel modules on Wheel page, LAB/OKLab on LAB page)
+        self.picker_tab_bar = PickerTabBar(self.picker_tab_container)
+        self.picker_tab_layout.addWidget(self.picker_tab_bar)
+
+        # Same top gap the slider tab pane puts between its tab bar and the
+        # first panel: without it the wheel tab strip hugs the colour wheel.
+        self.picker_top_gap = QWidget()
+        self.picker_top_gap.setFixedHeight(6)
+        self.picker_tab_layout.addWidget(self.picker_top_gap)
+
+        # Grip strip for the wheel module currently shown. It lives above the
+        # picker square so showing it grows the window instead of shrinking
+        # the wheel (the slider grips do the same below the picker).
+        self.wheel_grip_bar = WheelGripBar("wheel.hsv", "HSV", self.picker_tab_container)
+        self.wheel_grip_bar.setVisible(False)
+        self.picker_tab_layout.addWidget(self.wheel_grip_bar)
 
         # Stacked pane for visualizers
         self.stack = QStackedWidget()
@@ -363,10 +415,27 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.pane_wheel = WheelPane()
         wheel_layout = QVBoxLayout(self.pane_wheel)
         wheel_layout.setContentsMargins(0, 0, 0, 0)
-        self.color_wheel = ColorWheel()
-        self.color_wheel.colorChanged.connect(self.on_wheel_color_changed)
-        self.color_wheel.interactionFinished.connect(self.on_interaction_finished)
-        wheel_layout.addWidget(self.color_wheel)
+        # One real page per wheel module. The stack is switched by the top tab
+        # strip; the pages themselves are what the grip strip tears off.
+        self.wheel_panels = {}
+        self.wheel_stack = QStackedWidget()
+        self._floating_wheel_pages = {}
+        self._floating_preview_boxes = []
+        self._wheel_float_origin = {}
+        self._floating_lab_page = None
+        for _module_key in _MODULE_ORDER:
+            _panel = WheelModulePanel(_module_key, _MODULE_DEFS[_module_key]["wheel"])
+            _panel.wheel.colorChanged.connect(self.on_wheel_color_changed)
+            _panel.wheel.interactionFinished.connect(self.on_interaction_finished)
+            self.wheel_panels[_module_key] = _panel
+            self.wheel_stack.addWidget(_panel)
+        self.color_wheel = self.wheel_panels["hsv"].wheel
+        self._current_module = str(
+            self.cfg.get("colorSpaceModule", "hsv")
+        ).lower()
+        if self._current_module not in _MODULE_DEFS:
+            self._current_module = "hsv"
+        wheel_layout.addWidget(self.wheel_stack)
 
         # Source-space tracking — carries the "native" color space the user
         # last interacted with, so sync backends can write source→memory
@@ -470,6 +539,9 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         # than added by hand. Visibility and order still come from the config
         # (refresh_slider_visibility_and_order drives both).
         self.panel_host = PanelHost(self.panel_provider(), self.sliders_container)
+        # Wheel pages are dragged out of the picker into this host.
+        self.panel_host.set_allow_external_drops(True)
+        self.panel_host.set_external_drop_filter(self._can_accept_external_panel)
         self.sliders_layout.addWidget(self.panel_host)
         self.panel_host.mount_changed.connect(self._panel_mount_changed)
         self.panel_host.rearranged.connect(self._panel_rearranged)
@@ -477,6 +549,9 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         # A grip dragged clear of every host means "give it its own window".
         self.panel_host.float_requested.connect(self.float_panel)
         self.panel_host.menu_requested.connect(self.show_panel_menu)
+
+        from ui.window.picker_drop import PickerDropController
+        self.picker_drop = PickerDropController(self)
 
         # Overlapping swatches box (Floating on MainWindow to avoid clipping)
         self.preview_box = ColorPreviewBox(self)
@@ -494,12 +569,11 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         init_color = self.color_state.set_from("rgb", self.current_rgb)
         self._project_color(init_color, source="init")
 
-        # Create floating module switch button (next to ⊙/△)
-        self._init_module_button()
+        # Initialize top picker tab bar + LAB pane buttons
+        self._init_picker_tab_bar()
         self._init_lab_toggle_buttons()
 
         # Apply color-space module (wheel mode + slider set from config or default)
-        self._current_module = self.cfg.get("colorSpaceModule", "hsv")
         self._apply_module(self._current_module)
         
         # Apply slider visibility and order on startup
@@ -507,6 +581,9 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         # Re-open whatever was torn off last time (after the column exists,
         # so the panels have somewhere to come back to).
         self.restore_floating_panels()
+        if hasattr(self, "picker_drop"):
+            self.picker_drop.restore_from_config()
+            self.refresh_slider_visibility_and_order()
         self.update_mode_buttons_visibility()
         self.update_no_focus_policies()
 
@@ -576,4 +653,3 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
             except Exception:
                 pass
         return False, 0
-

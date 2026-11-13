@@ -132,6 +132,11 @@ _EN: dict[str, str] = {
     "开机自启动": "Start on login",
     "仅在画图软件前台时显示": "Show only in drawing app foreground",
     "仅在绘画软件前台时显示": "Show only when drawing app is in foreground",
+    "下拉菜单展开时自动隐藏": "Auto-hide when dropdown menu opens",
+    "绘画软件展开顶部菜单或右键下拉菜单时临时隐藏面板，关闭菜单后自动恢复":
+        "Temporarily hide the panel while a drawing app menu or dropdown is open, and restore it when closed",
+    "开启后，在 CSP 等绘画软件点开顶部下拉菜单、右键菜单或下拉列表时自动隐藏色环与浮窗，避免遮挡菜单项":
+        "When enabled, automatically hides the color wheel and floating panels while a menu bar dropdown, context menu, or dropdown list is open in CSP or other drawing apps so menu items are not covered",
     "无焦点取色模式": "No-focus pick mode",
     "绘画软件不在前台时自动隐藏悬浮面板": "Auto-hide the floating panel when the drawing app is not in the foreground",
     "开启后不会抢占绘画软件的键盘焦点，适合边画边取色": "Does not steal keyboard focus from the drawing app — ideal for picking while drawing",
@@ -148,6 +153,16 @@ _EN: dict[str, str] = {
     "显示模块切换按钮": "Show module switch button",
     "显示色环模块切换按钮": "Show wheel module switch",
     "在色环区域显示色环模块切换按钮": "Show the wheel module switch button on the wheel",
+    "显示色环模块标签栏": "Show wheel module tab bar",
+    "显示模块标签栏": "Show module tab bar",
+    "在取色区顶部显示色环模块 / LAB 模式标签栏，可拖拽标签排序":
+        "Show the wheel module / LAB mode tab bar above the picker; drag tabs to reorder",
+    "标签栏显示的模块": "Modules shown as tabs",
+    "浮出色图窗口": "Floating colour map window",
+    "浮出色图显示前景/背景色": "Show foreground/background swatches in floating colour map",
+    "浮出色图显示模式按钮": "Show mode button in floating colour map",
+    "控制拖出后的色图浮窗里是否带前景/背景色、透明色块和模式按钮":
+        "Choose whether a torn-off colour map window carries the foreground/background swatches, transparent tile and mode button",
     "显示LAB切换按钮": "Show LAB toggle button",
     "显示 LAB 切换按钮": "Show LAB toggle button",
     "显示 LAB 视图形状按钮": "Show LAB shape toggle",

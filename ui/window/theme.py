@@ -23,6 +23,7 @@ from ui.chrome_opacity import (
     with_opacity,
 )
 from ui import window_layout
+from ui.picker_panes import visible_picker_chrome_height
 from ui.ringless_mode import RINGLESS_ACTIVE_BORDER
 from ui.slider_themes import get_slider_theme
 from ui.window_layout import snap_border_width
@@ -450,10 +451,35 @@ class ThemeMixin:
         host = getattr(self, "panel_host", None)
         if host is not None:
             host.apply_chrome(self._floating_chrome)
+        picker_drop = getattr(self, "picker_drop", None)
+        if picker_drop is not None:
+            picker_drop.apply_chrome(self._floating_chrome)
+        picker_tabs = getattr(self, "picker_tab_bar", None)
+        if picker_tabs is not None:
+            picker_tabs.apply_chrome(self._floating_chrome)
+        wheel_grip = getattr(self, "wheel_grip_bar", None)
+        if wheel_grip is not None:
+            wheel_grip.apply_chrome(self._floating_chrome)
+        picker_gap = getattr(self, "picker_top_gap", None)
+        if picker_gap is not None:
+            picker_gap.setFixedHeight(
+                max(0, int(self._floating_chrome.top_gap)))
         floating = getattr(self, "floating_windows", None)
         if callable(floating):
             for window in floating().values():
                 window.apply_chrome(self._floating_chrome)
+                try:
+                    pids = window.panel_ids
+                except RuntimeError:
+                    continue
+                for pid in pids:
+                    try:
+                        panel = (window.panel(pid)
+                                 if hasattr(window, "panel") else None)
+                    except RuntimeError:
+                        continue
+                    if panel is not None and hasattr(panel, "apply_chrome"):
+                        panel.apply_chrome(self._floating_chrome)
 
         _set_css(self, f"""
             QWidget#CentralWidget {{
@@ -625,6 +651,8 @@ class ThemeMixin:
         # including the LAB shape/harmony toggles, share one chrome).
         btn_w = int(28 * scale)
         btn_h = int(28 * scale)
+        btn_tc = QColor(text)
+        btn_fg_css = f"rgba({btn_tc.red()}, {btn_tc.green()}, {btn_tc.blue()}, 115)"
         mode_buttons = [
             self.btn_mode_wheel,
             self.btn_mode_lab,
@@ -640,7 +668,7 @@ class ThemeMixin:
                         background-color: {barBg};
                         border: 1px solid {borderColor};
                         border-radius: {int(4 * scale)}px;
-                        color: {text};
+                        color: {btn_fg_css};
                         font-size: {int(13 * scale)}px;
                         font-weight: bold;
                     }}
@@ -706,7 +734,10 @@ class ThemeMixin:
                 self.settings_sidebar.raise_()
             return
 
-        title_offset = _title_bar_content_offset(self.title_bar, self.main_layout)
+        title_offset = (
+            _title_bar_content_offset(self.title_bar, self.main_layout)
+            + visible_picker_chrome_height(self)
+        )
         sliders_h = self.sliders_container.sizeHint().height()
         h = self.height()
         place = getattr(self, "_place_preview_box", None)

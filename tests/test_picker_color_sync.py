@@ -246,3 +246,42 @@ def test_l_gamut_range_moves_outside_gamut_and_syncs_with_right_slider(shared_wi
     assert abs(win.lab_slider._gamut_max - g_oklab._gamut_max) <= 1
 
 
+def test_lab_and_oklab_l_drag_to_extreme_and_back_preserves_chromaticity(shared_win):
+    """Dragging L_lab or L_oklab to 0/100 (achromatic) and back to mid-L must
+    preserve (a, b) slider values, the L groove gradient, and the colorful RGB."""
+    from ui.color_model import Color
+
+    win = shared_win
+    win.slider_containers["LAB"].show()
+    win.slider_containers["OKLab"].show()
+
+    for slider_l_key, ab_keys in [
+        ("L_lab", ("a_lab", "b_lab")),
+        ("L_oklab", ("a_oklab", "b_oklab")),
+    ]:
+        win._project_color(Color.from_rgb(240, 60, 80), source="init")
+        win._apply_deferred_color_updates()
+
+        s_l = win.slider_widgets[slider_l_key][0]
+        s_a = win.slider_widgets[ab_keys[0]][0]
+        s_b = win.slider_widgets[ab_keys[1]][0]
+
+        orig_l = s_l.value()
+        orig_ab = (s_a.value(), s_b.value())
+        orig_grad = [(st, c.getRgb()) for st, c in s_l.gradient_colors]
+        assert orig_ab != (0, 0)
+
+        for extreme in (0, 100):
+            s_l.setValue(extreme)
+            win._apply_deferred_color_updates()
+            assert (s_a.value(), s_b.value()) == orig_ab
+            assert [(st, c.getRgb()) for st, c in s_l.gradient_colors] == orig_grad
+
+        s_l.setValue(orig_l)
+        win._apply_deferred_color_updates()
+        assert (s_a.value(), s_b.value()) == orig_ab
+        r, g, b = win.current_rgb
+        assert r - g > 120, f"{slider_l_key} lost saturation after L drag: {(r, g, b)}"
+
+
+

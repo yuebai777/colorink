@@ -12,15 +12,21 @@ usable while the drawing program keeps the keyboard.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import sys
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QEvent, QPoint, QRect, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QPainter
-from PyQt6.QtWidgets import QStyle, QStyleOption, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QSizePolicy, QStyle, QStyleOption, QVBoxLayout, QWidget
 
-from ui.panels.drag import PanelHolder, PanelTitleBar
+from ui.panels.drag import DropIndicator, PanelHolder, PanelTitleBar
 from ui.panels.host import PanelHost
+from ui.panels.transitions import (
+    animate_window_opacity,
+    cancel_window_animations,
+    reveal_floating_window,
+)
 from ui.panels.tree import Leaf, Node, Split, Tabs
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +158,8 @@ class FloatingPanelWindow(PanelHolder, QWidget):
     moving_at = pyqtSignal(str, object)
     #: The title bar was right-clicked: (panel id, global position).
     menu_requested = pyqtSignal(str, object)
+    #: The title bar's left dropdown icon was clicked: global position.
+    options_requested = pyqtSignal(object)
     #: The window settled somewhere new — worth writing down.
     geometry_changed = pyqtSignal(str)
     #: A panel was dragged out of this window: (panel id, window).
@@ -165,6 +173,7 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         self.panel_id = panel_id
         self._panel: QWidget | None = None
         self._panels: dict[str, QWidget] = {}
+        self._title_override: str | None = None
         self._tree: Node = Leaf(panel_id)
         self._no_focus = bool(no_focus)
         self._chrome = None
@@ -201,6 +210,8 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         #: not in the foreground. The panel's own show/hide still updates this
         #: window's Qt state, but only the foreground restore may show it.
         self._foreground_hidden = False
+        self._suppress_auto_show = False
+        self._drag_dimmed = False
         self.setMouseTracking(True)
         self.setAcceptDrops(True)
 
@@ -215,6 +226,8 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         self.title_bar.moving_at.connect(
             lambda point: self.moving_at.emit(self.panel_id, point))
         self.title_bar.menu_requested.connect(self.menu_requested.emit)
+        self.title_bar.dropdown_requested.connect(
+            lambda _pid, point: self.options_requested.emit(point))
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(0)
@@ -230,6 +243,7 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         self.panel_host = PanelHost(self._resolve_panel, self.body)
         self.panel_host.rearranged.connect(self._on_host_rearranged)
         self.panel_host.tab_changed.connect(self._on_host_tab_changed)
+        self.panel_host.mount_finished.connect(self._sync_body_fill_policy)
         # A rebuild detaches and re-adopts every panel; the window decides its
         # own visibility again once that is over, so a transient hide cannot
         # leave it parked off screen (the reported "抓手开关一按，浮窗就没了").
@@ -313,7 +327,8 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         widget.removeEventFilter(self)
         widget.installEventFilter(self)
         self.set_tree(Leaf(pid))
-        self.setVisible(not widget.isHidden())
+        if not getattr(self, "_suppress_auto_show", False):
+            self.setVisible(not widget.isHidden())
 
     def take_panel(self, panel_id: str | None = None) -> QWidget | None:
         pid = panel_id or self.panel_id
@@ -322,6 +337,7 @@ class FloatingPanelWindow(PanelHolder, QWidget):
             widget = self._panel
         if widget is not None:
             widget.removeEventFilter(self)
+            widget.hide()
             widget.setParent(None)
             if self._panel is widget:
                 self._panel = next(iter(self._panels.values()), None)
@@ -373,6 +389,40 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         self.geometry_changed.emit(self.panel_id)
         return True
 
+    def _sync_body_fill_policy(self) -> None:
+        """Let wheel/LAB pages expand with the window; keep slider stacks top-anchored."""
+        host = getattr(self, "panel_host", None)
+        body = getattr(self, "body", None)
+        if host is None or body is None or sip_isdeleted(host) or sip_isdeleted(body):
+            return
+        body_box = body.layout()
+        fills = host.has_fill_holder()
+        if fills:
+            host.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Expanding,
+            )
+            if body_box is not None:
+                for i in reversed(range(body_box.count())):
+                    item = body_box.itemAt(i)
+                    if item is not None and item.spacerItem() is not None:
+                        body_box.takeAt(i)
+                body_box.setStretchFactor(host, 1)
+        else:
+            host.setSizePolicy(
+                QSizePolicy.Policy.Preferred,
+                QSizePolicy.Policy.Maximum,
+            )
+            if body_box is not None:
+                body_box.setStretchFactor(host, 0)
+                has_spacer = any(
+                    body_box.itemAt(i) is not None
+                    and body_box.itemAt(i).spacerItem() is not None
+                    for i in range(body_box.count())
+                )
+                if not has_spacer:
+                    body_box.addStretch(1)
+
     def adjust_size_for_content(self, shrink: bool = False,
                                 min_content_h: int = 0) -> None:
         """Fit the window to its content.
@@ -404,6 +454,13 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         gap = chrome.grip_gap if chrome is not None else 4
         top_gap = max(0, int(getattr(chrome, "top_gap", 0) or 0))
         needed_h = hint_h + bar + border * 2 + int(pad[1]) + int(gap) + top_gap * 2
+        if self.panel_host.has_fill_holder() and len(self.panel_ids) <= 1:
+            min_w = max(160, int(180 * scale))
+            min_h = max(180, int(200 * scale))
+            self.setMinimumSize(min_w, min_h)
+            if self.width() < min_w or self.height() < min_h:
+                self.resize(max(self.width(), min_w), max(self.height(), min_h))
+            return
         min_w = max(160, int(200 * scale))
         self.setMinimumSize(min_w, needed_h)
         if shrink and not getattr(self, "_user_resized", False):
@@ -473,16 +530,15 @@ class FloatingPanelWindow(PanelHolder, QWidget):
             if (box is not None and not self.panel_host._is_deleted(box)
                     and self.panel_host._box_is_mine(box)):
                 from ui.panels import rearrange
-                from ui.panels.host import DropIndicator
                 zone = target[1]
                 effective_h = max(1, box.height())
                 x, y, w, h = rearrange.drop_rect(box.width(), effective_h, zone)
                 if self.panel_host._indicator is None:
                     self.panel_host._indicator = DropIndicator(self.panel_host)
-                self.panel_host._indicator.setGeometry(
-                    QRect(box.mapTo(self.panel_host, QPoint(x, y)), QSize(w, h)))
-                self.panel_host._indicator.show()
-                self.panel_host._indicator.raise_()
+                self.panel_host._indicator.show_drop(
+                    QRect(box.mapTo(self.panel_host, QPoint(x, y)), QSize(w, h)),
+                    zone=zone,
+                )
                 return target
         return None
 
@@ -514,6 +570,9 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         self.adjust_size_for_content(shrink=True)
         self.geometry_changed.emit(self.panel_id)
 
+    def current_panel_id(self) -> str | None:
+        return self.panel_host.current_panel_id() if self.panel_host else self.panel_id
+
     def _on_host_tab_changed(self, idx: int):
         self._update_window_title()
         self.adjust_size_for_content(shrink=True)
@@ -529,6 +588,12 @@ class FloatingPanelWindow(PanelHolder, QWidget):
 
     def _update_window_title(self) -> None:
         from ui.panels import registry
+        if self._title_override:
+            title = self._title_override
+            self.setWindowTitle(title)
+            self.title_bar.title = title
+            self.title_bar.update()
+            return
         pids = self.panel_ids
         if not pids:
             return
@@ -561,6 +626,11 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         if not getattr(self, "_drag_enabled_pref", True) or not self._drag_target_alive():
             event.ignore()
             return
+        from ui.lab_float import LAB_FLOAT_ID
+        if (self.panel_host is not None
+                and self.panel_host._dragged_panel(event) == LAB_FLOAT_ID):
+            event.ignore()
+            return
         if self.panel_host is not None and self.panel_host._dragged_panel(event):
             event.acceptProposedAction()
         else:
@@ -568,6 +638,11 @@ class FloatingPanelWindow(PanelHolder, QWidget):
 
     def dragMoveEvent(self, event):
         if not getattr(self, "_drag_enabled_pref", True) or not self._drag_target_alive():
+            event.ignore()
+            return
+        from ui.lab_float import LAB_FLOAT_ID
+        if (self.panel_host is not None
+                and self.panel_host._dragged_panel(event) == LAB_FLOAT_ID):
             event.ignore()
             return
         if self.show_drop_hint(event.position().toPoint()) is not None:
@@ -586,6 +661,12 @@ class FloatingPanelWindow(PanelHolder, QWidget):
             return
         local_pos = event.position().toPoint()
         panel_id = self.panel_host._dragged_panel(event)
+        from ui.lab_float import LAB_FLOAT_ID
+        if panel_id == LAB_FLOAT_ID:
+            # Dragging the docked LAB grip over a float means "tear off a
+            # standalone LAB copy"; let the drag source handle that.
+            event.ignore()
+            return
         if panel_id is not None:
             target = self.drop_target_at(local_pos)
             self.clear_drop_hint()
@@ -601,6 +682,16 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         rect = self.geometry()
         return (rect.x(), rect.y(), rect.width(), rect.height())
 
+    @contextmanager
+    def batch_setup(self):
+        """Suppress intermediate auto-shows while mounting and sizing a window."""
+        prev = getattr(self, "_suppress_auto_show", False)
+        self._suppress_auto_show = True
+        try:
+            yield
+        finally:
+            self._suppress_auto_show = prev
+
     def show_without_stealing_focus(self) -> None:
         """Show the window the way the picker shows itself."""
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating,
@@ -608,9 +699,39 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         self.show()
         apply_no_activate(self, self._no_focus)
 
+    def reveal_animated(self, duration_ms: int = 155) -> None:
+        """Reveal the window once at its settled rect with a smooth fade-in."""
+        if getattr(self, "_foreground_hidden", False):
+            return
+        reveal_floating_window(
+            self,
+            self.show_without_stealing_focus,
+            target_opacity=1.0,
+            duration_ms=duration_ms,
+        )
+
+    def set_drag_dimmed(self, dimmed: bool) -> None:
+        """Gently soften opacity while dragged over an active dock zone."""
+        dimmed = bool(dimmed)
+        if getattr(self, "_drag_dimmed", False) == dimmed:
+            return
+        self._drag_dimmed = dimmed
+        if not self.isVisible():
+            self.setWindowOpacity(1.0)
+            return
+        animate_window_opacity(
+            self,
+            0.84 if dimmed else 1.0,
+            duration_ms=110,
+            attr="_drag_opacity_anim",
+        )
+
     def set_foreground_hidden(self, hidden: bool) -> None:
         """Park this window because the whole palette is out of the foreground."""
         self._foreground_hidden = bool(hidden)
+        if self._foreground_hidden:
+            self._drag_dimmed = False
+            cancel_window_animations(self, restore_opacity=1.0)
 
     def force_native_visible(self, visible: bool) -> None:
         """Make the real HWND follow *visible*.
@@ -760,6 +881,8 @@ class FloatingPanelWindow(PanelHolder, QWidget):
             if event.type() == QEvent.Type.Hide and not obj.isHidden():
                 return False
             should_show = self._should_be_visible(obj)
+            if should_show and getattr(self, "_suppress_auto_show", False):
+                return False
             if self.isVisible() != should_show:
                 self._updating_visibility = True
                 try:
@@ -784,6 +907,8 @@ class FloatingPanelWindow(PanelHolder, QWidget):
                 should_show = self._should_be_visible(None)
         except RuntimeError:
             # The C++ object went away between the signal and this call.
+            return
+        if should_show and getattr(self, "_suppress_auto_show", False):
             return
         if self.isVisible() != should_show:
             self._updating_visibility = True
@@ -903,8 +1028,14 @@ class FloatingPanelWindow(PanelHolder, QWidget):
             self.show_without_stealing_focus()
 
     def _on_dropped(self, global_pos) -> None:
+        self.set_drag_dimmed(False)
         self.dropped_at.emit(self.panel_id, global_pos)
         self.geometry_changed.emit(self.panel_id)
+
+    def hideEvent(self, event):
+        self._drag_dimmed = False
+        cancel_window_animations(self, restore_opacity=1.0)
+        super().hideEvent(event)
 
     def nativeEvent(self, eventType, message):
         if sys.platform == "win32" and eventType == b"windows_generic_MSG":
