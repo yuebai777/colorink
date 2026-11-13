@@ -422,3 +422,40 @@ class TestTransparentTileAntialiasingAndAlignment:
         bot_blue = [y for y in range(h_px // 2, h_px) if is_blue_border(img.pixelColor(mid_x, y))]
         assert top_blue and bot_blue
         assert abs(len(top_blue) - len(bot_blue)) <= 1, (dpr, top_blue, bot_blue)
+
+    def test_legacy_circles_have_transparent_ring_gap_without_back_bleed(self, qapp):
+        """Legacy FG/BG circles leave a transparent gap ring between the outer
+        border ring and inner color disc, and the overlapped back circle is
+        clipped out so it never bleeds into the front circle's gap ring."""
+        import math
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtWidgets import QWidget
+
+        box = make_preview_box()
+        box.position_mode = "bottom-left"
+        box.resize_and_position(304, 30, 400, 100, "fg")
+        box.set_colors(QColor(134, 149, 213), QColor(255, 0, 0))
+
+        dpr = 2.0
+        img = QImage(
+            int(box.width() * dpr),
+            int(box.height() * dpr),
+            QImage.Format.Format_ARGB32_Premultiplied,
+        )
+        img.setDevicePixelRatio(dpr)
+        img.fill(Qt.GlobalColor.transparent)
+        box.render(img, QPoint(), flags=QWidget.RenderFlag.DrawChildren)
+
+        fg_cx, fg_cy, fg_r, bg_cx, bg_cy, _ = box.legacy_circle_geometry()
+        # Sample along the ray from FG center toward BG center right in the
+        # annular gap (r - 2.0, between inner disc r-2.75 and outer stroke r-1.25).
+        dx = bg_cx - fg_cx
+        dy = bg_cy - fg_cy
+        dist = math.hypot(dx, dy)
+        gap_r = fg_r - 2.0
+        gx = int(round((fg_cx + (dx / dist) * gap_r) * dpr))
+        gy = int(round((fg_cy + (dy / dist) * gap_r) * dpr))
+        gap_pixel = img.pixelColor(gx, gy)
+        # Must be transparent (and must NOT contain the red BG circle underneath)
+        assert gap_pixel.alpha() == 0, f"Expected transparent gap ring pixel, got {gap_pixel.getRgb()}"
+

@@ -19,6 +19,17 @@ class ColorSlotsMixin:
         else:
             self.select_fg_slot()
 
+    def _iter_floating_previews(self):
+        seen = set()
+        for box in list(getattr(self, "_floating_preview_boxes", None) or ()):
+            if box is not None and id(box) not in seen:
+                seen.add(id(box))
+                yield box
+        lab_page = getattr(self, "_floating_lab_page", None)
+        lab_box = getattr(lab_page, "preview", None) if lab_page is not None else None
+        if lab_box is not None and id(lab_box) not in seen:
+            yield lab_box
+
     def select_fg_slot(self):
         # Clicking the fg swatch restores an opaque fg: clear any transparent
         # state so its highlight returns immediately.
@@ -29,6 +40,13 @@ class ColorSlotsMixin:
             self._bg_source_values = self._source_values
             self.active_slot = "fg"
             self.preview_box.update_slot_borders(self.active_slot)
+            iter_previews = getattr(self, "_iter_floating_previews", None)
+            if callable(iter_previews):
+                for box in iter_previews():
+                    try:
+                        box.update_slot_borders(self.active_slot)
+                    except RuntimeError:
+                        continue
             # Restore fg source
             self._source_space = self._fg_source_space
             self._source_values = self._fg_source_values
@@ -46,6 +64,13 @@ class ColorSlotsMixin:
             self._fg_source_values = self._source_values
             self.active_slot = "bg"
             self.preview_box.update_slot_borders(self.active_slot)
+            iter_previews = getattr(self, "_iter_floating_previews", None)
+            if callable(iter_previews):
+                for box in iter_previews():
+                    try:
+                        box.update_slot_borders(self.active_slot)
+                    except RuntimeError:
+                        continue
             # Restore bg source
             self._source_space = self._bg_source_space
             self._source_values = self._bg_source_values
@@ -87,6 +112,13 @@ class ColorSlotsMixin:
         else:
             self._bg_transparent = transparent
         self.preview_box.set_transparent(slot, transparent)
+        iter_previews = getattr(self, "_iter_floating_previews", None)
+        if callable(iter_previews):
+            for box in iter_previews():
+                try:
+                    box.set_transparent(slot, transparent)
+                except RuntimeError:
+                    continue
         print(f"[Transparent] {slot} transparent={transparent}")
         if hasattr(self, 'sync_thread') and self.sync_thread.isRunning():
             color_index = 0 if slot == "fg" else 1

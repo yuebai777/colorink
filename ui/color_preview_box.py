@@ -20,7 +20,7 @@ from ui.ringless_mode import (
     centered_control_offset,
     ringless_swatch_row,
 )
-from ui.transparent_swatch import TransparentTile, apply_preview_mouse_mask
+from ui.transparent_swatch import TransparentTile, apply_preview_mouse_mask, clip_out_circle
 
 _STROKE_PAD = 3  # Default padding around swatches for the compact control bar
 
@@ -176,21 +176,15 @@ class ColorPreviewBox(QWidget):
     # 鈹€鈹€ Drawing 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     def draw_circle(self, painter, cx, cy, r, color, active):
-        # Draw shadow
-        painter.setBrush(QBrush(QColor(0, 0, 0, 45)))
+        # Inner color disc (inset to leave a transparent gap ring inside the outer border)
+        r_inner = max(1.0, r - 2.75)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(QPointF(cx - 0.5, cy + 1.5), r, r)
-        
-        # Draw fill
         painter.setBrush(QBrush(color))
-        
-        if active:
-            # Active slot gets a nice distinct blue border
-            painter.setPen(QPen(self.active_border_color, 2.5))
-        else:
-            # Inactive slot gets a thin light gray border
-            painter.setPen(QPen(self.inactive_border_color, 1.0))
-            
+        painter.drawEllipse(QPointF(cx, cy), r_inner, r_inner)
+
+        # Outer border ring
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(self.active_border_color, 2.5) if active else QPen(self.inactive_border_color, 1.0))
         painter.drawEllipse(QPointF(cx, cy), r, r)
 
     def _draw_ringless_paint(self, painter: QPainter) -> None:
@@ -266,10 +260,14 @@ class ColorPreviewBox(QWidget):
             fg_active = self.active_slot == "fg" and not self.fg_transparent
             bg_active = self.active_slot == "bg" and not self.bg_transparent
             if self.active_slot == "fg":
+                clip_out_circle(painter, self.rect(), fg_cx, fg_cy, fg_r)
                 self.draw_circle(painter, bg_cx, bg_cy, bg_r, self.bg_color, bg_active)
+                painter.setClipping(False)
                 self.draw_circle(painter, fg_cx, fg_cy, fg_r, self.fg_color, fg_active)
             else:
+                clip_out_circle(painter, self.rect(), bg_cx, bg_cy, bg_r)
                 self.draw_circle(painter, fg_cx, fg_cy, fg_r, self.fg_color, fg_active)
+                painter.setClipping(False)
                 self.draw_circle(painter, bg_cx, bg_cy, bg_r, self.bg_color, bg_active)
         finally:
             painter.end()

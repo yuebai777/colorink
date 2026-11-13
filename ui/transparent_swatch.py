@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 from typing import cast
 
-from PyQt6.QtCore import QRect, QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import QPointF, QRect, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -90,6 +90,18 @@ def apply_preview_mouse_mask(box) -> None:
         box.clearMask()
     else:
         box.setMask(region)
+
+
+def clip_out_circle(
+    painter: QPainter, rect: QRect, cx: float, cy: float, r: float,
+) -> None:
+    """Clip *painter* to *rect* minus the front circle at *(cx, cy, r)* so
+    the back circle does not bleed through the front circle's transparent ring gap."""
+    clip = QPainterPath()
+    clip.addRect(QRectF(rect))
+    hole = QPainterPath()
+    hole.addEllipse(QPointF(cx, cy), r, r)
+    painter.setClipPath(clip.subtracted(hole))
 
 
 def _checker_pixmap(cell: int = 4, dpr: float = 1.0) -> QPixmap:
@@ -238,17 +250,31 @@ class TransparentTile(QWidget):
                 max(1.0, self.height() - stroke_w),
             )
             layout = getattr(parent, "_ringless_layout", None)
+            dpr = self.devicePixelRatioF() if hasattr(self, "devicePixelRatioF") else 1.0
             if layout is not None and bool(
                 getattr(layout, "controls_enabled", False)
             ):
                 radius = max(0.0, float(layout.corner_radius) - inset + 0.5)
+                painter.setBrush(QBrush(_checker_pixmap(4, dpr)))
+                painter.setPen(QPen(border_color, stroke_w))
+                painter.drawRoundedRect(rect, radius, radius)
             else:
-                radius = rect.height() / 2.0
+                inner_inset = 3.0
+                inner_rect = QRectF(
+                    inner_inset,
+                    inner_inset,
+                    max(1.0, self.width() - 2.0 * inner_inset),
+                    max(1.0, self.height() - 2.0 * inner_inset),
+                )
+                inner_radius = inner_rect.height() / 2.0
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(_checker_pixmap(4, dpr)))
+                painter.drawRoundedRect(inner_rect, inner_radius, inner_radius)
 
-            dpr = self.devicePixelRatioF() if hasattr(self, "devicePixelRatioF") else 1.0
-            painter.setBrush(QBrush(_checker_pixmap(4, dpr)))
-            painter.setPen(QPen(border_color, stroke_w))
-            painter.drawRoundedRect(rect, radius, radius)
+                radius = rect.height() / 2.0
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(QPen(border_color, stroke_w))
+                painter.drawRoundedRect(rect, radius, radius)
         finally:
             painter.end()
 
