@@ -132,10 +132,21 @@ struct D3DResources {
 unsafe impl Send for D3DResources {}
 unsafe impl Sync for D3DResources {}
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegionRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+const MAX_REGIONS: usize = 64;
+
 struct ScreenChannels {
     output_idx: usize,
     rect: RECT,
-    hwnd: HWND,
+    hwnds: Vec<HWND>,
     dxgi_surf1: IDXGISurface1,
     rtv: ID3D11RenderTargetView,
     ping_pong_srv: ID3D11ShaderResourceView,
@@ -160,10 +171,8 @@ static IS_HEALTHY: AtomicBool = AtomicBool::new(true);
 static TARGET_SCREEN: AtomicI32 = AtomicI32::new(-1);
 static FILTER_MODE: AtomicI32 = AtomicI32::new(0);
 static REGION_ENABLED: AtomicBool = AtomicBool::new(false);
-static REGION_X: AtomicI32 = AtomicI32::new(0);
-static REGION_Y: AtomicI32 = AtomicI32::new(0);
-static REGION_W: AtomicI32 = AtomicI32::new(0);
-static REGION_H: AtomicI32 = AtomicI32::new(0);
+static REGION_GEN: AtomicU64 = AtomicU64::new(0);
+static REGIONS: Mutex<Vec<RegionRect>> = Mutex::new(Vec::new());
 static FRAME_COUNT: AtomicU64 = AtomicU64::new(0);
 static CNT_ACQ_OK: AtomicU64 = AtomicU64::new(0);
 static CNT_ACQ_TIMEOUT: AtomicU64 = AtomicU64::new(0);
@@ -567,6 +576,8 @@ fn capture_worker_thread(
 
     let mut dup: Option<IDXGIOutputDuplication> = None;
     let mut dup_fail_count = 0;
+    let mut cached_region_gen = u64::MAX;
+    let mut cached_regions: Vec<RegionRect> = Vec::new();
 
     while running.load(Ordering::Relaxed) {
         if !active.load(Ordering::Relaxed) {
@@ -577,8 +588,37 @@ fn capture_worker_thread(
             continue;
         }
 
+        let cur_region_gen = REGION_GEN.load(Ordering::Acquire);
+        if cur_region_gen != cached_region_gen {
+            if let Ok(guard) = REGIONS.lock() {
+                cached_regions.clear();
+                cached_regions.extend_from_slice(&guard);
+            }
+            if cached_region_gen != u64::MAX && dup.is_some() {
+                // Re-acquire duplication on region change so static desktops immediately provide a fresh full texture.
+                dup = None;
+            }
+            cached_region_gen = cur_region_gen;
+        }
+
         let reg_en = REGION_ENABLED.load(Ordering::Relaxed);
-        if !reg_en {
+        if reg_en {
+            let intersects_screen = cached_regions.iter().any(|r| {
+                r.w > 0
+                    && r.h > 0
+                    && (r.x + r.w) > screen_rect.left
+                    && r.x < screen_rect.right
+                    && (r.y + r.h) > screen_rect.top
+                    && r.y < screen_rect.bottom
+            });
+            if !intersects_screen {
+                if dup.is_some() {
+                    dup = None;
+                }
+                thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+        } else {
             let req_target = target_screen.load(Ordering::Relaxed);
             if req_target >= 0 && req_target as usize != output_idx {
                 if dup.is_some() {
@@ -641,38 +681,39 @@ fn capture_worker_thread(
                         {
                             let ctx = context.lock().unwrap();
                             unsafe {
-                                if REGION_ENABLED.load(Ordering::Relaxed) {
-                                    let rx = REGION_X.load(Ordering::Relaxed);
-                                    let ry = REGION_Y.load(Ordering::Relaxed);
-                                    let rw = REGION_W.load(Ordering::Relaxed);
-                                    let rh = REGION_H.load(Ordering::Relaxed);
-                                    let ix1 = rx.max(screen_rect.left);
-                                    let iy1 = ry.max(screen_rect.top);
-                                    let ix2 = (rx + rw).min(screen_rect.right);
-                                    let iy2 = (ry + rh).min(screen_rect.bottom);
-                                    if ix2 > ix1 && iy2 > iy1 {
-                                        let left = (ix1 - screen_rect.left) as u32;
-                                        let top = (iy1 - screen_rect.top) as u32;
-                                        let right = (ix2 - screen_rect.left) as u32;
-                                        let bottom = (iy2 - screen_rect.top) as u32;
-                                        let src_box = D3D11_BOX {
-                                            left,
-                                            top,
-                                            front: 0,
-                                            right,
-                                            bottom,
-                                            back: 1,
-                                        };
-                                        ctx.0.CopySubresourceRegion(
-                                            &ping_pong_tex,
-                                            0,
-                                            left,
-                                            top,
-                                            0,
-                                            &tex,
-                                            0,
-                                            Some(&src_box),
-                                        );
+                                if reg_en {
+                                    for r in &cached_regions {
+                                        if r.w <= 0 || r.h <= 0 {
+                                            continue;
+                                        }
+                                        let ix1 = r.x.max(screen_rect.left);
+                                        let iy1 = r.y.max(screen_rect.top);
+                                        let ix2 = (r.x + r.w).min(screen_rect.right);
+                                        let iy2 = (r.y + r.h).min(screen_rect.bottom);
+                                        if ix2 > ix1 && iy2 > iy1 {
+                                            let left = (ix1 - screen_rect.left) as u32;
+                                            let top = (iy1 - screen_rect.top) as u32;
+                                            let right = (ix2 - screen_rect.left) as u32;
+                                            let bottom = (iy2 - screen_rect.top) as u32;
+                                            let src_box = D3D11_BOX {
+                                                left,
+                                                top,
+                                                front: 0,
+                                                right,
+                                                bottom,
+                                                back: 1,
+                                            };
+                                            ctx.0.CopySubresourceRegion(
+                                                &ping_pong_tex,
+                                                0,
+                                                left,
+                                                top,
+                                                0,
+                                                &tex,
+                                                0,
+                                                Some(&src_box),
+                                            );
+                                        }
                                     }
                                 } else {
                                     ctx.0.CopyResource(&ping_pong_tex, &tex);
@@ -710,40 +751,41 @@ fn capture_worker_thread(
     println!("[Capture {}] Exiting cleanly.", output_idx);
 }
 
-fn compute_screen_window_rect(
+fn compute_screen_target_rects(
     screen_rect: &RECT,
     output_idx: usize,
     req_target: i32,
-) -> Option<(i32, i32, i32, i32, i32, i32, bool)> {
-    if REGION_ENABLED.load(Ordering::Relaxed) {
-        let rx = REGION_X.load(Ordering::Relaxed);
-        let ry = REGION_Y.load(Ordering::Relaxed);
-        let rw = REGION_W.load(Ordering::Relaxed);
-        let rh = REGION_H.load(Ordering::Relaxed);
-        if rw <= 0 || rh <= 0 {
-            return None;
+    reg_en: bool,
+    regions: &[RegionRect],
+    out: &mut Vec<(i32, i32, i32, i32, i32, i32)>,
+) {
+    out.clear();
+    if reg_en {
+        for r in regions {
+            if r.w <= 0 || r.h <= 0 {
+                continue;
+            }
+            let ix1 = r.x.max(screen_rect.left);
+            let iy1 = r.y.max(screen_rect.top);
+            let ix2 = (r.x + r.w).min(screen_rect.right);
+            let iy2 = (r.y + r.h).min(screen_rect.bottom);
+            if ix2 > ix1 && iy2 > iy1 {
+                let win_w = ix2 - ix1;
+                let win_h = iy2 - iy1;
+                let local_left = ix1 - screen_rect.left;
+                let local_top = iy1 - screen_rect.top;
+                out.push((ix1, iy1, win_w, win_h, local_left, local_top));
+            }
         }
-        let ix1 = rx.max(screen_rect.left);
-        let iy1 = ry.max(screen_rect.top);
-        let ix2 = (rx + rw).min(screen_rect.right);
-        let iy2 = (ry + rh).min(screen_rect.bottom);
-        if ix2 <= ix1 || iy2 <= iy1 {
-            return None;
-        }
-        let win_w = ix2 - ix1;
-        let win_h = iy2 - iy1;
-        let local_left = ix1 - screen_rect.left;
-        let local_top = iy1 - screen_rect.top;
-        Some((ix1, iy1, win_w, win_h, local_left, local_top, true))
     } else {
         if req_target >= 0 && req_target as usize != output_idx {
-            return None;
+            return;
         }
         let x = screen_rect.left;
         let y = screen_rect.top;
         let win_w = (screen_rect.right - screen_rect.left).max(1);
         let win_h = (screen_rect.bottom - screen_rect.top).max(1);
-        Some((x, y, win_w, win_h, 0, 0, false))
+        out.push((x, y, win_w, win_h, 0, 0));
     }
 }
 
@@ -868,7 +910,7 @@ fn render_worker_thread(
                                                         screens.push(ScreenChannels {
                                                             output_idx: out_idx as usize,
                                                             rect: desc.DesktopCoordinates,
-                                                            hwnd,
+                                                            hwnds: vec![hwnd],
                                                             dxgi_surf1,
                                                             rtv,
                                                             ping_pong_srv,
@@ -900,9 +942,14 @@ fn render_worker_thread(
         return;
     }
 
-    let mut screen_applied_rects: Vec<Option<(i32, i32, i32, i32, bool)>> = vec![None; screens.len()];
+    let mut screen_applied_rects: Vec<Vec<Option<(i32, i32, i32, i32)>>> =
+        screens.iter().map(|s| vec![None; s.hwnds.len()]).collect();
+    let mut screen_applied_clipped: Vec<bool> = vec![false; screens.len()];
     let mut screen_applied_modes: Vec<i32> = vec![-1; screens.len()];
     let mut screen_has_presented = vec![false; screens.len()];
+    let mut cached_region_gen = u64::MAX;
+    let mut cached_regions: Vec<RegionRect> = Vec::new();
+    let mut target_rects: Vec<(i32, i32, i32, i32, i32, i32)> = Vec::new();
 
     while running.load(Ordering::Relaxed) {
         // Window message pump for all windows and thread messages on this thread
@@ -916,14 +963,25 @@ fn render_worker_thread(
 
         let is_act = active.load(Ordering::Relaxed);
         let req_target = target_screen.load(Ordering::Relaxed);
+        let cur_region_gen = REGION_GEN.load(Ordering::Acquire);
+        if cur_region_gen != cached_region_gen {
+            if let Ok(guard) = REGIONS.lock() {
+                cached_regions.clear();
+                cached_regions.extend_from_slice(&guard);
+            }
+            cached_region_gen = cur_region_gen;
+        }
+        let reg_en = REGION_ENABLED.load(Ordering::Relaxed);
 
         if !is_act {
             for (idx, screen) in screens.iter().enumerate() {
-                if screen_applied_rects[idx].is_some() {
-                    unsafe {
-                        let _ = ShowWindow(screen.hwnd, SW_HIDE);
+                for (j, &hwnd) in screen.hwnds.iter().enumerate() {
+                    if screen_applied_rects[idx][j].is_some() {
+                        unsafe {
+                            let _ = ShowWindow(hwnd, SW_HIDE);
+                        }
+                        screen_applied_rects[idx][j] = None;
                     }
-                    screen_applied_rects[idx] = None;
                 }
             }
 
@@ -948,19 +1006,60 @@ fn render_worker_thread(
         let mut any_rendered = false;
         let cur_mode = mode.load(Ordering::Relaxed);
 
-        for (idx, screen) in screens.iter().enumerate() {
-            let target_geom = compute_screen_window_rect(&screen.rect, screen.output_idx, req_target);
-            let Some((win_x, win_y, win_w, win_h, local_left, local_top, is_clipped)) = target_geom else {
-                if screen_applied_rects[idx].is_some() {
-                    unsafe {
-                        let _ = ShowWindow(screen.hwnd, SW_HIDE);
+        for (idx, screen) in screens.iter_mut().enumerate() {
+            compute_screen_target_rects(
+                &screen.rect,
+                screen.output_idx,
+                req_target,
+                reg_en,
+                &cached_regions,
+                &mut target_rects,
+            );
+            if target_rects.is_empty() {
+                for (j, &hwnd) in screen.hwnds.iter().enumerate() {
+                    if screen_applied_rects[idx][j].is_some() {
+                        unsafe {
+                            let _ = ShowWindow(hwnd, SW_HIDE);
+                        }
+                        screen_applied_rects[idx][j] = None;
                     }
-                    screen_applied_rects[idx] = None;
                 }
                 continue;
-            };
+            }
 
-            let geom_changed = screen_applied_rects[idx] != Some((win_x, win_y, win_w, win_h, is_clipped));
+            while screen.hwnds.len() < target_rects.len() {
+                if let Ok(extra_hwnd) = create_screen_overlay_window(
+                    screen.rect.left,
+                    screen.rect.top,
+                    1,
+                    1,
+                ) {
+                    screen.hwnds.push(extra_hwnd);
+                    screen_applied_rects[idx].push(None);
+                } else {
+                    break;
+                }
+            }
+            let active_hwnd_count = target_rects.len().min(screen.hwnds.len());
+
+            // Hide any surplus HWNDs no longer needed on this monitor
+            let mut surplus_hidden = false;
+            for j in active_hwnd_count..screen.hwnds.len() {
+                if screen_applied_rects[idx][j].is_some() {
+                    unsafe {
+                        let _ = ShowWindow(screen.hwnds[j], SW_HIDE);
+                    }
+                    screen_applied_rects[idx][j] = None;
+                    surplus_hidden = true;
+                }
+            }
+
+            let geom_changed = surplus_hidden
+                || screen_applied_clipped[idx] != reg_en
+                || (0..active_hwnd_count).any(|j| {
+                    let (wx, wy, ww, wh, _, _) = target_rects[j];
+                    screen_applied_rects[idx][j] != Some((wx, wy, ww, wh))
+                });
             let mode_changed = screen_applied_modes[idx] != cur_mode;
             let has_frame = screen.has_new_frame.swap(false, Ordering::AcqRel);
             let should_draw = has_frame || (screen_has_presented[idx] && (geom_changed || mode_changed));
@@ -981,15 +1080,8 @@ fn render_worker_thread(
                             MinDepth: 0.0,
                             MaxDepth: 1.0,
                         };
-                        let scissor = RECT {
-                            left: local_left,
-                            top: local_top,
-                            right: local_left + win_w,
-                            bottom: local_top + win_h,
-                        };
                         ctx.0.RSSetState(&raster_state);
                         ctx.0.RSSetViewports(Some(&[vp]));
-                        ctx.0.RSSetScissorRects(Some(&[scissor]));
                         ctx.0.OMSetRenderTargets(Some(&[Some(screen.rtv.clone())]), None);
                         ctx.0.IASetInputLayout(&input_layout);
                         ctx.0.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -1006,44 +1098,66 @@ fn render_worker_thread(
                         }
 
                         ctx.0.PSSetShaderResources(0, Some(&[Some(screen.ping_pong_srv.clone())]));
-                        ctx.0.Draw(4, 0);
+                        for &(win_x, win_y, win_w, win_h, local_left, local_top) in &target_rects[..active_hwnd_count] {
+                            let _ = (win_x, win_y);
+                            let scissor = RECT {
+                                left: local_left,
+                                top: local_top,
+                                right: local_left + win_w,
+                                bottom: local_top + win_h,
+                            };
+                            ctx.0.RSSetScissorRects(Some(&[scissor]));
+                            ctx.0.Draw(4, 0);
+                        }
                         ctx.0.PSSetShaderResources(0, Some(&[None]));
                     }
                 }
 
-                // Ensure window bounds match before blitting into its redirection surface
-                if geom_changed {
-                    unsafe {
-                        let _ = SetWindowPos(
-                            screen.hwnd,
-                            HWND_TOPMOST,
-                            win_x,
-                            win_y,
-                            win_w,
-                            win_h,
-                            SWP_NOACTIVATE | SWP_SHOWWINDOW,
-                        );
+                // Ensure window bounds match before blitting into their redirection surfaces
+                for j in 0..active_hwnd_count {
+                    let (win_x, win_y, win_w, win_h, _, _) = target_rects[j];
+                    if screen_applied_rects[idx][j] != Some((win_x, win_y, win_w, win_h)) {
+                        unsafe {
+                            let _ = SetWindowPos(
+                                screen.hwnds[j],
+                                HWND_TOPMOST,
+                                win_x,
+                                win_y,
+                                win_w,
+                                win_h,
+                                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                            );
+                        }
+                        screen_applied_rects[idx][j] = Some((win_x, win_y, win_w, win_h));
                     }
-                    screen_applied_rects[idx] = Some((win_x, win_y, win_w, win_h, is_clipped));
                 }
+                screen_applied_clipped[idx] = reg_en;
 
                 unsafe {
                     if let Ok(dxgi_hdc) = screen.dxgi_surf1.GetDC(false) {
-                        let win_hdc = GetDC(screen.hwnd);
-                        let blt_res = BitBlt(
-                            win_hdc,
-                            0,
-                            0,
-                            win_w,
-                            win_h,
-                            dxgi_hdc,
-                            local_left,
-                            local_top,
-                            SRCCOPY,
-                        );
-                        let _ = ReleaseDC(screen.hwnd, win_hdc);
+                        let mut all_ok = true;
+                        for j in 0..active_hwnd_count {
+                            let (_, _, win_w, win_h, local_left, local_top) = target_rects[j];
+                            let hwnd = screen.hwnds[j];
+                            let win_hdc = GetDC(hwnd);
+                            let blt_res = BitBlt(
+                                win_hdc,
+                                0,
+                                0,
+                                win_w,
+                                win_h,
+                                dxgi_hdc,
+                                local_left,
+                                local_top,
+                                SRCCOPY,
+                            );
+                            let _ = ReleaseDC(hwnd, win_hdc);
+                            if blt_res.is_err() {
+                                all_ok = false;
+                            }
+                        }
                         let _ = screen.dxgi_surf1.ReleaseDC(None);
-                        if blt_res.is_ok() {
+                        if all_ok {
                             FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
                             CNT_PRESENT_OK.fetch_add(1, Ordering::Relaxed);
                             screen_has_presented[idx] = true;
@@ -1060,8 +1174,15 @@ fn render_worker_thread(
 
         if !any_rendered {
             if let Some(first_vis) = screens.iter().find(|s| {
-                let idx = s.output_idx;
-                req_target < 0 || req_target as usize == idx
+                compute_screen_target_rects(
+                    &s.rect,
+                    s.output_idx,
+                    req_target,
+                    reg_en,
+                    &cached_regions,
+                    &mut target_rects,
+                );
+                !target_rects.is_empty()
             }) {
                 let lk = first_vis.lock.lock().unwrap();
                 if !first_vis.has_new_frame.load(Ordering::Acquire) {
@@ -1086,8 +1207,10 @@ fn render_worker_thread(
     unsafe {
         let _ = timeEndPeriod(1);
         for screen in screens {
-            let _ = ShowWindow(screen.hwnd, SW_HIDE);
-            let _ = DestroyWindow(screen.hwnd);
+            for hwnd in screen.hwnds {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+                let _ = DestroyWindow(hwnd);
+            }
         }
     }
     println!("[Render] Exited cleanly.");
@@ -1113,25 +1236,43 @@ pub extern "C" fn dcomp_filter_set_target(screen_index: i32) -> bool {
     true
 }
 
-#[no_mangle]
-pub extern "C" fn dcomp_filter_set_region(x: i32, y: i32, w: i32, h: i32) -> bool {
-    if w > 0 && h > 0 {
-        REGION_X.store(x, Ordering::SeqCst);
-        REGION_Y.store(y, Ordering::SeqCst);
-        REGION_W.store(w, Ordering::SeqCst);
-        REGION_H.store(h, Ordering::SeqCst);
-        REGION_ENABLED.store(true, Ordering::SeqCst);
-    } else {
-        REGION_ENABLED.store(false, Ordering::SeqCst);
-        REGION_X.store(0, Ordering::SeqCst);
-        REGION_Y.store(0, Ordering::SeqCst);
-        REGION_W.store(0, Ordering::SeqCst);
-        REGION_H.store(0, Ordering::SeqCst);
+fn update_regions_vec(new_regions: Vec<RegionRect>) {
+    let has_any = !new_regions.is_empty();
+    if let Ok(mut guard) = REGIONS.lock() {
+        *guard = new_regions;
     }
+    REGION_ENABLED.store(has_any, Ordering::SeqCst);
+    REGION_GEN.fetch_add(1, Ordering::Release);
     let session_guard = SESSION.lock().unwrap();
     if let Some(session) = session_guard.as_ref() {
         session.cv.notify_all();
     }
+}
+
+#[no_mangle]
+pub extern "C" fn dcomp_filter_set_region(x: i32, y: i32, w: i32, h: i32) -> bool {
+    if w > 0 && h > 0 {
+        update_regions_vec(vec![RegionRect { x, y, w, h }]);
+    } else {
+        update_regions_vec(Vec::new());
+    }
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn dcomp_filter_set_regions(rects: *const RegionRect, count: i32) -> bool {
+    if rects.is_null() || count <= 0 {
+        update_regions_vec(Vec::new());
+        return true;
+    }
+    let n = (count as usize).min(MAX_REGIONS);
+    let slice = unsafe { std::slice::from_raw_parts(rects, n) };
+    let valid: Vec<RegionRect> = slice
+        .iter()
+        .copied()
+        .filter(|r| r.w > 0 && r.h > 0)
+        .collect();
+    update_regions_vec(valid);
     true
 }
 

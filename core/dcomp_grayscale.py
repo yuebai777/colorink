@@ -11,6 +11,39 @@ import sys
 from pathlib import Path
 
 
+class _RegionRect(ctypes.Structure):
+    _fields_ = [
+        ("x", ctypes.c_int),
+        ("y", ctypes.c_int),
+        ("w", ctypes.c_int),
+        ("h", ctypes.c_int),
+    ]
+
+
+def _parse_region_rect(
+    region: tuple[int, int, int, int] | list[int] | dict | None,
+) -> tuple[int, int, int, int] | None:
+    if isinstance(region, dict):
+        try:
+            rx = int(region.get("x", 0))
+            ry = int(region.get("y", 0))
+            rw = int(region.get("width", region.get("w", 0)))
+            rh = int(region.get("height", region.get("h", 0)))
+            if rw > 0 and rh > 0:
+                return (rx, ry, rw, rh)
+        except (TypeError, ValueError):
+            return None
+        return None
+    if isinstance(region, (tuple, list)) and len(region) == 4:
+        try:
+            rx, ry, rw, rh = (int(v) for v in region)
+            if rw > 0 and rh > 0:
+                return (rx, ry, rw, rh)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 class DCompGrayscaleController:
     """基于 DirectComposition 显存直通的零延迟 OKLCh 灰度滤镜控制器."""
 
@@ -21,6 +54,7 @@ class DCompGrayscaleController:
         self._target = "all"
         self._target_index = -1
         self._region: tuple[int, int, int, int] | None = None
+        self._regions: list[tuple[int, int, int, int]] = []
         self.last_error = ""
 
         if self._dll_path:
@@ -92,6 +126,13 @@ class DCompGrayscaleController:
                 ctypes.c_int,
             ]
             dll.dcomp_filter_set_region.restype = ctypes.c_bool
+
+        if hasattr(dll, "dcomp_filter_set_regions"):
+            dll.dcomp_filter_set_regions.argtypes = [
+                ctypes.POINTER(_RegionRect),
+                ctypes.c_int,
+            ]
+            dll.dcomp_filter_set_regions.restype = ctypes.c_bool
 
         self._dll = dll
 
@@ -167,43 +208,72 @@ class DCompGrayscaleController:
 
     @property
     def region(self) -> tuple[int, int, int, int] | None:
+        regions = getattr(self, "_regions", None)
+        if regions:
+            return regions[0]
         return self._region
 
-    def set_region(self, region: tuple[int, int, int, int] | list[int] | dict | None) -> bool:
-        """设置灰度窗口区域 (x, y, width, height)，传 None 恢复最大化铺满."""
-        parsed: tuple[int, int, int, int] | None = None
-        if isinstance(region, dict):
-            try:
-                rx = int(region.get("x", 0))
-                ry = int(region.get("y", 0))
-                rw = int(region.get("width", region.get("w", 0)))
-                rh = int(region.get("height", region.get("h", 0)))
-                if rw > 0 and rh > 0:
-                    parsed = (rx, ry, rw, rh)
-            except (TypeError, ValueError):
-                parsed = None
-        elif isinstance(region, (tuple, list)) and len(region) == 4:
-            try:
-                rx, ry, rw, rh = (int(v) for v in region)
-                if rw > 0 and rh > 0:
-                    parsed = (rx, ry, rw, rh)
-            except (TypeError, ValueError):
-                parsed = None
+    @property
+    def regions(self) -> list[tuple[int, int, int, int]]:
+        regions = getattr(self, "_regions", None)
+        if regions is not None:
+            return list(regions)
+        return [self._region] if self._region is not None else []
+
+    def set_region(self, region: tuple[int, int, int, int] | list | dict | None) -> bool:
+        """设置灰度窗口区域 (x, y, width, height) 或区域列表，传 None 恢复最大化铺满."""
+        if isinstance(region, list) and (len(region) != 4 or any(isinstance(v, (dict, list, tuple)) for v in region)):
+            return self.set_regions(region)
+        parsed = _parse_region_rect(region)
+        self._regions = [parsed] if parsed is not None else []
         self._region = parsed
+        return self._sync_region()
+
+    def set_regions(self, regions: list | tuple | None) -> bool:
+        """设置多个灰度窗口区域，传空列表或 None 恢复最大化铺满."""
+        parsed_list: list[tuple[int, int, int, int]] = []
+        if regions:
+            single = _parse_region_rect(regions)
+            if single is not None and not (
+                isinstance(regions, (list, tuple))
+                and any(isinstance(item, (dict, list, tuple)) for item in regions)
+            ):
+                parsed_list = [single]
+            elif isinstance(regions, (list, tuple)):
+                for item in regions:
+                    if isinstance(item, dict) and item.get("enabled") is False:
+                        continue
+                    rect = _parse_region_rect(item)
+                    if rect is not None:
+                        parsed_list.append(rect)
+        self._regions = parsed_list
+        self._region = parsed_list[0] if parsed_list else None
         return self._sync_region()
 
     def clear_region(self) -> bool:
         """清除自定义区域，恢复默认最大化无边框窗口."""
-        return self.set_region(None)
+        return self.set_regions([])
+
+    def clear_regions(self) -> bool:
+        """清除所有自定义区域，恢复默认最大化无边框窗口."""
+        return self.set_regions([])
 
     def _sync_region(self) -> bool:
-        if not self._dll or not hasattr(self._dll, "dcomp_filter_set_region"):
+        if not self._dll:
             return False
+        regions = self.regions
         try:
-            if self._region is not None:
-                rx, ry, rw, rh = self._region
-                return bool(self._dll.dcomp_filter_set_region(rx, ry, rw, rh))
-            return bool(self._dll.dcomp_filter_set_region(0, 0, 0, 0))
+            if len(regions) > 1 and hasattr(self._dll, "dcomp_filter_set_regions"):
+                arr = (_RegionRect * len(regions))(
+                    *(_RegionRect(rx, ry, rw, rh) for rx, ry, rw, rh in regions)
+                )
+                return bool(self._dll.dcomp_filter_set_regions(arr, len(regions)))
+            if hasattr(self._dll, "dcomp_filter_set_region"):
+                if regions:
+                    rx, ry, rw, rh = regions[0]
+                    return bool(self._dll.dcomp_filter_set_region(rx, ry, rw, rh))
+                return bool(self._dll.dcomp_filter_set_region(0, 0, 0, 0))
+            return False
         except Exception as exc:
             self.last_error = f"设置灰度区域失败: {exc}"
             return False
