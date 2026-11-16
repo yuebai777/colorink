@@ -746,7 +746,9 @@ class LayoutMixin:
             self.pane_lab.set_readout_enabled(
                 show_ro and center_ok and not stack_hidden and idx == 1
             )
-            self.pane_lab.set_readout_clearance(left_clear=left_clear, right_inset=lab_inset)
+            self.pane_lab.set_readout_clearance(
+                left_clear=left_clear, right_inset=lab_inset, overhang_y=overhang_y,
+            )
         sb = getattr(self, "settings_sidebar", None)
         if sb is not None and sb.isVisible():
             sb.raise_()
@@ -1140,20 +1142,28 @@ class LayoutMixin:
         
         super().mouseReleaseEvent(event)
 
-    def _is_lab_toggle_zone(self, global_pos: QPoint | None = None) -> bool:
-        """True when the given global point (or the system cursor) is inside
-        the visible picker pane.
+    def _own_top_window(self):
+        """Top-level QWidget for this window (safe even on non-QWidget test stubs)."""
+        fn = getattr(self, "window", None)
+        if callable(fn):
+            return fn()
+        stack = getattr(self, "stack", None)
+        return stack.window() if stack is not None else None
 
-        Covers the color wheel (the ring AND every position inside it) plus
-        the LAB visualizer pane, so the local shortcut toggles in both
-        directions without moving the mouse.
-        """
+    def _is_lab_toggle_zone(self, global_pos: QPoint | None = None) -> bool:
+        """True when *global_pos* is inside the main window's visible picker pane."""
         try:
             if global_pos is None:
                 global_pos = QCursor.pos()
-            if self.stack.currentIndex() == 0 and self.color_wheel.isVisible():
-                pos = self.color_wheel.mapFromGlobal(global_pos)
-                return self.color_wheel.rect().contains(pos)
+            own_win = self._own_top_window()
+            under = QApplication.widgetAt(global_pos)
+            if under is not None and own_win is not None and under.window() is not own_win:
+                return False
+            if self.stack.currentIndex() == 0:
+                pane = getattr(self, "pane_wheel", None)
+                target = pane if (pane is not None and pane.isVisible()) else self.color_wheel
+                if target.isVisible():
+                    return target.rect().contains(target.mapFromGlobal(global_pos))
             if self.stack.currentIndex() == 1 and self.pane_lab.isVisible():
                 pos = self.pane_lab.mapFromGlobal(global_pos)
                 return self.pane_lab.rect().contains(pos)
@@ -1220,43 +1230,42 @@ class LayoutMixin:
         return hosts
 
     def _picker_tab_target(self, global_pos: QPoint):
-        """The wheel-page picker tab bar under *global_pos*, or None.
+        """The picker tab bar when *global_pos* hovers its tabs or picker body.
 
-        The LAB page is deliberately excluded: its LAB / OKLab tabs keep the
-        old behaviour and never take over the view-switch shortcut.
+        Covers both the top tab strip (``picker_tab_bar``) and the docked
+        wheel/LAB picker pane beneath it whenever the bar has at least two
+        tabs (e.g. HSV/HLS/... on wheel view or LAB/OKLab on LAB view). That
+        gives wheel/LAB tabs the exact same hover ergonomics as slider tabs.
         """
         bar = getattr(self, "picker_tab_bar", None)
         stack = getattr(self, "stack", None)
-        if bar is None or stack is None or stack.currentIndex() != 0:
+        if bar is None or stack is None:
             return None
         try:
             if not bar.isVisible() or bar.count() < 2:
                 return None
+            own_win = self._own_top_window()
             under = QApplication.widgetAt(global_pos)
-            if under is not None and under is not bar and not bar.isAncestorOf(under):
+            if under is not None and own_win is not None and under.window() is not own_win:
                 return None
-            if not bar.rect().contains(bar.mapFromGlobal(global_pos)):
-                return None
+            for w in (bar, getattr(self, "wheel_grip_bar", None), stack):
+                if (w is not None and w.isVisible()
+                        and w.rect().contains(w.mapFromGlobal(global_pos))):
+                    return bar
         except (RuntimeError, TypeError):
             return None
-        return bar
+        return None
 
     def _tab_toggle_target(self, global_pos: QPoint | None = None):
         """The (host, tabs) pair under the cursor, or None.
 
-        Covers the whole tab stack — the header strip and the page showing
-        below it — and only returns stacks with something to switch to (two
-        or more pages). When windows overlap, the one actually under the
-        cursor wins: a floating panel window parked over the main window
-        owns the point, not whatever it happens to cover.
+        Unifies wheel/LAB picker tabs and slider tab stacks (both docked and
+        in floating windows). Always prefers whichever window actually owns the
+        point under the cursor.
         """
         try:
             if global_pos is None:
                 global_pos = QCursor.pos()
-            # The picker's own wheel-module tabs behave like the slider tab
-            # stack: hovering the strip and pressing the local shortcut goes
-            # to the next module. Returned as (window, bar) so the caller can
-            # use the bar's advance_tab().
             picker_bar = self._picker_tab_target(global_pos)
             if picker_bar is not None:
                 return self, picker_bar
@@ -1272,62 +1281,61 @@ class LayoutMixin:
             pass
         return None
 
-    def _local_view_shortcut_zone(self, global_pos: QPoint | None = None) -> bool:
-        """True when the point is over a region the local shortcut acts on.
+    def _is_tab_shortcut_zone(self, global_pos: QPoint | None = None) -> bool:
+        """True when *global_pos* is over any switchable tab stack (wheel or sliders)."""
+        return self._tab_toggle_target(global_pos) is not None
 
-        One key, two regions: a panel tab stack (switch to the next page)
-        and the picker pane (flip wheel/LAB). Mouse and pen presses need
-        this as a precondition — with the cursor anywhere else the bound
-        button has to keep passing through to the painting app untouched.
-        """
-        if (self._floating_wheel_page_at(global_pos, require_lab=False)
-                is not None
+    def _is_lab_view_shortcut_zone(self, global_pos: QPoint | None = None) -> bool:
+        """True when *global_pos* is over a wheel/LAB picker view that supports LAB toggle."""
+        if (self._floating_wheel_page_at(global_pos, require_lab=False) is not None
                 and self._floating_wheel_page_at(global_pos) is None):
-            # LAB is disabled on this page: the local shortcut must pass
-            # through instead of silently switching a tab behind the cursor.
             return False
-        return (self._tab_toggle_target(global_pos) is not None
-                or self._floating_wheel_page_at(global_pos) is not None
+        return (self._floating_wheel_page_at(global_pos) is not None
                 or self._is_lab_toggle_zone(global_pos))
 
-    def _run_local_view_shortcut(self, global_pos: QPoint | None = None) -> bool:
-        """Act on whatever region the cursor is in; True when something moved.
+    def _run_tab_shortcut(self, global_pos: QPoint | None = None) -> bool:
+        """Advance the tab stack under *global_pos* (picker tabs or slider tabs)."""
+        target = self._tab_toggle_target(global_pos)
+        if target is None:
+            return False
+        host, tabs = target
+        moved = tabs.advance_tab() if host is self else host.advance_tab(tabs)
+        if not moved:
+            return False
+        print(f"[Hotkeys] Local tab shortcut: tab {tabs.currentIndex() + 1}/{tabs.count()}")
+        return True
 
-        Tab stack → next page (wrapping past the last one); picker pane →
-        wheel ⇄ LAB. Both ride the one local shortcut: the region under the
-        cursor decides which view switches.
-        """
+    def _run_lab_view_shortcut(self, global_pos: QPoint | None = None) -> bool:
+        """Toggle wheel ⇄ LAB on the floating or main picker pane under *global_pos*."""
         page = self._floating_wheel_page_at(global_pos)
         if page is not None:
             page.toggle_view()
-            print("[Hotkeys] Local shortcut: floating wheel/LAB")
+            print("[Hotkeys] Local LAB shortcut: floating wheel/LAB")
             return True
         if self._floating_wheel_page_at(global_pos, require_lab=False) is not None:
             return False
-        target = self._tab_toggle_target(global_pos)
-        if target is not None:
-            host, tabs = target
-            if host is self:
-                if not tabs.advance_tab():
-                    return False
-            elif not host.advance_tab(tabs):
-                return False
-            print(f"[Hotkeys] Local shortcut: tab "
-                  f"{tabs.currentIndex() + 1}/{tabs.count()}")
-            return True
         if self._is_lab_toggle_zone(global_pos):
             self.toggle_picker_mode()
+            print("[Hotkeys] Local LAB shortcut: picker wheel/LAB")
             return True
         return False
 
-    def _consume_local_view_press(self) -> bool:
-        """Single-fire guard for the local mouse/pen shortcut.
+    def _local_view_shortcut_zone(self, global_pos: QPoint | None = None) -> bool:
+        """Compatibility alias for the unified tab-switch zone check."""
+        return self._is_tab_shortcut_zone(global_pos)
 
-        A pen button press is delivered twice — once as a QTabletEvent and
-        once as a synthetic QMouseEvent — so only the first of the pair may
-        act. Returns True when this press should act, False when it is the
-        duplicate twin (caller swallows it without acting).
-        """
+    def _run_local_view_shortcut(self, global_pos: QPoint | None = None) -> bool:
+        """Compatibility alias executing the unified tab-switch action."""
+        return self._run_tab_shortcut(global_pos)
+
+    def _matches_cfg_hotkey(self, cfg_key: str, raw: str) -> bool:
+        if not raw:
+            return False
+        expected = str(self.cfg.get(cfg_key, "")).lower().replace(" ", "")
+        return bool(expected) and raw.lower().replace(" ", "") == expected
+
+    def _consume_local_view_press(self) -> bool:
+        """Single-fire guard for the local mouse/pen shortcuts."""
         now = time.monotonic()
         if now - self._last_local_view_ts < 0.06:
             return False
@@ -1335,84 +1343,53 @@ class LayoutMixin:
         return True
 
     def _maybe_handle_local_view_key(self, event) -> bool:
-        """Handle the configured local view shortcut (keyboard).
-
-        Over a tab stack the key switches to the next tab; over the picker
-        pane it flips wheel/LAB. When the cursor is over neither the key is
-        still consumed (unless a text field has focus), so the shortcut can
-        never re-activate a previously focused button/checkbox — clicking ☰
-        once used to make Space toggle the settings panel.
-
-        Only covers key events Qt delivers to this app (i.e. a Colorink
-        window has focus). Without focus — 无焦点选色模式, drawing in the
-        painting app — the system-wide hook registered in
-        ``update_hotkey_bindings`` takes over (see ``on_hotkey_triggered``).
-
-        Returns True when the event was consumed, False to pass it through
-        (non-matching key, or a text field has focus). The event filter
-        skips this entirely while a settings hotkey capture is active.
-        """
+        """Handle local tab-switch and local LAB-toggle keyboard shortcuts."""
         pressed = parse_key_event(event)
         if not pressed:
             return False
-        expected = str(self.cfg.get("toggleLabKey", "")).lower().replace(" ", "")
-        if pressed.lower().replace(" ", "") != expected:
+        hit_tab = self._matches_cfg_hotkey("toggleLabKey", pressed)
+        hit_lab = self._matches_cfg_hotkey("toggleLabLocalKey", pressed)
+        if not (hit_tab or hit_lab):
             return False
         # Never steal the key from a text field (e.g. the Companion URL input).
         focus_widget = QApplication.focusWidget()
         if isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit)):
             return False
-        self._run_local_view_shortcut()
+        if hit_tab:
+            if not self._run_tab_shortcut() and hit_lab:
+                self._run_lab_view_shortcut()
+        else:
+            self._run_lab_view_shortcut()
+        return True
+
+    def _dispatch_local_pointer_shortcut(self, event) -> bool:
+        """Handle local mouse/pen shortcuts for unified tab switch and LAB toggle."""
+        name = MOUSE_BUTTON_NAME_BY_QT.get(event.button())
+        if not name:
+            return False
+        hit_tab = self._matches_cfg_hotkey("toggleLabKey", name)
+        hit_lab = self._matches_cfg_hotkey("toggleLabLocalKey", name)
+        if not (hit_tab or hit_lab):
+            return False
+        pos = event.globalPosition().toPoint()
+        if hit_lab and self._is_lab_view_shortcut_zone(pos):
+            runner = self._run_lab_view_shortcut
+        elif hit_tab and self._is_tab_shortcut_zone(pos):
+            runner = self._run_tab_shortcut
+        else:
+            return False
+        if not self._consume_local_view_press():
+            return True
+        runner(pos)
         return True
 
     def _maybe_handle_local_view_mouse(self, event) -> bool:
-        """Handle a mouse press of the configured local view shortcut.
-
-        Mouse events follow the cursor, not keyboard focus, so this path
-        works even in 无焦点选色模式 while the painting app holds focus. The
-        press only counts over a region the shortcut acts on — everywhere
-        else the button belongs to the painting app. The button is compared
-        before the region is resolved: an ordinary click must not pay for a
-        hit test on its way to the canvas.
-        """
-        name = MOUSE_BUTTON_NAME_BY_QT.get(event.button())
-        if not name:
-            return False
-        expected = str(self.cfg.get("toggleLabKey", "")).lower().replace(" ", "")
-        if name.lower() != expected:
-            return False
-        pos = event.globalPosition().toPoint()
-        if not self._local_view_shortcut_zone(pos):
-            return False
-        # A pen press also arrives as a synthetic QMouseEvent — swallow the
-        # twin when the tablet event already acted.
-        if not self._consume_local_view_press():
-            return True
-        self._run_local_view_shortcut(pos)
-        return True
+        """Handle a mouse press for local tab-switch or LAB-toggle shortcuts."""
+        return self._dispatch_local_pointer_shortcut(event)
 
     def _maybe_handle_local_view_tablet(self, event) -> bool:
-        """Handle a pen (tablet) press of the configured local shortcut.
-
-        Pen side-buttons configured as right-click arrive as QTabletEvent
-        (TabletPress) — and, depending on the driver, as a synthetic
-        QMouseEvent too. Handling the tablet event directly makes pen
-        buttons work exactly like mouse buttons, with the pair deduplicated
-        by ``_consume_local_view_press``.
-        """
-        name = MOUSE_BUTTON_NAME_BY_QT.get(event.button())
-        if not name:
-            return False
-        expected = str(self.cfg.get("toggleLabKey", "")).lower().replace(" ", "")
-        if name.lower() != expected:
-            return False
-        pos = event.globalPosition().toPoint()
-        if not self._local_view_shortcut_zone(pos):
-            return False
-        if not self._consume_local_view_press():
-            return True
-        self._run_local_view_shortcut(pos)
-        return True
+        """Handle a pen (tablet) press for local tab-switch or LAB-toggle shortcuts."""
+        return self._dispatch_local_pointer_shortcut(event)
 
     def eventFilter(self, watched, event):
         try:

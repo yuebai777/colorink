@@ -174,23 +174,41 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
             self.save_hotkeys, allow_mouse=True)
         grid_hotkeys.addWidget(row_region_grayscale, 4, 1)
 
-        grid_hotkeys.addWidget(QLabel(i18n.tr("视图切换（色轮/标签页）")), 5, 0)
+        grid_hotkeys.addWidget(QLabel(i18n.tr("切换标签页（色轮/滑条）")), 5, 0)
         row_lab_toggle, self.btn_lab_toggle, self.btn_lab_toggle_none = self._make_hotkey_row(
             "toggleLabKey", self.cfg.get("toggleLabKey", "Space"),
             self.save_hotkeys, allow_mouse=True)
         grid_hotkeys.addWidget(row_lab_toggle, 5, 1)
 
-        grid_hotkeys.addWidget(QLabel(i18n.tr("LAB 切换（全局）")), 6, 0)
+        grid_hotkeys.addWidget(QLabel(i18n.tr("LAB 切换（色轮区）")), 6, 0)
+        row_lab_local, self.btn_lab_local, self.btn_lab_local_none = self._make_hotkey_row(
+            "toggleLabLocalKey", self.cfg.get("toggleLabLocalKey", ""),
+            self.save_hotkeys, allow_mouse=True)
+        grid_hotkeys.addWidget(row_lab_local, 6, 1)
+
+        grid_hotkeys.addWidget(QLabel(i18n.tr("LAB 切换（全局）")), 7, 0)
         row_lab_global, self.btn_lab_global, self.btn_lab_global_none = self._make_hotkey_row(
             "toggleLabGlobalKey", self.cfg.get("toggleLabGlobalKey", "Ctrl+Alt+L"),
             self.save_hotkeys, allow_mouse=True)
-        grid_hotkeys.addWidget(row_lab_global, 6, 1)
+        grid_hotkeys.addWidget(row_lab_global, 7, 1)
 
-        grid_hotkeys.addWidget(QLabel(i18n.tr("标题栏显示/隐藏")), 7, 0)
+        grid_hotkeys.addWidget(QLabel(i18n.tr("切换色轮标签（全局）")), 8, 0)
+        row_wheel_tab_global, self.btn_wheel_tab_global, self.btn_wheel_tab_global_none = self._make_hotkey_row(
+            "toggleWheelTabGlobalKey", self.cfg.get("toggleWheelTabGlobalKey", ""),
+            self.save_hotkeys, allow_mouse=True)
+        grid_hotkeys.addWidget(row_wheel_tab_global, 8, 1)
+
+        grid_hotkeys.addWidget(QLabel(i18n.tr("切换滑条标签（全局）")), 9, 0)
+        row_slider_tab_global, self.btn_slider_tab_global, self.btn_slider_tab_global_none = self._make_hotkey_row(
+            "toggleSliderTabGlobalKey", self.cfg.get("toggleSliderTabGlobalKey", ""),
+            self.save_hotkeys, allow_mouse=True)
+        grid_hotkeys.addWidget(row_slider_tab_global, 9, 1)
+
+        grid_hotkeys.addWidget(QLabel(i18n.tr("标题栏显示/隐藏")), 10, 0)
         row_title_bar, self.btn_title_bar, self.btn_title_bar_none = self._make_hotkey_row(
             "toggleTitleBarKey", self.cfg.get("toggleTitleBarKey", "Ctrl+Alt+K"),
             self.save_hotkeys, allow_mouse=True)
-        grid_hotkeys.addWidget(row_title_bar, 7, 1)
+        grid_hotkeys.addWidget(row_title_bar, 10, 1)
 
         cl_hk.addLayout(grid_hotkeys)
 
@@ -209,6 +227,21 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         cl_hk.addWidget(lbl_fallback)
 
         page_hotkeys.addWidget(card_hk)
+
+        self._floating_hotkey_entries = {}
+        self.card_floating_hotkeys, cl_float_hk = self._begin_card(
+            page_hotkeys, i18n.tr("浮窗快捷键"))
+        lbl_float_hk_hint = QLabel(i18n.tr(
+            "仅为当前打开的浮窗配置：可勾选跟随主窗口全局快捷键，或为该浮窗单独绑定专属热键"))
+        lbl_float_hk_hint.setObjectName("TipDesc")
+        lbl_float_hk_hint.setWordWrap(True)
+        cl_float_hk.addWidget(lbl_float_hk_hint)
+        self._floating_hotkeys_rows = QVBoxLayout()
+        self._floating_hotkeys_rows.setContentsMargins(0, 0, 0, 0)
+        self._floating_hotkeys_rows.setSpacing(10)
+        cl_float_hk.addLayout(self._floating_hotkeys_rows)
+        self.card_floating_hotkeys.setVisible(False)
+        page_hotkeys.addWidget(self.card_floating_hotkeys)
 
         # ── Card 2: 取色视窗快捷操作 ──
         card_tips, cl_tips = self._begin_card(page_hotkeys, i18n.tr("取色视窗快捷操作"))
@@ -311,15 +344,30 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.btn_lab_toggle.setText(display_hotkey(_lab_key) if _lab_key else i18n.tr("未绑定"))
         self.btn_lab_toggle.val = _lab_key
 
+        _lab_local = self.cfg.get("toggleLabLocalKey", "")
+        self.btn_lab_local.setText(display_hotkey(_lab_local) if _lab_local else i18n.tr("未绑定"))
+        self.btn_lab_local.val = _lab_local
+
         _lab_global = self.cfg.get("toggleLabGlobalKey", "Ctrl+Alt+L")
         self.btn_lab_global.setText(display_hotkey(_lab_global) if _lab_global else i18n.tr("未绑定"))
         self.btn_lab_global.val = _lab_global
+
+        _wheel_tab_global = self.cfg.get("toggleWheelTabGlobalKey", "")
+        self.btn_wheel_tab_global.setText(
+            i18n.tr(display_hotkey(_wheel_tab_global)) if _wheel_tab_global else i18n.tr("未绑定"))
+        self.btn_wheel_tab_global.val = _wheel_tab_global
+
+        _slider_tab_global = self.cfg.get("toggleSliderTabGlobalKey", "")
+        self.btn_slider_tab_global.setText(
+            i18n.tr(display_hotkey(_slider_tab_global)) if _slider_tab_global else i18n.tr("未绑定"))
+        self.btn_slider_tab_global.val = _slider_tab_global
 
         _title_bar = self.cfg.get("toggleTitleBarKey", "Ctrl+Alt+K")
         self.btn_title_bar.setText(display_hotkey(_title_bar) if _title_bar else i18n.tr("未绑定"))
         self.btn_title_bar.val = _title_bar
 
         self._sync_hotkey_none_buttons()
+        self.refresh_floating_hotkeys_ui()
         
         self.combo_grayscale_mode.blockSignals(True)
         backend = self.cfg.get("grayscaleFilterBackend", "dcomp")
@@ -334,6 +382,8 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.combo_grayscale_backend.setCurrentIndex(_idx if _idx >= 0 else 0)
         self.combo_grayscale_backend.blockSignals(False)
         self._refresh_grayscale_region_ui()
+        self._refresh_grayscale_status_ui()
+        self._update_grayscale_backend_note()
         
         self.cb_follow_mouse.blockSignals(True)
         self.cb_follow_mouse.setChecked(self.cfg.get("followMouseEnabled", False))
@@ -613,7 +663,8 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         exist, so ``setVisible`` has a parent to take effect against.
         """
         for name in ("pick", "hide", "follow", "grayscale", "region_grayscale",
-                     "lab_toggle", "lab_global", "title_bar"):
+                     "lab_toggle", "lab_local", "lab_global",
+                     "wheel_tab_global", "slider_tab_global", "title_bar"):
             button = getattr(self, f"btn_{name}", None)
             none_btn = getattr(self, f"btn_{name}_none", None)
             if button is None or none_btn is None:
@@ -622,6 +673,186 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
             none_btn.setEnabled(bound)
             none_btn.setVisible(bound)
 
+    def _clear_floating_hotkeys_rows(self) -> None:
+        self._floating_hotkey_entries = {}
+        while self._floating_hotkeys_rows.count():
+            item = self._floating_hotkeys_rows.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()
+
+    def _open_floating_windows_for_hotkeys(self) -> list:
+        mv = getattr(self, "_parent", None)
+        if mv is None:
+            return []
+        unique_fn = getattr(mv, "_unique_floating_windows", None)
+        if callable(unique_fn):
+            try:
+                return list(unique_fn())
+            except RuntimeError:
+                return []
+        fw_fn = getattr(mv, "floating_windows", None)
+        if callable(fw_fn):
+            out = []
+            seen = set()
+            for win in fw_fn().values():
+                if win is not None and id(win) not in seen:
+                    seen.add(id(win))
+                    out.append(win)
+            return out
+        return []
+
+    @staticmethod
+    def _floating_window_display_title(win, pids: list[str], win_id: str) -> str:
+        from ui.panels import registry
+        titles: list[str] = []
+        for pid in (pids or ([win_id] if win_id else [])):
+            spec = registry.panel(pid)
+            titles.append(i18n.tr(spec.title) if spec else pid)
+        if titles:
+            return " / ".join(titles)
+        return (win.windowTitle() if hasattr(win, "windowTitle") else "") or win_id
+
+    def _set_floating_hotkey_pref(self, window_id: str, field: str, value,
+                                  none_btn=None) -> None:
+        config.set_floating_window_hotkey_field(self.cfg, window_id, field, value)
+        mv = getattr(self, "_parent", None)
+        if mv is not None and isinstance(getattr(mv, "cfg", None), dict):
+            config.set_floating_window_hotkey_field(mv.cfg, window_id, field, value)
+        if none_btn is not None:
+            bound = bool(value)
+            none_btn.setEnabled(bound)
+            none_btn.setVisible(bound)
+        self._persist_and_emit()
+
+    @staticmethod
+    def _set_floating_lab_follow(pages: list, checked: bool) -> None:
+        for page in pages:
+            try:
+                page.set_follow_global_lab(bool(checked), remember=True)
+            except RuntimeError:
+                continue
+
+    def _build_floating_hotkey_section(
+        self, win_id: str, title: str, pages: list, slider_pids: list,
+    ) -> tuple[QWidget, dict]:
+        hk = config.get_floating_window_hotkeys(self.cfg, win_id)
+        box_widget = QWidget()
+        layout = QVBoxLayout(box_widget)
+        layout.setContentsMargins(0, 4, 0, 4)
+        layout.setSpacing(6)
+
+        lbl_title = QLabel(title)
+        title_font = lbl_title.font()
+        title_font.setBold(True)
+        lbl_title.setFont(title_font)
+        layout.addWidget(lbl_title)
+
+        refs: dict[str, object] = {}
+        has_wheel = bool(pages)
+        has_lab = any(getattr(p, "lab_enabled", False) for p in pages)
+        has_slider = bool(slider_pids)
+
+        if has_wheel:
+            cb_wheel_tab = QCheckBox(i18n.tr("跟随全局色轮标签快捷键"))
+            cb_wheel_tab.setChecked(bool(hk["follow_global_wheel_tab"]))
+            cb_wheel_tab.toggled.connect(
+                lambda checked, wid=win_id: self._set_floating_hotkey_pref(
+                    wid, "follow_global_wheel_tab", bool(checked)))
+            layout.addWidget(cb_wheel_tab)
+            refs["cb_follow_wheel_tab"] = cb_wheel_tab
+
+            if has_lab:
+                cb_lab = QCheckBox(i18n.tr("跟随全局 LAB 切换快捷键"))
+                cb_lab.setChecked(bool(pages[0].follow_global_lab))
+                cb_lab.toggled.connect(
+                    lambda checked, ps=list(pages):
+                    self._set_floating_lab_follow(ps, bool(checked)))
+                layout.addWidget(cb_lab)
+                refs["cb_follow_lab"] = cb_lab
+
+        if has_slider:
+            cb_slider_tab = QCheckBox(i18n.tr("跟随全局滑条标签快捷键"))
+            cb_slider_tab.setChecked(bool(hk["follow_global_slider_tab"]))
+            cb_slider_tab.toggled.connect(
+                lambda checked, wid=win_id: self._set_floating_hotkey_pref(
+                    wid, "follow_global_slider_tab", bool(checked)))
+            layout.addWidget(cb_slider_tab)
+            refs["cb_follow_slider_tab"] = cb_slider_tab
+
+        grid = QGridLayout()
+        grid.setSpacing(8)
+        grid.setColumnMinimumWidth(0, 120)
+        grid.setColumnStretch(1, 1)
+
+        def _add_key_row(row_idx: int, label_text: str, field: str,
+                         key_prefix: str) -> None:
+            grid.addWidget(QLabel(i18n.tr(label_text)), row_idx, 0)
+            init_val = hk[field]
+            none_ref: list = []
+            row_w, btn, none_btn = self._make_hotkey_row(
+                f"{key_prefix}{win_id}", init_val,
+                lambda val, wid=win_id, f=field, nr=none_ref:
+                self._set_floating_hotkey_pref(
+                    wid, f, val, none_btn=nr[0] if nr else None),
+                allow_mouse=True,
+            )
+            none_ref.append(none_btn)
+            bound = bool(init_val)
+            none_btn.setEnabled(bound)
+            none_btn.setVisible(bound)
+            grid.addWidget(row_w, row_idx, 1)
+            short = field.removesuffix("_key")
+            refs[f"btn_{short}"] = btn
+            refs[f"btn_{short}_none"] = none_btn
+
+        _add_key_row(0, "本浮窗标签切换", "tab_key", "__float_tab__:")
+        if has_wheel and has_lab:
+            _add_key_row(1, "本浮窗 LAB 切换", "lab_key", "__float_lab__:")
+
+        layout.addLayout(grid)
+        return box_widget, refs
+
+    def refresh_floating_hotkeys_ui(self) -> None:
+        """Rebuild the dynamic floating-window hotkey card from open floats."""
+        if not hasattr(self, "card_floating_hotkeys"):
+            return
+        mv = getattr(self, "_parent", None)
+        if mv is not None and isinstance(getattr(mv, "cfg", None), dict):
+            parent_fh = mv.cfg.get("floatingWindowHotkeys")
+            if isinstance(parent_fh, dict):
+                self.cfg["floatingWindowHotkeys"] = {
+                    k: dict(v) if isinstance(v, dict) else v
+                    for k, v in parent_fh.items()
+                }
+            elif "floatingWindowHotkeys" in self.cfg:
+                self.cfg["floatingWindowHotkeys"] = {}
+        self._clear_floating_hotkeys_rows()
+        windows = self._open_floating_windows_for_hotkeys()
+        classify_fn = getattr(mv, "_classify_floating_window", None) if mv is not None else None
+
+        rendered = 0
+        for win in windows:
+            win_id = getattr(win, "panel_id", "") or ""
+            if not win_id:
+                continue
+            pids = list(getattr(win, "panel_ids", ()) or ())
+            if callable(classify_fn):
+                pages, _labs, slider_pids = classify_fn(win)
+            else:
+                pages, slider_pids = [], (pids or [win_id])
+            if not pages and not slider_pids:
+                continue
+            title = self._floating_window_display_title(win, pids, win_id)
+            section, refs = self._build_floating_hotkey_section(
+                win_id, title, pages, slider_pids)
+            self._floating_hotkeys_rows.addWidget(section)
+            self._floating_hotkey_entries[win_id] = refs
+            rendered += 1
+
+        self.card_floating_hotkeys.setVisible(rendered > 0)
+
     def save_hotkeys(self, new_val=None):
         self.cfg["pickKey"] = self.btn_pick.val
         self.cfg["hideWindowKey"] = self.btn_hide.val
@@ -629,11 +860,15 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cfg["grayscaleFilterKey"] = self.btn_grayscale.val
         self.cfg["regionGrayscaleKey"] = self.btn_region_grayscale.val
         self.cfg["toggleLabKey"] = self.btn_lab_toggle.val
+        self.cfg["toggleLabLocalKey"] = self.btn_lab_local.val
         self.cfg["toggleLabGlobalKey"] = self.btn_lab_global.val
+        self.cfg["toggleWheelTabGlobalKey"] = self.btn_wheel_tab_global.val
+        self.cfg["toggleSliderTabGlobalKey"] = self.btn_slider_tab_global.val
         self.cfg["toggleTitleBarKey"] = self.btn_title_bar.val
         # Keep the ✕ controls in step with the values just saved (binding a
         # key enables its ✕, unbinding disables it).
         self._sync_hotkey_none_buttons()
+        self._refresh_grayscale_status_ui()
         self._persist_and_emit()
 
     def _grayscale_filter_config(self) -> dict:
@@ -966,6 +1201,9 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
 
     def showEvent(self, event):
         super().showEvent(event)
+        self.refresh_floating_hotkeys_ui()
+        self._refresh_grayscale_region_ui()
+        self._refresh_grayscale_status_ui()
         # Settings are open.  The main window deliberately keeps its no-focus
         # extension styles while this sidebar is up (the sidebar lives in its
         # own top-level SettingsWindow, so the main window never needs to

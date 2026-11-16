@@ -742,9 +742,10 @@ class ThemeMixin:
         if self.cfg.get("hideHueRing", False):
             self._sync_ringless_mode()
             self.preview_box.raise_()
-            ro_wheel = getattr(self, "readout_wheel", None)
-            if ro_wheel is not None and ro_wheel.isVisible():
-                ro_wheel.raise_()
+            for _ro_attr in ("readout_wheel", "readout_lab"):
+                _ro = getattr(self, _ro_attr, None)
+                if _ro is not None and _ro.isVisible():
+                    _ro.raise_()
             if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
                 self.settings_sidebar.raise_()
             return
@@ -786,9 +787,10 @@ class ThemeMixin:
                     max(0, sliders_top - self.preview_box.height()
                         - clearance))
         self.preview_box.raise_()
-        ro_wheel = getattr(self, "readout_wheel", None)
-        if ro_wheel is not None and ro_wheel.isVisible():
-            ro_wheel.raise_()
+        for _ro_attr in ("readout_wheel", "readout_lab"):
+            _ro = getattr(self, _ro_attr, None)
+            if _ro is not None and _ro.isVisible():
+                _ro.raise_()
         sync_ro = getattr(self, "_sync_readout_clearance", None)
         if callable(sync_ro):
             sync_ro()

@@ -677,6 +677,70 @@ class PickerActionsMixin:
             except RuntimeError:
                 continue
 
+    def toggle_wheel_tab_global(self) -> None:
+        """Advance wheel/LAB tabs globally across main picker and opted-in floats."""
+        bar = getattr(self, "picker_tab_bar", None)
+        stack = getattr(self, "stack", None)
+        if (bar is not None and stack is not None
+                and not stack.isHidden() and bar.isVisible() and bar.count() >= 2):
+            bar.advance_tab()
+        unique_fn = getattr(self, "_unique_floating_windows", None)
+        classify_fn = getattr(self, "_classify_floating_window", None)
+        advance_fn = getattr(self, "_advance_floating_window_tabs", None)
+        if callable(unique_fn) and callable(classify_fn) and callable(advance_fn):
+            for win_obj in unique_fn():
+                win_id = getattr(win_obj, "panel_id", "")
+                pages, _labs, _sliders = classify_fn(win_obj)
+                if not pages:
+                    continue
+                if config.get_floating_window_hotkeys(self.cfg, win_id)["follow_global_wheel_tab"]:
+                    advance_fn(win_obj)
+
+    def toggle_slider_tab_global(self) -> None:
+        """Advance slider/panel tab stacks globally across main host and opted-in floats."""
+        advance_host_fn = getattr(self, "_advance_host_tabs", None)
+        main_host = getattr(self, "panel_host", None)
+        if callable(advance_host_fn) and main_host is not None:
+            advance_host_fn(main_host)
+        unique_fn = getattr(self, "_unique_floating_windows", None)
+        classify_fn = getattr(self, "_classify_floating_window", None)
+        advance_fn = getattr(self, "_advance_floating_window_tabs", None)
+        if callable(unique_fn) and callable(classify_fn) and callable(advance_fn):
+            for win_obj in unique_fn():
+                win_id = getattr(win_obj, "panel_id", "")
+                _pages, _labs, slider_pids = classify_fn(win_obj)
+                if not slider_pids:
+                    continue
+                if config.get_floating_window_hotkeys(self.cfg, win_id)["follow_global_slider_tab"]:
+                    advance_fn(win_obj)
+
+    def toggle_floating_window_tabs(self, window_id: str) -> bool:
+        """Advance tab stack(s) inside the open floating window matching *window_id*."""
+        find_fn = getattr(self, "_floating_hotkey_window_for", None)
+        advance_fn = getattr(self, "_advance_floating_window_tabs", None)
+        if callable(find_fn) and callable(advance_fn):
+            win_obj = find_fn(window_id)
+            if win_obj is not None:
+                return advance_fn(win_obj)
+        return False
+
+    def toggle_floating_window_lab(self, window_id: str) -> bool:
+        """Toggle wheel <-> LAB on floating wheel page(s) inside *window_id*."""
+        find_fn = getattr(self, "_floating_hotkey_window_for", None)
+        classify_fn = getattr(self, "_classify_floating_window", None)
+        if not (callable(find_fn) and callable(classify_fn)):
+            return False
+        win_obj = find_fn(window_id)
+        if win_obj is None:
+            return False
+        pages, _labs, _sliders = classify_fn(win_obj)
+        toggled = False
+        for page in pages:
+            if getattr(page, "lab_enabled", True):
+                page.toggle_view()
+                toggled = True
+        return toggled
+
     def toggle_picker_mode(self):
         """Switch picker panes without re-running the full theme/layout pass."""
         new_index = (self.stack.currentIndex() + 1) % 2
@@ -726,14 +790,18 @@ class PickerActionsMixin:
             adjust()
         self.update()
 
-    def _show_settings_window(self):
+    def _show_settings_window(self, page_index: int | None = None):
         """Ensure the settings window exists and is shown (no-op if already up)."""
         if not hasattr(self, 'settings_window') or self.settings_window is None:
             from ui.settings_window import SettingsWindow
             self.settings_window = SettingsWindow(self, self.settings_sidebar)
+        if page_index is not None and hasattr(self.settings_sidebar, "nav"):
+            self.settings_sidebar.nav.setCurrentRow(page_index)
+        self.settings_sidebar.refresh_ui()
         if not self.settings_window.isVisible():
-            self.settings_sidebar.refresh_ui()
             self.settings_window.show_near_main_window()
+        else:
+            self.settings_window.raise_()
 
     def toggle_settings_sidebar(self):
         # Lazy-create the independent settings window on first use
@@ -1296,10 +1364,14 @@ class PickerActionsMixin:
         )
         region_ctrl = getattr(self, "region_grayscale_overlay", None)
         if region_ctrl is not None:
+            from core.region_grayscale import (
+                active_region_tuples,
+                read_region_entries_from_config,
+            )
             region_ctrl.set_backend("mag" if new_backend == "mag" else "auto")
             region_ctrl.set_target(screen_target)
             region_ctrl.set_mode("luma" if new_backend == "mag" else new_mode)
-            region_ctrl.set_region(self.cfg.get("grayscaleFilterRegion"))
+            region_ctrl.set_regions(active_region_tuples(read_region_entries_from_config(self.cfg)))
 
         # Update window flags dynamically
         self.update_window_flags()
@@ -1576,10 +1648,82 @@ class PickerActionsMixin:
             for btn in [self.title_bar.btn_settings, self.title_bar.btn_close, self.title_bar.btn_min]:
                 btn.setFocusPolicy(policy)
 
-    # ── Window / Region Grayscale Filter ─────────────────────────────────
+    # ── Fullscreen & Window / Region Grayscale Filter ────────────────────
+
+    def _sync_sidebar_grayscale_ui(self) -> None:
+        sidebar = getattr(self, "settings_sidebar", None)
+        if sidebar is None:
+            return
+        sidebar.cfg["grayscaleFilterRegions"] = list(self.cfg.get("grayscaleFilterRegions") or [])
+        sidebar.cfg["grayscaleFilterRegion"] = self.cfg.get("grayscaleFilterRegion")
+        refresh_region = getattr(sidebar, "_refresh_grayscale_region_ui", None)
+        if callable(refresh_region):
+            refresh_region()
+        refresh_status = getattr(sidebar, "_refresh_grayscale_status_ui", None)
+        if callable(refresh_status):
+            refresh_status()
+
+    def toggle_fullscreen_grayscale(self) -> bool:
+        """Toggle the fullscreen grayscale filter with automatic Mag fallback."""
+        fs_ctrl = getattr(self, "grayscale_overlay", None)
+        if fs_ctrl is None:
+            return False
+        try:
+            region_ctrl = getattr(self, "region_grayscale_overlay", None)
+            if region_ctrl is not None and region_ctrl.is_active:
+                region_ctrl.set_active(False)
+            result = fs_ctrl.toggle()
+            if result is False:
+                from core.mag_grayscale import MagFilterController
+                if not isinstance(fs_ctrl, MagFilterController):
+                    backend_name = type(fs_ctrl).__name__
+                    err = getattr(fs_ctrl, "last_error", "")
+                    print(f"[Grayscale] Backend {backend_name} failed ({err}), falling back to Mag backend...")
+                    mag_ctrl = MagFilterController(mode="luma")
+                    if mag_ctrl.is_available:
+                        try:
+                            fs_ctrl.set_active(False)
+                            close_fn = getattr(fs_ctrl, "close", None)
+                            if callable(close_fn):
+                                close_fn()
+                        except Exception:
+                            pass
+                        self.grayscale_overlay = mag_ctrl
+                        self.cfg["grayscaleFilterBackend"] = "mag"
+                        config.save_hotkey_config(self.cfg)
+                        result = self.grayscale_overlay.toggle()
+                        if result:
+                            print("[Grayscale] Successfully fell back to Mag filter backend")
+                            self._sync_sidebar_grayscale_ui()
+                            return True
+                err = getattr(self.grayscale_overlay, "last_error", "")
+                if err:
+                    from PyQt6.QtWidgets import QMessageBox
+                    QMessageBox.warning(self, "灰度滤镜", err)
+            self._sync_sidebar_grayscale_ui()
+            return bool(result)
+        except Exception as exc:
+            print(f"[Grayscale] Fullscreen toggle error: {exc}")
+            from core.mag_grayscale import MagFilterController
+            if not isinstance(getattr(self, "grayscale_overlay", None), MagFilterController):
+                try:
+                    mag_ctrl = MagFilterController(mode="luma")
+                    if mag_ctrl.is_available:
+                        self.grayscale_overlay = mag_ctrl
+                        self.cfg["grayscaleFilterBackend"] = "mag"
+                        config.save_hotkey_config(self.cfg)
+                        if self.grayscale_overlay.toggle():
+                            self._sync_sidebar_grayscale_ui()
+                            return True
+                except Exception:
+                    pass
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "灰度滤镜", f"切换失败: {exc}")
+            self._sync_sidebar_grayscale_ui()
+            return False
 
     def toggle_region_grayscale(self) -> bool:
-        """Toggle the window/region grayscale filter (maximized by default or custom region)."""
+        """Toggle the window/region grayscale filter (maximized by default or custom regions)."""
         region_ctrl = getattr(self, "region_grayscale_overlay", None)
         if region_ctrl is None:
             return False
@@ -1589,63 +1733,164 @@ class PickerActionsMixin:
                 fs_ctrl = getattr(self, "grayscale_overlay", None)
                 if fs_ctrl is not None and fs_ctrl.is_active:
                     fs_ctrl.set_active(False)
+                from core.region_grayscale import (
+                    active_region_tuples,
+                    read_region_entries_from_config,
+                )
+                entries = read_region_entries_from_config(self.cfg)
+                region_ctrl.set_regions(active_region_tuples(entries))
             ok = region_ctrl.toggle()
             if not ok and region_ctrl.last_error:
                 from PyQt6.QtWidgets import QMessageBox
                 QMessageBox.warning(self, "区域灰度滤镜", region_ctrl.last_error)
+            self._sync_sidebar_grayscale_ui()
             return ok
         except Exception as exc:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "区域灰度滤镜", f"切换区域灰度失败: {exc}")
+            self._sync_sidebar_grayscale_ui()
             return False
 
-    def start_select_grayscale_region(self) -> None:
-        """Launch the interactive fullscreen rubber-band selector for the grayscale region."""
+    def _ensure_region_grayscale_selector(self):
         selector = getattr(self, "region_grayscale_selector", None)
         if selector is None:
             from ui.region_grayscale_selector import RegionGrayscaleSelector
             selector = RegionGrayscaleSelector(None)
-            selector.regionSelected.connect(self._on_grayscale_region_selected)
+            selector.regionsSelected.connect(self._on_grayscale_regions_selected)
+            selector.regionReplaced.connect(self._on_grayscale_region_replaced)
             selector.regionReset.connect(self._on_grayscale_region_reset)
+            selector.canceled.connect(self._on_grayscale_selection_canceled)
             self.region_grayscale_selector = selector
-        selector.start_selection()
+        return selector
 
-    def _on_grayscale_region_selected(self, x: int, y: int, width: int, height: int) -> None:
-        """Persist the selected grayscale rectangle and activate region grayscale."""
-        from core.region_grayscale import region_to_config_dict
-        rect_dict = region_to_config_dict((x, y, width, height))
-        self.cfg["grayscaleFilterRegion"] = rect_dict
+    def _restore_after_region_selection(self, activate_region: bool | None = None) -> None:
+        resume = getattr(self, "_resume_grayscale_after_select", None)
+        self._resume_grayscale_after_select = None
+
+        if activate_region is True:
+            region_ctrl = getattr(self, "region_grayscale_overlay", None)
+            if region_ctrl is not None and not region_ctrl.is_active:
+                fs_ctrl = getattr(self, "grayscale_overlay", None)
+                if fs_ctrl is not None and fs_ctrl.is_active:
+                    fs_ctrl.set_active(False)
+                region_ctrl.set_active(True)
+        elif activate_region is None:
+            if resume == "region":
+                region_ctrl = getattr(self, "region_grayscale_overlay", None)
+                if region_ctrl is not None and not region_ctrl.is_active:
+                    region_ctrl.set_active(True)
+            elif resume == "fullscreen":
+                fs_ctrl = getattr(self, "grayscale_overlay", None)
+                if fs_ctrl is not None and not fs_ctrl.is_active:
+                    fs_ctrl.set_active(True)
+
+        if getattr(self, "_restore_settings_after_select", False):
+            self._restore_settings_after_select = False
+            sw = getattr(self, "settings_window", None)
+            if sw is not None:
+                sw.show()
+                sw.raise_()
+        self._sync_sidebar_grayscale_ui()
+
+    def apply_grayscale_regions(self, entries: list, activate: bool = False) -> list[dict]:
+        """Persist region entries and sync the live RegionGrayscaleController + sidebar."""
+        from core.region_grayscale import (
+            active_region_tuples,
+            write_regions_to_config,
+        )
+        normalized = write_regions_to_config(self.cfg, entries)
         config.save_hotkey_config(self.cfg)
         region_ctrl = getattr(self, "region_grayscale_overlay", None)
         if region_ctrl is not None:
-            fs_ctrl = getattr(self, "grayscale_overlay", None)
-            if fs_ctrl is not None and fs_ctrl.is_active:
-                fs_ctrl.set_active(False)
-            region_ctrl.set_region(rect_dict)
-            if not region_ctrl.is_active:
+            if activate:
+                fs_ctrl = getattr(self, "grayscale_overlay", None)
+                if fs_ctrl is not None and fs_ctrl.is_active:
+                    fs_ctrl.set_active(False)
+            region_ctrl.set_regions(active_region_tuples(normalized))
+            if activate and not region_ctrl.is_active:
                 region_ctrl.set_active(True)
-        sidebar = getattr(self, "settings_sidebar", None)
-        if sidebar is not None:
-            sidebar.cfg["grayscaleFilterRegion"] = rect_dict
-            refresh_region = getattr(sidebar, "_refresh_grayscale_region_ui", None)
-            if callable(refresh_region):
-                refresh_region()
+        self._sync_sidebar_grayscale_ui()
+        return normalized
+
+    def start_select_grayscale_region(self, replace_index: int | None = None) -> None:
+        """Launch the interactive fullscreen multi-region selector for the grayscale filter."""
+        from core.region_grayscale import read_region_entries_from_config
+
+        selector = self._ensure_region_grayscale_selector()
+
+        region_ctrl = getattr(self, "region_grayscale_overlay", None)
+        fs_ctrl = getattr(self, "grayscale_overlay", None)
+        if region_ctrl is not None and region_ctrl.is_active:
+            self._resume_grayscale_after_select = "region"
+            region_ctrl.set_active(False)
+        elif fs_ctrl is not None and fs_ctrl.is_active:
+            self._resume_grayscale_after_select = "fullscreen"
+            fs_ctrl.set_active(False)
+        else:
+            self._resume_grayscale_after_select = None
+
+        sw = getattr(self, "settings_window", None)
+        if sw is not None and sw.isVisible():
+            self._restore_settings_after_select = True
+            sw.hide()
+        else:
+            self._restore_settings_after_select = False
+
+        entries = read_region_entries_from_config(self.cfg)
+        self._selecting_replace_index = replace_index
+        selector.start_selection(regions=entries, replace_index=replace_index)
+
+    def _on_grayscale_regions_selected(self, selected_entries: list) -> None:
+        """Persist multi-region selection (preserving disabled rows) and activate region grayscale."""
+        from core.region_grayscale import read_region_entries_from_config
+        existing = read_region_entries_from_config(self.cfg)
+        disabled_entries = [dict(e) for e in existing if not e.get("enabled", True)]
+        merged = list(selected_entries) + disabled_entries
+        self.apply_grayscale_regions(merged, activate=False)
+        self._restore_after_region_selection(activate_region=True)
+
+    def _on_grayscale_region_replaced(
+        self, index: int, x: int, y: int, width: int, height: int
+    ) -> None:
+        """Replace a single existing region entry while keeping others and its name intact."""
+        from core.region_grayscale import read_region_entries_from_config
+        entries = read_region_entries_from_config(self.cfg)
+        new_entry: dict = {
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+            "enabled": True,
+        }
+        if 0 <= index < len(entries):
+            old_name = entries[index].get("name", "")
+            if old_name:
+                new_entry["name"] = old_name
+            entries[index] = new_entry
+        else:
+            entries.append(new_entry)
+        self.apply_grayscale_regions(entries, activate=False)
+        self._restore_after_region_selection(activate_region=True)
+
+    def _on_grayscale_region_selected(self, x: int, y: int, width: int, height: int) -> None:
+        """Backward-compatible single-rectangle selection handler."""
+        self._on_grayscale_regions_selected([{
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+            "enabled": True,
+        }])
 
     def _on_grayscale_region_reset(self) -> None:
-        """Callback when user double-clicks or presses Space in the region selector."""
+        """Callback when user resets to maximized inside the region selector."""
         self.reset_grayscale_region_to_maximized()
+        self._restore_after_region_selection(activate_region=False)
+
+    def _on_grayscale_selection_canceled(self) -> None:
+        self._restore_after_region_selection(activate_region=None)
 
     def reset_grayscale_region_to_maximized(self) -> None:
         """Reset the region grayscale filter to its default frameless maximized window."""
-        self.cfg["grayscaleFilterRegion"] = None
-        config.save_hotkey_config(self.cfg)
-        region_ctrl = getattr(self, "region_grayscale_overlay", None)
-        if region_ctrl is not None:
-            region_ctrl.clear_region()
-        sidebar = getattr(self, "settings_sidebar", None)
-        if sidebar is not None:
-            sidebar.cfg["grayscaleFilterRegion"] = None
-            refresh_region = getattr(sidebar, "_refresh_grayscale_region_ui", None)
-            if callable(refresh_region):
-                refresh_region()
+        self.apply_grayscale_regions([], activate=False)
 

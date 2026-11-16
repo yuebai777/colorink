@@ -168,6 +168,27 @@ def test_refresh_ui_reflects_an_unbound_hotkey(sidebar, monkeypatch):
     assert not _shown(sidebar.btn_pick_none)
 
 
+def test_dedicated_lab_local_hotkey_defaults_unbound_and_round_trips(sidebar, monkeypatch):
+    monkeypatch.setattr("ui.settings_sidebar.config.save_hotkey_config",
+                        lambda cfg: None)
+    assert sidebar.cfg["toggleLabLocalKey"] == ""
+    assert sidebar.btn_lab_local.val == ""
+    assert sidebar.btn_lab_local.text() == i18n.tr("未绑定")
+    assert not sidebar.btn_lab_local_none.isEnabled()
+    assert not _shown(sidebar.btn_lab_local_none)
+
+    sidebar.btn_lab_local.val = "M"
+    sidebar.save_hotkeys("M")
+    assert sidebar.cfg["toggleLabLocalKey"] == "M"
+    assert sidebar.btn_lab_local_none.isEnabled()
+    assert _shown(sidebar.btn_lab_local_none)
+
+    sidebar.btn_lab_local_none.click()
+    assert sidebar.cfg["toggleLabLocalKey"] == ""
+    assert sidebar.btn_lab_local.val == ""
+    assert not _shown(sidebar.btn_lab_local_none)
+
+
 def test_delete_and_backspace_unbind_during_capture(sidebar):
     """Pressing Delete/Backspace while recording is the keyboard path to "无"."""
     from PyQt6.QtCore import Qt
@@ -256,3 +277,33 @@ def test_update_hotkey_bindings_skips_unbound_values(monkeypatch):
     assert [name for name in keyboard_binds
             if name != OPEN_SETTINGS_FALLBACK] == ["ctrl+alt+q"]
     assert mouse_binds == []
+
+
+def test_global_tab_hotkeys_default_unbound_and_round_trip(sidebar, tmp_path, monkeypatch):
+    """Global wheel/slider tab hotkeys default to unbound and persist across save/load."""
+    from core import config
+
+    monkeypatch.setattr(config, "get_user_data_dir", lambda: str(tmp_path))
+    assert sidebar.cfg["toggleWheelTabGlobalKey"] == ""
+    assert sidebar.cfg["toggleSliderTabGlobalKey"] == ""
+    assert sidebar.btn_wheel_tab_global.val == ""
+    assert sidebar.btn_slider_tab_global.val == ""
+    assert not _shown(sidebar.btn_wheel_tab_global_none)
+    assert not _shown(sidebar.btn_slider_tab_global_none)
+
+    sidebar.btn_wheel_tab_global.val = "Ctrl+Alt+1"
+    sidebar.btn_slider_tab_global.val = "Ctrl+Alt+2"
+    sidebar.save_hotkeys()
+    assert _shown(sidebar.btn_wheel_tab_global_none)
+    assert _shown(sidebar.btn_slider_tab_global_none)
+
+    reloaded = config.load_hotkey_config()
+    assert reloaded["toggleWheelTabGlobalKey"] == "Ctrl+Alt+1"
+    assert reloaded["toggleSliderTabGlobalKey"] == "Ctrl+Alt+2"
+
+    sidebar.btn_wheel_tab_global_none.click()
+    sidebar.btn_slider_tab_global_none.click()
+    assert sidebar.cfg["toggleWheelTabGlobalKey"] == ""
+    assert sidebar.cfg["toggleSliderTabGlobalKey"] == ""
+    assert not _shown(sidebar.btn_wheel_tab_global_none)
+    assert not _shown(sidebar.btn_slider_tab_global_none)

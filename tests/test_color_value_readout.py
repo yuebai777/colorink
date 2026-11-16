@@ -180,7 +180,9 @@ with patch("core.config.load_hotkey_config", return_value=dict(cfg)), \
      patch("core.memory_sync.MemorySyncThread.start"), \
      patch("core.global_hotkeys.bind_hotkey"), \
      patch("core.global_hotkeys.bind_mouse_hotkey"), \
-     patch("core.global_hotkeys.unbind_all"):
+     patch("core.global_hotkeys.unbind_all"), \
+     patch.object(main_window.MainWindow, "_schedule_lab_prerender"), \
+     patch("ui.color_wheel_prewarm.ColorWheelPrewarmMixin.schedule_slice_prewarm"):
     win = main_window.MainWindow()
     win.show()
     app.processEvents()
@@ -190,6 +192,9 @@ with patch("core.config.load_hotkey_config", return_value=dict(cfg)), \
     assert win.stack.width() == win.stack.height()
     assert win.readout_wheel.focusPolicy() == Qt.FocusPolicy.NoFocus
     assert win.readout_wheel.isVisible()
+    assert not win.readout_lab.isVisible(), (
+        f"readout_lab leaked before LAB pane was ever shown: geom={win.readout_lab.geometry()}"
+    )
 
     # Non-overlap in WheelPane with bottom-left preview_box & visible corner buttons.
     stack_off = win.stack.mapTo(win, QPoint(0, 0))
@@ -210,18 +215,19 @@ with patch("core.config.load_hotkey_config", return_value=dict(cfg)), \
     assert win.readout_lab.mode == "hsv"
     assert saved and saved[-1] == "hsv"
 
-    # LAB pane check: wheel readout hides, LAB readout clears buttons & swatches.
+    # LAB pane check: wheel readout hides, LAB readout shares exact Y height and clears buttons & swatches.
     win.toggle_picker_mode()
     app.processEvents()
     assert not win.readout_wheel.isVisible()
-    pb_in_pane = win.preview_box.geometry().translated(-win.stack.mapTo(win, QPoint(0, 0)))
-    ro_lab = win.readout_lab.geometry()
+    ro_lab_in_win = win.readout_lab.geometry()
+    ro_lab = ro_lab_in_win.translated(-stack_off)
     assert win.readout_lab.isVisible(), (
         f"pane_lab={win.pane_lab.size()} ro_lab={ro_lab} hint={win.readout_lab.sizeHint()} "
         f"enabled={win.pane_lab._readout_enabled} left={win.pane_lab._readout_left_clear} "
         f"btns={[(b.isVisible(), b.geometry()) for b in (win.btn_lab_harmony, win.btn_lab_shape, win.btn_mode_lab)]}"
     )
-    assert ro_lab.left() >= pb_in_pane.right() + 2
+    assert ro_lab_in_win.y() == ro_in_win.y(), f"Y mismatch wheel={ro_in_win.y()} lab={ro_lab_in_win.y()}"
+    assert ro_lab_in_win.left() >= win.preview_box.geometry().right() + 2
     for btn in (win.btn_lab_harmony, win.btn_lab_shape, win.btn_mode_lab):
         if btn is not None and btn.isVisible():
             assert not ro_lab.intersects(btn.geometry()), f"LAB overlaps {btn}: {ro_lab} vs {btn.geometry()}"
@@ -266,6 +272,17 @@ with patch("core.config.load_hotkey_config", return_value=dict(cfg)), \
     win.on_settings_saved()
     app.processEvents()
     assert win.readout_wheel.isVisible()
+    assert not win.readout_lab.isVisible()
+
+    # Hiding the stack (e.g. all wheel modules floated) must also hide readout_wheel.
+    win.stack.hide()
+    app.processEvents()
+    assert not win.readout_wheel.isVisible()
+    win.stack.show()
+    app.processEvents()
+    win.update_mode_buttons_visibility()
+    app.processEvents()
+    assert win.readout_wheel.isVisible()
 
     win.close()
 """
@@ -276,3 +293,49 @@ with patch("core.config.load_hotkey_config", return_value=dict(cfg)), \
         timeout=30,
     )
     assert res.returncode == 0, f"stderr:\n{res.stderr}\nstdout:\n{res.stdout}"
+
+
+def test_external_host_readout_stays_hidden_before_layout_and_when_pane_hidden(qapp):
+    """External-parent readouts must stay hidden at (0, 0) while pane is 0x0 or hidden."""
+    from PyQt6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
+    from ui.picker_panes import LabPane, WheelPane
+
+    host = QWidget()
+    host.resize(320, 360)
+    vbox = QVBoxLayout(host)
+    vbox.setContentsMargins(0, 40, 0, 0)
+    stack = QStackedWidget(host)
+    vbox.addWidget(stack)
+
+    pane_wheel = WheelPane(stack)
+    pane_lab = LabPane(stack)
+    stack.addWidget(pane_wheel)
+    stack.addWidget(pane_lab)
+
+    # Emulate _attach_readout on an external host before first layout.
+    ro_lab = ColorValueReadout(host, pill_backdrop=True)
+    ro_lab.hide()
+    pane_lab.set_readout_enabled(False)
+    pane_lab.set_readout_widget(ro_lab, pill_backdrop=True)
+
+    host.show()
+    qapp.processEvents()
+    assert stack.currentIndex() == 0
+    assert not ro_lab.isVisible(), f"external readout leaked at {ro_lab.geometry()}"
+
+    # Enabling before page 1 is active must still keep ro_lab hidden because
+    # pane_lab is not visible in the host.
+    pane_lab.set_readout_enabled(True)
+    assert not ro_lab.isVisible()
+
+    # Switching to page 1 reveals it in the pane, and switching back hides it.
+    stack.setCurrentIndex(1)
+    qapp.processEvents()
+    pane_lab._reposition_mode_button()
+    assert ro_lab.isVisible()
+    assert ro_lab.geometry().top() >= 40
+
+    stack.setCurrentIndex(0)
+    qapp.processEvents()
+    assert not ro_lab.isVisible()
+    host.close()

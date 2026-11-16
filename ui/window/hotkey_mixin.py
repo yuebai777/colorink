@@ -16,11 +16,23 @@ except Exception:
     input_zones = None
 
 
+FLOAT_TAB_HOTKEY_PREFIX = "__float_tab__:"
+FLOAT_LAB_HOTKEY_PREFIX = "__float_lab__:"
+
+
 class HotkeyMixin:
     def init_hotkeys(self):
         # Register global hotkeys from config
         global_hotkeys.get_hotkey_signals().triggered.connect(self.on_hotkey_triggered)
         self.update_hotkey_bindings()
+        self._hotkeys_ready = True
+
+    @staticmethod
+    def _bind_global_slot(hotkey_type: str, value: str) -> None:
+        if is_mouse_hotkey(value):
+            global_hotkeys.bind_mouse_hotkey(hotkey_type, value)
+        else:
+            global_hotkeys.bind_hotkey(hotkey_type, value)
 
     def update_hotkey_bindings(self):
         global_hotkeys.unbind_all()
@@ -33,19 +45,40 @@ class HotkeyMixin:
         # not suppressed, so the app under the cursor still gets the click).
         for hotkey_type in ("pickKey", "hideWindowKey", "toggleTitleBarKey",
                             "followMouseKey", "grayscaleFilterKey",
-                            "regionGrayscaleKey", "toggleLabGlobalKey"):
+                            "regionGrayscaleKey", "toggleLabGlobalKey",
+                            "toggleWheelTabGlobalKey", "toggleSliderTabGlobalKey"):
             value = cast(str, self.cfg.get(hotkey_type) or "")
-            if is_mouse_hotkey(value):
-                global_hotkeys.bind_mouse_hotkey(hotkey_type, value)
-            else:
-                global_hotkeys.bind_hotkey(hotkey_type, value)
-        # The local LAB-toggle key is bound as a system-wide hook too, so it
-        # works while focus is in the drawing app (无焦点选色模式). Mouse
-        # buttons need no hook — the event filter sees them by cursor
+            HotkeyMixin._bind_global_slot(hotkey_type, value)
+        # Local hover shortcuts are registered as system-wide hooks too so they
+        # keep working while focus is in the drawing app (无焦点选色模式).
+        # Mouse buttons need no OS hook — the event filter sees them by cursor
         # position — so only keyboard values are bound here.
-        lab_toggle_key = cast(str, self.cfg.get("toggleLabKey"))
-        if not is_mouse_hotkey(lab_toggle_key):
-            global_hotkeys.bind_hotkey("toggleLabKey", lab_toggle_key)
+        for local_key in ("toggleLabKey", "toggleLabLocalKey"):
+            key_val = cast(str, self.cfg.get(local_key) or "")
+            if not is_mouse_hotkey(key_val):
+                global_hotkeys.bind_hotkey(local_key, key_val)
+        # Per-floating-window dedicated global hotkeys (only for open floats).
+        unique_fn = getattr(self, "_unique_floating_windows", None)
+        classify_fn = getattr(self, "_classify_floating_window", None)
+        if callable(unique_fn):
+            for win_obj in unique_fn():
+                win_id = getattr(win_obj, "panel_id", "")
+                if not win_id:
+                    continue
+                if callable(classify_fn):
+                    pages, _labs, slider_pids = classify_fn(win_obj)
+                    allow_tab = bool(pages or slider_pids)
+                    allow_lab = any(getattr(p, "lab_enabled", False) for p in pages)
+                else:
+                    allow_tab = True
+                    allow_lab = True
+                prefs = config.get_floating_window_hotkeys(self.cfg, win_id)
+                if allow_tab and prefs["tab_key"]:
+                    HotkeyMixin._bind_global_slot(
+                        f"{FLOAT_TAB_HOTKEY_PREFIX}{win_id}", prefs["tab_key"])
+                if allow_lab and prefs["lab_key"]:
+                    HotkeyMixin._bind_global_slot(
+                        f"{FLOAT_LAB_HOTKEY_PREFIX}{win_id}", prefs["lab_key"])
         # Hard-wired, unbindable escape hatch: with showTitleBar=false, the
         # right button occupied and the tray unreachable, every visible entry
         # into settings can be unbound — keep one combo that always opens
@@ -83,17 +116,20 @@ class HotkeyMixin:
                 self.settings_sidebar.cb_follow_mouse.blockSignals(True)
                 self.settings_sidebar.cb_follow_mouse.setChecked(self.follow_mouse_active)
                 self.settings_sidebar.cb_follow_mouse.blockSignals(False)
-        elif hotkey_type == "toggleLabKey":
+        elif hotkey_type in ("toggleLabKey", "toggleLabLocalKey"):
             # System-wide hook path: the Qt event filter already consumed the
             # key when a Colorink window has focus. Without focus — e.g. while
             # drawing in CSP with 无焦点选色模式 — this hook is the only path,
-            # and the region gate still applies: a tab stack under the cursor
-            # switches page, the picker pane flips wheel/LAB.
+            # and the matching region gate still applies.
             if QApplication.activeWindow() is not None:
                 return  # handled by the Qt key path
-            if self._local_view_shortcut_zone():
-                print("[Hotkeys] Local view shortcut (no-focus)")
-                self._run_local_view_shortcut()
+            if hotkey_type == "toggleLabKey":
+                if self._is_tab_shortcut_zone():
+                    print("[Hotkeys] Tab switch shortcut (no-focus)")
+                    self._run_tab_shortcut()
+            elif self._is_lab_view_shortcut_zone():
+                print("[Hotkeys] Local LAB toggle shortcut (no-focus)")
+                self._run_lab_view_shortcut()
         elif hotkey_type == "toggleLabGlobalKey":
             print("[Hotkeys] Toggle LAB view (global)")
             toggle = getattr(self, "toggle_lab_global", None)
@@ -101,6 +137,26 @@ class HotkeyMixin:
                 toggle()
             else:
                 self.toggle_picker_mode()
+        elif hotkey_type == "toggleWheelTabGlobalKey":
+            print("[Hotkeys] Wheel tab switch (global)")
+            toggle = getattr(self, "toggle_wheel_tab_global", None)
+            if callable(toggle):
+                toggle()
+        elif hotkey_type == "toggleSliderTabGlobalKey":
+            print("[Hotkeys] Slider tab switch (global)")
+            toggle = getattr(self, "toggle_slider_tab_global", None)
+            if callable(toggle):
+                toggle()
+        elif hotkey_type.startswith(FLOAT_TAB_HOTKEY_PREFIX):
+            win_id = hotkey_type[len(FLOAT_TAB_HOTKEY_PREFIX):]
+            fn = getattr(self, "toggle_floating_window_tabs", None)
+            if callable(fn):
+                fn(win_id)
+        elif hotkey_type.startswith(FLOAT_LAB_HOTKEY_PREFIX):
+            win_id = hotkey_type[len(FLOAT_LAB_HOTKEY_PREFIX):]
+            fn = getattr(self, "toggle_floating_window_lab", None)
+            if callable(fn):
+                fn(win_id)
         elif hotkey_type == "pickKey":
             if self.picker_overlay.is_active:
                 self.picker_overlay.stop()
@@ -118,6 +174,10 @@ class HotkeyMixin:
                 print("[Hotkeys] Global Color Picker activated")
         elif hotkey_type == "grayscaleFilterKey":
             print("[Hotkeys] Grayscale Filter toggled")
+            toggle_fs = getattr(self, "toggle_fullscreen_grayscale", None)
+            if callable(toggle_fs):
+                toggle_fs()
+                return
             try:
                 region_ctrl = getattr(self, "region_grayscale_overlay", None)
                 if region_ctrl is not None and region_ctrl.is_active:

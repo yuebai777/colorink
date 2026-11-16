@@ -252,19 +252,21 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         screen_target = self.cfg.get("grayscaleFilterScreen", "all")
         self.grayscale_overlay.set_target(screen_target)
 
-        # Window / Region grayscale filter (默认最大化无边框无任务栏窗口，支持自定义框选区域)
-        from core.region_grayscale import RegionGrayscaleController
-        from ui.region_grayscale_selector import RegionGrayscaleSelector
+        # Window / Region grayscale filter (默认最大化无边框无任务栏窗口，支持自定义框选多区域)
+        from core.region_grayscale import (
+            RegionGrayscaleController,
+            active_region_tuples,
+            read_region_entries_from_config,
+        )
         region_backend = "mag" if backend == "mag" else "auto"
+        region_entries = read_region_entries_from_config(self.cfg)
         self.region_grayscale_overlay = RegionGrayscaleController(
             mode=mode,
             backend=region_backend,
-            region=self.cfg.get("grayscaleFilterRegion"),
+            regions=active_region_tuples(region_entries),
         )
         self.region_grayscale_overlay.set_target(screen_target)
-        self.region_grayscale_selector = RegionGrayscaleSelector(None)
-        self.region_grayscale_selector.regionSelected.connect(self._on_grayscale_region_selected)
-        self.region_grayscale_selector.regionReset.connect(self._on_grayscale_region_reset)
+        self._ensure_region_grayscale_selector()
 
         self._dcomp_warmup_timer = QTimer(self)
         self._dcomp_warmup_timer.setSingleShot(True)
@@ -520,11 +522,13 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.btn_mode_lab.clicked.connect(self.toggle_picker_mode)
         self.btn_mode_lab.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.pane_lab.set_mode_button(self.btn_mode_lab)
-        self.readout_lab = self._attach_readout(
-            self.pane_lab, pill_backdrop=True, align_with_buttons=True,
-        )
         
         self.stack.addWidget(self.pane_lab)
+        # Parent readout_lab to MainWindow too so wheel and LAB share the exact
+        # same baseline Y coordinate with zero vertical jump on mode switch.
+        self.readout_lab = self._attach_readout(
+            self.pane_lab, host=self, pill_backdrop=True, align_with_buttons=False,
+        )
 
         # Sliders Area
         self.sliders_container = QWidget()
@@ -620,10 +624,17 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         align_with_buttons: bool = False,
     ) -> ColorValueReadout:
         readout = ColorValueReadout(host or pane, pill_backdrop=pill_backdrop)
+        # Hide unpositioned readout until its pane has valid geometry and is active
+        # (page 1 in QStackedWidget stays size 0x0 until first shown).
+        readout.hide()
         readout.set_mode(self.cfg.get("colorValueReadoutMode", "rgb"))
         readout.modeChanged.connect(self._on_readout_mode_changed)
         pane.set_readout_enabled(self.cfg.get("showColorValueReadout", True))
-        pane.set_readout_widget(readout, align_with_buttons=align_with_buttons)
+        pane.set_readout_widget(
+            readout,
+            pill_backdrop=pill_backdrop,
+            align_with_buttons=align_with_buttons,
+        )
         return readout
 
     def nativeEvent(self, eventType, message):

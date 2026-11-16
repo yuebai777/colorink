@@ -228,9 +228,10 @@ class FloatingWheelPage(QWidget):
             pane_h=height,
             right_bound=right_bound,
             left_bound=left_bound,
-            align_with_buttons=(self.view_mode == "lab"),
+            align_with_buttons=False,
             margin=margin,
             scale=scale,
+            use_pill_backdrop=(self.view_mode == "lab"),
         )
 
     # ── view mode ────────────────────────────────────────────────────────

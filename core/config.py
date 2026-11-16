@@ -10,7 +10,7 @@ HOTKEY_CFG_NAME = "hotkey-config.json"
 # when the shape of the config changes and register a migration below; old
 # configs are migrated forward on load instead of relying on ad-hoc key pops.
 CONFIG_SCHEMA_KEY = "schemaVersion"
-CONFIG_SCHEMA_VERSION = 5
+CONFIG_SCHEMA_VERSION = 6
 
 # Envelope marker for the settings backup/restore JSON export.
 SETTINGS_EXPORT_FORMAT = "colorink-settings"
@@ -87,8 +87,12 @@ def default_hotkey_config():
         "toggleTitleBarKey": "Ctrl+Alt+K",  # 全局快捷键: 切换标题栏（设置/最小化/关闭那一栏）显隐
         "grayscaleFilterKey": "Ctrl+Alt+D",
         "regionGrayscaleKey": "Ctrl+Alt+G",  # 全局快捷键: 开关窗口/区域灰度滤镜
-        "toggleLabKey": "Space",          # 本地快捷键: 悬停色轮/LAB区域切换视图，悬停标签页切换到下一个标签页
+        "toggleLabKey": "Space",          # 局域快捷键: 悬停色轮/LAB或滑条标签页区域切换到下一个标签页
+        "toggleWheelTabGlobalKey": "",    # 全局快捷键: 任意位置切换色轮/LAB标签页（及跟随的浮窗）
+        "toggleSliderTabGlobalKey": "",   # 全局快捷键: 任意位置切换滑条标签页（及跟随的浮窗）
+        "toggleLabLocalKey": "",          # 局域快捷键: 悬停色轮/LAB/浮出轮盘区域切换色轮与LAB视图（默认未绑定）
         "toggleLabGlobalKey": "Ctrl+Alt+L",   # 全局快捷键: 任意位置切换色轮/LAB视图
+        "floatingWindowHotkeys": {},      # 各独立浮窗的跟随设置与独立快捷键: {panel_id: {...}}
         "showLabToggleButton": True,      # 显示/隐藏色轮与LAB之间的浮动切换按钮
         "showLabShapeButton": True,       # 显示/隐藏 LAB 视图形状切换按钮
         "showLabHarmonyButton": True,     # 显示/隐藏 LAB 调和模式按钮
@@ -100,7 +104,8 @@ def default_hotkey_config():
         # native = DXGI Desktop Duplication + OpenGL 兼容层；
         # mag = Windows 系统颜色矩阵（仅 Luma，作用于全部屏幕）
         "grayscaleFilterBackend": "dcomp",
-        "grayscaleFilterRegion": None,    # 区域灰度滤镜自定义矩形 {"x", "y", "width", "height"}，None 表示默认最大化无边框窗口
+        "grayscaleFilterRegion": None,    # 兼容旧版：主自定义区域 {"x", "y", "width", "height"}，None 表示默认最大化无边框窗口
+        "grayscaleFilterRegions": [],     # 区域灰度滤镜多区域列表 [{"x", "y", "width", "height", "enabled", ...}]
         "showTaskbarIcon": False,
         "lockWindowSize": False,
         "lockWindowPosition": False,
@@ -267,6 +272,29 @@ def _migrate_4_to_5(cfg: dict) -> dict:
     return cfg
 
 
+def _migrate_5_to_6(cfg: dict) -> dict:
+    """Promote legacy single ``grayscaleFilterRegion`` into ``grayscaleFilterRegions``."""
+    legacy = cfg.get("grayscaleFilterRegion")
+    existing = cfg.get("grayscaleFilterRegions")
+    if isinstance(legacy, dict) and not existing:
+        try:
+            rx = int(legacy.get("x", 0))
+            ry = int(legacy.get("y", 0))
+            rw = int(legacy.get("width", legacy.get("w", 0)))
+            rh = int(legacy.get("height", legacy.get("h", 0)))
+            if rw > 0 and rh > 0:
+                cfg["grayscaleFilterRegions"] = [{
+                    "x": rx,
+                    "y": ry,
+                    "width": rw,
+                    "height": rh,
+                    "enabled": True,
+                }]
+        except (TypeError, ValueError):
+            pass
+    return cfg
+
+
 # Registered migrations, keyed by the target schema version they produce.
 _CONFIG_MIGRATIONS: dict[int, Callable[[dict], dict]] = {
     1: _migrate_0_to_1,
@@ -274,6 +302,7 @@ _CONFIG_MIGRATIONS: dict[int, Callable[[dict], dict]] = {
     3: _migrate_2_to_3,
     4: _migrate_3_to_4,
     5: _migrate_4_to_5,
+    6: _migrate_5_to_6,
 }
 
 
@@ -357,7 +386,55 @@ def _sanitize_types(cfg: dict) -> dict:
             cfg["colorValueReadoutMode"] = mode.lower()
         else:
             cfg.pop("colorValueReadoutMode", None)
+    if "floatingWindowHotkeys" in cfg and not isinstance(cfg.get("floatingWindowHotkeys"), dict):
+        cfg.pop("floatingWindowHotkeys", None)
+    if "grayscaleFilterRegions" in cfg:
+        raw_regions = cfg.get("grayscaleFilterRegions")
+        if not isinstance(raw_regions, list):
+            cfg.pop("grayscaleFilterRegions", None)
+        else:
+            from core.region_grayscale import normalize_region_entries
+            cfg["grayscaleFilterRegions"] = normalize_region_entries(raw_regions)
     return cfg
+
+
+def get_floating_window_hotkeys(cfg: dict | None, window_id: str) -> dict:
+    """Return normalized follow/hotkey settings for floating window *window_id*."""
+    raw = ((cfg or {}).get("floatingWindowHotkeys") or {}).get(window_id)
+    if not isinstance(raw, dict):
+        raw = {}
+    tab_key = raw.get("tab_key", "")
+    lab_key = raw.get("lab_key", "")
+    return {
+        "follow_global_wheel_tab": bool(raw.get("follow_global_wheel_tab", False)),
+        "follow_global_slider_tab": bool(raw.get("follow_global_slider_tab", False)),
+        "tab_key": tab_key if isinstance(tab_key, str) else "",
+        "lab_key": lab_key if isinstance(lab_key, str) else "",
+    }
+
+
+def set_floating_window_hotkey_field(
+    cfg: dict | None,
+    window_id: str,
+    field: str,
+    value,
+) -> None:
+    """Persist one per-floating-window follow flag or dedicated hotkey into *cfg*."""
+    if cfg is None or not window_id:
+        return
+    all_prefs = dict(cfg.get("floatingWindowHotkeys") or {})
+    entry = dict(all_prefs.get(window_id) or {})
+    entry[field] = value
+    if not any((
+        bool(entry.get("follow_global_wheel_tab", False)),
+        bool(entry.get("follow_global_slider_tab", False)),
+        bool(entry.get("tab_key", "")),
+        bool(entry.get("lab_key", "")),
+    )):
+        all_prefs.pop(window_id, None)
+    else:
+        all_prefs[window_id] = entry
+    cfg["floatingWindowHotkeys"] = all_prefs
 
 
 def load_hotkey_config():

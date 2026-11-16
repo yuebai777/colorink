@@ -9,10 +9,13 @@ from PyQt6.QtGui import QColor, QCursor
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -147,28 +150,226 @@ class AppearancePanelMixin:
             backend = "mag" if "Mag" in text else "dcomp"
         self._update_grayscale_mode_options(backend)
         self._update_grayscale_screen_options(backend)
+        self._update_grayscale_backend_note()
         self.save_settings()
 
+    def _update_grayscale_backend_note(self) -> None:
+        lbl = getattr(self, "lbl_grayscale_backend_note", None)
+        if lbl is None:
+            return
+        backend = self.combo_grayscale_backend.currentData() if hasattr(self, "combo_grayscale_backend") else None
+        if not backend:
+            backend = self.cfg.get("grayscaleFilterBackend", "dcomp")
+        if backend == "mag":
+            lbl.setText(i18n.tr(
+                "系统 Mag 模式仅支持 BT.709 Luma 亮度并作用于全部屏幕；区域灰度同步使用 Windows 放大镜窗口。"
+            ))
+        elif backend == "native":
+            lbl.setText(i18n.tr(
+                "全屏灰度使用 GPU 兼容模式；区域灰度优先使用 DComp 显存直通（不可用时自动回退至 Mag 窗口）。"
+            ))
+        else:
+            lbl.setText(i18n.tr(
+                "DComp 显存直通提供零拷贝低延迟的 OKLCh / Luma 渲染；配置局部区域后将按桌面坐标跨屏生效。"
+            ))
+
+    def _read_grayscale_region_entries(self) -> list[dict]:
+        from core.region_grayscale import read_region_entries_from_config
+        return read_region_entries_from_config(self.cfg)
+
+    def _apply_grayscale_region_entries(self, entries: list[dict]) -> None:
+        from core.region_grayscale import write_regions_to_config
+        if hasattr(self, "_parent") and self._parent is not None:
+            apply_fn = getattr(self._parent, "apply_grayscale_regions", None)
+            if callable(apply_fn):
+                normalized = apply_fn(entries, activate=False)
+                write_regions_to_config(self.cfg, normalized)
+                self._refresh_grayscale_region_ui()
+                return
+        write_regions_to_config(self.cfg, entries)
+        if hasattr(self, "_persist_config"):
+            self._persist_config()
+        self._refresh_grayscale_region_ui()
+
     def _format_grayscale_region_text(self) -> str:
-        from core.region_grayscale import normalize_region_tuple
-        norm = normalize_region_tuple(self.cfg.get("grayscaleFilterRegion"))
-        if norm is None:
-            return i18n.tr("默认最大化")
-        rx, ry, rw, rh = norm
-        return f"{rw}×{rh} ({rx}, {ry})"
+        from core.region_grayscale import format_region_status_from_entries
+        entries = self._read_grayscale_region_entries()
+        return format_region_status_from_entries(entries, i18n.tr)
+
+    def _refresh_grayscale_status_ui(self) -> None:
+        from ui.hotkey_button import display_hotkey
+        parent = getattr(self, "_parent", None)
+        fs_ctrl = getattr(parent, "grayscale_overlay", None) if parent is not None else None
+        rg_ctrl = getattr(parent, "region_grayscale_overlay", None) if parent is not None else None
+        fs_active = bool(getattr(fs_ctrl, "is_active", False))
+        rg_active = bool(getattr(rg_ctrl, "is_active", False))
+
+        fs_key = self.cfg.get("grayscaleFilterKey", "Ctrl+Alt+D")
+        fs_key_disp = display_hotkey(fs_key) if fs_key else i18n.tr("未绑定")
+        rg_key = self.cfg.get("regionGrayscaleKey", "Ctrl+Alt+G")
+        rg_key_disp = display_hotkey(rg_key) if rg_key else i18n.tr("未绑定")
+
+        if hasattr(self, "lbl_fullscreen_grayscale_status"):
+            self.lbl_fullscreen_grayscale_status.setText(
+                i18n.tr("● 已开启") if fs_active else i18n.tr("未开启")
+            )
+            self._set_label_state(
+                self.lbl_fullscreen_grayscale_status,
+                "success" if fs_active else "muted",
+            )
+        if hasattr(self, "lbl_fullscreen_grayscale_sub"):
+            self.lbl_fullscreen_grayscale_sub.setText(
+                i18n.tr("作用于所选屏幕全屏 · 快捷键：{key}", key=fs_key_disp)
+            )
+        if hasattr(self, "btn_toggle_fullscreen_grayscale"):
+            self.btn_toggle_fullscreen_grayscale.setText(
+                i18n.tr("关闭全屏灰度") if fs_active else i18n.tr("开启全屏灰度")
+            )
+            self.btn_toggle_fullscreen_grayscale.setProperty("activeFilter", fs_active)
+            st = self.btn_toggle_fullscreen_grayscale.style()
+            st.unpolish(self.btn_toggle_fullscreen_grayscale)
+            st.polish(self.btn_toggle_fullscreen_grayscale)
+
+        if hasattr(self, "lbl_region_grayscale_status"):
+            self.lbl_region_grayscale_status.setText(
+                i18n.tr("● 已开启") if rg_active else i18n.tr("未开启")
+            )
+            self._set_label_state(
+                self.lbl_region_grayscale_status,
+                "success" if rg_active else "muted",
+            )
+        if hasattr(self, "lbl_region_grayscale_sub"):
+            scope_text = self._format_grayscale_region_text()
+            self.lbl_region_grayscale_sub.setText(
+                i18n.tr("无边框穿透窗口 ({scope}) · 快捷键：{key}", scope=scope_text, key=rg_key_disp)
+            )
+        if hasattr(self, "btn_toggle_region_grayscale"):
+            self.btn_toggle_region_grayscale.setText(
+                i18n.tr("关闭区域灰度") if rg_active else i18n.tr("开启区域灰度")
+            )
+            self.btn_toggle_region_grayscale.setProperty("activeFilter", rg_active)
+            st = self.btn_toggle_region_grayscale.style()
+            st.unpolish(self.btn_toggle_region_grayscale)
+            st.polish(self.btn_toggle_region_grayscale)
+
+    def _rebuild_grayscale_regions_list(self, entries: list[dict]) -> None:
+        container_layout = getattr(self, "_grayscale_regions_layout", None)
+        if container_layout is None:
+            return
+        self._clear_layout(container_layout)
+
+        if not entries:
+            empty_banner = QFrame()
+            empty_banner.setObjectName("TipBanner")
+            eb_layout = QVBoxLayout(empty_banner)
+            eb_layout.setContentsMargins(10, 8, 10, 8)
+            eb_layout.setSpacing(2)
+            lbl_empty = QLabel(i18n.tr(
+                "未设定局部区域：区域灰度将以默认最大化无边框窗口覆盖目标屏幕。\n"
+                "点击「框选区域」可在屏幕上拖拽框选一个或多个局部灰度区域。"
+            ))
+            lbl_empty.setObjectName("TipDesc")
+            lbl_empty.setWordWrap(True)
+            eb_layout.addWidget(lbl_empty)
+            container_layout.addWidget(empty_banner)
+            return
+
+        from ui.region_grayscale_selector import describe_region_screens
+        for idx, entry in enumerate(entries):
+            rx = int(entry["x"])
+            ry = int(entry["y"])
+            rw = int(entry["width"])
+            rh = int(entry["height"])
+            enabled = bool(entry.get("enabled", True))
+            custom_name = entry.get("name", "")
+            label_prefix = custom_name if custom_name else i18n.tr("区域 {idx}", idx=idx + 1)
+
+            row_frame = QFrame()
+            row_frame.setObjectName("GrayscaleRegionRow")
+            row_frame.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            row_layout = QHBoxLayout(row_frame)
+            row_layout.setContentsMargins(8, 6, 8, 6)
+            row_layout.setSpacing(8)
+
+            cb = QCheckBox()
+            cb.setChecked(enabled)
+            cb.setToolTip(i18n.tr("启用或暂时停用此灰度区域"))
+            cb.toggled.connect(lambda checked, i=idx: self._on_toggle_grayscale_region_item(i, checked))
+            row_layout.addWidget(cb, 0, Qt.AlignmentFlag.AlignVCenter)
+
+            info_col = QVBoxLayout()
+            info_col.setContentsMargins(0, 0, 0, 0)
+            info_col.setSpacing(2)
+            title_lbl = QLabel(f"{label_prefix}  ·  {rw} × {rh} px")
+            title_lbl.setObjectName("RowTitle" if enabled else "StatusMuted")
+            title_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            screen_desc = describe_region_screens(rx, ry, rw, rh, i18n.tr)
+            sub_lbl = QLabel(i18n.tr("起点 ({x}, {y}) · {screen}", x=rx, y=ry, screen=screen_desc))
+            sub_lbl.setObjectName("RowSubtitle")
+            sub_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            info_col.addWidget(title_lbl)
+            info_col.addWidget(sub_lbl)
+            row_layout.addLayout(info_col, 1)
+
+            btn_reselect = QPushButton(i18n.tr("重选"))
+            btn_reselect.setObjectName("GrayscaleActionSmall")
+            btn_reselect.setToolTip(i18n.tr("在屏幕上重新拖拽框选此区域"))
+            btn_reselect.clicked.connect(lambda _chk=False, i=idx: self._on_reselect_grayscale_region_item(i))
+            row_layout.addWidget(btn_reselect, 0, Qt.AlignmentFlag.AlignVCenter)
+
+            btn_del = QPushButton("×")
+            btn_del.setObjectName("GrayscaleRemoveSmall")
+            btn_del.setFixedSize(24, 22)
+            btn_del.setToolTip(i18n.tr("删除此灰度区域"))
+            btn_del.clicked.connect(lambda _chk=False, i=idx: self._on_remove_grayscale_region_item(i))
+            row_layout.addWidget(btn_del, 0, Qt.AlignmentFlag.AlignVCenter)
+
+            container_layout.addWidget(row_frame)
+
+        card_regions = getattr(self, "_card_grayscale_regions", None)
+        if card_regions is not None:
+            card_regions.updateGeometry()
 
     def _refresh_grayscale_region_ui(self) -> None:
         if not hasattr(self, "lbl_grayscale_region"):
             return
-        from core.region_grayscale import normalize_region_tuple
-        norm = normalize_region_tuple(self.cfg.get("grayscaleFilterRegion"))
+        entries = self._read_grayscale_region_entries()
+        active_count = sum(1 for e in entries if e.get("enabled", True))
         self.lbl_grayscale_region.setText(self._format_grayscale_region_text())
         self._set_label_state(
             self.lbl_grayscale_region,
-            "muted" if norm is None else "accent",
+            "muted" if not entries or active_count == 0 else "accent",
         )
+        if hasattr(self, "btn_select_grayscale_region"):
+            self.btn_select_grayscale_region.setText(
+                i18n.tr("+ 框选 / 编辑") if entries else i18n.tr("框选区域")
+            )
         if hasattr(self, "btn_reset_grayscale_region"):
-            self.btn_reset_grayscale_region.setEnabled(norm is not None)
+            self.btn_reset_grayscale_region.setEnabled(bool(entries))
+        self._rebuild_grayscale_regions_list(entries)
+        self._refresh_grayscale_status_ui()
+        self._update_grayscale_backend_note()
+
+    def _on_toggle_grayscale_region_item(self, idx: int, checked: bool) -> None:
+        entries = self._read_grayscale_region_entries()
+        if 0 <= idx < len(entries):
+            entries[idx]["enabled"] = bool(checked)
+            self._apply_grayscale_region_entries(entries)
+
+    def _on_reselect_grayscale_region_item(self, idx: int) -> None:
+        if hasattr(self, "_parent") and self._parent is not None:
+            start_fn = getattr(self._parent, "start_select_grayscale_region", None)
+            if callable(start_fn):
+                try:
+                    start_fn(replace_index=idx)
+                except TypeError:
+                    start_fn()
+
+    def _on_remove_grayscale_region_item(self, idx: int) -> None:
+        entries = self._read_grayscale_region_entries()
+        if 0 <= idx < len(entries):
+            entries.pop(idx)
+            self._apply_grayscale_region_entries(entries)
 
     def _on_select_grayscale_region(self) -> None:
         if hasattr(self, "_parent") and self._parent is not None:
@@ -181,23 +382,33 @@ class AppearancePanelMixin:
             reset_fn = getattr(self._parent, "reset_grayscale_region_to_maximized", None)
             if callable(reset_fn):
                 reset_fn()
+                if getattr(self._parent, "cfg", {}).get("grayscaleFilterRegion") is None:
+                    self.cfg["grayscaleFilterRegion"] = None
+                    self.cfg["grayscaleFilterRegions"] = []
                 self._refresh_grayscale_region_ui()
                 return
         self.cfg["grayscaleFilterRegion"] = None
+        self.cfg["grayscaleFilterRegions"] = []
         self._refresh_grayscale_region_ui()
         self.save_settings()
 
     def _on_toggle_fullscreen_grayscale(self) -> None:
         if hasattr(self, "_parent") and self._parent is not None:
-            toggle_fn = getattr(self._parent, "toggle_grayscale_filter", None)
+            toggle_fn = getattr(self._parent, "toggle_fullscreen_grayscale", None)
             if callable(toggle_fn):
                 toggle_fn()
+            else:
+                hk_fn = getattr(self._parent, "on_hotkey_triggered", None)
+                if callable(hk_fn):
+                    hk_fn("grayscaleFilterKey")
+            self._refresh_grayscale_status_ui()
 
     def _on_toggle_region_grayscale(self) -> None:
         if hasattr(self, "_parent") and self._parent is not None:
-            toggle_fn = getattr(self._parent, "toggle_region_grayscale_filter", None)
+            toggle_fn = getattr(self._parent, "toggle_region_grayscale", None)
             if callable(toggle_fn):
                 toggle_fn()
+            self._refresh_grayscale_status_ui()
 
     def theme_colors(self):
         """Resolve active theme colors dynamically based on parent window.
@@ -418,8 +629,18 @@ class AppearancePanelMixin:
                 background: transparent;
                 font-size: {font_size}px;
             }}
+            QLabel#StatusMuted {{
+                color: {bar_muted};
+                background: transparent;
+            }}
+            QLabel#StatusAccent {{
+                color: {accent};
+                font-weight: bold;
+                background: transparent;
+            }}
             QLabel#StatusSuccess {{
                 color: {success};
+                font-weight: bold;
                 background: transparent;
             }}
             QLabel#StatusWarning {{
@@ -498,6 +719,30 @@ class AppearancePanelMixin:
             }}
             QPushButton:disabled {{
                 color: {disabled_color};
+            }}
+            QPushButton#GrayscaleToggleBtn[activeFilter="true"] {{
+                background-color: {accent};
+                border-color: {accent};
+                color: white;
+                font-weight: bold;
+            }}
+            QPushButton#GrayscaleActionSmall,
+            QPushButton#GrayscaleRemoveSmall {{
+                padding: 1px 7px;
+                min-height: 20px;
+                font-size: {max(9, int(font_size * 0.92))}px;
+            }}
+            QPushButton#GrayscaleRemoveSmall:hover {{
+                border-color: {danger};
+                color: {danger};
+            }}
+            QFrame#GrayscaleRegionRow {{
+                background-color: {bg};
+                border: 1px solid {borderColor};
+                border-radius: 5px;
+            }}
+            QFrame#GrayscaleRegionRow:hover {{
+                border-color: {accent};
             }}
             QPushButton#StepButton {{
                 min-width: 28px;
@@ -1320,13 +1565,83 @@ class AppearancePanelMixin:
                 self._persist_config()
         self._refresh_autostart_status()
 
+    def _make_grayscale_switch_row(
+        self,
+        title_text: str,
+        status_attr: str,
+        sub_attr: str,
+        btn_attr: str,
+        btn_initial_text: str,
+        slot,
+    ) -> QWidget:
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(2, 3, 2, 3)
+        row_layout.setSpacing(8)
+
+        left_col = QVBoxLayout()
+        left_col.setContentsMargins(0, 0, 0, 0)
+        left_col.setSpacing(2)
+
+        top_line = QHBoxLayout()
+        top_line.setContentsMargins(0, 0, 0, 0)
+        top_line.setSpacing(6)
+        title_lbl = QLabel(title_text)
+        title_lbl.setObjectName("RowTitle")
+        status_lbl = QLabel(i18n.tr("未开启"))
+        self._set_label_state(status_lbl, "muted")
+        top_line.addWidget(title_lbl)
+        top_line.addWidget(status_lbl)
+        top_line.addStretch()
+
+        sub_lbl = QLabel("")
+        sub_lbl.setObjectName("RowSubtitle")
+        sub_lbl.setWordWrap(True)
+
+        left_col.addLayout(top_line)
+        left_col.addWidget(sub_lbl)
+        row_layout.addLayout(left_col, 1)
+
+        btn = QPushButton(btn_initial_text)
+        btn.setObjectName("GrayscaleToggleBtn")
+        btn.setMinimumWidth(92)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.clicked.connect(slot)
+        row_layout.addWidget(btn, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        setattr(self, status_attr, status_lbl)
+        setattr(self, sub_attr, sub_lbl)
+        setattr(self, btn_attr, btn)
+        return row_widget
+
+    def _build_grayscale_quick_card(self, parent_layout):
+        card_quick, cl_quick = self._begin_card(parent_layout, i18n.tr("滤镜开关与状态"))
+        cl_quick.addWidget(self._make_grayscale_switch_row(
+            i18n.tr("全屏灰度滤镜"),
+            "lbl_fullscreen_grayscale_status",
+            "lbl_fullscreen_grayscale_sub",
+            "btn_toggle_fullscreen_grayscale",
+            i18n.tr("开启全屏灰度"),
+            self._on_toggle_fullscreen_grayscale,
+        ))
+        cl_quick.addWidget(self._make_grayscale_switch_row(
+            i18n.tr("区域灰度滤镜"),
+            "lbl_region_grayscale_status",
+            "lbl_region_grayscale_sub",
+            "btn_toggle_region_grayscale",
+            i18n.tr("开启区域灰度"),
+            self._on_toggle_region_grayscale,
+        ))
+        parent_layout.addWidget(card_quick)
+        return card_quick
+
     def _build_grayscale_card(self, parent_layout):
-        # ═══════════════════ 全屏/区域灰度滤镜 ═══════════════════
-        card_gray, cl_gray = self._begin_card(parent_layout, i18n.tr("灰度滤镜"))
+        # ═══════════════════ 渲染设置 ═══════════════════
+        card_gray, cl_gray = self._begin_card(parent_layout, i18n.tr("渲染设置"))
 
         grid_gray = QGridLayout()
         grid_gray.setSpacing(8)
-        grid_gray.setColumnMinimumWidth(0, 110)
+        grid_gray.setColumnMinimumWidth(0, 96)
         grid_gray.setColumnStretch(1, 1)
 
         grid_gray.addWidget(QLabel(i18n.tr("作用屏幕")), 0, 0)
@@ -1355,47 +1670,59 @@ class AppearancePanelMixin:
         self.combo_grayscale_backend.currentTextChanged.connect(self._on_grayscale_backend_changed)
         grid_gray.addWidget(self.combo_grayscale_backend, 2, 1)
 
-        grid_gray.addWidget(QLabel(i18n.tr("窗口区域")), 3, 0)
-        row_region = QHBoxLayout()
-        row_region.setContentsMargins(0, 0, 0, 0)
-        row_region.setSpacing(6)
-        self.lbl_grayscale_region = QLabel(i18n.tr("默认最大化"))
-        self._set_label_state(self.lbl_grayscale_region, "muted")
-        self.btn_select_grayscale_region = QPushButton(i18n.tr("框选区域"))
-        self.btn_select_grayscale_region.clicked.connect(self._on_select_grayscale_region)
-        self.btn_reset_grayscale_region = QPushButton(i18n.tr("重置最大化"))
-        self.btn_reset_grayscale_region.clicked.connect(self._on_reset_grayscale_region)
-        row_region.addWidget(self.lbl_grayscale_region, 1)
-        row_region.addWidget(self.btn_select_grayscale_region)
-        row_region.addWidget(self.btn_reset_grayscale_region)
-        grid_gray.addLayout(row_region, 3, 1)
-
         cl_gray.addLayout(grid_gray)
+
+        self.lbl_grayscale_backend_note = QLabel("")
+        self.lbl_grayscale_backend_note.setObjectName("RowSubtitle")
+        self.lbl_grayscale_backend_note.setWordWrap(True)
+        cl_gray.addWidget(self.lbl_grayscale_backend_note)
+
         parent_layout.addWidget(card_gray)
         return card_gray
 
+    def _build_grayscale_regions_card(self, parent_layout):
+        card_regions, cl_regions = self._begin_card(parent_layout, i18n.tr("区域灰度范围"))
+        card_regions.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        self._card_grayscale_regions = card_regions
+
+        row_summary = QHBoxLayout()
+        row_summary.setContentsMargins(0, 0, 0, 0)
+        row_summary.setSpacing(8)
+        lbl_scope_title = QLabel(i18n.tr("当前范围"))
+        lbl_scope_title.setMinimumWidth(96)
+        self.lbl_grayscale_region = QLabel(i18n.tr("默认最大化"))
+        self._set_label_state(self.lbl_grayscale_region, "muted")
+        self.lbl_grayscale_region.setWordWrap(True)
+        row_summary.addWidget(lbl_scope_title, 0, Qt.AlignmentFlag.AlignVCenter)
+        row_summary.addWidget(self.lbl_grayscale_region, 1, Qt.AlignmentFlag.AlignVCenter)
+        cl_regions.addLayout(row_summary)
+
+        row_actions = QHBoxLayout()
+        row_actions.setContentsMargins(0, 0, 0, 0)
+        row_actions.setSpacing(6)
+        self.btn_select_grayscale_region = QPushButton(i18n.tr("框选区域"))
+        self.btn_select_grayscale_region.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_select_grayscale_region.clicked.connect(self._on_select_grayscale_region)
+        self.btn_reset_grayscale_region = QPushButton(i18n.tr("重置最大化"))
+        self.btn_reset_grayscale_region.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_reset_grayscale_region.clicked.connect(self._on_reset_grayscale_region)
+        row_actions.addWidget(self.btn_select_grayscale_region)
+        row_actions.addWidget(self.btn_reset_grayscale_region)
+        row_actions.addStretch()
+        cl_regions.addLayout(row_actions)
+
+        self._grayscale_regions_layout = QVBoxLayout()
+        self._grayscale_regions_layout.setContentsMargins(0, 2, 0, 0)
+        self._grayscale_regions_layout.setSpacing(6)
+        cl_regions.addLayout(self._grayscale_regions_layout)
+
+        parent_layout.addWidget(card_regions)
+        return card_regions
+
     def _build_filter_page(self, page_filter):
+        self._build_grayscale_quick_card(page_filter)
         self._build_grayscale_card(page_filter)
-
-        card_quick, cl_quick = self._begin_card(page_filter, i18n.tr("快捷开关"))
-        row_quick = QHBoxLayout()
-        row_quick.setSpacing(8)
-        self.btn_toggle_fullscreen_grayscale = QPushButton(i18n.tr("开关全屏灰度"))
-        self.btn_toggle_fullscreen_grayscale.clicked.connect(self._on_toggle_fullscreen_grayscale)
-        self.btn_toggle_region_grayscale = QPushButton(i18n.tr("开关区域灰度"))
-        self.btn_toggle_region_grayscale.clicked.connect(self._on_toggle_region_grayscale)
-        row_quick.addWidget(self.btn_toggle_fullscreen_grayscale)
-        row_quick.addWidget(self.btn_toggle_region_grayscale)
-        row_quick.addStretch()
-        cl_quick.addLayout(row_quick)
-
-        lbl_filter_hint = QLabel(i18n.tr(
-            "全屏灰度滤镜作用于整个屏幕；区域灰度滤镜以无边框穿透窗口呈现，仅对上方设定的窗口区域生效。"
-        ))
-        lbl_filter_hint.setObjectName("TipDesc")
-        lbl_filter_hint.setWordWrap(True)
-        cl_quick.addWidget(lbl_filter_hint)
-        page_filter.addWidget(card_quick)
+        self._build_grayscale_regions_card(page_filter)
 
     def _on_wheel_tab_check_changed(self, _state=None):
         """Keep at least one wheel-module tab checked, then save."""

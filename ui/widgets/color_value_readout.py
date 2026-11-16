@@ -542,6 +542,7 @@ def place_readout_beside_buttons(
     scale: float,
     pane_origin: QPoint | None = None,
     overhang_y: int = 0,
+    use_pill_backdrop: bool | None = None,
 ) -> None:
     """Position *readout* inside (or just below) a legacy wheel/LAB pane."""
     if readout is None:
@@ -549,7 +550,9 @@ def place_readout_beside_buttons(
     if not enabled or pane_w <= 0 or pane_h <= 0:
         readout.hide()
         return
-    readout.set_pill_backdrop(align_with_buttons)
+    readout.set_pill_backdrop(
+        align_with_buttons if use_pill_backdrop is None else bool(use_pill_backdrop)
+    )
     avail = max(0, right_bound - left_bound)
     size = readout.fit_width(avail)
     if size is None:

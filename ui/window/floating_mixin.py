@@ -57,6 +57,7 @@ class FloatingPanelsMixin:
             retired = self._retired_floating_windows = []
         if window not in retired:
             retired.append(window)
+        self._refresh_floating_hotkeys_state()
 
     @staticmethod
     def _floating_window_dead(window) -> bool:
@@ -66,6 +67,117 @@ class FloatingPanelsMixin:
             return bool(sip.isdeleted(window))
         except Exception:
             return False
+
+    def _unique_floating_windows(self) -> list:
+        """Return deduplicated live FloatingPanelWindow instances in map order."""
+        out: list = []
+        seen: set[int] = set()
+        for win in self.floating_windows().values():
+            if win is None or id(win) in seen or self._floating_window_dead(win):
+                continue
+            seen.add(id(win))
+            out.append(win)
+        return out
+
+    def _classify_floating_window(self, window) -> tuple[list, list, list]:
+        """Return ``(wheel_pages, lab_pages, slider_panel_ids)`` in *window*."""
+        pages: list = []
+        lab_pages: list = []
+        slider_pids: list = []
+        if self._floating_window_dead(window):
+            return pages, lab_pages, slider_pids
+        for pid in getattr(window, "panel_ids", ()) or ():
+            try:
+                page = window.panel(pid)
+            except RuntimeError:
+                continue
+            if getattr(page, "is_floating_wheel_page", False):
+                pages.append(page)
+            elif getattr(page, "is_floating_lab_page", False):
+                lab_pages.append(page)
+            elif page is not None:
+                slider_pids.append(pid)
+        return pages, lab_pages, slider_pids
+
+    def _floating_hotkey_window_for(self, window_id: str):
+        """Return the open floating window matching *window_id*, if any."""
+        if not window_id:
+            return None
+        windows = self._unique_floating_windows()
+        for win in windows:
+            if getattr(win, "panel_id", None) == window_id:
+                return win
+        for win in windows:
+            if window_id in (getattr(win, "panel_ids", ()) or ()):
+                return win
+        return None
+
+    def _advance_host_tabs(self, host) -> bool:
+        """Advance multi-page tab stacks inside *host*; return True if any moved."""
+        if host is None:
+            return False
+        try:
+            if host.isHidden():
+                return False
+        except RuntimeError:
+            return False
+        advanced = False
+        for tabs, _node in list(getattr(host, "_tabs", ()) or ()):
+            if tabs is None:
+                continue
+            try:
+                if tabs.isHidden() or tabs.count() < 2:
+                    continue
+                if host.advance_tab(tabs):
+                    advanced = True
+            except RuntimeError:
+                continue
+        return advanced
+
+    def _floating_window_has_tabs(self, window) -> bool:
+        """True when *window* contains at least one multi-page tab stack."""
+        if self._floating_window_dead(window):
+            return False
+        host = getattr(window, "panel_host", None)
+        if host is None:
+            return False
+        for tabs, _node in list(getattr(host, "_tabs", ()) or ()):
+            if tabs is None:
+                continue
+            try:
+                if not tabs.isHidden() and tabs.count() >= 2:
+                    return True
+            except RuntimeError:
+                continue
+        return False
+
+    def _advance_floating_window_tabs(self, window) -> bool:
+        """Advance multi-page tab stack(s) hosted inside *window*."""
+        if self._floating_window_dead(window):
+            return False
+        return self._advance_host_tabs(getattr(window, "panel_host", None))
+
+    def _refresh_floating_hotkeys_state(self) -> None:
+        """Re-sync global floating hotkey bindings and open Settings UI card."""
+        if getattr(self, "_hotkeys_ready", False):
+            rebind = getattr(self, "update_hotkey_bindings", None)
+            if callable(rebind):
+                rebind()
+        sidebar = getattr(self, "settings_sidebar", None)
+        if sidebar is not None:
+            refresh_ui = getattr(sidebar, "refresh_floating_hotkeys_ui", None)
+            if callable(refresh_ui):
+                refresh_ui()
+
+    def _set_floating_follow_flag(self, window_id: str, field: str, enabled: bool) -> None:
+        """Persist a floating window follow-global-hotkey toggle and refresh Settings."""
+        from core import config as _config
+        cfg = getattr(self, "cfg", None)
+        if cfg is None or not window_id:
+            return
+        _config.set_floating_window_hotkey_field(cfg, window_id, field, bool(enabled))
+        _config.save_hotkey_config(cfg)
+        self._refresh_floating_hotkeys_state()
 
     # ── out ──────────────────────────────────────────────────────────────
 
@@ -239,6 +351,7 @@ class FloatingPanelsMixin:
                 # panels in a row: one re-mount of the column at the end
                 # instead of one per panel.
                 fn(defer=bool(defer_refresh))
+        self._refresh_floating_hotkeys_state()
         return True
 
     def _wrap_floating_wheel(self, panel_id: str, widget):
@@ -299,27 +412,19 @@ class FloatingPanelsMixin:
     def _show_floating_options(self, window, global_pos) -> None:
         """The floating title-bar dropdown: per-window view/decorations."""
         from PyQt6.QtWidgets import QMenu
+        from core import config as _config, i18n
+
         if self._floating_window_dead(window):
             return
-        pages = []
-        lab_pages = []
-        for pid in window.panel_ids:
-            try:
-                page = window.panel(pid)
-            except RuntimeError:
-                continue
-            if getattr(page, "is_floating_wheel_page", False):
-                pages.append(page)
-            elif getattr(page, "is_floating_lab_page", False):
-                lab_pages.append(page)
+        pages, lab_pages, slider_pids = self._classify_floating_window(window)
         menu = QMenu(self)
-        if not pages:
+        if not pages and not slider_pids:
             if lab_pages:
-                swatches = menu.addAction("显示前景/背景色")
+                swatches = menu.addAction(i18n.tr("显示前景/背景色"))
                 swatches.setCheckable(True)
                 swatches.setChecked(bool(lab_pages[0].show_swatches))
                 menu.addSeparator()
-                close = menu.addAction("关闭 LAB 浮窗")
+                close = menu.addAction(i18n.tr("关闭 LAB 浮窗"))
                 picked = menu.exec(global_pos)
                 if picked is swatches:
                     visible = not lab_pages[0].show_swatches
@@ -328,41 +433,75 @@ class FloatingPanelsMixin:
                 elif picked is close:
                     self._close_lab_float()
                 return
-            action = menu.addAction("此浮窗没有色图页")
+            action = menu.addAction(i18n.tr("此浮窗没有色图页"))
             action.setEnabled(False)
             menu.exec(global_pos)
             return
-        active_id = window.current_panel_id()
-        active = next(
-            (p for p in pages if p.panel_id == active_id), pages[0])
-        swatches = menu.addAction("显示前景/背景色")
-        swatches.setCheckable(True)
-        swatches.setChecked(bool(active.show_swatches))
-        buttons = menu.addAction("显示模式按钮")
-        buttons.setCheckable(True)
-        buttons.setChecked(bool(active.show_buttons))
-        menu.addSeparator()
-        hide_lab = menu.addAction("隐藏 LAB 图（本浮窗）")
-        hide_lab.setCheckable(True)
-        hide_lab.setChecked(not active.lab_enabled)
-        follow = menu.addAction("跟随全局 LAB 切换快捷键")
-        follow.setCheckable(True)
-        follow.setChecked(bool(active.follow_global_lab))
-        menu.addSeparator()
-        to_lab = active.view_mode != "lab"
-        view = menu.addAction("切换为 LAB 图（本浮窗）" if to_lab
-                              else "切换为色环视图（本浮窗）")
-        view.setEnabled(bool(active.lab_enabled))
+
+        win_id = getattr(window, "panel_id", "") or ""
+        hk = _config.get_floating_window_hotkeys(getattr(self, "cfg", {}), win_id)
+
+        swatches = buttons = hide_lab = follow = view = None
+        follow_wheel_tab = follow_slider_tab = next_tab = open_hotkeys = None
+        active = None
+        to_lab = False
+
+        if pages:
+            active_id = window.current_panel_id()
+            active = next(
+                (p for p in pages if p.panel_id == active_id), pages[0])
+            swatches = menu.addAction(i18n.tr("显示前景/背景色"))
+            swatches.setCheckable(True)
+            swatches.setChecked(bool(active.show_swatches))
+            buttons = menu.addAction(i18n.tr("显示模式按钮"))
+            buttons.setCheckable(True)
+            buttons.setChecked(bool(active.show_buttons))
+            menu.addSeparator()
+            hide_lab = menu.addAction(i18n.tr("隐藏 LAB 图（本浮窗）"))
+            hide_lab.setCheckable(True)
+            hide_lab.setChecked(not active.lab_enabled)
+            follow = menu.addAction(i18n.tr("跟随全局 LAB 切换快捷键"))
+            follow.setCheckable(True)
+            follow.setChecked(bool(active.follow_global_lab))
+            follow_wheel_tab = menu.addAction(i18n.tr("跟随全局色轮标签快捷键"))
+            follow_wheel_tab.setCheckable(True)
+            follow_wheel_tab.setChecked(bool(hk["follow_global_wheel_tab"]))
+
+        if slider_pids:
+            if pages:
+                menu.addSeparator()
+            follow_slider_tab = menu.addAction(i18n.tr("跟随全局滑条标签快捷键"))
+            follow_slider_tab.setCheckable(True)
+            follow_slider_tab.setChecked(bool(hk["follow_global_slider_tab"]))
+
+        if self._floating_window_has_tabs(window):
+            next_tab = menu.addAction(i18n.tr("切换到下一个标签页"))
+
+        if pages and active is not None:
+            menu.addSeparator()
+            to_lab = active.view_mode != "lab"
+            view = menu.addAction(
+                i18n.tr("切换为 LAB 图（本浮窗）") if to_lab
+                else i18n.tr("切换为色环视图（本浮窗）"))
+            view.setEnabled(bool(active.lab_enabled))
+
+        open_settings = getattr(self, "_show_settings_window", None)
+        if callable(open_settings):
+            menu.addSeparator()
+            open_hotkeys = menu.addAction(i18n.tr("本浮窗快捷键设置..."))
+
         picked = menu.exec(global_pos)
-        if picked is swatches:
+        if picked is None:
+            return
+        if picked is swatches and active is not None:
             visible = not active.show_swatches
             for page in pages:
                 page.set_show_swatches(visible, remember=True)
-        elif picked is buttons:
+        elif picked is buttons and active is not None:
             visible = not active.show_buttons
             for page in pages:
                 page.set_show_buttons(visible, remember=True)
-        elif picked is hide_lab:
+        elif picked is hide_lab and active is not None:
             enabled = not active.lab_enabled
             for page in pages:
                 page.set_lab_enabled(enabled, remember=True)
@@ -371,11 +510,25 @@ class FloatingPanelsMixin:
                 window.geometry_changed.emit(window.panel_id)
             except RuntimeError:
                 pass
-        elif picked is follow:
+            self._refresh_floating_hotkeys_state()
+        elif picked is follow and active is not None:
             enabled = not active.follow_global_lab
             for page in pages:
                 page.set_follow_global_lab(enabled, remember=True)
-        elif picked is view and active.lab_enabled:
+            self._refresh_floating_hotkeys_state()
+        elif picked is follow_wheel_tab:
+            self._set_floating_follow_flag(
+                win_id, "follow_global_wheel_tab",
+                not hk["follow_global_wheel_tab"],
+            )
+        elif picked is follow_slider_tab:
+            self._set_floating_follow_flag(
+                win_id, "follow_global_slider_tab",
+                not hk["follow_global_slider_tab"],
+            )
+        elif picked is next_tab:
+            self._advance_floating_window_tabs(window)
+        elif picked is view and active is not None and active.lab_enabled:
             target = "lab" if to_lab else "wheel"
             for page in pages:
                 page.set_view_mode(target, remember=True)
@@ -384,6 +537,8 @@ class FloatingPanelsMixin:
                 window.geometry_changed.emit(window.panel_id)
             except RuntimeError:
                 pass
+        elif picked is open_hotkeys and callable(open_settings):
+            open_settings(0)
 
     def _refresh_after_wheel_float(self) -> None:
         """The wheel tab strip changed shape: re-sync tabs/height."""
@@ -511,6 +666,7 @@ class FloatingPanelsMixin:
             _config.save_hotkey_config(getattr(self, "cfg", {}))
         if refresh:
             self._refresh_after_wheel_float()
+        self._refresh_floating_hotkeys_state()
         return True
 
     def float_lab_view(self, persist: bool = True, state=None,
@@ -631,6 +787,7 @@ class FloatingPanelsMixin:
         if persist:
             self._save_floating_state()
             _config.save_hotkey_config(getattr(self, "cfg", {}))
+        self._refresh_floating_hotkeys_state()
         return True
 
     def _close_lab_float(self) -> bool:
@@ -670,6 +827,7 @@ class FloatingPanelsMixin:
             self._retire_floating_window(window)
         if widget is None:
             self._save_floating_state()
+            self._refresh_floating_hotkeys_state()
             return True
         origins = getattr(self, "_wheel_float_origin", None) or {}
         origin = origins.pop(panel_id, "picker")
@@ -696,6 +854,7 @@ class FloatingPanelsMixin:
                     owner_host = pdrop.host_owning(panel_id) or getattr(self, "panel_host", None)
                     if owner_host is not None:
                         owner_host.trigger_landing_animation(panel_id)
+                self._refresh_floating_hotkeys_state()
                 return True
             if getattr(self, "panel_host", None) is not None:
                 host = self.panel_host
@@ -718,6 +877,7 @@ class FloatingPanelsMixin:
                         )
                     if refresh:
                         host.trigger_landing_animation(panel_id)
+                    self._refresh_floating_hotkeys_state()
                     return True
         # A tab hidden while its page was floating must come back when the
         # page docks, otherwise the widget would be left parentless.
@@ -763,6 +923,7 @@ class FloatingPanelsMixin:
             QTimer.singleShot(
                 0, lambda s=getattr(self, "stack", None): animate_panel_landing(s)
             )
+        self._refresh_floating_hotkeys_state()
         return True
 
     def _floating_geometry(self, panel_id, size, position, *, origin=None):
@@ -874,6 +1035,7 @@ class FloatingPanelsMixin:
             )
         if refresh and dock_host is not None:
             dock_host.trigger_landing_animation(panel_id)
+        self._refresh_floating_hotkeys_state()
         return True
 
     def restore_floating_panels(self) -> None:
@@ -1014,6 +1176,7 @@ class FloatingPanelsMixin:
             fn()
         if restored_wheel:
             self._refresh_after_wheel_float()
+        self._refresh_floating_hotkeys_state()
 
     # ── bookkeeping ──────────────────────────────────────────────────────
 
@@ -1504,6 +1667,7 @@ class FloatingPanelsMixin:
             )
         if getattr(target_window, "panel_host", None) is not None:
             target_window.panel_host.trigger_landing_animation(panel_id)
+        self._refresh_floating_hotkeys_state()
 
     def _save_floating_state(self) -> None:
         from core import config

@@ -80,7 +80,8 @@ _EN: dict[str, str] = {
     "黑白滤镜": "Grayscale filter",
     "LAB切换(色轮)": "Toggle LAB (wheel)",
     "LAB切换(全局)": "Toggle LAB (global)",
-    "视图切换（色轮/标签页）": "Switch view (wheel / tabs)",
+    "切换标签页（色轮/滑条）": "Switch tabs (wheel / sliders)",
+    "LAB 切换（色轮区）": "Toggle LAB (picker hover)",
     "LAB 切换（全局）": "Toggle LAB (global)",
     "标题栏显隐": "Toggle title bar",
     "标题栏显示/隐藏": "Toggle title bar",
@@ -408,7 +409,18 @@ _EN: dict[str, str] = {
     "系统 Luma (Mag) 作用于全部屏幕": "System Luma (Mag) applies to all screens",
     "点击后窗口隐藏3秒，移鼠标到目标位置": "Hides the window for 3 seconds, then move the mouse to the target",
     # Long tooltips
-    "鼠标悬停在色轮或LAB区域时，按此键/鼠标键切换色轮/LAB视图；悬停在标签页上（分页叠放的滑块组/面板）时切换到下一个标签页；支持键盘、鼠标按键或数位板笔按键（建议侧键/中键，左键会与色轮操作冲突）；无需聚焦本窗口，无焦点取色模式下也可用": "While hovering the wheel/LAB area, press this key/mouse button to switch the wheel/LAB view; while hovering a tab stack (sliders/panels stacked behind tabs) it switches to the next tab. Supports keyboard, mouse buttons and pen buttons (side/middle button recommended — left click conflicts with the wheel). No focus required; also works in no-focus pick mode.",
+    "鼠标悬停在有标签页的色轮/LAB区域或滑条分组上时，按此键/鼠标键切换到下一个标签页（循环切换）；"
+    "支持键盘、鼠标按键或数位板笔按键；无需聚焦本窗口，无焦点取色模式下也可用":
+        "While hovering a tabbed wheel/LAB pane or slider tab stack, press this key/mouse button "
+        "to advance to the next tab. Supports keyboard, mouse buttons and pen buttons. No focus "
+        "required; also works in no-focus pick mode.",
+    "鼠标悬停在色轮、LAB 视图或浮出轮盘区域时，按此键/鼠标键切换色轮与 LAB 视图；"
+    "支持键盘、鼠标按键或数位板笔按键（建议侧键/中键，左键会与取色操作冲突）；"
+    "无需聚焦本窗口，无焦点取色模式下也可用":
+        "While hovering the wheel, LAB view or a floating wheel, press this key/mouse button "
+        "to toggle between wheel and LAB views. Supports keyboard, mouse buttons and pen "
+        "buttons (side/middle button recommended — left click conflicts with picking). No focus "
+        "required; also works in no-focus pick mode.",
     "任意位置全局切换色轮/LAB视图，无需聚焦本窗口；支持键盘或鼠标按键（鼠标按键作为全局快捷键时不拦截点击，画画软件仍会收到）": "Toggle the wheel/LAB view globally from anywhere, no focus required. Supports keyboard or mouse buttons (mouse hotkeys are not suppressed, so the drawing app still receives the click).",
     "显示或隐藏标题栏（设置/最小化/关闭按钮那一栏）；隐藏后顶部边框与四周一致": "Show or hide the title bar (settings/minimize/close buttons). When hidden the top border matches the other edges.",
     "OKLCh (GPU兼容)：感知均匀的全屏黑白，覆盖 ColorInk；系统 Luma (Mag)：延迟最低、仅作用于全部屏幕的备用模式；需要按屏目标时请在 Native 后端选择 Luma。": "OKLCh (GPU-compatible): perceptual full-screen grayscale covering Colorink. System Luma (Mag): lowest latency fallback that only applies to all screens. Use the Native backend's Luma mode for per-screen targeting.",
@@ -424,7 +436,8 @@ _EN: dict[str, str] = {
     "解绑「隐藏窗口」快捷键（设为「无」），让该键位不再被占用": "Unbind the \"Hide window\" hotkey (set it to \"None\") so the key is free again",
     "解绑「跟随鼠标」快捷键（设为「无」），让该键位不再被占用": "Unbind the \"Follow mouse\" hotkey (set it to \"None\") so the key is free again",
     "解绑「灰度滤镜」快捷键（设为「无」），让该键位不再被占用": "Unbind the \"Grayscale filter\" hotkey (set it to \"None\") so the key is free again",
-    "解绑「视图切换（色轮/标签页）」快捷键（设为「无」），让该键位不再被占用": "Unbind the \"Switch view (wheel / tabs)\" hotkey (set it to \"None\") so the key is free again",
+    "解绑「切换标签页（色轮/滑条）」快捷键（设为「无」），让该键位不再被占用": "Unbind the \"Switch tabs (wheel / sliders)\" hotkey (set it to \"None\") so the key is free again",
+    "解绑「LAB 切换（色轮区）」快捷键（设为「无」），让该键位不再被占用": "Unbind the \"Toggle LAB (picker hover)\" hotkey (set it to \"None\") so the key is free again",
     "解绑「LAB 切换（全局）」快捷键（设为「无」），让该键位不再被占用": "Unbind the \"Toggle LAB (global)\" hotkey (set it to \"None\") so the key is free again",
     "解绑「标题栏显示/隐藏」快捷键（设为「无」），让该键位不再被占用": "Unbind the \"Toggle title bar\" hotkey (set it to \"None\") so the key is free again",
     "选择界面主题：自动匹配绘画软件、屏幕取色或固定灰/白/黑": "Choose the UI theme: auto-match the drawing app, eyedropper, or fixed gray/white/black",
@@ -521,6 +534,89 @@ _EN: dict[str, str] = {
     "在色轮与 LAB 视图显示当前颜色数值（点击可切换 RGB / HSV / HLS / LAB / OKLab / OKLCh / HEX）": "Show current color values in the wheel and LAB view (click to cycle RGB / HSV / HLS / LAB / OKLab / OKLCh / HEX)",
     "左键点击切换格式 · 右键选择或复制": "Left-click to cycle format · Right-click to choose or copy",
     "复制 {value}": "Copy {value}",
+    "切换色轮标签（全局）": "Cycle wheel tabs (global)",
+    "切换滑条标签（全局）": "Cycle slider tabs (global)",
+    "任意位置全局切换主色轮/LAB标签页，并同步勾选「跟随全局色轮标签快捷键」的浮窗；无需聚焦本窗口": (
+        "Globally cycle main wheel/LAB tabs and any floating wheel windows opted into following it, without focusing this window"
+    ),
+    "任意位置全局切换主窗口滑条/面板标签页，并同步勾选「跟随全局滑条标签快捷键」的浮窗；无需聚焦本窗口": (
+        "Globally cycle main slider/panel tab stacks and any floating slider windows opted into following it, without focusing this window"
+    ),
+    "解绑「切换色轮标签（全局）」快捷键（设为「无」），让该键位不再被占用": (
+        "Unbind the Cycle Wheel Tabs (Global) shortcut (set to None) so the key is freed"
+    ),
+    "解绑「切换滑条标签（全局）」快捷键（设为「无」），让该键位不再被占用": (
+        "Unbind the Cycle Slider Tabs (Global) shortcut (set to None) so the key is freed"
+    ),
+    "浮窗快捷键": "Floating Window Hotkeys",
+    "仅为当前打开的浮窗配置：可勾选跟随主窗口全局快捷键，或为该浮窗单独绑定专属热键": (
+        "Configure currently open floating windows: follow the main global shortcuts or bind per-window global hotkeys"
+    ),
+    "跟随全局 LAB 切换快捷键": "Follow global LAB toggle shortcut",
+    "跟随全局色轮标签快捷键": "Follow global wheel tab shortcut",
+    "跟随全局滑条标签快捷键": "Follow global slider tab shortcut",
+    "本浮窗标签切换": "This window tab switch",
+    "本浮窗 LAB 切换": "This window LAB toggle",
+    "切换到下一个标签页": "Switch to next tab",
+    "本浮窗快捷键设置...": "Floating window hotkeys...",
+    "显示前景/背景色": "Show FG/BG swatches",
+    "显示模式按钮": "Show mode button",
+    "隐藏 LAB 图（本浮窗）": "Hide LAB view (this window)",
+    "关闭 LAB 浮窗": "Close LAB float",
+    "此浮窗没有色图页": "No colour map in this window",
+    "切换为 LAB 图（本浮窗）": "Switch to LAB view (this window)",
+    "在屏幕上拖拽框选一个或多个灰度区域；支持拖动边框调整、删除与多区管理": "Drag on screen to select one or more grayscale regions; supports resizing, deleting, and multi-region editing",
+    "清空所有自定义区域，将区域灰度滤镜重置为默认最大化无边框窗口": "Clear all custom regions and reset the region grayscale filter to a frameless maximized window",
+    "立即开启或关闭区域灰度滤镜": "Toggle the region grayscale filter immediately",
+    "滤镜开关与状态": "Filter Toggles & Status",
+    "渲染设置": "Rendering Settings",
+    "区域灰度范围": "Region Grayscale Scope",
+    "全屏灰度滤镜": "Fullscreen Grayscale Filter",
+    "● 已开启": "● Active",
+    "未开启": "Inactive",
+    "开启全屏灰度": "Enable Fullscreen",
+    "关闭全屏灰度": "Disable Fullscreen",
+    "开启区域灰度": "Enable Region",
+    "关闭区域灰度": "Disable Region",
+    "作用于所选屏幕全屏 · 快捷键：{key}": "Covers selected screen(s) · Shortcut: {key}",
+    "无边框穿透窗口 ({scope}) · 快捷键：{key}": "Frameless click-through ({scope}) · Shortcut: {key}",
+    "当前范围": "Active Scope",
+    "+ 框选 / 编辑": "+ Add / Edit",
+    "重选": "Reselect",
+    "启用或暂时停用此灰度区域": "Enable or temporarily disable this grayscale region",
+    "在屏幕上重新拖拽框选此区域": "Redraw this region on screen",
+    "删除此灰度区域": "Delete this grayscale region",
+    "区域 {idx}": "Region {idx}",
+    "起点 ({x}, {y}) · {screen}": "Origin ({x}, {y}) · {screen}",
+    "显示器 {idx}": "Display {idx}",
+    "跨 {count} 个显示器": "Across {count} displays",
+    "桌面外区域": "Off-screen region",
+    "共 {total} 个区域（已启用 {active} 个）": "{total} regions ({active} enabled)",
+    "共 {total} 个区域（已全部停用，暂按默认最大化）": "{total} regions (all disabled, using maximized)",
+    "未设定局部区域：区域灰度将以默认最大化无边框窗口覆盖目标屏幕。\n点击「框选区域」可在屏幕上拖拽框选一个或多个局部灰度区域。": (
+        "No custom regions set: region grayscale covers the target screen as a frameless maximized window.\n"
+        "Click \"Select Region\" to drag and select one or more grayscale regions on screen."
+    ),
+    "系统 Mag 模式仅支持 BT.709 Luma 亮度并作用于全部屏幕；区域灰度同步使用 Windows 放大镜窗口。": (
+        "System Mag mode only supports BT.709 Luma across all screens; region grayscale uses Windows Magnifier windows."
+    ),
+    "全屏灰度使用 GPU 兼容模式；区域灰度优先使用 DComp 显存直通（不可用时自动回退至 Mag 窗口）。": (
+        "Fullscreen grayscale uses GPU-compatible OpenGL; region grayscale prefers DComp passthrough (falls back to Mag windows if unavailable)."
+    ),
+    "DComp 显存直通提供零拷贝低延迟的 OKLCh / Luma 渲染；配置局部区域后将按桌面坐标跨屏生效。": (
+        "DComp passthrough delivers zero-copy low-latency OKLCh / Luma rendering; custom regions apply across displays by desktop coordinates."
+    ),
+    "已框选 {count} 个区域": "{count} region(s) selected",
+    "请拖拽框选灰度区域": "Drag to select grayscale region(s)",
+    "左键拖拽添加 · 拖动边框调整 · 右键区域删除": "Drag to add · Drag border to resize · Right-click region to delete",
+    "重新框选区域 #{idx}": "Reselect Region #{idx}",
+    "拖拽框选新区域 · ESC 取消": "Drag to select new region · ESC to cancel",
+    "完成 ({count})": "Done ({count})",
+    "完成": "Done",
+    "清空": "Clear",
+    "恢复最大化": "Maximize",
+    "取消": "Cancel",
+    "切换为色环视图（本浮窗）": "Switch to wheel view (this window)",
 }
 
 

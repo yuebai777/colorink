@@ -74,13 +74,17 @@ class PaneWithModeButton(QWidget):
         self._readout = None
         self._readout_enabled = True
         self._readout_align_buttons = False
+        self._readout_pill_backdrop = False
         self._readout_left_clear = 0
         self._readout_right_inset = 0
         self._readout_overhang_y = 0
 
-    def set_readout_widget(self, widget, *, align_with_buttons: bool = False):
+    def set_readout_widget(
+        self, widget, *, pill_backdrop: bool = False, align_with_buttons: bool = False,
+    ):
         """Attach the compact inline numeric readout anchored beside buttons."""
         self._readout = widget
+        self._readout_pill_backdrop = bool(pill_backdrop)
         self._readout_align_buttons = bool(align_with_buttons)
         if widget is not None and hasattr(widget, "layoutMetricsChanged"):
             widget.layoutMetricsChanged.connect(self._reposition_mode_button)
@@ -90,6 +94,8 @@ class PaneWithModeButton(QWidget):
         enabled = bool(enabled)
         if self._readout_enabled != enabled:
             self._readout_enabled = enabled
+        if not enabled and self._readout is not None:
+            self._readout.hide()
         # Always sync immediately when enabled/disabled toggles (external parent case).
         self._reposition_mode_button()
 
@@ -148,6 +154,11 @@ class PaneWithModeButton(QWidget):
         super().showEvent(event)
         self._reposition_mode_button()
 
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        if self._readout is not None and not self._is_readout_pane_active(self._readout):
+            self._readout.hide()
+
     def moveEvent(self, event):
         super().moveEvent(event)
         self._reposition_mode_button()
@@ -197,7 +208,9 @@ class PaneWithModeButton(QWidget):
         pw = self.width()
         ph = self.height()
         y = ph - m - bh
-        if y < 0:
+        if y < 0 or pw <= 0:
+            if self._readout is not None:
+                self._readout.hide()
             return
         # Full cluster, left→right: [extra, module, mode].
         order = [self._extra_btn, self._module_btn, self._mode_btn]
@@ -240,9 +253,11 @@ class PaneWithModeButton(QWidget):
 
     def _is_readout_pane_active(self, readout) -> bool:
         parent = readout.parentWidget() if hasattr(readout, "parentWidget") else None
-        return self._readout_enabled and (
-            parent is None or parent is self or not self.isHidden()
-        )
+        if not self._readout_enabled:
+            return False
+        if parent is None or parent is self:
+            return True
+        return bool(parent.isAncestorOf(self) and self.isVisibleTo(parent))
 
     def _reposition_readout_legacy(self, order, pw, ph, m, bh, gap):
         readout = self._readout
@@ -269,6 +284,7 @@ class PaneWithModeButton(QWidget):
             scale=getattr(readout, "_scale", 1.0),
             pane_origin=origin,
             overhang_y=self._readout_overhang_y,
+            use_pill_backdrop=self._readout_pill_backdrop,
         )
 
     def _reposition_readout_ringless(self, order, layout, positions, bw):

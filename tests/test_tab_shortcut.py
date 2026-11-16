@@ -112,8 +112,8 @@ class _ShortcutWindow(LayoutMixin):
     ``_is_lab_toggle_zone`` reads on the live window.
     """
 
-    def __init__(self, host, wheel, hotkey="Space"):
-        self.cfg = {"toggleLabKey": hotkey}
+    def __init__(self, host, wheel, hotkey="Space", lab_hotkey=""):
+        self.cfg = {"toggleLabKey": hotkey, "toggleLabLocalKey": lab_hotkey}
         self.panel_host = host
         self.stack = QStackedWidget()
         self.color_wheel = wheel
@@ -248,14 +248,35 @@ def test_key_over_a_tab_stack_switches_tab(window):
     assert win.picker_toggles == 0, "标签页区域不该顺手切色轮/LAB"
 
 
-def test_key_over_the_picker_pane_still_flips_wheel_and_lab(window):
+def test_tab_key_over_picker_without_tabs_does_not_flip_lab(window):
     win, _host, tabs, wheel = window
     before = tabs.currentIndex()
     wheel_center = wheel.mapToGlobal(wheel.rect().center())
     with mock.patch("ui.window.layout.QCursor.pos", return_value=wheel_center):
         assert LayoutMixin._maybe_handle_local_view_key(win, _key_event()) is True
-    assert win.picker_toggles == 1
+    assert win.picker_toggles == 0
     assert tabs.currentIndex() == before
+
+
+def test_dedicated_local_lab_key_toggles_wheel_and_lab_over_picker(window):
+    win, _host, tabs, wheel = window
+    # Default unbound must not trigger on any key.
+    wheel_center = wheel.mapToGlobal(wheel.rect().center())
+    with mock.patch("ui.window.layout.QCursor.pos", return_value=wheel_center):
+        assert LayoutMixin._maybe_handle_local_view_key(win, _key_event(Qt.Key.Key_M)) is False
+    assert win.picker_toggles == 0
+
+    win.cfg["toggleLabLocalKey"] = "M"
+    with mock.patch("ui.window.layout.QCursor.pos", return_value=wheel_center):
+        assert LayoutMixin._maybe_handle_local_view_key(win, _key_event(Qt.Key.Key_M)) is True
+    assert win.picker_toggles == 1
+    assert tabs.currentIndex() == 0
+
+    # Dedicated LAB hotkey over a slider tab stack does not accidentally advance tabs.
+    with mock.patch("ui.window.layout.QCursor.pos", return_value=_inside(tabs)):
+        assert LayoutMixin._maybe_handle_local_view_key(win, _key_event(Qt.Key.Key_M)) is True
+    assert tabs.currentIndex() == 0
+    assert win.picker_toggles == 1
 
 
 def test_key_outside_every_zone_is_consumed_without_acting(window):
@@ -387,3 +408,25 @@ def test_no_focus_hook_ignores_a_cursor_outside_every_zone(window):
         HotkeyMixin.on_hotkey_triggered(win, "toggleLabKey")
     assert tabs.currentIndex() == 0
     assert win.picker_toggles == 0
+
+
+def test_dedicated_lab_key_mouse_pen_and_no_focus_hook(window):
+    win, _host, tabs, wheel = window
+    wheel_pos = wheel.mapToGlobal(wheel.rect().center())
+    win.cfg["toggleLabLocalKey"] = "MiddleButton"
+
+    # Mouse over picker toggles LAB; mouse over slider tab passes through.
+    assert LayoutMixin._maybe_handle_local_view_mouse(
+        win, _FakePointerEvent(_inside(tabs), Qt.MouseButton.MiddleButton)) is False
+    assert LayoutMixin._maybe_handle_local_view_mouse(
+        win, _FakePointerEvent(wheel_pos, Qt.MouseButton.MiddleButton)) is True
+    assert win.picker_toggles == 1
+
+    # No-focus keyboard hook path.
+    win.cfg["toggleLabLocalKey"] = "M"
+    with mock.patch("ui.window.hotkey_mixin.QApplication.activeWindow",
+                    return_value=None), \
+         mock.patch("ui.window.layout.QCursor.pos", return_value=wheel_pos):
+        HotkeyMixin.on_hotkey_triggered(win, "toggleLabLocalKey")
+    assert win.picker_toggles == 2
+    assert tabs.currentIndex() == 0

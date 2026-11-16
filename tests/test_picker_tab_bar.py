@@ -138,25 +138,41 @@ with patch('core.config.load_hotkey_config', return_value=dict(cfg)), \
     assert win.picker_top_gap.isHidden()
     assert win._top_stack_gap.isHidden()
 
-    # The local view shortcut over the strip walks to the next module, like
-    # it already does over a slider tab stack.
+    # The unified tab shortcut switches tabs over BOTH the strip AND the wheel body.
     shortcut_start = bar.current_key()
     assert win._tab_toggle_target(bar.mapToGlobal(bar.rect().center())) == (win, bar)
     assert win._run_local_view_shortcut(bar.mapToGlobal(bar.rect().center()))
     app.processEvents()
     assert bar.current_key() != shortcut_start
+
+    wheel_body_pos = win.pane_wheel.mapToGlobal(win.pane_wheel.rect().center())
+    before_wheel_body = bar.current_key()
+    assert win._tab_toggle_target(wheel_body_pos) == (win, bar)
+    assert win._run_tab_shortcut(wheel_body_pos)
+    app.processEvents()
+    assert bar.current_key() != before_wheel_body
+    assert win.stack.currentIndex() == 0, "tab shortcut over wheel must switch wheel tab, not LAB"
+
     bar.setCurrentIndex(bar.tab_keys().index('rgb')); app.processEvents()
 
-    # LAB page: tabs become LAB / OKLab.
-    win.toggle_picker_mode(); app.processEvents()
+    # Dedicated local LAB shortcut toggles Wheel <-> LAB cleanly.
+    win.cfg['toggleLabLocalKey'] = 'M'
+    assert win._run_lab_view_shortcut(wheel_body_pos)
+    app.processEvents()
+    assert win.stack.currentIndex() == 1
+    # Over LAB view with LAB/OKLab tabs, unified tab shortcut also advances LAB/OKLab!
     assert bar.tab_keys() == ['lab', 'oklab'], bar.tab_keys()
     assert bar.current_key() == 'lab'
-    bar.setCurrentIndex(1); app.processEvents()
+    lab_body_pos = win.pane_lab.mapToGlobal(win.pane_lab.rect().center())
+    assert win._tab_toggle_target(lab_body_pos) == (win, bar)
+    assert win._run_tab_shortcut(lab_body_pos)
+    app.processEvents()
     assert win.cfg['visualizerMode'] == 'oklab'
     assert win.lab_square.render_mode == 'oklab'
-
-    # Back to the wheel: the last wheel module is restored.
-    win.toggle_picker_mode(); app.processEvents()
+    assert win.stack.currentIndex() == 1
+    assert win._run_lab_view_shortcut(lab_body_pos)
+    app.processEvents()
+    assert win.stack.currentIndex() == 0
     assert bar.current_key() == 'rgb'
 
     # Hiding modules from settings removes their tabs.
