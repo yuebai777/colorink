@@ -512,6 +512,15 @@ _EN: dict[str, str] = {
     "解绑「区域灰度滤镜」快捷键（设为「无」），让该键位不再被占用": "Unbind the Region Grayscale Filter shortcut (set to None) so the key is freed",
     "在屏幕上拖拽框选灰度滤镜生效区域；框选时双击或按空格可恢复默认最大化": "Drag on screen to select the active grayscale region; double-click or press Space while selecting to restore default maximized mode",
     "将区域灰度滤镜重置为默认最大化无边框窗口（铺满屏幕且不显示任务栏图标）": "Reset the region grayscale filter to a frameless maximized window covering the screen without a taskbar icon",
+    "恢复自启动": "Restore autostart",
+    "重新启用被 Windows 任务管理器禁用的开机自启动项": "Re-enable the autostart entry disabled by Windows Task Manager",
+    "已被 Windows 启动管理禁用，当前不会随开机启动": "Disabled by Windows Startup Manager; Colorink will not start on login",
+    "已被 Windows 启动管理禁用，请运行打包版并点击恢复或在任务管理器中重新启用": "Disabled by Windows Startup Manager; run the packaged build to restore it or re-enable it in Task Manager",
+    "当前为源码运行模式，开机自启动仅在打包版中可用": "Running from source; start on login is only available in packaged builds",
+    "显示颜色数值": "Show color values",
+    "在色轮与 LAB 视图显示当前颜色数值（点击可切换 RGB / HSV / HLS / LAB / OKLab / OKLCh / HEX）": "Show current color values in the wheel and LAB view (click to cycle RGB / HSV / HLS / LAB / OKLab / OKLCh / HEX)",
+    "左键点击切换格式 · 右键选择或复制": "Left-click to cycle format · Right-click to choose or copy",
+    "复制 {value}": "Copy {value}",
 }
 
 

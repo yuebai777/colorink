@@ -522,6 +522,10 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cb_flip_wheel.setChecked(self.cfg.get("flipColorWheelHorizontally", False))
         self.cb_flip_wheel.blockSignals(False)
 
+        self.cb_show_color_readout.blockSignals(True)
+        self.cb_show_color_readout.setChecked(self.cfg.get("showColorValueReadout", True))
+        self.cb_show_color_readout.blockSignals(False)
+
         # ── Ringless settings ──
         ringless_config = RinglessConfig.from_values(
             self.cfg.get("hideHueRing", False),
@@ -586,6 +590,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.update_version_visibility()
         self.apply_theme()
         self._refresh_module_sliders()
+        self._refresh_autostart_status()
 
 
 
@@ -673,7 +678,11 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
             if not ok:
                 # 注册表写入失败（windowed 下 print 不可见）：回滚配置与勾选
                 self.cfg["openAtLogin"] = old_autostart
-                self.cb_autostart.setChecked(old_autostart)
+                self.cb_autostart.blockSignals(True)
+                try:
+                    self.cb_autostart.setChecked(old_autostart)
+                finally:
+                    self.cb_autostart.blockSignals(False)
             else:
                 # 注册表写入成功后才把新状态落进配置；否则下次 refresh_ui()
                 # 会重新加载旧值，勾选看起来"保存不生效"，也无法通过再勾一次
@@ -762,6 +771,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cfg["uiScale"] = self.zoom_slider.value()
         self.cfg[CHROME_OPACITY_KEY] = clamp_chrome_opacity(self.opacity_slider.value())
         self.cfg["flipColorWheelHorizontally"] = self.cb_flip_wheel.isChecked()
+        self.cfg["showColorValueReadout"] = self.cb_show_color_readout.isChecked()
         
         self.cfg.update(self._grayscale_filter_config())
 
@@ -805,6 +815,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self._refresh_theme_status()
         self.apply_theme()
         self._refresh_module_sliders()
+        self._refresh_autostart_status()
 
     def _refresh_module_sliders(self):
         """Show only the slider rows that belong to the currently active module.

@@ -348,10 +348,11 @@ class UpdatePanelMixin:
             return
         old_autostart = self.cfg.get("openAtLogin", False)
         new_autostart = imported.get("openAtLogin", False)
+        if old_autostart != new_autostart:
+            if not autostart.apply_autostart(new_autostart):
+                imported["openAtLogin"] = old_autostart
         self.cfg = imported
         config.save_hotkey_config(self.cfg)
-        if old_autostart != new_autostart:
-            autostart.apply_autostart(new_autostart)
         self.refresh_ui()
         self.settingChanged.emit()
         QMessageBox.information(self, i18n.tr("导入配置"), i18n.tr("配置已导入并生效。"))
@@ -367,10 +368,11 @@ class UpdatePanelMixin:
         if answer != QMessageBox.StandardButton.Yes:
             return
         old_autostart = self.cfg.get("openAtLogin", False)
-        self.cfg = config.default_hotkey_config()
+        defaults = config.default_hotkey_config()
+        if old_autostart and not autostart.apply_autostart(False):
+            defaults["openAtLogin"] = old_autostart
+        self.cfg = defaults
         config.save_hotkey_config(self.cfg)
-        if old_autostart:
-            autostart.apply_autostart(False)
         self.refresh_ui()
         self.settingChanged.emit()
         QMessageBox.information(self, i18n.tr("恢复默认"), i18n.tr("设置已恢复为默认值。"))

@@ -204,7 +204,8 @@ def resolve_window_layout(*, window_width: float, window_height: float,
                           margins: tuple[float, float, float, float],
                           title_height: float, sliders_height: float,
                           spacing: float, ui_scale: float = 1.0,
-                          picker_minimum: float = 0.0) -> WindowLayout:
+                          picker_minimum: float = 0.0,
+                          top_spacing: float | None = None) -> WindowLayout:
     """Lay the window out top to bottom: title, picker, sliders.
 
     *margins* is (left, top, right, bottom) from the outer layout. The picker
@@ -213,14 +214,15 @@ def resolve_window_layout(*, window_width: float, window_height: float,
     """
     left, top, right, bottom = (float(m) for m in margins)
     spacing = int(spacing)
+    top_gap = spacing if top_spacing is None else int(top_spacing)
     content = Rect(left, top,
                    float(window_width) - left - right,
                    float(window_height) - top - bottom)
     title_band = Rect(content.x, content.y, content.width, float(title_height))
 
-    picker_y = content.y + float(title_height) + spacing
+    picker_y = content.y + float(title_height) + top_gap
     available = content.height - float(title_height) - float(sliders_height) \
-        - 2 * spacing
+        - top_gap - spacing
     square = picker_square_height(window_width, left, right, picker_minimum)
     picker_h = max(0.0, min(available, float(square)))
     picker = Rect(content.x, picker_y, content.width, picker_h)

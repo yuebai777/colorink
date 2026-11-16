@@ -1036,6 +1036,18 @@ class ColorUpdatesMixin:
         self._update_lab_slider_gamut_range(
             include_current=(source in ("sliders_lab_L", "sliders_oklab_L")))
 
+    def _iter_readouts(self):
+        """Yield all live inline color readouts (main panes + floating wheels)."""
+        for _ro_attr in ("readout_wheel", "readout_lab"):
+            _ro = getattr(self, _ro_attr, None)
+            if _ro is not None:
+                yield _ro
+        pages = getattr(self, "_floating_wheel_pages", None) or {}
+        for _wpage in pages.values():
+            _ro = getattr(_wpage, "readout", None)
+            if _ro is not None:
+                yield _ro
+
     def _project_color(self, color: Color, source: str = "", hsv=None):
         """Project a unified :class:`Color` onto every widget (single fan-out).
 
@@ -1057,9 +1069,14 @@ class ColorUpdatesMixin:
         self._source_space = color.source_space
         self._source_values = self._color_source_dict(color)
         self._current_rgb_float = color.rgb_float
+        resolved_hsv = color.hsv if hsv is None else hsv
+        iter_ro = getattr(self, "_iter_readouts", None)
+        if callable(iter_ro):
+            for _ro in iter_ro():
+                _ro.set_color(color, resolved_hsv)
         try:
             self.update_ui_colors(color.r, color.g, color.b, source=source,
-                                  hsv=color.hsv if hsv is None else hsv,
+                                  hsv=resolved_hsv,
                                   oklch=color.oklch, oklab=color.oklab,
                                   rgb_float=color.rgb_float,
                                   lab=color.lab,

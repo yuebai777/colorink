@@ -62,6 +62,8 @@ with patch('core.config.load_hotkey_config', return_value=dict(cfg)), \
     # No bottom-right module button any more.
     assert not hasattr(win, 'btn_module')
     assert bar.isVisible()
+    assert win.picker_top_gap.isHidden(), 'no redundant top gap when wheel grip strip is hidden'
+    assert win._top_stack_gap.isHidden(), 'picker tab bar hugs stack cleanly without wheel grip'
     assert bar.tab_keys() == ['hsv', 'vhsv', 'hls', 'rgb', 'lch'], bar.tab_keys()
     # Tab bar sits between the title bar and the picker.
     assert bar.mapTo(win.central, bar.rect().topLeft()).y() >= win.title_bar.geometry().bottom()
@@ -103,6 +105,8 @@ with patch('core.config.load_hotkey_config', return_value=dict(cfg)), \
     assert 'wheel.lch' not in host.tree().panels(), host.tree().panels()
     assert 'lch' in bar.tab_keys(), bar.tab_keys()
     assert win.wheel_grip_bar.isVisible()
+    assert not win.picker_top_gap.isHidden(), 'top gap separates tab strip and grip strip in grip mode'
+    assert not win._top_stack_gap.isHidden(), 'grip mode keeps spacing above color wheel'
     assert win.wheel_grip_bar.title == win._current_module.upper()
     active_before = win._current_module
     float_id = 'wheel.' + active_before
@@ -131,6 +135,8 @@ with patch('core.config.load_hotkey_config', return_value=dict(cfg)), \
     win.cfg['panelDrag'] = False
     win._sync_picker_tab_bar(); app.processEvents()
     assert not win.wheel_grip_bar.isVisible()
+    assert win.picker_top_gap.isHidden()
+    assert win._top_stack_gap.isHidden()
 
     # The local view shortcut over the strip walks to the next module, like
     # it already does over a slider tab stack.
@@ -160,10 +166,14 @@ with patch('core.config.load_hotkey_config', return_value=dict(cfg)), \
     # The removed active module (rgb) hands over to the selected tab.
     assert win._current_module == bar.current_key() == 'hsv', win._current_module
 
-    # Turning the bar off hides it.
+    # Turning the bar off hides it (even if grip mode is on, no blank gap above grip).
     win.cfg['showModuleSwitchButton'] = False
+    win.cfg['panelDrag'] = True
     win._sync_picker_tab_bar(); app.processEvents()
     assert not bar.isVisible()
+    assert win.picker_top_gap.isHidden()
+    win.cfg['panelDrag'] = False
+    win._sync_picker_tab_bar(); app.processEvents()
     if len(sys.argv) > 1:
         win.cfg['showModuleSwitchButton'] = True
         win.cfg['wheelModuleTabs'] = ['hsv', 'vhsv', 'hls', 'rgb', 'lch']

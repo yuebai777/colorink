@@ -212,6 +212,10 @@ class PickerDropController(QObject):
         top_layout.addWidget(self.top_host)
         self.top_container.hide()
         main_layout.insertWidget(stack_idx, self.top_container)
+        self.top_dock_gap = QWidget(owner.centralWidget())
+        self.top_dock_gap.setFixedHeight(4)
+        self.top_dock_gap.hide()
+        main_layout.insertWidget(stack_idx + 1, self.top_dock_gap)
 
         # 2. Middle row: [left_dock | picker_column | right_dock], stays hidden
         #    until at least one edge/center dock is visible so owner.stack
@@ -369,12 +373,17 @@ class PickerDropController(QObject):
     def has_visible_center_tabs(self) -> bool:
         return self.center_tab_bar.isVisible() and self.center_tab_bar.count() > 1
 
+    def _band_spacing(self) -> int:
+        if hasattr(self.owner, "_band_spacing"):
+            return max(0, int(self.owner._band_spacing()))
+        return max(0, int(self.owner.main_layout.spacing()))
+
     def extra_top_height(self) -> int:
         extra = 0
         if self.top_container.isVisible():
             hint = max(self.top_host.column_hint(), self.top_container.sizeHint().height())
             if hint > 0:
-                extra += hint + max(0, self.owner.main_layout.spacing())
+                extra += hint + self._band_spacing()
         if self.center_tab_bar.isVisible():
             extra += self.center_tab_bar.sizeHint().height() + 2
         return extra
@@ -1032,6 +1041,9 @@ class PickerDropController(QObject):
             cont = self._containers[slot]
             if slot != SLOT_CENTER:
                 cont.setVisible(bool(vis))
+                if slot == SLOT_TOP and hasattr(self, "top_dock_gap"):
+                    self.top_dock_gap.setFixedHeight(self._band_spacing())
+                    self.top_dock_gap.setVisible(bool(vis))
                 if slot in (SLOT_LEFT, SLOT_RIGHT):
                     scale = float(getattr(chrome, "scale", 1.0) or 1.0) if chrome is not None else 1.0
                     min_w = max(160, int(DEFAULT_SIDE_WIDTH * scale)) if vis else 0
@@ -1168,6 +1180,9 @@ class PickerDropController(QObject):
                 if callable(refit):
                     refit()
                 preview.raise_()
+        sync_ro = getattr(owner, "_sync_readout_clearance", None)
+        if callable(sync_ro):
+            sync_ro()
 
     def _sync_side_window_width(self) -> None:
         owner = self.owner

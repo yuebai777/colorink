@@ -66,6 +66,7 @@ _SETTINGS_TOOLTIPS: dict[str, str] = {
     "combo_lab_harmony": "选择 LAB 视图的调和模式（互补 / 近似 / 三等分等）",
     "cb_show_lab_lightness": "显示/隐藏 LAB 区域的亮度滑块",
     "cb_flip_wheel": "水平镜像色环（颜色排列左右翻转）",
+    "cb_show_color_readout": "在色轮与 LAB 视图显示当前颜色数值（点击可切换 RGB / HSV / HLS / LAB / OKLab / OKLCh / HEX）",
     "btn_scroll_dec": "减小滑块滚轮步长（每次滚动改变的值）",
     "btn_scroll_inc": "增大滑块滚轮步长（每次滚动改变的值）",
     "btn_same_dec": "减小同一色彩空间内滑块之间的间距",

@@ -22,6 +22,7 @@ from ui import preview_clearance
 from ui.color_preview_box import ColorPreviewBox
 from ui.lab_visualizer import LabSlider, LabSquare
 from ui.ringless_mode import RINGLESS_ACTIVE_BORDER
+from ui.widgets.color_value_readout import ColorValueReadout, place_readout_beside_buttons
 from ui.widgets.picker_icon_button import PickerIconButton
 from ui.window_layout import resolve_picker_geometry
 
@@ -87,6 +88,13 @@ class FloatingWheelPage(QWidget):
         self.mode_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.mode_btn.clicked.connect(self.toggle_view)
         self.mode_btn.show()
+
+        self.readout = ColorValueReadout(self)
+        self.readout.set_mode(cfg.get("colorValueReadoutMode", "rgb"))
+        on_mode = getattr(owner, "_on_readout_mode_changed", None)
+        if callable(on_mode):
+            self.readout.modeChanged.connect(on_mode)
+        self.readout.layoutMetricsChanged.connect(self._place_overlays)
 
         self.sync_from_owner()
         self.apply_visibility_defaults()
@@ -199,6 +207,31 @@ class FloatingWheelPage(QWidget):
         self._align_lab_slider()
         self.preview.raise_()
         self.mode_btn.raise_()
+
+        gap = max(4, int(round(6 * scale)))
+        if self.mode_btn.isVisible():
+            right_bound = btn_x - max(4, int(round(4 * scale)))
+        elif (self.view_mode == "lab"
+              and self.lab_slider is not None
+              and self.lab_slider.isVisible()):
+            right_bound = width - self.lab_slider.width() - gap
+        else:
+            right_bound = width - margin
+        left_bound = margin
+        if (self.show_swatches and self.preview.isVisible()
+                and getattr(self.preview, "position_mode", "top-left") == "bottom-left"):
+            left_bound = max(left_bound, self.preview.x() + self.preview.width() + gap)
+        place_readout_beside_buttons(
+            self.readout,
+            enabled=bool(cfg.get("showColorValueReadout", True)),
+            pane_w=width,
+            pane_h=height,
+            right_bound=right_bound,
+            left_bound=left_bound,
+            align_with_buttons=(self.view_mode == "lab"),
+            margin=margin,
+            scale=scale,
+        )
 
     # ── view mode ────────────────────────────────────────────────────────
     def _ensure_lab(self) -> None:
@@ -347,6 +380,10 @@ class FloatingWheelPage(QWidget):
             self.preview.set_theme_colors(
                 source.active_border_color, source.inactive_border_color)
         self.preview.update()
+        color = getattr(getattr(self.owner, "color_state", None), "current", None)
+        if color is not None and hasattr(self, "readout"):
+            self.readout.set_mode(cfg.get("colorValueReadoutMode", "rgb"), emit=False)
+            self.readout.set_color(color)
         self._place_overlays()
 
     def apply_visibility_defaults(self) -> None:
@@ -396,6 +433,14 @@ class FloatingWheelPage(QWidget):
                 border-color: #5a94e2;
             }}
         """)
+        if hasattr(self, "readout"):
+            self.readout.set_theme(
+                bg=chrome.background,
+                bar_bg=chrome.bar_bg,
+                text=chrome.text,
+                border=chrome.border_color,
+                scale=scale,
+            )
         self._place_overlays()
 
     def take_panel(self):

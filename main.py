@@ -214,7 +214,8 @@ def main():
     from core import autostart as _autostart
     from core import config as _config
     _autostart.apply_autostart(
-        bool(_config.load_hotkey_config().get("openAtLogin", False))
+        bool(_config.load_hotkey_config().get("openAtLogin", False)),
+        clear_disabled_approval=False,
     )
 
     # Load and apply window icon

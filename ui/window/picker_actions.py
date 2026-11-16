@@ -142,6 +142,11 @@ class PickerActionsMixin:
                 grip.panel_id = registry.wheel_panel_id(active)
                 grip.set_title(_MODULE_NAMES.get(active, active.upper()))
         grip.setVisible(show)
+        gap = getattr(self, "picker_top_gap", None)
+        if gap is not None:
+            tab_bar = getattr(self, "picker_tab_bar", None)
+            show_tabs = tab_bar is not None and not tab_bar.isHidden()
+            gap.setVisible(show and show_tabs)
 
     def _sync_picker_tab_bar(self) -> bool:
         """Populate and show/hide the top tabs for the current picker page."""
@@ -182,9 +187,6 @@ class PickerActionsMixin:
         show_bar = show_tabs and (bool(items) or host_owned)
         was_visible = not tab_bar.isHidden()
         tab_bar.setVisible(show_bar)
-        gap = getattr(self, "picker_top_gap", None)
-        if gap is not None:
-            gap.setVisible(show_bar)
         self._sync_wheel_grip()
         self._sync_main_picker_visibility()
         return was_visible != tab_bar.isVisible()
@@ -248,6 +250,9 @@ class PickerActionsMixin:
                               or (getattr(self, "picker_top_gap", None) is not None
                                   and not self.picker_top_gap.isHidden()))
                 container.setVisible(has_chrome)
+        sync_spacers = getattr(self, "_sync_band_spacers", None)
+        if callable(sync_spacers):
+            sync_spacers()
         self._adjust_content_height()
 
     def _on_picker_tab_changed(self, index: int) -> None:
@@ -622,12 +627,42 @@ class PickerActionsMixin:
                 if show_lab_harmony_btn:
                     self.btn_lab_harmony.raise_()
 
+        show_readout = bool(self.cfg.get("showColorValueReadout", True))
+        pdrop = getattr(self, "picker_drop", None)
+        picker_showing = (
+            (pdrop is None or pdrop.center_shows_picker())
+            and hasattr(self, "stack")
+            and not self.stack.isHidden()
+        )
         # Re-pack the visible button cluster after every visibility change so
         # a lone toggle always lands on the outermost edge.
         if hasattr(self, "pane_wheel"):
+            self.pane_wheel.set_readout_enabled(show_readout and picker_showing and idx == 0)
             self.pane_wheel._reposition_mode_button()
         if hasattr(self, "pane_lab"):
+            self.pane_lab.set_readout_enabled(show_readout and picker_showing and idx == 1)
             self.pane_lab._reposition_mode_button()
+
+    def _on_readout_mode_changed(self, mode: str) -> None:
+        """Persist the inline numeric readout format and sync all panes."""
+        self.cfg["colorValueReadoutMode"] = mode
+        config.save_hotkey_config(self.cfg)
+        iter_ro = getattr(self, "_iter_readouts", None)
+        readouts = iter_ro() if callable(iter_ro) else (
+            getattr(self, "readout_wheel", None),
+            getattr(self, "readout_lab", None),
+        )
+        for ro in readouts:
+            if ro is not None:
+                ro.set_mode(mode, emit=False)
+        for pane_attr in ("pane_wheel", "pane_lab"):
+            pane = getattr(self, pane_attr, None)
+            if pane is not None:
+                pane._reposition_mode_button()
+        for wpage in (getattr(self, "_floating_wheel_pages", None) or {}).values():
+            place = getattr(wpage, "_place_overlays", None)
+            if callable(place):
+                place()
 
     def toggle_lab_global(self):
         """The system-wide LAB shortcut: main pane plus opted-in floats."""
@@ -1394,6 +1429,20 @@ class PickerActionsMixin:
         if callable(_sync_tabs):
             _sync_tabs()
 
+        readout_mode = self.cfg.get("colorValueReadoutMode", "rgb")
+        iter_ro = getattr(self, "_iter_readouts", None)
+        readouts = iter_ro() if callable(iter_ro) else (
+            getattr(self, "readout_wheel", None),
+            getattr(self, "readout_lab", None),
+        )
+        for ro in readouts:
+            if ro is not None:
+                ro.retranslate()
+                ro.set_mode(readout_mode, emit=False)
+        update_vis = getattr(self, "update_mode_buttons_visibility", None)
+        if callable(update_vis):
+            update_vis()
+
         self.preview_box.position_mode = self.cfg.get("previewBoxPosition", "top-left")
         self.apply_theme()
         _sync_float = getattr(self, "_sync_floating_wheel_chrome", None)
@@ -1436,14 +1485,33 @@ class PickerActionsMixin:
         # place now (ui/panels/floating.apply_no_activate): it skips windows
         # with no native handle yet, because at startup update_window_flags()
         # runs before WA_TranslucentBackground is set and creating winId()
-        # too early would break transparency. showEvent() re-applies it.
+        # too early would break transparency. showEvent() / WinIdChange re-applies it.
         from ui.panels.floating import apply_no_activate
 
         apply_no_activate(self, enabled)
 
+    def _apply_ws_ex_appwindow(self, enabled: bool) -> None:
+        """Add or remove WS_EX_APPWINDOW on the native window.
+
+        Windows hides WS_EX_NOACTIVATE windows from the taskbar by default
+        unless WS_EX_APPWINDOW is explicitly set.
+        """
+        from ui.panels.floating import apply_taskbar_appwindow
+
+        apply_taskbar_appwindow(self, enabled)
+
+    def _apply_win32_window_styles(self) -> None:
+        """Sync native Win32 extended styles (no-activate & taskbar visibility)."""
+        cfg = getattr(self, "cfg", {})
+        self._apply_ws_ex_noactivate(bool(cfg.get("noFocusMode", False)))
+        self._apply_ws_ex_appwindow(bool(cfg.get("showTaskbarIcon", False)))
+
     def update_window_flags(self):
+        show_taskbar = bool(self.cfg.get("showTaskbarIcon", False))
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
-        if not self.cfg.get("showTaskbarIcon", False):
+        if show_taskbar:
+            flags |= Qt.WindowType.Window
+        else:
             flags |= Qt.WindowType.Tool
 
         # No-focus mode is a global preference — keep it on even while the
@@ -1461,6 +1529,9 @@ class PickerActionsMixin:
         if self.windowFlags() != flags:
             was_visible = self.isVisible()
             self.setWindowFlags(flags)
+            # Re-apply native extended styles before re-showing so Windows
+            # sees WS_EX_APPWINDOW / WS_EX_NOACTIVATE on ShowWindow().
+            self._apply_win32_window_styles()
             if was_visible:
                 # Re-show without activating: this is a programmatic flag
                 # refresh (e.g. opening settings while no-focus is enabled),
@@ -1469,10 +1540,8 @@ class PickerActionsMixin:
                 self.show()
                 self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, no_focus)
 
-        # Double safety: force WS_EX_NOACTIVATE via Win32 API, and also clear
-        # it when no-focus is disabled so disabling the mode really restores
-        # normal activation behavior.
-        self._apply_ws_ex_noactivate(no_focus)
+        # Double safety: force WS_EX_NOACTIVATE / WS_EX_APPWINDOW via Win32 API.
+        self._apply_win32_window_styles()
 
     def update_no_focus_policies(self):
         # Mirror update_window_flags(): the no-focus preference no longer

@@ -239,7 +239,11 @@ class ThemeMixin:
             win_bw, win_bw if needs_top_frame else 0, win_bw, win_bw
         )
         spacing = int(4 * scale)
-        self.main_layout.setSpacing(spacing)
+        if hasattr(self, "_sync_band_spacers"):
+            self.main_layout.setSpacing(0)
+            self._sync_band_spacers(scale)
+        else:
+            self.main_layout.setSpacing(spacing)
         
         # Get Same-space and Diff-space spacing values from configuration
         same_space = self.cfg.get("sliderSameSpace", 6)
@@ -678,6 +682,14 @@ class ThemeMixin:
                     }}
                 """)
 
+        # Style compact inline color readouts (light/dark chips & text ink).
+        for _ro_attr in ("readout_wheel", "readout_lab"):
+            _ro = getattr(self, _ro_attr, None)
+            if _ro is not None:
+                _ro.set_theme(
+                    bg=bg, bar_bg=barBg, text=text, border=borderColor, scale=scale,
+                )
+
         # Keep the LAB harmony menu on the same chrome as the mode buttons.
         harmony_menu = getattr(self, "_lab_harmony_menu", None)
         if harmony_menu is not None:
@@ -730,6 +742,9 @@ class ThemeMixin:
         if self.cfg.get("hideHueRing", False):
             self._sync_ringless_mode()
             self.preview_box.raise_()
+            ro_wheel = getattr(self, "readout_wheel", None)
+            if ro_wheel is not None and ro_wheel.isVisible():
+                ro_wheel.raise_()
             if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
                 self.settings_sidebar.raise_()
             return
@@ -771,6 +786,12 @@ class ThemeMixin:
                     max(0, sliders_top - self.preview_box.height()
                         - clearance))
         self.preview_box.raise_()
+        ro_wheel = getattr(self, "readout_wheel", None)
+        if ro_wheel is not None and ro_wheel.isVisible():
+            ro_wheel.raise_()
+        sync_ro = getattr(self, "_sync_readout_clearance", None)
+        if callable(sync_ro):
+            sync_ro()
 
         # If settings sidebar is open, ensure it remains on top!
         if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():

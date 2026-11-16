@@ -186,6 +186,8 @@ def default_hotkey_config():
         "hideHueRing": False,
         "ringlessControlsSide": "right",
         "ringlessControlBarPosition": "top",
+        "showColorValueReadout": True,
+        "colorValueReadoutMode": "rgb",
         CONFIG_SCHEMA_KEY: CONFIG_SCHEMA_VERSION,
     }
 
@@ -316,16 +318,20 @@ _BOOL_KEYS = frozenset({
     "flipColorWheelHorizontally", "hideHueRing", "showModuleSwitchButton",
     "showLabToggleButton", "showLabShapeButton", "showLabHarmonyButton",
     "showLabCheckerboard", "floatingWheelShowSwatches", "floatingWheelShowButtons",
+    "showColorValueReadout",
 })
 _INT_KEYS = frozenset({
     "uiScale", "pickerZoom", "historyColumns", "historyRows",
     "historySwatchSize", "sliderScrollStep", "sliderSameSpace",
     "sliderDiffSpace", "panelTopGap", "backgroundOpacity",
 })
+_VALID_READOUT_MODES = frozenset({
+    "rgb", "hsv", "hls", "lab", "oklab", "oklch", "hex",
+})
 
 
 def _sanitize_types(cfg: dict) -> dict:
-    """Coerce known keys to bool/int, dropping values that cannot convert."""
+    """Coerce known keys to bool/int/enum, dropping values that cannot convert."""
     for key in _BOOL_KEYS:
         value = cfg.get(key)
         if isinstance(value, bool):
@@ -345,6 +351,12 @@ def _sanitize_types(cfg: dict) -> dict:
             cfg[key] = int(value)
         except (TypeError, ValueError):
             cfg.pop(key, None)
+    if "colorValueReadoutMode" in cfg:
+        mode = cfg.get("colorValueReadoutMode")
+        if isinstance(mode, str) and mode.lower() in _VALID_READOUT_MODES:
+            cfg["colorValueReadoutMode"] = mode.lower()
+        else:
+            cfg.pop("colorValueReadoutMode", None)
     return cfg
 
 

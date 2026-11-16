@@ -66,12 +66,46 @@ class LayoutMixin:
 
     @staticmethod
     def _required_content_height(title_height, stack_min_height, sliders_height,
-                                 margins_top, margins_bottom, spacing):
+                                 margins_top, margins_bottom, spacing,
+                                 top_spacing=None):
+        top = int(spacing) if top_spacing is None else int(top_spacing)
         return max(
             240,
             int(title_height) + int(stack_min_height) + int(sliders_height)
-            + int(margins_top) + int(margins_bottom) + 2 * int(spacing),
+            + int(margins_top) + int(margins_bottom) + top + int(spacing),
         )
+
+    def _band_spacing(self, scale=None) -> int:
+        if scale is None:
+            scale = getattr(self, "cfg", {}).get("uiScale", 100) / 100.0
+        return int(4 * scale)
+
+    def _top_stack_spacing(self, scale=None) -> int:
+        pdrop = getattr(self, "picker_drop", None)
+        if pdrop is not None and pdrop.has_any_docks():
+            return self._band_spacing(scale)
+        tab_bar = getattr(self, "picker_tab_bar", None)
+        grip = getattr(self, "wheel_grip_bar", None)
+        if (
+            tab_bar is not None
+            and not tab_bar.isHidden()
+            and (grip is None or grip.isHidden())
+        ):
+            return 0
+        return self._band_spacing(scale)
+
+    def _sync_band_spacers(self, scale=None) -> None:
+        base = self._band_spacing(scale)
+        top_gap = self._top_stack_spacing(scale)
+        top_spacer = getattr(self, "_top_stack_gap", None)
+        if top_spacer is not None:
+            top_spacer.setFixedHeight(max(0, top_gap))
+            top_spacer.setVisible(top_gap > 0)
+        bot_spacer = getattr(self, "_stack_sliders_gap", None)
+        if bot_spacer is not None:
+            bot_spacer.setFixedHeight(max(0, base))
+            sc = getattr(self, "sliders_container", None)
+            bot_spacer.setVisible(base > 0 and (sc is None or not sc.isHidden()))
 
     # Kept as a thin alias: the rule itself lives in ui.window_layout.
     _picker_square_height = staticmethod(window_layout.picker_square_height)
@@ -159,6 +193,9 @@ class LayoutMixin:
         self._content_height_adjust_pending = False
         required = 0
         try:
+            sync_spacers = getattr(self, "_sync_band_spacers", None)
+            if callable(sync_spacers):
+                sync_spacers()
             host = getattr(self, "panel_host", None)
             if host is not None:
                 host.updateGeometry()
@@ -259,13 +296,18 @@ class LayoutMixin:
                             hint = max(hint, int(msh().height()))
                         except (TypeError, ValueError, AttributeError):
                             pass
+            band_fn = getattr(self, "_band_spacing", None)
+            band_sp = band_fn() if callable(band_fn) else self.main_layout.spacing()
+            top_fn = getattr(self, "_top_stack_spacing", None)
+            top_sp = top_fn() if callable(top_fn) else band_sp
             required = self._required_content_height(
                 _visible_title_bar_height(self.title_bar)
                 + visible_picker_chrome_height(self)
                 + extra_top,
                 visualizer_h,
                 hint,
-                margins.top(), margins.bottom(), self.main_layout.spacing(),
+                margins.top(), margins.bottom(), band_sp,
+                top_spacing=top_sp,
             )
         except AttributeError:
             return
@@ -425,9 +467,10 @@ class LayoutMixin:
                 + extra_top
             ),
             sliders_height=sliders_height,
-            spacing=int(4 * scale),
+            spacing=self._band_spacing(scale),
             ui_scale=scale,
             picker_minimum=self.stack.minimumSizeHint().height(),
+            top_spacing=self._top_stack_spacing(scale),
         )
         if left_offset > 0:
             from dataclasses import replace as _replace
@@ -648,6 +691,65 @@ class LayoutMixin:
         preview = getattr(self, "preview_box", None)
         if preview is not None:
             preview.raise_()
+        self._sync_readout_clearance()
+
+    def _sync_readout_clearance(self):
+        """Tell wheel/LAB panes how much corner space bottom-left swatches,
+        the vertical LAB column, and the post-stack gap provide."""
+        preview = getattr(self, "preview_box", None)
+        stack = getattr(self, "stack", None)
+        cfg = getattr(self, "cfg", {})
+        scale = float(cfg.get("uiScale", 100)) / 100.0
+        gap = max(4, int(round(6 * scale)))
+        left_clear = 0
+        if (preview is not None and preview.isVisible()
+                and getattr(preview, "position_mode", "top-left") == "bottom-left"
+                and stack is not None):
+            stack_left = stack.mapTo(self, QPoint(0, 0)).x()
+            left_clear = max(0, preview.x() + preview.width() - stack_left + gap)
+        lab_col = getattr(self, "lab_slider_column", None)
+        lab_inset = (
+            (lab_col.width() + gap)
+            if (lab_col is not None and lab_col.isVisible())
+            else 0
+        )
+        overhang_y = 0
+        if (not cfg.get("hideHueRing", False)
+                and stack is not None and stack.height() > 0):
+            gap_w = getattr(self, "_stack_sliders_gap", None)
+            sliders_c = getattr(self, "sliders_container", None)
+            if sliders_c is not None and sliders_c.isVisible():
+                avail_below = (
+                    gap_w.height()
+                    if (gap_w is not None and gap_w.isVisible())
+                    else 0
+                )
+            else:
+                stack_bottom = stack.mapTo(self, QPoint(0, 0)).y() + stack.height()
+                avail_below = max(0, self.height() - stack_bottom)
+            overhang_y = min(max(2, int(round(2.6 * scale))), max(0, avail_below - 1))
+
+        show_ro = bool(cfg.get("showColorValueReadout", True))
+        pdrop = getattr(self, "picker_drop", None)
+        center_ok = pdrop is None or pdrop.center_shows_picker()
+        stack_hidden = stack.isHidden() if stack is not None else False
+        idx = stack.currentIndex() if stack is not None else 0
+
+        if hasattr(self, "pane_wheel"):
+            self.pane_wheel.set_readout_enabled(
+                show_ro and center_ok and not stack_hidden and idx == 0
+            )
+            self.pane_wheel.set_readout_clearance(
+                left_clear=left_clear, right_inset=0, overhang_y=overhang_y,
+            )
+        if hasattr(self, "pane_lab"):
+            self.pane_lab.set_readout_enabled(
+                show_ro and center_ok and not stack_hidden and idx == 1
+            )
+            self.pane_lab.set_readout_clearance(left_clear=left_clear, right_inset=lab_inset)
+        sb = getattr(self, "settings_sidebar", None)
+        if sb is not None and sb.isVisible():
+            sb.raise_()
 
     def _update_lab_avoid(self):
         """Tell LabSquare how much of its top/bottom is covered by the floating
@@ -716,20 +818,32 @@ class LayoutMixin:
         new_avoid_top = max(0, int(box.bottom() - plane_top + pad))
         _apply_avoid(new_avoid_top, new_avoid_bottom)
 
+    def event(self, event):
+        if event.type() == QEvent.Type.WinIdChange:
+            if self.windowHandle() is not None and self.effectiveWinId() is not None:
+                apply_styles = getattr(self, "_apply_win32_window_styles", None)
+                if callable(apply_styles):
+                    apply_styles()
+        return super().event(event)
+
     def showEvent(self, event):
         """On show, run any content-height adjustment deferred while hidden."""
         super().showEvent(event)
-        # Re-apply WS_EX_NOACTIVATE now that the native window exists. This
-        # covers startup/hotkey-show paths where update_window_flags() ran
-        # before winId()/show() created the native handle.
-        apply_noactivate = getattr(self, "_apply_ws_ex_noactivate", None)
-        if callable(apply_noactivate):
-            cfg = getattr(self, "cfg", {})
-            # Keep no-focus regardless of settings visibility: settings live in
-            # their own window, and dropping NOACTIVATE here would let this
-            # window steal Photoshop's foreground (Wintab context reopen →
-            # first-stroke pressure loss).
-            apply_noactivate(bool(cfg.get("noFocusMode", False)))
+        # Re-apply WS_EX_NOACTIVATE / WS_EX_APPWINDOW now that the native
+        # window exists. This covers startup/hotkey-show paths where
+        # update_window_flags() ran before winId()/show() created the handle.
+        apply_styles = getattr(self, "_apply_win32_window_styles", None)
+        if callable(apply_styles):
+            apply_styles()
+        else:
+            apply_noactivate = getattr(self, "_apply_ws_ex_noactivate", None)
+            if callable(apply_noactivate):
+                cfg = getattr(self, "cfg", {})
+                # Keep no-focus regardless of settings visibility: settings live in
+                # their own window, and dropping NOACTIVATE here would let this
+                # window steal Photoshop's foreground (Wintab context reopen →
+                # first-stroke pressure loss).
+                apply_noactivate(bool(cfg.get("noFocusMode", False)))
         self._content_height_adjust_pending = False
         from PyQt6.QtCore import QTimer as _QTimer
         _QTimer.singleShot(0, self._adjust_content_height)
@@ -858,6 +972,7 @@ class LayoutMixin:
         lock_fn = getattr(self, "_lock_picker_stack_square", None)
         if callable(lock_fn):
             lock_fn(margins=margins, extra_side=extra_side)
+        self._sync_readout_clearance()
 
         # ── Step 4: LAB avoidance observes FINAL preview geometry ──
         # Must run AFTER ringless sync so it sees the page-appropriate

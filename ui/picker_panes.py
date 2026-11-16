@@ -9,13 +9,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPixmap
 from PyQt6.QtWidgets import QTabBar, QWidget
 
 from ui.ringless_mode import centered_control_offset
 from ui.panels.drag import PANEL_MIME
 from ui.wheel_grip import WHEEL_GRIP_MIME
+from ui.widgets.color_value_readout import place_readout_beside_buttons
 
 if TYPE_CHECKING:
     from ui.ringless_mode import RinglessLayout
@@ -70,6 +71,41 @@ class PaneWithModeButton(QWidget):
         self._btn_gap = 4
         self._reserve_module_slot = False
         self._ringless_layout: RinglessLayout | None = None
+        self._readout = None
+        self._readout_enabled = True
+        self._readout_align_buttons = False
+        self._readout_left_clear = 0
+        self._readout_right_inset = 0
+        self._readout_overhang_y = 0
+
+    def set_readout_widget(self, widget, *, align_with_buttons: bool = False):
+        """Attach the compact inline numeric readout anchored beside buttons."""
+        self._readout = widget
+        self._readout_align_buttons = bool(align_with_buttons)
+        if widget is not None and hasattr(widget, "layoutMetricsChanged"):
+            widget.layoutMetricsChanged.connect(self._reposition_mode_button)
+        self._reposition_mode_button()
+
+    def set_readout_enabled(self, enabled: bool):
+        enabled = bool(enabled)
+        if self._readout_enabled != enabled:
+            self._readout_enabled = enabled
+        # Always sync immediately when enabled/disabled toggles (external parent case).
+        self._reposition_mode_button()
+
+    def set_readout_clearance(
+        self, *, left_clear: int = 0, right_inset: int = 0, overhang_y: int | None = None,
+    ):
+        lc = max(0, int(left_clear))
+        ri = max(0, int(right_inset))
+        oy = self._readout_overhang_y if overhang_y is None else max(0, int(overhang_y))
+        if (lc != self._readout_left_clear
+                or ri != self._readout_right_inset
+                or oy != self._readout_overhang_y):
+            self._readout_left_clear = lc
+            self._readout_right_inset = ri
+            self._readout_overhang_y = oy
+        self._reposition_mode_button()
 
     # ── Button setters (trigger reposition) ──────────────────────────────
 
@@ -106,6 +142,14 @@ class PaneWithModeButton(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._reposition_mode_button()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._reposition_mode_button()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
         self._reposition_mode_button()
 
     # ── Reposition dispatch ──────────────────────────────────────────────
@@ -159,6 +203,7 @@ class PaneWithModeButton(QWidget):
         order = [self._extra_btn, self._module_btn, self._mode_btn]
         self._pack_visible_buttons(
             order, pw - m, y, bw, bh, gap, anchor_left=False)
+        self._reposition_readout_legacy(order, pw, ph, m, bh, gap)
 
     # ── Ringless top-bar anchoring ────────────────────────────────────────
 
@@ -183,6 +228,95 @@ class PaneWithModeButton(QWidget):
             order, edge, positions.y, bw, bw, layout.button_gap,
             anchor_left=(layout.controls_side == "right"),
         )
+        self._reposition_readout_ringless(order, layout, positions, bw)
+
+    def _readout_parent_origin(self, readout) -> QPoint | None:
+        parent = readout.parentWidget() if hasattr(readout, "parentWidget") else None
+        if parent is None or parent is self:
+            return QPoint(0, 0)
+        if not parent.isAncestorOf(self):
+            return None
+        return self.mapTo(parent, QPoint(0, 0))
+
+    def _is_readout_pane_active(self, readout) -> bool:
+        parent = readout.parentWidget() if hasattr(readout, "parentWidget") else None
+        return self._readout_enabled and (
+            parent is None or parent is self or not self.isHidden()
+        )
+
+    def _reposition_readout_legacy(self, order, pw, ph, m, bh, gap):
+        readout = self._readout
+        if readout is None:
+            return
+        origin = self._readout_parent_origin(readout)
+        pane_active = origin is not None and self._is_readout_pane_active(readout)
+        visible = [b for b in order if b is not None and not b.isHidden()]
+        right_bound = (
+            min(b.x() for b in visible) - gap
+            if visible
+            else (pw - m - self._readout_right_inset)
+        )
+        left_bound = max(m, self._readout_left_clear)
+        place_readout_beside_buttons(
+            readout,
+            enabled=pane_active,
+            pane_w=pw,
+            pane_h=ph,
+            right_bound=right_bound,
+            left_bound=left_bound,
+            align_with_buttons=self._readout_align_buttons,
+            margin=m,
+            scale=getattr(readout, "_scale", 1.0),
+            pane_origin=origin,
+            overhang_y=self._readout_overhang_y,
+        )
+
+    def _reposition_readout_ringless(self, order, layout, positions, bw):
+        readout = self._readout
+        if readout is None:
+            return
+        pw = self.width()
+        origin = self._readout_parent_origin(readout)
+        if origin is None or not self._is_readout_pane_active(readout) or pw <= 0 or self.height() <= 0:
+            readout.hide()
+            return
+        if hasattr(readout, "set_pill_backdrop"):
+            readout.set_pill_backdrop(False)
+        swatches_w = (
+            2 * layout.swatch_padding
+            + 3 * layout.swatch_width
+            + 2 * layout.swatch_gap
+        )
+        visible = [b for b in order if b is not None and not b.isHidden()]
+        if layout.controls_side == "right":
+            left_bound = (
+                max(b.x() + b.width() for b in visible) if visible else layout.margin
+            )
+            right_bound = pw - layout.margin - swatches_w
+        else:
+            left_bound = layout.margin + swatches_w
+            right_bound = (
+                min(b.x() for b in visible) if visible else (pw - layout.margin)
+            )
+        avail_left = left_bound + layout.button_gap
+        avail_right = right_bound - layout.button_gap
+        avail = max(0, avail_right - avail_left)
+        if hasattr(readout, "fit_width"):
+            size = readout.fit_width(avail)
+            if size is None:
+                readout.hide()
+                return
+        else:
+            size = readout.sizeHint()
+            if avail < size.width():
+                readout.hide()
+                return
+        rw, rh = size.width(), size.height()
+        rx = avail_left + (avail_right - avail_left - rw) // 2
+        ry = max(0, positions.y + (bw - rh) // 2)
+        readout.setGeometry(origin.x() + rx, origin.y() + ry, rw, rh)
+        readout.show()
+        readout.raise_()
 
 
 class WheelPane(PaneWithModeButton):
@@ -431,6 +565,7 @@ class PickerTabBar(QTabBar):
         scale = max(0.5, float(getattr(chrome, "scale", 1.0) or 1.0))
         pad_x = max(2, int(round(5 * scale)))
         pad_y = max(2, int(round(3 * scale)))
+        pad_bottom = max(1, pad_y - 1)
         font = max(7, int(round(
             (getattr(chrome, "font_size", 0) or 11) * 0.85)))
         bar_bg = getattr(chrome, "bar_bg", "") or "transparent"
@@ -445,7 +580,7 @@ class PickerTabBar(QTabBar):
             " }"
             "QTabBar#PickerTabBar::tab {"
             f" background: {bar_bg}; color: {bar_text};"
-            f" padding: {pad_y}px {pad_x}px;"
+            f" padding: {pad_y}px {pad_x}px {pad_bottom}px {pad_x}px;"
             f" font-size: {font}px; border: none;"
             " }"
             "QTabBar#PickerTabBar::tab:selected {"

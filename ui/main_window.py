@@ -38,7 +38,7 @@ from ui.picker_panes import LabPane, PickerTabBar, WheelPane
 from ui.wheel_grip import WheelGripBar
 from ui.wheel_modules import WheelModulePanel
 from ui.settings_sidebar import SettingsSidebar
-from ui.widgets import PickerIconButton, TitleBar, _title_bar_content_offset  # noqa: F401  (re-export)
+from ui.widgets import ColorValueReadout, PickerIconButton, TitleBar, _title_bar_content_offset  # noqa: F401  (re-export)
 from ui.window.module_defs import _MODULE_DEFS, _MODULE_NAMES, _MODULE_ORDER
 from ui.window import (
     ColorSlotsMixin,
@@ -337,6 +337,7 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
                 self.cfg["grayscaleFilterBackend"] = "mag"
 
     def init_ui(self):
+        self.setWindowTitle("Colorink")
         # Frameless, transparent, stays on top, taskbar icon based on config
         self.update_window_flags()
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -391,10 +392,12 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.picker_tab_bar = PickerTabBar(self.picker_tab_container)
         self.picker_tab_layout.addWidget(self.picker_tab_bar)
 
-        # Same top gap the slider tab pane puts between its tab bar and the
-        # first panel: without it the wheel tab strip hugs the colour wheel.
+        # Spacer between the wheel module tabs and the wheel grip strip (when
+        # panelDrag=True); hidden when no grip strip is shown so the wheel
+        # sits directly below the tab strip without extra blank space.
         self.picker_top_gap = QWidget()
         self.picker_top_gap.setFixedHeight(6)
+        self.picker_top_gap.setVisible(False)
         self.picker_tab_layout.addWidget(self.picker_top_gap)
 
         # Grip strip for the wheel module currently shown. It lives above the
@@ -405,6 +408,10 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.picker_tab_layout.addWidget(self.wheel_grip_bar)
 
         # Stacked pane for visualizers
+        self._top_stack_gap = QWidget(self.central)
+        self._top_stack_gap.setFixedHeight(4)
+        self.main_layout.addWidget(self._top_stack_gap)
+
         self.stack = QStackedWidget()
         # The picker takes the spare height (stretch 1). Someone has to: with
         # every item content-sized, a QVBoxLayout spreads the leftover
@@ -459,6 +466,9 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.pane_wheel.set_mode_button(self.btn_mode_wheel)
         
         self.stack.addWidget(self.pane_wheel)
+        # Parent readout_wheel to MainWindow (like preview_box) after pane_wheel
+        # is in stack so it can hug the gap below stack without clipping.
+        self.readout_wheel = self._attach_readout(self.pane_wheel, host=self)
 
         # Pane 2: LAB Space
         self.pane_lab = LabPane(self)
@@ -510,6 +520,9 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.btn_mode_lab.clicked.connect(self.toggle_picker_mode)
         self.btn_mode_lab.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.pane_lab.set_mode_button(self.btn_mode_lab)
+        self.readout_lab = self._attach_readout(
+            self.pane_lab, pill_backdrop=True, align_with_buttons=True,
+        )
         
         self.stack.addWidget(self.pane_lab)
 
@@ -525,6 +538,10 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self.sliders_layout = QVBoxLayout(self.sliders_container)
         self.sliders_layout.setContentsMargins(10, 6, 10, 10)
         self.sliders_layout.setSpacing(8)
+        self._stack_sliders_gap = QWidget(self.central)
+        self._stack_sliders_gap.setFixedHeight(4)
+        self.main_layout.addWidget(self._stack_sliders_gap)
+
         self.main_layout.addWidget(self.sliders_container)
         # Whatever the picker cannot use (it is square, so it stops growing
         # once width caps it) parks at the bottom instead of being spread
@@ -593,6 +610,21 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self._update_lab_avoid()
         self.color_wheel.schedule_slice_prewarm(350)
         self._schedule_lab_prerender(100)
+
+    def _attach_readout(
+        self,
+        pane,
+        *,
+        host=None,
+        pill_backdrop: bool = False,
+        align_with_buttons: bool = False,
+    ) -> ColorValueReadout:
+        readout = ColorValueReadout(host or pane, pill_backdrop=pill_backdrop)
+        readout.set_mode(self.cfg.get("colorValueReadoutMode", "rgb"))
+        readout.modeChanged.connect(self._on_readout_mode_changed)
+        pane.set_readout_enabled(self.cfg.get("showColorValueReadout", True))
+        pane.set_readout_widget(readout, align_with_buttons=align_with_buttons)
+        return readout
 
     def nativeEvent(self, eventType, message):
         """Intercept native OS messages to prevent DPI-induced geometry distortion.

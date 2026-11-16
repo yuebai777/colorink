@@ -115,6 +115,34 @@ def sip_isdeleted(obj) -> bool:
         return False
 
 
+def _update_ex_style_bits(widget, *, set_mask: int = 0, clear_mask: int = 0) -> None:
+    """Update Win32 GWL_EXSTYLE bits on *widget* if it already has a native handle."""
+    try:
+        if widget.windowHandle() is None:
+            return
+        eff_fn = getattr(widget, "effectiveWinId", None)
+        if callable(eff_fn):
+            eff = eff_fn()
+            if not eff:
+                return
+            hwnd = int(eff)
+        else:
+            hwnd = int(widget.winId())
+        import win32con
+        import win32gui
+        ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+        new_style = (ex_style | set_mask) & ~clear_mask
+        if new_style != ex_style:
+            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, new_style)
+            win32gui.SetWindowPos(
+                hwnd, 0, 0, 0, 0, 0,
+                win32con.SWP_NOMOVE | win32con.SWP_NOSIZE
+                | win32con.SWP_NOZORDER | win32con.SWP_FRAMECHANGED,
+            )
+    except Exception:
+        pass
+
+
 def apply_no_activate(widget, enabled: bool) -> None:
     """Force WS_EX_NOACTIVATE on (or off) a native window.
 
@@ -125,26 +153,36 @@ def apply_no_activate(widget, enabled: bool) -> None:
     shows the window calls this again.
     """
     try:
-        if widget.windowHandle() is None:
-            return
         import win32con
-        import win32gui
-        hwnd = int(widget.winId())
-        ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-        new_style = ex_style
-        if enabled:
-            new_style |= win32con.WS_EX_NOACTIVATE
-        else:
-            new_style &= ~win32con.WS_EX_NOACTIVATE
-        if new_style != ex_style:
-            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, new_style)
-            win32gui.SetWindowPos(
-                hwnd, 0, 0, 0, 0, 0,
-                win32con.SWP_NOMOVE | win32con.SWP_NOSIZE
-                | win32con.SWP_NOZORDER | win32con.SWP_FRAMECHANGED,
-            )
+        flag = win32con.WS_EX_NOACTIVATE
     except Exception:
-        pass
+        return
+    if enabled:
+        _update_ex_style_bits(widget, set_mask=flag)
+    else:
+        _update_ex_style_bits(widget, clear_mask=flag)
+
+
+def apply_taskbar_appwindow(widget, enabled: bool) -> None:
+    """Force or clear WS_EX_APPWINDOW so taskbar icon works with WS_EX_NOACTIVATE.
+
+    On Windows, top-level windows carrying WS_EX_NOACTIVATE are hidden from the
+    taskbar by default unless WS_EX_APPWINDOW is explicitly set.
+    """
+    try:
+        import win32con
+        appwindow = win32con.WS_EX_APPWINDOW
+        toolwindow = win32con.WS_EX_TOOLWINDOW
+    except Exception:
+        return
+    if enabled:
+        _update_ex_style_bits(
+            widget,
+            set_mask=appwindow,
+            clear_mask=toolwindow,
+        )
+    else:
+        _update_ex_style_bits(widget, clear_mask=appwindow)
 
 
 class FloatingPanelWindow(PanelHolder, QWidget):

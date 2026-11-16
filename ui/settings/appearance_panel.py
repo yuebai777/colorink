@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core import i18n
+from core import autostart, i18n
 from ui.border_themes import list_border_theme_names
 from ui.chrome_opacity import (
     CHROME_OPACITY_KEY,
@@ -1243,6 +1243,24 @@ class AppearancePanelMixin:
             self.cb_autostart
         ))
 
+        self._autostart_status_row = QWidget()
+        autostart_status_layout = QHBoxLayout(self._autostart_status_row)
+        autostart_status_layout.setContentsMargins(0, 0, 0, 0)
+        autostart_status_layout.setSpacing(8)
+        self.lbl_autostart_status = QLabel("")
+        self.lbl_autostart_status.setWordWrap(True)
+        self._set_label_state(self.lbl_autostart_status, "hint")
+        self.btn_autostart_repair = QPushButton(i18n.tr("恢复自启动"))
+        self.btn_autostart_repair.setToolTip(
+            i18n.tr("重新启用被 Windows 任务管理器禁用的开机自启动项")
+        )
+        self.btn_autostart_repair.clicked.connect(self._on_repair_autostart)
+        self.btn_autostart_repair.setVisible(False)
+        autostart_status_layout.addWidget(self.lbl_autostart_status, 1)
+        autostart_status_layout.addWidget(self.btn_autostart_repair)
+        self._autostart_status_row.setVisible(False)
+        cl_env.addWidget(self._autostart_status_row)
+
         self.cmb_language = NonScrollComboBox()
         self.cmb_language.addItem("自动 (Auto)", "auto")
         self.cmb_language.addItem("中文", "zh")
@@ -1262,6 +1280,45 @@ class AppearancePanelMixin:
 
         parent_layout.addWidget(card_env)
         return card_env
+
+    def _refresh_autostart_status(self):
+        if not hasattr(self, "_autostart_status_row"):
+            return
+        enabled = bool(self.cfg.get("openAtLogin", False))
+        blocked = enabled and autostart.is_autostart_blocked_by_windows()
+        supported = autostart.is_autostart_supported()
+
+        if blocked and supported:
+            self.lbl_autostart_status.setText(
+                i18n.tr("已被 Windows 启动管理禁用，当前不会随开机启动")
+            )
+            self._set_label_state(self.lbl_autostart_status, "warning")
+            self.btn_autostart_repair.setVisible(True)
+            self._autostart_status_row.setVisible(True)
+        elif blocked:
+            self.lbl_autostart_status.setText(
+                i18n.tr("已被 Windows 启动管理禁用，请运行打包版并点击恢复或在任务管理器中重新启用")
+            )
+            self._set_label_state(self.lbl_autostart_status, "warning")
+            self.btn_autostart_repair.setVisible(False)
+            self._autostart_status_row.setVisible(True)
+        elif not supported:
+            self.lbl_autostart_status.setText(
+                i18n.tr("当前为源码运行模式，开机自启动仅在打包版中可用")
+            )
+            self._set_label_state(self.lbl_autostart_status, "hint")
+            self.btn_autostart_repair.setVisible(False)
+            self._autostart_status_row.setVisible(True)
+        else:
+            self.btn_autostart_repair.setVisible(False)
+            self._autostart_status_row.setVisible(False)
+
+    def _on_repair_autostart(self):
+        if autostart.apply_autostart(True):
+            self.cfg["openAtLogin"] = True
+            if hasattr(self, "_persist_config"):
+                self._persist_config()
+        self._refresh_autostart_status()
 
     def _build_grayscale_card(self, parent_layout):
         # ═══════════════════ 全屏/区域灰度滤镜 ═══════════════════
@@ -1449,6 +1506,18 @@ class AppearancePanelMixin:
             i18n.tr("水平翻转色环"),
             i18n.tr("水平镜像色环（颜色排列左右翻转）"),
             self.cb_flip_wheel
+        ))
+
+        self.cb_show_color_readout = QCheckBox(i18n.tr("显示颜色数值"))
+        _readout_tip = i18n.tr(
+            "在色轮与 LAB 视图显示当前颜色数值（点击可切换 RGB / HSV / HLS / LAB / OKLab / OKLCh / HEX）"
+        )
+        self.cb_show_color_readout.setToolTip(_readout_tip)
+        self.cb_show_color_readout.stateChanged.connect(self.save_settings)
+        cl_wheel.addWidget(self._make_setting_row(
+            i18n.tr("显示颜色数值"),
+            _readout_tip,
+            self.cb_show_color_readout,
         ))
 
         # Ringless mode settings
