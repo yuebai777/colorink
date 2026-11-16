@@ -12,17 +12,20 @@ of the pick.
 
 Theming mirrors ``ui.settings_window``: colours come from the host sidebar's
 ``theme_colors()`` so both surfaces agree, and the font size follows the same
-``fontSize`` setting. Nothing here touches the network — the roll of honour is
-bundled data (see ``core.sponsors``).
+``fontSize`` setting. Initial data comes from the bundled/cached roll
+immediately, and opening the dialog triggers a quiet background refresh (see
+``core.sponsors.refresh_sponsors``).
 """
 
 from __future__ import annotations
 
+import os
+import threading
 import webbrowser
 from dataclasses import dataclass
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QPoint, QRect, QRectF, Qt
+from PyQt6.QtCore import QEvent, QPoint, QRect, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -297,11 +300,17 @@ class _Row:
 class SponsorHallDialog(QDialog):
     """The honour roll itself: a scrollable, single time-ordered list."""
 
-    def __init__(self, parent=None):
+    _refresh_done = pyqtSignal(object)
+
+    def __init__(self, parent=None, *, auto_refresh: bool = True):
         super().__init__(parent)
         self._host = parent
         self._sponsors: list[sponsors.Sponsor] = []
         self._rows: list[_Row] = []
+        self._refreshing = False
+        self._stop_refresh = threading.Event()
+        self.destroyed.connect(self._stop_refresh.set)
+        self._refresh_done.connect(self._on_refresh_done)
         # Mirroring state: see ``eventFilter`` / ``hideEvent``.
         self._restore_with_host = False
         self._hiding_with_host = False
@@ -341,6 +350,9 @@ class SponsorHallDialog(QDialog):
         self._language_listener = self.retranslate
         i18n.add_language_listener(self._language_listener)
 
+        if auto_refresh and not os.environ.get("PYTEST_CURRENT_TEST"):
+            self.refresh_async()
+
     # ── construction ──────────────────────────────────────────────────────
 
     def _build_ui(self):
@@ -375,13 +387,13 @@ class SponsorHallDialog(QDialog):
         body_layout.addWidget(self._lbl_count)
 
         self._rows_container = QWidget()
-        rows_layout = QVBoxLayout(self._rows_container)
-        rows_layout.setContentsMargins(0, 0, 0, 0)
-        rows_layout.setSpacing(8)
+        self._rows_layout = QVBoxLayout(self._rows_container)
+        self._rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._rows_layout.setSpacing(8)
 
         for sponsor in self._sponsors:
             row = self._build_row(sponsor)
-            rows_layout.addWidget(row.widget)
+            self._rows_layout.addWidget(row.widget)
             self._rows.append(row)
 
         body_layout.addWidget(self._rows_container)
@@ -409,6 +421,60 @@ class SponsorHallDialog(QDialog):
         footer_layout.addWidget(self._btn_sponsor)
         footer_layout.addStretch(1)
         layout.addWidget(footer)
+
+    def refresh_async(self):
+        """Fetch online updates in the background and update rows if changed."""
+        if self._refreshing:
+            return
+        self._refreshing = True
+        stop_event = self._stop_refresh
+
+        def _worker():
+            payload = None
+            try:
+                result = sponsors.refresh_sponsors()
+                if isinstance(result, dict) and result.get("ok"):
+                    payload = list(result.get("sponsors") or [])
+            except Exception:
+                payload = None
+            if stop_event.is_set():
+                return
+            try:
+                self._refresh_done.emit(payload)
+            except RuntimeError:
+                pass
+
+        threading.Thread(
+            target=_worker, daemon=True, name="colorink-sponsors-refresh"
+        ).start()
+
+    def _on_refresh_done(self, updated):
+        self._refreshing = False
+        if sip.isdeleted(self) or not isinstance(updated, list):
+            return
+        if updated == self._sponsors:
+            return
+        self._rebuild_rows(updated)
+
+    def _rebuild_rows(self, new_sponsors: list[sponsors.Sponsor]):
+        while self._rows_layout.count():
+            item = self._rows_layout.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.deleteLater()
+        self._rows.clear()
+
+        self._sponsors = list(new_sponsors)
+        for sponsor in self._sponsors:
+            row = self._build_row(sponsor)
+            self._rows_layout.addWidget(row.widget)
+            self._rows.append(row)
+
+        self._lbl_count.setText(_count_text(len(self._sponsors)))
+        self._show_empty_state(not self._sponsors)
+        palette = self._colors()
+        accent = palette["accent"]
+        self._repaint_avatars(accent, readable_ink(accent))
 
     def _build_row(self, sponsor: sponsors.Sponsor) -> _Row:
         widget = QWidget()

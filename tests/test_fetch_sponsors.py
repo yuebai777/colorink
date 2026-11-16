@@ -707,11 +707,11 @@ def test_fetch_page_tolerates_a_missing_data_block():
 # ── entry point ─────────────────────────────────────────────────────────
 
 
-def test_main_refuses_without_credentials(monkeypatch, capsys):
+def test_main_refuses_api_source_without_credentials(monkeypatch, capsys):
     monkeypatch.delenv("AFDIAN_USER_ID", raising=False)
     monkeypatch.delenv("AFDIAN_API_TOKEN", raising=False)
 
-    assert fetch_sponsors.main([]) == 1
+    assert fetch_sponsors.main(["--source", "api"]) == 1
     out = capsys.readouterr().out
     assert "AFDIAN_USER_ID" in out
     # Must not silently write an empty list over the existing one.
@@ -774,3 +774,166 @@ def test_shipped_data_file_is_valid_json():
     assert path.is_file()
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert isinstance(payload.get("sponsors"), list)
+
+
+# ── public webpage scraping (no token) ──────────────────────────────────
+
+
+def _web_opener(routes: dict):
+    """Fake ``urlopen`` matching URL prefixes or query-keyed callbacks."""
+    calls: list[str] = []
+
+    def _open(request, timeout=None):
+        calls.append(request.full_url)
+        for prefix, handler in routes.items():
+            if prefix in request.full_url:
+                payload = handler(request.full_url) if callable(handler) else handler
+                return _FakeResponse(payload)
+        raise AssertionError(f"unexpected url: {request.full_url}")
+
+    _open.calls = calls
+    return _open
+
+
+def test_fetch_creator_user_id_extracts_id():
+    opener = _web_opener({
+        "get-profile-by-slug": {"ec": 200, "data": {"user": {"user_id": "uid-123"}}},
+    })
+
+    assert fetch_sponsors.fetch_creator_user_id("touyimoyuebai", opener=opener) == "uid-123"
+
+
+def test_fetch_creator_user_id_raises_when_missing():
+    opener = _web_opener({
+        "get-profile-by-slug": {"ec": 200, "data": {"user": {}}},
+    })
+
+    with pytest.raises(RuntimeError, match="missing user_id"):
+        fetch_sponsors.fetch_creator_user_id("touyimoyuebai", opener=opener)
+
+
+def test_fetch_web_all_paginates_and_merges_top_without_duplicates():
+    def _sponsors_page(url):
+        page = int(urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["page"][0])
+        if page == 1:
+            return {"ec": 200, "data": {"has_more": 1, "list": [
+                {"user_id": "u1", "name": "甲"},
+            ]}}
+        if page == 2:
+            return {"ec": 200, "data": {"has_more": 0, "list": [
+                {"user_id": "u2", "name": "乙"},
+            ]}}
+        raise AssertionError(f"unexpected page {page}")
+
+    opener = _web_opener({
+        "get-sponsors": _sponsors_page,
+        "get-top-sponsors": {"ec": 200, "data": {"list": [
+            {"user_id": "u1", "name": "甲"},
+            {"user_id": "u3", "name": "丙"},
+        ]}},
+    })
+
+    records = fetch_sponsors.fetch_web_all("creator-1", opener=opener)
+
+    assert [r["user"]["name"] for r in records] == ["甲", "乙", "丙"]
+
+
+def test_build_web_entries_preserves_existing_rows_and_first_seen_dates():
+    existing = [
+        {"name": "老赞助者", "since": "", "last_pay": "2026-09-10",
+         "message": "老留言", "avatar": "avatars/old.jpg"},
+        {"name": "乙", "since": "", "last_pay": "2026-10-01",
+         "message": "", "avatar": ""},
+    ]
+    web_records = [
+        {"user": {"name": "新赞助者"}},
+        {"user": {"name": "乙"}},
+    ]
+
+    entries = fetch_sponsors.build_web_entries(
+        web_records,
+        existing_entries=existing,
+        previous_avatars={"老赞助者": "avatars/old.jpg"},
+        discovered_date="2026-11-14",
+    )
+
+    by_name = {e["name"]: e for e in entries}
+    assert set(by_name) == {"老赞助者", "乙", "新赞助者"}
+    assert by_name["老赞助者"]["last_pay"] == "2026-09-10"
+    assert by_name["老赞助者"]["avatar"] == "avatars/old.jpg"
+    assert by_name["老赞助者"]["message"] == "老留言"
+    # Existing web-returned sponsor keeps original date instead of drifting.
+    assert by_name["乙"]["last_pay"] == "2026-10-01"
+    # Brand-new web sponsor gets today's discovery date.
+    assert by_name["新赞助者"]["last_pay"] == "2026-11-14"
+
+
+def test_build_web_entries_prefers_manual_addition_date_over_discovered_date():
+    entries = fetch_sponsors.build_web_entries(
+        [{"user": {"name": "乙"}}],
+        existing_entries=[],
+        additions=[{"name": "乙", "last_pay": "2026-10-20"}],
+        discovered_date="2026-11-14",
+    )
+
+    assert entries[0]["last_pay"] == "2026-10-20"
+
+
+def test_build_web_entries_respects_exclude_for_both_web_and_existing():
+    existing = [
+        {"name": "留着", "last_pay": "2026-09-10"},
+        {"name": "下架旧人", "last_pay": "2026-09-01"},
+    ]
+    web_records = [
+        {"user": {"name": "下架新人"}},
+        {"user": {"name": "新人"}},
+    ]
+
+    entries = fetch_sponsors.build_web_entries(
+        web_records,
+        existing_entries=existing,
+        overrides={
+            "下架旧人": {"exclude": True},
+            "下架新人": {"exclude": True},
+        },
+        discovered_date="2026-11-14",
+    )
+
+    assert {e["name"] for e in entries} == {"留着", "新人"}
+
+
+def test_main_auto_falls_back_to_web_without_tokens_and_is_idempotent(
+    tmp_path, monkeypatch, capsys
+):
+    data_path = tmp_path / "sponsors.json"
+    data_path.write_text(json.dumps({
+        "schema": 1,
+        "generated_at": "2026-09-10",
+        "sponsors": [
+            {"name": "みや", "since": "", "last_pay": "2026-09-10",
+             "message": "", "avatar": "avatars/miya.jpg"},
+        ],
+    }, ensure_ascii=False), encoding="utf-8")
+    overlay_path = tmp_path / "sponsor_overrides.json"
+    overlay_path.write_text(json.dumps({
+        "add": [{"name": "匿名", "last_pay": "2026-08-28"}],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(fetch_sponsors, "DATA_PATH", data_path)
+    monkeypatch.setattr(fetch_sponsors, "OVERLAY_PATH", overlay_path)
+    monkeypatch.delenv("AFDIAN_USER_ID", raising=False)
+    monkeypatch.delenv("AFDIAN_API_TOKEN", raising=False)
+    monkeypatch.setattr(fetch_sponsors, "fetch_creator_user_id", lambda slug: "cid-1")
+    monkeypatch.setattr(
+        fetch_sponsors, "fetch_web_all",
+        lambda cid: [{"user": {"name": "alek"}}],
+    )
+
+    assert fetch_sponsors.main([]) == 0
+    written = json.loads(data_path.read_text(encoding="utf-8"))
+    assert [e["name"] for e in written["sponsors"]] == ["alek", "みや", "匿名"]
+    assert written["sponsors"][1]["avatar"] == "avatars/miya.jpg"
+
+    capsys.readouterr()
+    assert fetch_sponsors.main([]) == 0
+    assert "no change" in capsys.readouterr().out

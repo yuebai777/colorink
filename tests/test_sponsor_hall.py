@@ -7,6 +7,7 @@ window whose config directory is isolated to ``tmp_path``, a real
 """
 
 import os
+import time
 
 import pytest
 
@@ -705,3 +706,81 @@ class TestLanguage:
 
         # …and switching back restores Chinese, without a restart.
         assert dialog._btn_sponsor.text() == "前往爱发电赞助"
+
+
+# ── Background online refresh ───────────────────────────────────────────
+
+
+class TestBackgroundRefresh:
+    def test_refresh_updates_rows_and_count_from_empty_state(
+        self, qapp, sponsors_stub, monkeypatch
+    ):
+        from core import sponsors
+        from ui.sponsor_hall import SponsorHallDialog
+
+        sponsors_stub([])
+        dialog = SponsorHallDialog(None)
+        assert dialog._lbl_empty.isHidden() is False
+        assert dialog._rows == []
+
+        updated = [
+            sponsors.Sponsor("新赞助者", last_pay="2026-11-14"),
+            sponsors.Sponsor("老朋友", last_pay="2026-09-10"),
+        ]
+        monkeypatch.setattr(
+            sponsors, "refresh_sponsors",
+            lambda: {"ok": True, "changed": True, "sponsors": updated},
+        )
+
+        dialog.refresh_async()
+        # Wait briefly for the daemon worker thread to emit _refresh_done.
+        deadline = 50
+        while dialog._refreshing and deadline > 0:
+            qapp.processEvents()
+            time.sleep(0.01)
+            deadline -= 1
+        qapp.processEvents()
+
+        assert [r.name for r in dialog._rows] == ["新赞助者", "老朋友"]
+        assert dialog._lbl_count.text() == i18n.tr("共 {n} 位赞助者", n=2)
+        assert dialog._lbl_empty.isHidden() is True
+        assert dialog._rows_container.isHidden() is False
+        assert not dialog._rows[0].avatar.pixmap().isNull()
+
+    def test_failed_refresh_leaves_existing_rows_untouched(
+        self, qapp, sponsors_stub, monkeypatch
+    ):
+        from core import sponsors
+        from ui.sponsor_hall import SponsorHallDialog
+
+        sponsors_stub([("原有", "2026-09-10")])
+        dialog = SponsorHallDialog(None)
+
+        monkeypatch.setattr(
+            sponsors, "refresh_sponsors",
+            lambda: {"ok": False, "changed": False, "sponsors": []},
+        )
+        dialog.refresh_async()
+        deadline = 50
+        while dialog._refreshing and deadline > 0:
+            qapp.processEvents()
+            time.sleep(0.01)
+            deadline -= 1
+        qapp.processEvents()
+
+        assert [r.name for r in dialog._rows] == ["原有"]
+        assert dialog._lbl_count.text() == i18n.tr("共 {n} 位赞助者", n=1)
+
+    def test_auto_refresh_runs_outside_pytest_env(
+        self, qapp, sponsors_stub, monkeypatch
+    ):
+        from ui.sponsor_hall import SponsorHallDialog
+
+        sponsors_stub([])
+        called = []
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        monkeypatch.setattr(SponsorHallDialog, "refresh_async", lambda self: called.append(True))
+
+        SponsorHallDialog(None)
+
+        assert called == [True]

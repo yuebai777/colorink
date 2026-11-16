@@ -1,9 +1,17 @@
 """Sync the sponsor honour roll from Afdian into ``core/data/sponsors.json``.
 
-Run by the maintainer, never by the shipped app. The Afdian API needs a
-user id and an api token, and **a token inside a distributed binary is a
-leaked token** (Python bytecode is trivially unpacked), so the app only ever
-reads a static, bundled data file. This script is the thing that produces it.
+Run by the maintainer (or GitHub Actions), never needing an embedded token in
+the shipped binary. Two fetch sources are supported:
+
+* **OpenAPI mode** (when ``AFDIAN_USER_ID`` and ``AFDIAN_API_TOKEN`` are set):
+  calls ``https://afdian.com/api/open/query-sponsor`` for full history with
+  exact payment timestamps.
+* **Public webpage mode** (default when no API token is set, or ``--source web``):
+  reads the creator's public Afdian page endpoints (``get-profile-by-slug`` +
+  ``get-sponsors``) without any login or token. Since the public page does not
+  expose timestamps or older/offline entries, web mode merges incrementally
+  with the existing ``sponsors.json`` and stamps newly discovered sponsors with
+  today's date.
 
 Usage
 -----
@@ -63,6 +71,18 @@ DATA_PATH = PROJECT_ROOT / "core" / "data" / "sponsors.json"
 OVERLAY_PATH = PROJECT_ROOT / "core" / "data" / "sponsor_overrides.json"
 
 API_URL = "https://afdian.com/api/open/query-sponsor"
+DEFAULT_SLUG = "touyimoyuebai"
+PROFILE_BY_SLUG_URL = "https://afdian.com/api/user/get-profile-by-slug"
+WEB_SPONSORS_URL = "https://afdian.com/api/creator/get-sponsors"
+WEB_TOP_SPONSORS_URL = "https://afdian.com/api/creator/get-top-sponsors"
+_WEB_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://afdian.com/",
+}
 TIMEOUT_SECONDS = 20
 SCHEMA_VERSION = 1
 
@@ -216,6 +236,36 @@ def manual_entries(additions: list, skip: set[str] | None = None) -> list[dict]:
     return entries
 
 
+def _override_for(overrides: dict, name: str) -> dict:
+    raw = overrides.get(name)
+    return raw if isinstance(raw, dict) else {}
+
+
+def _pick_avatar(override: dict, previous_avatars: dict, name: str,
+                 fallback: str = "") -> str:
+    if "avatar" in override:
+        # Present-but-empty means "clear it"; only the type is guarded.
+        raw = override["avatar"]
+        return raw.strip() if isinstance(raw, str) else ""
+    return (previous_avatars.get(name) or fallback or "").strip()
+
+
+def _enrich_with_additions(entries: list[dict], additions: list) -> list[dict]:
+    """Fill blank fields on existing rows and append unseen manual rows."""
+    for manual in manual_entries(additions):
+        for entry in entries:
+            if entry["name"] != manual["name"]:
+                continue
+            for field in ("since", "last_pay", "avatar"):
+                if not entry[field] and manual[field]:
+                    entry[field] = manual[field]
+            break
+
+    known = {entry["name"] for entry in entries}
+    entries.extend(manual_entries(additions, known))
+    return entries
+
+
 def build_entries(records: list[dict], overrides: dict | None = None,
                   previous_avatars: dict | None = None,
                   additions: list | None = None) -> list[dict]:
@@ -251,45 +301,130 @@ def build_entries(records: list[dict], overrides: dict | None = None,
         if not name or name in seen:
             continue
 
-        override = overrides.get(name) or {}
-        if not isinstance(override, dict):
-            override = {}
+        override = _override_for(overrides, name)
         if override.get("exclude"):
             continue
 
         seen.add(name)
         message = override.get("message")
-        if "avatar" in override:
-            # Present-but-empty means "clear it"; only the type is guarded.
-            avatar = override["avatar"] if isinstance(override["avatar"], str) else ""
-        else:
-            avatar = previous_avatars.get(name, "")
         entries.append({
             "name": name,
             "since": day_from_timestamp(record.get("create_time")),
             "last_pay": day_from_timestamp(record.get("last_pay_time")),
             "message": message.strip() if isinstance(message, str) else "",
-            "avatar": avatar.strip(),
+            "avatar": _pick_avatar(override, previous_avatars, name),
         })
 
-    # Enrichment pass: a manual row may supply a fact the API cannot (a date for
-    # an anonymous donation, a local image), but it only ever fills blanks.
-    # Deliberately excludes ``message``: that field has exactly one home, the
-    # per-name override, and a second way to set it would be a precedence
-    # puzzle for whoever maintains the file.
-    for manual in manual_entries(additions):
-        for entry in entries:
-            if entry["name"] != manual["name"]:
-                continue
-            for field in ("since", "last_pay", "avatar"):
-                if not entry[field] and manual[field]:
-                    entry[field] = manual[field]
-            break
+    # Enrichment pass excludes ``message``: that field has one home (per-name override).
+    return _enrich_with_additions(entries, additions)
 
-    # Everyone else is somebody the API does not know about at all.
-    known = {entry["name"] for entry in entries}
-    entries.extend(manual_entries(additions, known))
-    return entries
+
+def _normalize_existing_map(existing_entries: list | None) -> tuple[list[dict], dict[str, dict]]:
+    """Normalise on-disk roll entries into ``(ordered_list, by_name)``."""
+    ordered: list[dict] = []
+    by_name: dict[str, dict] = {}
+    for item in existing_entries or []:
+        if not isinstance(item, dict):
+            continue
+        raw_name = item.get("name")
+        name = raw_name.strip() if isinstance(raw_name, str) else ""
+        if not name or name in by_name:
+            continue
+        message = item.get("message")
+        avatar = item.get("avatar")
+        clean = {
+            "name": name,
+            "since": normalize_date(item.get("since")),
+            "last_pay": normalize_date(item.get("last_pay")),
+            "message": message.strip() if isinstance(message, str) else "",
+            "avatar": avatar.strip() if isinstance(avatar, str) else "",
+        }
+        ordered.append(clean)
+        by_name[name] = clean
+    return ordered, by_name
+
+
+def build_web_entries(records: list[dict], existing_entries: list | None = None,
+                      overrides: dict | None = None,
+                      previous_avatars: dict | None = None,
+                      additions: list | None = None,
+                      discovered_date: str = "") -> list[dict]:
+    """Merge public-webpage sponsor records with the existing roll incrementally.
+
+    The public webpage endpoints do not expose payment timestamps or older /
+    off-platform entries. Dropping ``existing_entries`` would wipe prior
+    sponsors (or bump everyone's date on every monthly sync), so existing rows
+    are carried forward unless excluded via overrides, and newly discovered
+    sponsors receive ``discovered_date`` (unless ``additions`` supplies a date).
+    """
+    overrides = overrides or {}
+    previous_avatars = previous_avatars or {}
+    additions = additions or []
+    ordered_existing, existing_by_name = _normalize_existing_map(existing_entries)
+    manual_by_name = {m["name"]: m for m in manual_entries(additions)}
+    stamped_date = normalize_date(discovered_date)
+
+    entries: list[dict] = []
+    seen: set[str] = set()
+
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        name = _nickname(record)
+        if not name or name in seen:
+            continue
+
+        override = _override_for(overrides, name)
+        if override.get("exclude"):
+            seen.add(name)
+            continue
+
+        seen.add(name)
+        prior = existing_by_name.get(name)
+        if prior is not None:
+            since = prior["since"]
+            last_pay = prior["last_pay"]
+            fallback_msg = prior["message"]
+            fallback_avatar = prior["avatar"]
+        else:
+            since = ""
+            manual = manual_by_name.get(name)
+            has_manual_date = bool(manual and (manual["last_pay"] or manual["since"]))
+            last_pay = "" if has_manual_date else stamped_date
+            fallback_msg = ""
+            fallback_avatar = ""
+
+        msg_override = override.get("message")
+        message = msg_override.strip() if isinstance(msg_override, str) else fallback_msg
+        entries.append({
+            "name": name,
+            "since": since,
+            "last_pay": last_pay,
+            "message": message,
+            "avatar": _pick_avatar(override, previous_avatars, name, fallback_avatar),
+        })
+
+    # Carry forward existing entries absent from the live public list.
+    for prior in ordered_existing:
+        name = prior["name"]
+        if name in seen:
+            continue
+        override = _override_for(overrides, name)
+        if override.get("exclude"):
+            seen.add(name)
+            continue
+        seen.add(name)
+        msg_override = override.get("message")
+        message = msg_override.strip() if isinstance(msg_override, str) else prior["message"]
+        entries.append({
+            "name": name,
+            "since": prior["since"],
+            "last_pay": prior["last_pay"],
+            "message": message,
+            "avatar": _pick_avatar(override, previous_avatars, name, prior["avatar"]),
+        })
+
+    return _enrich_with_additions(entries, additions)
 
 
 def sort_entries(entries: list[dict]) -> list[dict]:
@@ -366,6 +501,16 @@ def previous_avatars(path: Path) -> dict[str, str]:
 # ── network (kept thin and injectable so tests never hit the wire) ─────
 
 
+def _open_json(request: urllib.request.Request, opener=None) -> dict:
+    open_url = opener or urllib.request.urlopen
+    with open_url(request, timeout=TIMEOUT_SECONDS) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if not isinstance(payload, dict) or payload.get("ec") != 200:
+        raise RuntimeError(f"afdian api error: {payload!r}")
+    data = payload.get("data")
+    return data if isinstance(data, dict) else {}
+
+
 def fetch_page(user_id: str, token: str, page: int, opener=None) -> dict:
     params = json.dumps({"page": page}, separators=(",", ":"))
     ts = int(time.time())
@@ -380,13 +525,7 @@ def fetch_page(user_id: str, token: str, page: int, opener=None) -> dict:
         data=body,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
-    open_url = opener or urllib.request.urlopen
-    with open_url(request, timeout=TIMEOUT_SECONDS) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    if not isinstance(payload, dict) or payload.get("ec") != 200:
-        raise RuntimeError(f"afdian api error: {payload!r}")
-    data = payload.get("data")
-    return data if isinstance(data, dict) else {}
+    return _open_json(request, opener=opener)
 
 
 def fetch_all(user_id: str, token: str, opener=None) -> list[dict]:
@@ -399,6 +538,79 @@ def fetch_all(user_id: str, token: str, opener=None) -> list[dict]:
     return records
 
 
+def _get_web_json(url: str, params: dict, opener=None) -> dict:
+    query = urllib.parse.urlencode(params)
+    request = urllib.request.Request(f"{url}?{query}", headers=_WEB_HEADERS)
+    return _open_json(request, opener=opener)
+
+
+def fetch_creator_user_id(slug: str = DEFAULT_SLUG, opener=None) -> str:
+    data = _get_web_json(PROFILE_BY_SLUG_URL, {"url_slug": slug}, opener=opener)
+    user = data.get("user")
+    user_id = user.get("user_id") if isinstance(user, dict) else ""
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise RuntimeError(f"afdian profile missing user_id for slug {slug!r}")
+    return user_id.strip()
+
+
+def fetch_web_page(user_id: str, page: int, kind: str = "new", opener=None) -> dict:
+    return _get_web_json(
+        WEB_SPONSORS_URL,
+        {"user_id": user_id, "type": kind, "page": page},
+        opener=opener,
+    )
+
+
+def fetch_web_top(user_id: str, opener=None) -> list[dict]:
+    data = _get_web_json(WEB_TOP_SPONSORS_URL, {"user_id": user_id}, opener=opener)
+    return [item for item in (data.get("list") or []) if isinstance(item, dict)]
+
+
+def fetch_web_all(user_id: str, opener=None, *, max_pages: int = 100) -> list[dict]:
+    """Fetch public webpage sponsors (``get-sponsors`` + ``get-top-sponsors``).
+
+    Returns records wrapped as ``{"user": <item>}`` so ``_nickname`` and the
+    entry builders handle API and webpage records uniformly.
+    """
+    raw_items: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_names: set[str] = set()
+
+    def _collect(item: dict):
+        uid = item.get("user_id")
+        uid_key = uid.strip() if isinstance(uid, str) else ""
+        name = item.get("name")
+        name_key = name.strip() if isinstance(name, str) else ""
+        if uid_key and uid_key in seen_ids:
+            return
+        if name_key and name_key in seen_names:
+            return
+        if uid_key:
+            seen_ids.add(uid_key)
+        if name_key:
+            seen_names.add(name_key)
+        raw_items.append(item)
+
+    for page in range(1, max_pages + 1):
+        data = fetch_web_page(user_id, page, kind="new", opener=opener)
+        page_items = [r for r in (data.get("list") or []) if isinstance(r, dict)]
+        for item in page_items:
+            _collect(item)
+        if not data.get("has_more") or not page_items:
+            break
+
+    # Supplement with the monthly top list in case an item appears there only.
+    try:
+        top_items = fetch_web_top(user_id, opener=opener)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] ignoring get-top-sponsors error: {exc}")
+        top_items = []
+    for item in top_items:
+        _collect(item)
+
+    return [{"user": item} for item in raw_items]
+
+
 # ── entry point ───────────────────────────────────────────────────────
 
 
@@ -408,11 +620,17 @@ def main(argv=None) -> int:
                         help="print the result without writing the data file")
     parser.add_argument("--force", action="store_true",
                         help="write even when nothing changed")
+    parser.add_argument("--source", choices=("auto", "api", "web"), default="auto",
+                        help="fetch source: OpenAPI (api), public webpage (web), or auto")
+    parser.add_argument("--slug", default=os.environ.get("AFDIAN_SLUG", DEFAULT_SLUG),
+                        help="creator url_slug used in public webpage mode")
     args = parser.parse_args(argv)
 
     user_id = os.environ.get("AFDIAN_USER_ID", "").strip()
     token = os.environ.get("AFDIAN_API_TOKEN", "").strip()
-    if not user_id or not token:
+
+    use_api = args.source == "api" or (args.source == "auto" and bool(user_id and token))
+    if use_api and (not user_id or not token):
         print("[error] AFDIAN_USER_ID / AFDIAN_API_TOKEN are not set.")
         print("        Refusing to run: a missing token would overwrite the "
               "existing list with an empty one.")
@@ -424,18 +642,32 @@ def main(argv=None) -> int:
     if additions:
         print(f"[info] {len(additions)} manual entry/entries in {OVERLAY_PATH.name}")
 
-    records = fetch_all(user_id, token)
+    generated_at = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d")
     prior = previous_avatars(DATA_PATH)
-    entries = build_entries(records, overrides, prior, additions)
-    excluded = sum(1 for r in records if (overrides.get(_nickname(r)) or {}).get("exclude"))
+
+    if use_api:
+        records = fetch_all(user_id, token)
+        entries = build_entries(records, overrides, prior, additions)
+        source_label = "afdian open api"
+    else:
+        creator_id = user_id or fetch_creator_user_id(args.slug)
+        records = fetch_web_all(creator_id)
+        existing = existing_sponsors(DATA_PATH) or []
+        entries = build_web_entries(
+            records, existing, overrides, prior, additions,
+            discovered_date=generated_at,
+        )
+        source_label = f"afdian public page ({args.slug})"
+
+    excluded = sum(1 for r in records if _override_for(overrides, _nickname(r)).get("exclude"))
     kept = sum(1 for e in entries if e["avatar"] and e["name"] in prior)
-    from_api = {_nickname(r) for r in records}
-    manual = sum(1 for e in entries if e["name"] not in from_api)
-    print(f"[info] afdian returned {len(records)} record(s); "
-          f"{len(entries)} listed ({manual} added by hand), "
+    from_source = {_nickname(r) for r in records}
+    manual = sum(1 for e in entries if e["name"] not in from_source)
+    detail = "added by hand" if use_api else "kept/added by hand"
+    print(f"[info] {source_label} returned {len(records)} record(s); "
+          f"{len(entries)} listed ({manual} {detail}), "
           f"{excluded} excluded by overrides, {kept} kept a local avatar")
 
-    generated_at = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d")
     document = build_document(entries, generated_at)
 
     if not args.force and is_unchanged(document, DATA_PATH):

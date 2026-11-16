@@ -434,3 +434,172 @@ def test_shipped_avatars_all_resolve():
             assert sponsors.resolve_avatar(sponsor.avatar) is not None, (
                 f"sponsor {sponsor.name!r} points at missing {sponsor.avatar!r}"
             )
+
+
+# ── cache merging & online refresh (offline-injected) ───────────────────
+
+
+class _FakeHttpResponse:
+    def __init__(self, payload):
+        self._body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_sorted_sponsors_prefers_newer_cached_remote_and_drops_stale(
+    write_data, tmp_path, monkeypatch
+):
+    write_data({
+        "schema": 1,
+        "generated_at": "2026-09-10",
+        "sponsors": [{"name": "旧人", "last_pay": "2026-09-10"}],
+    })
+    cache_path = tmp_path / "sponsors-cache.json"
+    cache_path.write_text(json.dumps({
+        "schema": 1,
+        "has_remote": True,
+        "remote_generated_at": "2026-11-14",
+        "remote_sponsors": [
+            {"name": "新人", "last_pay": "2026-11-14", "message": "加油"},
+        ],
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(sponsors, "_cache_path", lambda: cache_path)
+
+    result = sponsors.sorted_sponsors()
+
+    assert [s.name for s in result] == ["新人"]
+    assert result[0].message == "加油"
+
+
+def test_sorted_sponsors_ignores_stale_cached_remote_after_app_upgrade(
+    write_data, tmp_path, monkeypatch
+):
+    write_data({
+        "schema": 1,
+        "generated_at": "2026-12-01",
+        "sponsors": [{"name": "新版内置", "last_pay": "2026-12-01"}],
+    })
+    cache_path = tmp_path / "sponsors-cache.json"
+    cache_path.write_text(json.dumps({
+        "schema": 1,
+        "has_remote": True,
+        "remote_generated_at": "2026-11-01",
+        "remote_sponsors": [{"name": "旧缓存", "last_pay": "2026-11-01"}],
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(sponsors, "_cache_path", lambda: cache_path)
+
+    result = sponsors.sorted_sponsors()
+
+    assert [s.name for s in result] == ["新版内置"]
+
+
+def test_sorted_sponsors_merges_same_day_bundled_and_remote_and_afdian(
+    write_data, tmp_path, monkeypatch
+):
+    write_data({
+        "schema": 1,
+        "generated_at": "2026-11-14",
+        "sponsors": [{"name": "みや", "last_pay": "2026-09-10", "avatar": "avatars/miya.jpg"}],
+    })
+    cache_path = tmp_path / "sponsors-cache.json"
+    cache_path.write_text(json.dumps({
+        "schema": 1,
+        "has_remote": True,
+        "remote_generated_at": "2026-11-14",
+        "remote_sponsors": [{"name": "みや", "last_pay": "2026-09-10", "message": "谢谢"}],
+        "afdian_sponsors": [
+            {"name": "みや", "last_pay": "2026-11-14", "avatar": "https://evil.test/x.png"},
+            {"name": "alek", "last_pay": "2026-11-14", "avatar": "https://evil.test/y.png"},
+        ],
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(sponsors, "_cache_path", lambda: cache_path)
+
+    result = sponsors.sorted_sponsors()
+
+    assert [s.name for s in result] == ["alek", "みや"]
+    # Curated entry keeps bundled avatar + remote message and ignores afdian URL.
+    assert result[1].avatar == "avatars/miya.jpg"
+    assert result[1].message == "谢谢"
+    assert result[1].last_pay == "2026-09-10"
+    # Live Afdian entry never carries external URLs into avatar.
+    assert result[0].avatar == ""
+
+
+def test_corrupt_cache_degrades_to_bundled(write_data, tmp_path, monkeypatch):
+    write_data({"schema": 1, "generated_at": "2026-09-10", "sponsors": [{"name": "内置"}]})
+    cache_path = tmp_path / "sponsors-cache.json"
+    cache_path.write_text("{ broken cache", encoding="utf-8")
+    monkeypatch.setattr(sponsors, "_cache_path", lambda: cache_path)
+
+    assert [s.name for s in sponsors.sorted_sponsors()] == ["内置"]
+
+
+def test_refresh_sponsors_updates_cache_and_preserves_discovery_date(
+    write_data, tmp_path, monkeypatch
+):
+    write_data({
+        "schema": 1,
+        "generated_at": "2026-09-10",
+        "sponsors": [{"name": "みや", "last_pay": "2026-09-10"}],
+    })
+    cache_path = tmp_path / "sponsors-cache.json"
+    monkeypatch.setattr(sponsors, "_cache_path", lambda: cache_path)
+
+    dates = iter(["2026-11-14", "2026-11-14", "2026-12-01", "2026-12-01"])
+    monkeypatch.setattr(sponsors, "_today_str", lambda: next(dates))
+
+    def _opener(req, timeout=None):
+        if "raw.githubusercontent.com" in req.full_url:
+            raise OSError("github blocked")
+        if "get-sponsors" in req.full_url:
+            return _FakeHttpResponse({
+                "ec": 200,
+                "data": {"has_more": 0, "list": [
+                    {"name": "alek", "avatar": "https://pic1.afdiancdn.com/a.png"},
+                ]},
+            })
+        if "get-top-sponsors" in req.full_url:
+            return _FakeHttpResponse({"ec": 200, "data": {"list": []}})
+        raise AssertionError(req.full_url)
+
+    first = sponsors.refresh_sponsors(opener=_opener)
+    assert first["ok"] is True
+    assert first["changed"] is True
+    assert [s.name for s in first["sponsors"]] == ["alek", "みや"]
+    assert first["sponsors"][0].last_pay == "2026-11-14"
+    assert first["sponsors"][0].avatar == ""
+
+    # Next month Afdian still lists alek: the original discovery date stays put.
+    second = sponsors.refresh_sponsors(opener=_opener)
+    assert second["ok"] is True
+    assert second["changed"] is False
+    assert second["sponsors"][0].last_pay == "2026-11-14"
+
+
+def test_refresh_sponsors_when_all_sources_fail_preserves_cache_and_reports_not_ok(
+    write_data, tmp_path, monkeypatch
+):
+    write_data({
+        "schema": 1,
+        "generated_at": "2026-09-10",
+        "sponsors": [{"name": "みや", "last_pay": "2026-09-10"}],
+    })
+    cache_path = tmp_path / "sponsors-cache.json"
+    monkeypatch.setattr(sponsors, "_cache_path", lambda: cache_path)
+
+    def _fail_opener(req, timeout=None):
+        raise OSError("offline")
+
+    result = sponsors.refresh_sponsors(opener=_fail_opener)
+
+    assert result["ok"] is False
+    assert result["changed"] is False
+    assert [s.name for s in result["sponsors"]] == ["みや"]
+    assert not cache_path.exists()

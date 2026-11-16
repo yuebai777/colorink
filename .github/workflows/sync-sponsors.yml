@@ -1,9 +1,10 @@
 name: Sync sponsor list
 
-# Maintains core/data/sponsors.json (the in-app 鸣谢名单) from the Afdian API.
+# Maintains core/data/sponsors.json (the in-app 鸣谢名单) from Afdian.
 #
-# The api token lives in repository secrets and is never shipped: the app only
-# reads the generated, bundled data file. See tools/release/fetch_sponsors.py.
+# Repository secrets (AFDIAN_USER_ID / AFDIAN_API_TOKEN) are optional:
+# when unset, tools/release/fetch_sponsors.py falls back to Afdian's public
+# webpage endpoints and merges incrementally with the existing roll.
 #
 # Trigger it by hand with the "Run workflow" button on the Actions page — no
 # local tooling, no typing, nothing to install.
@@ -11,9 +12,9 @@ name: Sync sponsor list
 on:
   # Manual: Actions → Sync sponsor list → Run workflow.
   workflow_dispatch:
-  # Safety net: refresh monthly so the roll does not drift too far behind.
+  # Daily check: idempotent script exits without committing when unchanged.
   schedule:
-    - cron: '0 3 1 * *'
+    - cron: '0 3 * * *'
 
 permissions:
   contents: write
