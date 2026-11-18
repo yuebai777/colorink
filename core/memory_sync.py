@@ -44,6 +44,10 @@ class MemorySyncSignals(QObject):
     # (e.g. Photoshop elevated, Colorink not) — the UI can offer a
     # one-click "relaunch as administrator".
     error_changed = pyqtSignal(str, str, bool)
+    # Emitted once per disconnect episode when CSP Companion mode has a saved
+    # session that failed to connect or dropped unexpectedly. Carries the
+    # short reason code (e.g. "auth_failed", "connect_failed", "disconnected").
+    companion_reconnect_needed = pyqtSignal(str)
 
 class MemorySyncThread(QThread):
     def __init__(self, parent=None):
@@ -88,6 +92,8 @@ class MemorySyncThread(QThread):
         self._last_active_slot: int | None = None          # 0/1/None dedup
         self.companion_hsv = None
         self._last_companion_hsv = (0.0, 0.0, 0.0)
+        self._last_companion_connect_try = 0.0
+        self._companion_reconnect_notified = False
         self.last_write_time = 0.0
         self._last_error_text = ("", False)
         # PS read-back throttle: get_color/get_bg_color on the COM backend
@@ -135,6 +141,8 @@ class MemorySyncThread(QThread):
         # 一直停在"5.1 内存同步已移除"而不再重新检测（比如换成了 5.0）。
         self.csp_sync.unsupported_reason = ""
         self._last_error_text = ("", False)
+        self._last_companion_connect_try = 0.0
+        self._companion_reconnect_notified = False
 
         if initial_palette:
             active_idx = int(initial_palette.get("active_slot", 0))
@@ -198,6 +206,16 @@ class MemorySyncThread(QThread):
                 sai.on_external_colour(rgb)
         except Exception:  # noqa: BLE001 - an observation must never break the poll
             pass
+
+    def reset_companion_reconnect_state(self):
+        """Reset companion reconnect throttling & notification tracking."""
+        self._last_companion_connect_try = 0.0
+        self._companion_reconnect_notified = False
+        reset_fn = getattr(self.companion_sync, "reset_reconnect_tracking", None)
+        if callable(reset_fn):
+            reset_fn()
+        if hasattr(self, "_wake_event"):
+            self._wake_event.set()
 
     def set_sync_enabled(self, enabled):
         self.sync_enabled = enabled
@@ -623,14 +641,44 @@ class MemorySyncThread(QThread):
                     status = self.ps_sync.status()
                     connected = status.get('connected', False)
                 elif self.software_mode == 'companion':
-                    color = self.companion_sync.get_color_hsv()
+                    is_comp_connected = bool(getattr(self.companion_sync, "_connected", False))
+                    has_sess_fn = (
+                        getattr(self.companion_sync, "has_session", None)
+                        or getattr(self.companion_sync, "_has_session", None)
+                    )
+                    has_sess = bool(has_sess_fn()) if callable(has_sess_fn) else True
+                    color = None
+                    if is_comp_connected:
+                        self._last_companion_connect_try = 0.0
+                        color = self.companion_sync.get_color_hsv()
+                    elif has_sess:
+                        now_ts = time.time()
+                        if now_ts - self._last_companion_connect_try >= 1.2:
+                            self._last_companion_connect_try = now_ts
+                            color = self.companion_sync.get_color_hsv()
+
                     if color:
                         colors = [color]
                         self.companion_hsv = (color["h"], color["s"], color["v"])
                     else:
                         self.companion_hsv = None
-                    status = self.companion_sync.status()
-                    connected = status.get('connected', False)
+
+                    status_fn = getattr(self.companion_sync, "status_lite", None) or self.companion_sync.status
+                    status = status_fn()
+                    connected = bool(status.get('connected', False))
+                    if connected:
+                        self._companion_reconnect_notified = False
+                        self._last_companion_connect_try = 0.0
+                    else:
+                        needs_fn = getattr(self.companion_sync, "needs_reconnect", None)
+                        if (
+                            callable(needs_fn)
+                            and needs_fn()
+                            and not self._companion_reconnect_notified
+                        ):
+                            self._companion_reconnect_notified = True
+                            reason = getattr(self.companion_sync, "last_error", "") or "connect_failed"
+                            self.signals.companion_reconnect_needed.emit(reason)
                     
                 # Notify status change
                 status_key = (self.software_mode, connected)

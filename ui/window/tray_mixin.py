@@ -28,9 +28,10 @@ class TrayMixin:
 
         self.tray_icon.setToolTip("Colorink")
 
+        self._pending_tray_action = None
         self._build_tray_menu()
         self.tray_icon.activated.connect(self.on_tray_activated)
-        self.tray_icon.messageClicked.connect(self._open_pending_update)
+        self.tray_icon.messageClicked.connect(self._on_tray_message_clicked)
         self.tray_icon.show()
 
     def _build_tray_menu(self):
@@ -61,6 +62,13 @@ class TrayMixin:
         tray_menu.addAction(title_action)
         self.tray_title_action = title_action
 
+        border_action = QAction(i18n.tr("显示窗口边框"), self)
+        border_action.setCheckable(True)
+        border_action.setChecked(self.cfg.get("showWindowBorder", True))
+        border_action.triggered.connect(self.set_window_border_visible)
+        tray_menu.addAction(border_action)
+        self.tray_border_action = border_action
+
         tray_menu.addSeparator()
 
         region_toggle_action = QAction(i18n.tr("切换区域灰度滤镜"), self)
@@ -79,6 +87,11 @@ class TrayMixin:
         self.tray_reset_region_action = region_reset_action
 
         tray_menu.addSeparator()
+
+        companion_action = QAction(i18n.tr("连接 / 重连 CSP 智能手机..."), self)
+        companion_action.triggered.connect(self._on_tray_companion_reconnect)
+        tray_menu.addAction(companion_action)
+        self.tray_companion_action = companion_action
 
         settings_action = QAction(i18n.tr("打开设置"), self)
         settings_action.triggered.connect(self.toggle_settings_sidebar)
@@ -154,6 +167,7 @@ class TrayMixin:
         if latest and latest == self.cfg.get("skippedUpdateVersion", ""):
             return  # User already declined this exact version — don't nag.
         self._pending_update = result
+        self._pending_tray_action = "update"
         if (hasattr(self, "tray_icon")
                 and QSystemTrayIcon.isSystemTrayAvailable()):
             self.tray_icon.showMessage(
@@ -162,6 +176,26 @@ class TrayMixin:
                 QSystemTrayIcon.MessageIcon.Information,
                 10000,
             )
+
+    def _on_tray_companion_reconnect(self):
+        """Open CSP Companion setup/reconnect dialog from the tray menu."""
+        setup_fn = getattr(self, "_setup_companion_connection", None)
+        if callable(setup_fn):
+            c = getattr(getattr(self, "sync_thread", None), "companion_sync", None)
+            has_sess = bool(c._has_session()) if (c is not None and hasattr(c, "_has_session")) else False
+            try:
+                setup_fn(reconnect_mode=has_sess, auto_prompt=False)
+            except TypeError:
+                setup_fn()
+
+    def _on_tray_message_clicked(self):
+        """Dispatch tray balloon clicks between companion reconnect & update."""
+        action = getattr(self, "_pending_tray_action", None)
+        if action == "companion_reconnect":
+            self._pending_tray_action = None
+            self._on_tray_companion_reconnect()
+            return
+        self._open_pending_update()
 
     def _open_pending_update(self):
         """Handle a tray-message click: reuse the in-app download flow."""
@@ -197,10 +231,44 @@ class TrayMixin:
             self.cfg["showTitleBar"] = visible
             config.save_hotkey_config(self.cfg)
             self.title_bar.setVisible(visible)
+            apply_style = getattr(self, "apply_style", None)
+            if callable(apply_style):
+                apply_style()
             self.update_geometries()
             self._adjust_content_height()
         if hasattr(self, "tray_title_action"):
             self.tray_title_action.setChecked(visible)
+        sidebar = getattr(self, "settings_sidebar", None)
+        cb = getattr(sidebar, "cb_show_title_bar", None) if sidebar is not None else None
+        if cb is not None:
+            cb.blockSignals(True)
+            cb.setChecked(visible)
+            cb.blockSignals(False)
+
+    def set_window_border_visible(self, visible: bool):
+        """Show or hide the outer window border and re-adapt title/frame margins."""
+        visible = bool(visible)
+        if bool(self.cfg.get("showWindowBorder", True)) != visible:
+            self.cfg["showWindowBorder"] = visible
+            config.save_hotkey_config(self.cfg)
+            apply_theme = getattr(self, "apply_theme", None)
+            if callable(apply_theme):
+                apply_theme()
+            else:
+                self.update_geometries()
+            self._adjust_content_height()
+        if hasattr(self, "tray_border_action"):
+            self.tray_border_action.setChecked(visible)
+        sidebar = getattr(self, "settings_sidebar", None)
+        cb = (
+            getattr(sidebar, "cb_show_window_border", None)
+            if sidebar is not None
+            else None
+        )
+        if cb is not None:
+            cb.blockSignals(True)
+            cb.setChecked(visible)
+            cb.blockSignals(False)
 
     def toggle_title_bar(self):
         self.set_title_bar_visible(not self.title_bar.isVisible())
@@ -273,7 +341,14 @@ class TrayMixin:
             # The OS reclaims all resources on process exit anyway.
             self.sync_thread.running = False
 
-        # Hide settings window before exit
+        # Hide companion dialog & settings window before exit
+        comp_dlg = getattr(self, '_companion_dialog', None)
+        if comp_dlg is not None:
+            try:
+                comp_dlg.hide()
+                comp_dlg.close()
+            except Exception:
+                pass
         if hasattr(self, 'settings_window') and self.settings_window is not None:
             self.settings_window.hide()
 

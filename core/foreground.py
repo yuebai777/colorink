@@ -179,6 +179,204 @@ def find_running_drawing_software() -> str | None:
     return None
 
 
+def is_csp_running() -> bool:
+    """True if a CLIP STUDIO PAINT editor process is currently running."""
+    try:
+        import psutil
+        for proc in psutil.process_iter(["name"]):
+            try:
+                name = proc.info.get("name")
+                if not name:
+                    continue
+                stem = name[:-4] if name.lower().endswith(".exe") else name
+                if "clipstudiopaint" in stem.lower():
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
+_CSP_COMPANION_DIALOG_TITLES = {
+    "连接智能手机",
+    "連接智慧型手機",
+    "connect to smartphone",
+    "スマートフォンと接続",
+    "스마트폰과 연결",
+}
+
+
+def is_csp_companion_qr_title(title: str) -> bool:
+    """True when *title* matches CSP's 'Connect to smartphone' QR dialog."""
+    if not title:
+        return False
+    return title.strip().lower() in _CSP_COMPANION_DIALOG_TITLES
+
+
+def rects_overlap(
+    a: tuple[int, int, int, int],
+    b: tuple[int, int, int, int],
+    margin: int = 0,
+) -> bool:
+    """Return True when two (left, top, right, bottom) rects intersect."""
+    al, at, ar, ab = a
+    bl, bt, br, bb = b
+    if ar <= al or ab <= at or br <= bl or bb <= bt:
+        return False
+    return not (
+        ar <= bl - margin
+        or al >= br + margin
+        or ab <= bt - margin
+        or at >= bb + margin
+    )
+
+
+def get_widget_screen_rect(
+    widget,
+    win32gui_module=None,
+) -> tuple[int, int, int, int] | None:
+    """Return (left, top, right, bottom) for *widget* in physical screen coords."""
+    if widget is None:
+        return None
+    if win32gui_module is None:
+        try:
+            import win32gui as win32gui_module
+        except ImportError:
+            win32gui_module = None
+    if win32gui_module is not None:
+        get_rect = getattr(win32gui_module, "GetWindowRect", None)
+        if callable(get_rect):
+            try:
+                win_handle = widget.windowHandle() if hasattr(widget, "windowHandle") else None
+                if win_handle is not None:
+                    eff_fn = getattr(widget, "effectiveWinId", None)
+                    hwnd = int(eff_fn() if callable(eff_fn) else widget.winId())
+                    if hwnd:
+                        l, t, r, b = get_rect(hwnd)
+                        if r > l and b > t:
+                            return (int(l), int(t), int(r), int(b))
+            except Exception:
+                pass
+    try:
+        fg = widget.frameGeometry()
+        dpr = 1.0
+        dpr_fn = getattr(widget, "devicePixelRatioF", None) or getattr(widget, "devicePixelRatio", None)
+        if callable(dpr_fn):
+            dpr = max(0.5, float(dpr_fn() or 1.0))
+        l = round(fg.left() * dpr)
+        t = round(fg.top() * dpr)
+        r = round((fg.left() + fg.width()) * dpr)
+        b = round((fg.top() + fg.height()) * dpr)
+        if r > l and b > t:
+            return (l, t, r, b)
+    except Exception:
+        pass
+    return None
+
+
+def find_csp_companion_qr_window(
+    win32gui_module=None,
+    win32process_module=None,
+    process_exe_resolver=None,
+) -> tuple[int, tuple[int, int, int, int]] | None:
+    """Locate CSP's visible 'Connect to smartphone' QR dialog, if open.
+
+    Returns ``(hwnd, (left, top, right, bottom))`` in physical screen pixels,
+    or ``None`` if no matching CSP dialog is currently visible.
+    """
+    if win32gui_module is None:
+        try:
+            import win32gui as win32gui_module
+        except ImportError:
+            return None
+    if win32process_module is None:
+        try:
+            import win32process as win32process_module
+        except ImportError:
+            win32process_module = None
+
+    enum_windows = getattr(win32gui_module, "EnumWindows", None)
+    is_visible = getattr(win32gui_module, "IsWindowVisible", None)
+    get_text = getattr(win32gui_module, "GetWindowText", None)
+    get_rect = getattr(win32gui_module, "GetWindowRect", None)
+    if not (callable(enum_windows) and callable(is_visible) and callable(get_text) and callable(get_rect)):
+        return None
+
+    is_iconic = getattr(win32gui_module, "IsIconic", None)
+    get_class = getattr(win32gui_module, "GetClassName", None)
+    get_tid_pid = (
+        getattr(win32process_module, "GetWindowThreadProcessId", None)
+        if win32process_module is not None
+        else None
+    )
+    resolver = process_exe_resolver or _resolve_process_exe
+    my_pid = os.getpid()
+    found: dict[str, tuple[int, tuple[int, int, int, int]] | None] = {"hit": None}
+    exe_cache: dict[int, str] = {}
+
+    def _cb(hwnd, _extra):
+        if found["hit"] is not None:
+            return False
+        try:
+            if not is_visible(hwnd):
+                return True
+            if callable(is_iconic) and is_iconic(hwnd):
+                return True
+            title = get_text(hwnd) or ""
+            if not is_csp_companion_qr_title(title):
+                return True
+            l, t, r, b = get_rect(hwnd)
+            rect = (int(l), int(t), int(r), int(b))
+            if (rect[2] - rect[0]) < 150 or (rect[3] - rect[1]) < 150:
+                return True
+
+            w_pid = 0
+            if callable(get_tid_pid):
+                _, raw_pid = get_tid_pid(hwnd)
+                w_pid = int(raw_pid or 0)
+            if w_pid and w_pid == my_pid:
+                return True
+
+            if w_pid:
+                exe = exe_cache.get(w_pid)
+                if exe is None:
+                    exe = resolver(w_pid) or ""
+                    exe_cache[w_pid] = exe
+                if exe:
+                    if identify_drawing_app(exe_name=exe) != "csp":
+                        return True
+            if callable(get_class):
+                cls_name = get_class(hwnd) or ""
+                if is_known_non_drawing_class(cls_name):
+                    return True
+
+            found["hit"] = (int(hwnd), rect)
+            return False
+        except Exception:
+            return True
+
+    try:
+        enum_windows(_cb, None)
+    except Exception:
+        pass
+    return found["hit"]
+
+
+def find_csp_companion_qr_rect(
+    win32gui_module=None,
+    win32process_module=None,
+    process_exe_resolver=None,
+) -> tuple[int, int, int, int] | None:
+    """Return physical screen rect of CSP's visible QR dialog, or None."""
+    hit = find_csp_companion_qr_window(
+        win32gui_module=win32gui_module,
+        win32process_module=win32process_module,
+        process_exe_resolver=process_exe_resolver,
+    )
+    return hit[1] if hit is not None else None
+
+
 def has_saved_companion_session() -> bool:
     """True if a valid CSP companion session file exists in AppData."""
     try:

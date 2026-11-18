@@ -30,10 +30,10 @@ import select
 import socket
 import sys
 import time
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Callable, TypedDict
 
 if TYPE_CHECKING:
-    from PyQt6.QtWidgets import QWidget
+    from PyQt6.QtWidgets import QDialog, QWidget
 
 # ---------------------------------------------------------------------------
 # Protocol constants — compatible with CSP's companion protocol
@@ -343,6 +343,9 @@ class CSPCompanionSync:
         self.process_name: str = "CLIPStudioPaint.exe"
         self.pid: int | None = None
         self.pm: None = None  # Compat with CSPSync attribute checks
+        self.last_error: str = ""
+        self.consecutive_failures: int = 0
+        self.ever_connected: bool = False
 
         # Load saved session for fast reconnect
         self._load_session()
@@ -394,11 +397,38 @@ class CSPCompanionSync:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def scan_qr_code() -> QRInfo | None:
-        """Capture the primary screen and scan for CSP's companion QR code.
+    def is_qr_scan_available() -> bool:
+        """Return True when mss, Pillow and pyzbar can be imported."""
+        try:
+            import mss  # noqa: F401
+            from PIL import Image  # noqa: F401
+            from pyzbar.pyzbar import decode  # noqa: F401
+            return True
+        except ImportError:
+            return False
 
-        Returns ``{"host": ..., "port": ..., "password": ...}`` on success,
-        ``None`` if no QR found or dependencies missing.
+    @staticmethod
+    def _decode_qr_from_image(img, zbar_decode) -> QRInfo | None:
+        codes = zbar_decode(img)
+        for code in codes:
+            url = code.data.decode("utf-8", errors="replace")
+            _log(f"QR found: {url[:80]}...")
+            info = _decode_qr_url(url)
+            if info:
+                return info
+        return None
+
+    @staticmethod
+    def scan_qr_code(
+        target_rect: tuple[int, int, int, int] | None = None,
+    ) -> QRInfo | None:
+        """Capture the screen and scan for CSP's companion QR code.
+
+        When *target_rect* ``(left, top, right, bottom)`` is provided, that
+        region is scanned first before falling back to all attached monitors.
+
+        Returns ``{"host": ..., "port": ..., "password": ..., "generation": ...}``
+        on success, ``None`` if no QR found or dependencies missing.
         """
         try:
             import mss
@@ -410,14 +440,34 @@ class CSPCompanionSync:
 
         try:
             with mss.mss() as sct:
-                monitor = sct.monitors[1]  # primary monitor
-                screenshot = sct.grab(monitor)
-                img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
-                codes = zbar_decode(img)
-                for code in codes:
-                    url = code.data.decode("utf-8", errors="replace")
-                    _log(f"QR found: {url[:80]}...")
-                    info = _decode_qr_url(url)
+                if target_rect is not None:
+                    tl, tt, tr, tb = target_rect
+                    if tr > tl and tb > tt:
+                        try:
+                            pad = 8
+                            region = {
+                                "left": int(tl - pad),
+                                "top": int(tt - pad),
+                                "width": int((tr - tl) + pad * 2),
+                                "height": int((tb - tt) + pad * 2),
+                            }
+                            shot = sct.grab(region)
+                            img = Image.frombytes(
+                                "RGB", shot.size, shot.bgra, "raw", "BGRX"
+                            )
+                            info = CSPCompanionSync._decode_qr_from_image(img, zbar_decode)
+                            if info:
+                                return info
+                        except Exception as exc:
+                            _log(f"QR target-rect grab skipped: {exc}")
+
+                monitors = sct.monitors[1:] if len(sct.monitors) > 1 else sct.monitors
+                for monitor in monitors:
+                    screenshot = sct.grab(monitor)
+                    img = Image.frombytes(
+                        "RGB", screenshot.size, screenshot.bgra, "raw", "BGRX"
+                    )
+                    info = CSPCompanionSync._decode_qr_from_image(img, zbar_decode)
                     if info:
                         return info
         except Exception as exc:
@@ -456,6 +506,7 @@ class CSPCompanionSync:
 
         if not self._host or not self._port or not self._password:
             _log("connect: no session info — scan QR or provide manual params")
+            self.last_error = "no_session"
             return False
 
         # If already connected, check if still alive
@@ -470,7 +521,7 @@ class CSPCompanionSync:
             _log(f"Connecting to {self._host}:{self._port}...")
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._sock = sock
-            sock.settimeout(2.0)
+            sock.settimeout(1.2)
             sock.connect((self._host, self._port))
             if getattr(self, "_aborting", False):
                 self._disconnect()
@@ -483,6 +534,8 @@ class CSPCompanionSync:
             if not self._try_reconnect():
                 if getattr(self, "_aborting", False) or not self._authenticate():
                     _log("connect: auth failed")
+                    self.last_error = "auth_failed"
+                    self.consecutive_failures = getattr(self, "consecutive_failures", 0) + 1
                     self._disconnect()
                     return False
 
@@ -495,12 +548,17 @@ class CSPCompanionSync:
 
             self._connected = True
             self._last_heartbeat = time.time()
+            self.last_error = ""
+            self.consecutive_failures = 0
+            self.ever_connected = True
             self._save_session()
             _log("connect: OK")
             return True
 
         except Exception as exc:
             _log(f"connect failed: {exc}")
+            self.last_error = "timeout" if isinstance(exc, socket.timeout) else "connect_failed"
+            self.consecutive_failures = getattr(self, "consecutive_failures", 0) + 1
             self._disconnect()
             return False
 
@@ -636,7 +694,8 @@ class CSPCompanionSync:
                 self._send_heartbeat()
                 self._last_heartbeat = time.time()
             except Exception:
-                self._connected = False
+                self.last_error = "disconnected"
+                self._disconnect()
 
     # ------------------------------------------------------------------
     # Raw I/O
@@ -1074,13 +1133,36 @@ class CSPCompanionSync:
         if not self._connected:
             # Try reconnecting once
             _ = self.connect()
+        return self.status_lite()
+
+    def status_lite(self) -> dict[str, bool | str | int | None]:
+        """Return connection status without triggering a blocking connect()."""
         return {
             "connected": self._connected,
             "host": self._host if self._connected else None,
             "port": self._port if self._connected else None,
             "version": self.current_version,
             "processName": self.process_name,
+            "hasSession": self._has_session(),
+            "consecutiveFailures": getattr(self, "consecutive_failures", 0),
+            "everConnected": getattr(self, "ever_connected", False),
+            "lastError": getattr(self, "last_error", ""),
         }
+
+    def needs_reconnect(self) -> bool:
+        """True when a saved session failed to connect or dropped unexpectedly."""
+        if self._connected or not self._has_session():
+            return False
+        return bool(
+            getattr(self, "ever_connected", False)
+            or getattr(self, "last_error", "") == "auth_failed"
+            or getattr(self, "consecutive_failures", 0) >= 2
+        )
+
+    def reset_reconnect_tracking(self) -> None:
+        """Clear accumulated failure counters before a fresh reconnect cycle."""
+        self.consecutive_failures = 0
+        self.last_error = ""
 
     def set_version(self, version: str) -> bool:
         version = str(version or "auto").strip()
@@ -1110,22 +1192,118 @@ class CSPCompanionSync:
         return self.has_session()
 
     # ------------------------------------------------------------------
-    # Connection setup dialog
+    # Connection setup / reconnect dialog
     # ------------------------------------------------------------------
 
     @staticmethod
-    def show_setup_dialog(parent: QWidget | None = None) -> bool:
-        """Show a setup dialog to acquire CSP companion connection info.
+    def _position_dialog_clear_of_qr(
+        dlg: QDialog,
+        qr_rect: tuple[int, int, int, int] | None = None,
+    ) -> None:
+        """Place *dlg* away from the upper-middle area where CSP pops up its QR dialog."""
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtGui import QCursor
+        from PyQt6.QtWidgets import QApplication
 
-        Auto-scans QR code (if pyzbar available), falls back to manual
-        URL paste.  Saves session on success.  Call after switching to
-        companion mode when no saved session exists.
+        from core.foreground import get_widget_screen_rect, rects_overlap
 
-        Returns ``True`` if connection was established, ``False`` if
-        user cancelled or connection failed.
-        """
+        dlg.adjustSize()
+        w = max(dlg.width(), dlg.sizeHint().width(), 440)
+        h = max(dlg.height(), dlg.sizeHint().height(), 220)
+
+        screen = None
+        if qr_rect is not None:
+            cx_p = (qr_rect[0] + qr_rect[2]) // 2
+            cy_p = (qr_rect[1] + qr_rect[3]) // 2
+            for s in QApplication.screens():
+                dpr = max(0.5, float(s.devicePixelRatio() or 1.0))
+                geo = s.geometry()
+                sl = round(geo.left() * dpr)
+                st = round(geo.top() * dpr)
+                sr = sl + round(geo.width() * dpr)
+                sb = st + round(geo.height() * dpr)
+                if sl <= cx_p <= sr and st <= cy_p <= sb:
+                    screen = s
+                    break
+        if screen is None:
+            try:
+                screen = QApplication.screenAt(QCursor.pos())
+            except Exception:
+                screen = None
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+
+        avail = screen.availableGeometry()
+        dpr = max(0.5, float(screen.devicePixelRatio() or 1.0))
+
+        def _clamp(x: int, y: int) -> tuple[int, int]:
+            cx = max(avail.left() + 12, min(x, avail.right() - w - 12))
+            cy = max(avail.top() + 12, min(y, avail.bottom() - h - 12))
+            return cx, cy
+
+        # Default placement: lower-center of available geometry, clear of
+        # CSP's upper-middle QR dialog (Fig. 2) and top-left File menu (Fig. 1).
+        default_x, default_y = _clamp(
+            avail.center().x() - w // 2,
+            avail.bottom() - h - 32,
+        )
+
+        if qr_rect is None:
+            dlg.move(default_x, default_y)
+            return
+
+        # Convert physical qr_rect to logical coords relative to this screen's DPR.
+        ql = round(qr_rect[0] / dpr)
+        qt = round(qr_rect[1] / dpr)
+        qr = round(qr_rect[2] / dpr)
+        qb = round(qr_rect[3] / dpr)
+        qr_logical = (ql, qt, qr, qb)
+
+        candidates = [
+            _clamp(default_x, default_y),
+            _clamp((ql + qr) // 2 - w // 2, qb + 20),
+            _clamp(avail.right() - w - 24, avail.bottom() - h - 24),
+            _clamp(avail.left() + 24, avail.bottom() - h - 24),
+            _clamp(qr + 20, qt),
+            _clamp(ql - w - 20, qt),
+            _clamp((ql + qr) // 2 - w // 2, qt - h - 20),
+        ]
+        for cx, cy in candidates:
+            cand_phys = (
+                round(cx * dpr),
+                round(cy * dpr),
+                round((cx + w) * dpr),
+                round((cy + h) * dpr),
+            )
+            if not rects_overlap(cand_phys, qr_rect, margin=16):
+                dlg.move(cx, cy)
+                return
+
+        # Fallback: check current rect and at least keep it lower on screen
+        cur_rect = get_widget_screen_rect(dlg)
+        if cur_rect is None or rects_overlap(cur_rect, qr_rect, margin=12):
+            dlg.move(*_clamp((qr_logical[0] + qr_logical[2]) // 2 - w // 2, qb + 20))
+
+    @staticmethod
+    def create_companion_dialog(
+        parent: QWidget | None = None,
+        *,
+        reconnect_mode: bool = False,
+        auto_show_without_activating: bool = False,
+        hide_for_scan_cb: Callable[[QDialog], object] | None = None,
+        restore_after_scan_cb: Callable[[object, QDialog], None] | None = None,
+        find_qr_window_cb: Callable[[], tuple[int, tuple[int, int, int, int]] | None] | None = None,
+        sync_overlap_cb: Callable[[tuple[int, int, int, int] | None], None] | None = None,
+        on_connected_cb: Callable[[], None] | None = None,
+        on_dismissed_cb: Callable[[bool], None] | None = None,
+    ) -> QDialog:
+        """Build the CSP Companion setup / reconnect dialog with QR auto-watch
+        and temporary window hiding during QR capture."""
         from PyQt6.QtCore import Qt, QTimer
         from PyQt6.QtWidgets import (
+            QApplication,
             QDialog,
             QHBoxLayout,
             QLabel,
@@ -1134,16 +1312,30 @@ class CSPCompanionSync:
             QVBoxLayout,
         )
 
+        from core import i18n
+        from core.foreground import (
+            find_csp_companion_qr_window,
+            get_widget_screen_rect,
+            rects_overlap,
+        )
+
         dlg = QDialog(parent)
-        dlg.setWindowTitle("CSP 智能手机连接")
+        dlg.setWindowTitle(
+            i18n.tr("CSP 智能手机需要重新连接")
+            if reconnect_mode
+            else i18n.tr("CSP 智能手机连接")
+        )
         dlg.setMinimumWidth(460)
         dlg.setWindowFlags(
             Qt.WindowType.Dialog
+            | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.CustomizeWindowHint
             | Qt.WindowType.WindowTitleHint
             | Qt.WindowType.WindowCloseButtonHint
         )
-        # Force readable styling regardless of system dark/light mode
+        if auto_show_without_activating:
+            dlg.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+
         dlg.setStyleSheet("""
             QDialog {
                 background-color: #2e2e2e;
@@ -1196,59 +1388,91 @@ class CSPCompanionSync:
         layout.setSpacing(10)
 
         # ── Step-by-step guide ──
-        guide = QLabel(
-            "<b style='font-size:13px;'>🔗 CSP 智能手机连接 — 操作步骤</b>"
-        )
+        if reconnect_mode:
+            guide_text = i18n.tr(
+                "<b style='font-size:13px;'>🔗 CSP 智能手机连接已断开，请重新连接</b>"
+            )
+            step1_html = i18n.tr(
+                "在 <b>CLIP STUDIO PAINT</b> 顶部点击菜单 <b>文件 → 连接智能手机</b>"
+            )
+            step1_sub = i18n.tr(
+                "（弹出二维码窗口时，Colorink 若有遮挡会自动临时隐藏）"
+            )
+            step2_html = i18n.tr(
+                "二维码窗口弹出后将自动扫描重连，或点击下方 <b>自动扫描二维码</b>"
+            )
+            step2_sub = i18n.tr("（也可手动粘贴二维码链接 URL）")
+            steps_html = (
+                "<table>"
+                + "<tr><td style='padding:4px 8px; vertical-align:top; color:#5a94e2;'><b>①</b></td>"
+                + f"<td style='padding:4px 0;'>{step1_html}<br>"
+                + f"<span style='color:#999; font-size:10px;'>{step1_sub}</span></td></tr>"
+                + "<tr><td style='padding:4px 8px; vertical-align:top; color:#5a94e2;'><b>②</b></td>"
+                + f"<td style='padding:4px 0;'>{step2_html}<br>"
+                + f"<span style='color:#999; font-size:10px;'>{step2_sub}</span></td></tr>"
+                + "</table>"
+            )
+        else:
+            guide_text = i18n.tr(
+                "<b style='font-size:13px;'>🔗 CSP 智能手机连接 — 操作步骤</b>"
+            )
+            s1 = i18n.tr("打开 <b>CLIP STUDIO PAINT</b>")
+            s2 = i18n.tr("点击菜单 <b>文件 → 连接智能手机</b>")
+            s2_sub = i18n.tr("（CSP 会弹出二维码窗口；扫描时 Colorink 会自动临时隐藏以避免遮挡）")
+            s3 = i18n.tr("点击下方 <b>自动扫描二维码</b>，")
+            s3_sub = i18n.tr("或手动粘贴二维码旁边的 URL")
+            steps_html = (
+                "<table>"
+                + "<tr><td style='padding:4px 8px; vertical-align:top; color:#5a94e2;'><b>①</b></td>"
+                + f"<td style='padding:4px 0;'>{s1}</td></tr>"
+                + "<tr><td style='padding:4px 8px; vertical-align:top; color:#5a94e2;'><b>②</b></td>"
+                + f"<td style='padding:4px 0;'>{s2}<br>"
+                + f"<span style='color:#999; font-size:10px;'>{s2_sub}</span></td></tr>"
+                + "<tr><td style='padding:4px 8px; vertical-align:top; color:#5a94e2;'><b>③</b></td>"
+                + f"<td style='padding:4px 0;'>{s3}<br>"
+                + f"<span style='color:#999; font-size:10px;'>{s3_sub}</span></td></tr>"
+                + "</table>"
+            )
+
+        guide = QLabel(guide_text)
         guide.setWordWrap(True)
         layout.addWidget(guide)
 
-        steps = QLabel(
-            "<table>"
-            + "<tr><td style='padding:4px 8px; vertical-align:top; color:#5a94e2;'><b>①</b></td>"
-            + "<td style='padding:4px 0;'>打开 <b>CLIP STUDIO PAINT</b></td></tr>"
-            + "<tr><td style='padding:4px 8px; vertical-align:top; color:#5a94e2;'><b>②</b></td>"
-            + "<td style='padding:4px 0;'>点击菜单 <b>文件 → 连接智能手机</b><br>"
-            + "<span style='color:#999; font-size:10px;'>"
-            + "（CSP 会弹出一个带二维码的窗口，请保持该窗口打开）</span></td></tr>"
-            + "<tr><td style='padding:4px 8px; vertical-align:top; color:#5a94e2;'><b>③</b></td>"
-            + "<td style='padding:4px 0;'>点击下方 <b>自动扫描二维码</b>，<br>"
-            + "<span style='color:#999; font-size:10px;'>"
-            + "或手动粘贴二维码旁边的 URL</span></td></tr>"
-            + "</table>"
-        )
+        steps = QLabel(steps_html)
         steps.setWordWrap(True)
         steps.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(steps)
 
-        # Separator
         sep = QLabel("")
         sep.setFixedHeight(1)
         sep.setStyleSheet("background-color: #555;")
         layout.addWidget(sep)
 
-        # URL input
-        url_label = QLabel("<b>连接 URL</b>（二维码旁边的文字链接）：")
+        url_label = QLabel(i18n.tr("<b>连接 URL</b>（可选，手动粘贴链接）："))
         layout.addWidget(url_label)
         url_input = QLineEdit()
-        url_input.setPlaceholderText("粘贴以 https://companion.clip-studio.com 开头的 URL")
+        url_input.setPlaceholderText(i18n.tr("粘贴以 https://companion.clip-studio.com 开头的 URL"))
         layout.addWidget(url_input)
 
-        # Status label
-        status_lbl = QLabel("")
+        status_lbl = QLabel(
+            i18n.tr("等待在 CSP 中打开「文件 → 连接智能手机」...")
+            if reconnect_mode
+            else ""
+        )
+        status_lbl.setWordWrap(True)
         status_lbl.setStyleSheet("color: #888;")
         layout.addWidget(status_lbl)
 
-        # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(8)
 
-        scan_btn = QPushButton("📷 自动扫描二维码")
-        scan_btn.setToolTip("截屏搜索 CSP 的二维码（需安装 pyzbar）")
+        scan_btn = QPushButton(i18n.tr("📷 自动扫描二维码"))
+        scan_btn.setToolTip(i18n.tr("临时隐藏软件并截屏搜索 CSP 的二维码"))
 
-        connect_btn = QPushButton("连接")
+        connect_btn = QPushButton(i18n.tr("连接"))
         connect_btn.setDefault(True)
 
-        cancel_btn = QPushButton("取消")
+        cancel_btn = QPushButton(i18n.tr("稍后") if reconnect_mode else i18n.tr("取消"))
 
         btn_layout.addWidget(scan_btn)
         btn_layout.addStretch()
@@ -1256,45 +1480,71 @@ class CSPCompanionSync:
         btn_layout.addWidget(connect_btn)
         layout.addLayout(btn_layout)
 
-        # Result tracking
-        result: dict[str, bool] = {"ok": False}
+        state: dict[str, object] = {
+            "ok": False,
+            "closed": False,
+            "scanning": False,
+            "notified_connected": False,
+            "qr_attempts": {},  # hwnd -> int
+            "pending_auto_hwnd": 0,
+            "last_qr_rect": None,
+        }
         instance = CSPCompanionSync()
+        qr_finder = find_qr_window_cb or find_csp_companion_qr_window
 
-        def do_scan():
-            scan_btn.setEnabled(False)
-            scan_btn.setText("扫描中...")
-            status_lbl.setText("正在搜索屏幕上的二维码...")
-            status_lbl.setStyleSheet("color: #5a94e2;")
-            QTimer.singleShot(200, lambda: _scan_tick())
+        setattr(dlg, "result_ok", False)
+        setattr(dlg, "_reconnect_mode", reconnect_mode)
+        setattr(dlg, "_auto_prompt", auto_show_without_activating)
 
-        def _scan_tick():
-            info = CSPCompanionSync.scan_qr_code()
-            if info:
-                status_lbl.setText(
-                    f"✓ 发现 CSP 服务器: {info['host']}:{info['port']}"
-                )
-                status_lbl.setStyleSheet("color: #4a4;")
-                instance._host = info["host"]
-                instance._port = info["port"]
-                instance._password = info["password"]
-                if info.get("generation"):
-                    instance._generation = info["generation"]
-                do_connect()
-            else:
-                status_lbl.setText(
-                    "未找到二维码 — 请确认 CSP 的\"连接智能手机\"窗口可见，\n"
-                    + "或手动粘贴 URL 后点击\"连接\""
-                )
-                status_lbl.setStyleSheet("color: #c84;")
-                scan_btn.setEnabled(True)
-                scan_btn.setText("重新扫描")
+        def _is_alive() -> bool:
+            return not bool(state["closed"])
 
-        def do_connect():
+        def _default_hide(d: QDialog) -> bool:
+            was_vis = d.isVisible()
+            if was_vis:
+                d.hide()
+            return was_vis
+
+        def _default_restore(snap: object, d: QDialog) -> None:
+            if snap and _is_alive():
+                d.show()
+                d.raise_()
+
+        hide_fn = hide_for_scan_cb or _default_hide
+        restore_fn = restore_after_scan_cb or _default_restore
+
+        watch_timer = QTimer(dlg)
+        watch_timer.setInterval(300)
+
+        def _finish_connected():
+            if state["notified_connected"]:
+                return
+            state["notified_connected"] = True
+            state["ok"] = True
+            setattr(dlg, "result_ok", True)
+            watch_timer.stop()
+            instance._disconnect()
+            if callable(on_connected_cb):
+                try:
+                    on_connected_cb()
+                except Exception:
+                    pass
+            status_lbl.setText(
+                i18n.tr("✓ 重新连接成功！颜色同步已恢复")
+                if reconnect_mode
+                else i18n.tr("✓ 连接成功！颜色同步已启动")
+            )
+            status_lbl.setStyleSheet("color: #4a4; font-weight: bold;")
+            QTimer.singleShot(1000, lambda: dlg.accept() if _is_alive() else None)
+
+        def _complete_connect(auto_triggered: bool = False, qr_hwnd: int = 0) -> None:
+            if not _is_alive():
+                return
             connect_btn.setEnabled(False)
             scan_btn.setEnabled(False)
             url_text = url_input.text().strip()
 
-            if url_text and not instance._host:
+            if url_text:
                 info = CSPCompanionSync.decode_qr_text(url_text)
                 if info:
                     instance._host = info["host"]
@@ -1303,23 +1553,23 @@ class CSPCompanionSync:
                     if info.get("generation"):
                         instance._generation = info["generation"]
                 else:
-                    status_lbl.setText("URL 格式不正确，请检查后重试")
+                    status_lbl.setText(i18n.tr("URL 格式不正确，请检查后重试"))
                     status_lbl.setStyleSheet("color: #c44;")
                     connect_btn.setEnabled(True)
                     scan_btn.setEnabled(True)
                     return
 
             if not instance._host:
-                status_lbl.setText("请先扫描二维码或粘贴 URL")
+                status_lbl.setText(i18n.tr("请先扫描二维码或粘贴 URL"))
                 status_lbl.setStyleSheet("color: #c44;")
                 connect_btn.setEnabled(True)
                 scan_btn.setEnabled(True)
                 return
 
-            status_lbl.setText(f"正在连接 {instance._host}:{instance._port}...")
+            status_lbl.setText(
+                i18n.tr("正在连接 {host}:{port}...", host=instance._host, port=instance._port)
+            )
             status_lbl.setStyleSheet("color: #5a94e2;")
-            # Force UI update before blocking on socket connect
-            from PyQt6.QtWidgets import QApplication
             QApplication.processEvents()
 
             ok = instance.connect(
@@ -1330,27 +1580,228 @@ class CSPCompanionSync:
             )
 
             if ok:
-                status_lbl.setText("✓ 连接成功！颜色同步已启动")
-                status_lbl.setStyleSheet("color: #4a4; font-weight: bold;")
-                result["ok"] = True
-                QTimer.singleShot(1200, dlg.accept)
+                _finish_connected()
             else:
+                if auto_triggered and qr_hwnd:
+                    attempts_map = state["qr_attempts"]
+                    assert isinstance(attempts_map, dict)
+                    attempts = int(attempts_map.get(qr_hwnd, 0))
+                    if attempts < 2:
+                        status_lbl.setText(i18n.tr("连接重试中，请保持 CSP 二维码窗口打开..."))
+                        status_lbl.setStyleSheet("color: #c84;")
+                        connect_btn.setEnabled(True)
+                        scan_btn.setEnabled(True)
+                        QTimer.singleShot(600, lambda h=qr_hwnd: _auto_scan_for_hwnd(h))
+                        return
                 status_lbl.setText(
-                    "连接失败 — 请确认：\n"
-                    + "1. CSP 正在运行且\"连接智能手机\"窗口已打开\n"
-                    + "2. URL 完整且未过期（每次打开都会生成新的）\n"
-                    + "3. 防火墙未阻止 TCP 连接"
+                    i18n.tr(
+                        "连接失败 — 请确认：\n"
+                        "1. CSP 正在运行且\"连接智能手机\"窗口已打开\n"
+                        "2. URL 完整且未过期（每次打开都会生成新的）\n"
+                        "3. 防火墙未阻止 TCP 连接"
+                    )
                 )
                 status_lbl.setStyleSheet("color: #c44;")
                 connect_btn.setEnabled(True)
                 scan_btn.setEnabled(True)
+                scan_btn.setText(i18n.tr("重新扫描"))
 
-        _ = scan_btn.clicked.connect(do_scan)
-        _ = connect_btn.clicked.connect(do_connect)
+        def do_scan(auto_triggered: bool = False, target_rect: tuple[int, int, int, int] | None = None, qr_hwnd: int = 0) -> None:
+            if not _is_alive() or state["scanning"] or state["ok"]:
+                return
+            state["scanning"] = True
+            scan_btn.setEnabled(False)
+            connect_btn.setEnabled(False)
+            scan_btn.setText(i18n.tr("扫描中..."))
+            status_lbl.setText(i18n.tr("正在临时隐藏软件并扫描屏幕上的二维码..."))
+            status_lbl.setStyleSheet("color: #5a94e2;")
+            QApplication.processEvents()
+
+            snap = hide_fn(dlg)
+            QApplication.processEvents()
+
+            def _scan_tick():
+                info = None
+                try:
+                    if _is_alive():
+                        rect = target_rect if target_rect is not None else state["last_qr_rect"]
+                        info = CSPCompanionSync.scan_qr_code(target_rect=rect)  # type: ignore[arg-type]
+                finally:
+                    try:
+                        restore_fn(snap, dlg)
+                    except Exception:
+                        pass
+                    state["scanning"] = False
+
+                if not _is_alive():
+                    return
+
+                if info:
+                    status_lbl.setText(
+                        i18n.tr("✓ 发现 CSP 服务器: {host}:{port}", host=info["host"], port=info["port"])
+                    )
+                    status_lbl.setStyleSheet("color: #4a4;")
+                    instance._host = info["host"]
+                    instance._port = info["port"]
+                    instance._password = info["password"]
+                    if info.get("generation"):
+                        instance._generation = info["generation"]
+                    url_input.clear()
+                    _complete_connect(auto_triggered=auto_triggered, qr_hwnd=qr_hwnd)
+                else:
+                    if auto_triggered and qr_hwnd:
+                        attempts_map = state["qr_attempts"]
+                        assert isinstance(attempts_map, dict)
+                        attempts = int(attempts_map.get(qr_hwnd, 0))
+                        if attempts < 2:
+                            status_lbl.setText(i18n.tr("已检测到「连接智能手机」窗口，等待二维码显示后重试..."))
+                            status_lbl.setStyleSheet("color: #5a94e2;")
+                            connect_btn.setEnabled(True)
+                            scan_btn.setEnabled(True)
+                            scan_btn.setText(i18n.tr("重新扫描"))
+                            QTimer.singleShot(600, lambda h=qr_hwnd: _auto_scan_for_hwnd(h))
+                            return
+                        status_lbl.setText(
+                            i18n.tr("已检测到「连接智能手机」窗口，但未识别到二维码，请点击「重新扫描」")
+                        )
+                    else:
+                        status_lbl.setText(
+                            i18n.tr(
+                                "未找到二维码 — 请确认 CSP 的\"连接智能手机\"窗口可见，\n"
+                                "或手动粘贴 URL 后点击\"连接\""
+                            )
+                        )
+                    status_lbl.setStyleSheet("color: #c84;")
+                    connect_btn.setEnabled(True)
+                    scan_btn.setEnabled(True)
+                    scan_btn.setText(i18n.tr("重新扫描"))
+
+            QTimer.singleShot(180, _scan_tick)
+
+        def _auto_scan_for_hwnd(hwnd: int) -> None:
+            if not _is_alive() or state["scanning"] or state["ok"]:
+                return
+            if state["pending_auto_hwnd"] == hwnd:
+                state["pending_auto_hwnd"] = 0
+            hit = None
+            try:
+                hit = qr_finder()
+            except Exception:
+                hit = None
+            if hit is None:
+                return
+            cur_hwnd, cur_rect = hit
+            if cur_hwnd != hwnd:
+                return
+            attempts_map = state["qr_attempts"]
+            assert isinstance(attempts_map, dict)
+            attempts = int(attempts_map.get(cur_hwnd, 0))
+            if attempts >= 2:
+                return
+            attempts_map[cur_hwnd] = attempts + 1
+            state["last_qr_rect"] = cur_rect
+            do_scan(auto_triggered=True, target_rect=cur_rect, qr_hwnd=cur_hwnd)
+
+        def _watch_tick() -> None:
+            if not _is_alive() or state["scanning"] or state["ok"]:
+                return
+            try:
+                hit = qr_finder()
+            except Exception:
+                hit = None
+            qr_rect = hit[1] if hit is not None else None
+            state["last_qr_rect"] = qr_rect
+            if callable(sync_overlap_cb):
+                try:
+                    sync_overlap_cb(qr_rect)
+                except Exception:
+                    pass
+            if hit is None:
+                state["pending_auto_hwnd"] = 0
+                attempts_map = state["qr_attempts"]
+                assert isinstance(attempts_map, dict)
+                attempts_map.clear()
+                return
+
+            qr_hwnd, qr_rect = hit
+            if dlg.isVisible():
+                dlg_rect = get_widget_screen_rect(dlg)
+                if dlg_rect is not None and rects_overlap(dlg_rect, qr_rect, margin=16):
+                    CSPCompanionSync._position_dialog_clear_of_qr(dlg, qr_rect=qr_rect)
+
+            attempts_map = state["qr_attempts"]
+            assert isinstance(attempts_map, dict)
+            if int(attempts_map.get(qr_hwnd, 0)) == 0 and state["pending_auto_hwnd"] != qr_hwnd:
+                state["pending_auto_hwnd"] = qr_hwnd
+                status_lbl.setText(i18n.tr("已检测到 CSP「连接智能手机」窗口，准备自动扫描..."))
+                status_lbl.setStyleSheet("color: #5a94e2;")
+                QTimer.singleShot(300, lambda h=qr_hwnd: _auto_scan_for_hwnd(h))
+
+        def _mark_connected_externally() -> None:
+            if not _is_alive() or state["ok"]:
+                return
+            state["ok"] = True
+            state["notified_connected"] = True
+            setattr(dlg, "result_ok", True)
+            watch_timer.stop()
+            status_lbl.setText(i18n.tr("✓ CSP 智能手机已连接"))
+            status_lbl.setStyleSheet("color: #4a4; font-weight: bold;")
+            QTimer.singleShot(800, lambda: dlg.accept() if _is_alive() else None)
+
+        def _on_finished(res: int) -> None:
+            state["closed"] = True
+            watch_timer.stop()
+            if callable(sync_overlap_cb):
+                try:
+                    sync_overlap_cb(None)
+                except Exception:
+                    pass
+            if callable(on_dismissed_cb):
+                try:
+                    on_dismissed_cb(bool(state["ok"]))
+                except Exception:
+                    pass
+
+        setattr(dlg, "is_scanning", lambda: bool(state["scanning"]))
+        setattr(dlg, "trigger_scan", lambda: do_scan(auto_triggered=False))
+        setattr(dlg, "watch_tick", _watch_tick)
+        setattr(dlg, "mark_connected_externally", _mark_connected_externally)
+
+        _ = scan_btn.clicked.connect(lambda: do_scan(auto_triggered=False))
+        _ = connect_btn.clicked.connect(lambda: _complete_connect(auto_triggered=False))
         _ = cancel_btn.clicked.connect(dlg.reject)
+        _ = dlg.finished.connect(_on_finished)
 
+        watch_timer.timeout.connect(_watch_tick)
+        watch_timer.start()
+
+        # Position clear of any currently open QR window (or upper-middle area)
+        initial_hit = None
+        try:
+            initial_hit = qr_finder()
+        except Exception:
+            initial_hit = None
+        CSPCompanionSync._position_dialog_clear_of_qr(
+            dlg, qr_rect=(initial_hit[1] if initial_hit is not None else None)
+        )
+        return dlg
+
+    @staticmethod
+    def show_setup_dialog(
+        parent: QWidget | None = None,
+        *,
+        reconnect_mode: bool = False,
+    ) -> bool:
+        """Show a modal setup dialog to acquire CSP companion connection info.
+
+        Auto-scans QR code (if pyzbar available), falls back to manual
+        URL paste.  Saves session on success.
+        """
+        dlg = CSPCompanionSync.create_companion_dialog(
+            parent, reconnect_mode=reconnect_mode
+        )
         _ = dlg.exec()
-        return result["ok"]
+        return bool(getattr(dlg, "result_ok", False))
 
 
 # ---------------------------------------------------------------------------

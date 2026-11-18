@@ -370,18 +370,29 @@ class SyncPanelMixin:
             self._on_ps_restart()
 
     def _refresh_companion_status(self):
-        if not hasattr(self, 'parent') or self._parent is None: return
-        if not hasattr(self._parent, 'sync_thread'): return
+        if self._parent is None:
+            return
+        if not hasattr(self._parent, 'sync_thread'):
+            return
         c = self._parent.sync_thread.companion_sync
         connected = getattr(c, '_connected', False)
+        has_sess = bool(c._has_session()) if hasattr(c, '_has_session') else False
+        needs_fn = getattr(c, "needs_reconnect", None)
+        needs_reconn = bool(needs_fn()) if callable(needs_fn) else False
         if connected:
             self.lbl_companion_status.setText(i18n.tr("● 已连接"))
             self._set_label_state(self.lbl_companion_status, "success")
             self.btn_companion_reconnect.setVisible(False)
             self.btn_companion_disconnect.setVisible(True)
-        elif c._has_session():
-            self.lbl_companion_status.setText(i18n.tr("○ 已保存 — 等待 CSP..."))
+        elif has_sess:
+            if needs_reconn:
+                self.lbl_companion_status.setText(
+                    i18n.tr("○ 需要重新连接 — 请在 CSP 打开「文件 → 连接智能手机」")
+                )
+            else:
+                self.lbl_companion_status.setText(i18n.tr("○ 已保存 — 等待 CSP..."))
             self._set_label_state(self.lbl_companion_status, "warning")
+            self.btn_companion_reconnect.setText(i18n.tr("重新连接"))
             self.btn_companion_reconnect.setVisible(True)
             self.btn_companion_disconnect.setVisible(False)
         else:
@@ -392,12 +403,17 @@ class SyncPanelMixin:
             self.btn_companion_disconnect.setVisible(False)
 
     def _on_companion_reconnect(self):
-        if hasattr(self, 'parent') and self._parent is not None:
-            self._parent._setup_companion_connection()
+        if self._parent is not None:
+            c = getattr(getattr(self._parent, 'sync_thread', None), 'companion_sync', None)
+            has_sess = bool(c._has_session()) if (c is not None and hasattr(c, '_has_session')) else False
+            try:
+                self._parent._setup_companion_connection(reconnect_mode=has_sess, auto_prompt=False)
+            except TypeError:
+                self._parent._setup_companion_connection()
             self._refresh_companion_status()
 
     def _on_companion_disconnect(self):
-        if hasattr(self, 'parent') and self._parent is not None:
+        if self._parent is not None:
             if hasattr(self._parent, 'sync_thread'):
                 self._parent.sync_thread.companion_sync._disconnect()
             self._refresh_companion_status()
