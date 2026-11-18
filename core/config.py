@@ -98,6 +98,7 @@ def default_hotkey_config():
         "showLabHarmonyButton": True,     # 显示/隐藏 LAB 调和模式按钮
         "showLabCheckerboard": True,      # 显示/隐藏 LAB 视图灰白网格背景
         "showTitleBar": True,             # 显示/隐藏标题栏（隐藏后顶部边框与四周一致）
+        "showWindowBorder": True,         # 显示/隐藏窗口外边框（主窗口与浮出面板外框）
         "grayscaleFilterScreen": "all",
         "grayscaleFilterMode": "oklch",
         # dcomp = DirectComposition 显存直通（零拷贝零延迟，推荐）；
@@ -339,7 +340,7 @@ def _merge_with_defaults(loaded: dict) -> dict:
 _BOOL_KEYS = frozenset({
     "showSlidersRGB", "showSlidersHSV", "showSlidersVHSV", "showSlidersHSL", "showSlidersLAB",
     "showSlidersOKLab", "showSlidersOKLCh", "showSlidersHistory",
-    "showTitleBar", "showTaskbarIcon", "lockWindowSize", "lockWindowPosition",
+    "showTitleBar", "showWindowBorder", "showTaskbarIcon", "lockWindowSize", "lockWindowPosition",
     "onlyShowInCsp", "openAtLogin", "checkUpdatesOnStartup",
     "followMouseEnabled", "noFocusMode", "showLabLightnessSlider",
     "mouseHotkeyZoneFilter",

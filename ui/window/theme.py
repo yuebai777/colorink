@@ -25,7 +25,12 @@ from ui.chrome_opacity import (
 from ui import window_layout
 from ui.picker_panes import visible_picker_chrome_height
 from ui.ringless_mode import RINGLESS_ACTIVE_BORDER
-from ui.slider_themes import get_slider_theme
+from ui.slider_themes import get_slider_theme, resolve_slider_theme
+from ui.theme_contrast import (
+    build_mode_button_css,
+    derive_chrome_palette,
+    readable_ink,
+)
 from ui.window_layout import snap_border_width
 from ui.widgets import (
     GradientSlider,
@@ -47,6 +52,39 @@ def _set_css(widget, css: str) -> None:
         return
     widget._cached_css = css
     widget.setStyleSheet(css)
+
+
+def _title_bar_visible_in_window(owner, title_bar) -> bool:
+    """Whether *title_bar* counts as shown (even before the window is first shown)."""
+    if hasattr(title_bar, "isHidden"):
+        try:
+            win_vis = getattr(owner, "isVisible", None)
+            if callable(win_vis) and not win_vis():
+                return not bool(title_bar.isHidden())
+        except RuntimeError:
+            pass
+    return bool(title_bar.isVisible())
+
+
+def resolve_window_frame_metrics(
+    cfg: dict,
+    border_theme: dict,
+    title_bar_visible: bool,
+    ratio: float,
+) -> tuple[int, bool, bool]:
+    """Return ``(win_bw, title_inset, needs_top_frame)`` for outer window frames.
+
+    When ``showWindowBorder`` is False, all four edges collapse to 0px and both
+    ``title_inset`` and ``needs_top_frame`` stay False (even when ``showTitleBar``
+    is also False or the border theme normally insets the title bar).
+    """
+    if not bool(cfg.get("showWindowBorder", True)):
+        return 0, False, False
+    raw_bw = max(0, int(cast(int, border_theme.get("window_border_width", 4))))
+    win_bw = snap_border_width(raw_bw, ratio)
+    title_inset = bool(border_theme.get("title_bar_inset", False))
+    needs_top_frame = win_bw > 0 and (title_inset or not bool(title_bar_visible))
+    return win_bw, title_inset, needs_top_frame
 
 
 class ThemeMixin:
@@ -165,6 +203,9 @@ class ThemeMixin:
         self.apply_style(scale)
         if not is_resize_event:
             self._adjust_content_height()
+            update_geom = getattr(self, "update_geometries", None)
+            if callable(update_geom):
+                update_geom()
 
     def apply_layout(self, scale=None):
         """Geometry only: bands, margins, widget sizes, floating placement.
@@ -222,19 +263,12 @@ class ThemeMixin:
             panels_btn.setFixedSize(title_btn_size, title_btn_size)
         
         
-        # Side/bottom margins match the window border width from the border
-        # theme (4px by default); the top border needs its own margin when the
-        # title bar is hidden. Snapped to whole device pixels — see
-        # ui/window_layout.snap_border_width for why a 3px frame on a 1.5x
-        # screen paints a stray light line down one side only.
-        win_bw = snap_border_width(
-            max(0, int(cast(int, border_theme.get("window_border_width", 4)))),
-            self._device_ratio())
-        # title_bar_inset = the frame wraps above the title bar too; otherwise
-        # the bar runs flush to the top edge (and only a hidden bar gets a
-        # top margin, as before).
-        title_inset = bool(border_theme.get("title_bar_inset", False))
-        needs_top_frame = title_inset or not self.title_bar.isVisible()
+        # Side/bottom margins match the window border width when showWindowBorder
+        # is enabled; when disabled, every edge (including hidden/inset top) drops to 0.
+        title_visible = _title_bar_visible_in_window(self, self.title_bar)
+        win_bw, _title_inset, needs_top_frame = resolve_window_frame_metrics(
+            self.cfg, border_theme, title_visible, self._device_ratio()
+        )
         self.main_layout.setContentsMargins(
             win_bw, win_bw if needs_top_frame else 0, win_bw, win_bw
         )
@@ -266,8 +300,8 @@ class ThemeMixin:
             top_gap
         )
         
-        # Update spacing within each color space block
-        for group in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh"]:
+        # Update spacing within each color space block (including VHSV)
+        for group in [g for g in config.SLIDER_GROUPS if g != "History"]:
             if hasattr(self, "slider_containers") and group in self.slider_containers:
                 container = self.slider_containers[group]
                 lay = container.layout()
@@ -282,18 +316,24 @@ class ThemeMixin:
                     last = lay.itemAt(lay.count() - 1) if lay.count() else None
                     if last is None or last.spacerItem() is None:
                         lay.addStretch(1)
-        
+                    lay.invalidate()
+                container.updateGeometry()
+
         # Row spacing (字母 / 滑条 / 数值 之间) comes from the slider theme:
         # PS leaves a visible gap after the letter, SAI/CSP sit tighter.
         row_spacing = float(cast(float, slider_theme.get("row_spacing", 1)))
         row_spacing_px = max(0, int(row_spacing * scale))
         for row in getattr(self, "slider_row_layouts", []):
             row.setSpacing(row_spacing_px)
-            
+
         # Adjust label fixed widths (theme-aware)
         ch_w_factor = float(cast(float, slider_theme["channel_label_width_factor"]))
         for chan, label in getattr(self, "slider_labels", {}).items():
             label.setFixedWidth(max(8, int(12 * scale * ch_w_factor)))
+
+        sync_spacers = getattr(self, "_sync_band_spacers", None)
+        if callable(sync_spacers):
+            sync_spacers(scale)
 
         self._place_floating_chrome(scale)
 
@@ -302,6 +342,9 @@ class ThemeMixin:
         if ratio != getattr(self, "_style_ratio", None):
             self._style_ratio = ratio
             self.apply_style(scale)
+            ensure_dpi = getattr(self, "_ensure_dpi_min_height", None)
+            if callable(ensure_dpi):
+                ensure_dpi()
 
     def apply_style(self, scale=None):
         """Chrome only: palette, borders, stylesheets, fonts.
@@ -313,11 +356,10 @@ class ThemeMixin:
             scale = self.cfg.get("uiScale", 100) / 100.0
         slider_theme, border_theme = self._theme_presets()
         ratio = self._device_ratio()
-        win_bw = snap_border_width(
-            max(0, int(cast(int, border_theme.get("window_border_width", 4)))),
-            ratio)
-        needs_top_frame = (bool(border_theme.get("title_bar_inset", False))
-                           or not self.title_bar.isVisible())
+        title_visible = _title_bar_visible_in_window(self, self.title_bar)
+        win_bw, title_inset, needs_top_frame = resolve_window_frame_metrics(
+            self.cfg, border_theme, title_visible, ratio
+        )
 
         theme_name = self.cfg.get("ui-theme", "auto")
         if theme_name == "auto":
@@ -339,7 +381,7 @@ class ThemeMixin:
                 bg = QColor(bg_stored).name()
                 barBg = c_bar.name()
                 border_color = c_bar.name()
-                text = "#ffffff" if QColor(bg).lightness() < 128 else "#222222"
+                text = readable_ink(bg)
             except Exception:
                 bg = barBg = border_color = "#787878"
                 text = "#222222"
@@ -354,22 +396,26 @@ class ThemeMixin:
             text = t["text"]
             border_color = t["border"]
             barBg = border_color
-            
-        # Determine label text color based on background/text lightness to avoid low contrast
-        is_dark_text = QColor(text).lightness() < 128
-        channel_text_color = "#666666" if is_dark_text else "#e9e9e9"
-        inputBg = "#eaeaea" if is_dark_text else "#2e2e2e"
-        borderColor = "#d0d0d0" if is_dark_text else "#555555"
-        handle_border_global = "#999999" if is_dark_text else "#b0b0b0"
 
-        # Border theme with every "auto" colour resolved against the UI theme.
+        # Derive surface-aware chrome colours so both `bg` and `barBg` stay
+        # sharp across white, gray, black, auto, and arbitrary eyedropper pairs.
+        palette = derive_chrome_palette(bg, barBg, border_color)
+        channel_text_color = palette["channel_text"]
+        inputBg = palette["input_bg"]
+        borderColor = palette["input_border"]
+        handle_border_global = "#999999" if QColor(text).lightness() < 128 else "#b0b0b0"
+
+        # Border and slider themes with every "auto" / adaptive colour resolved.
         border = resolve_border_theme(
             border_theme,
             chrome_border=border_color,
             input_bg=inputBg,
             input_border=borderColor,
             text=text,
+            bg=bg,
+            bar_bg=barBg,
         )
+        resolved_slider = resolve_slider_theme(slider_theme, bg=bg)
         win_radius = border["window_border_radius"]
         win_border_color = border["window_border_color"]
 
@@ -392,17 +438,15 @@ class ThemeMixin:
         value_text_css = border["value_box_text"]
 
         if hasattr(self, "preview_box"):
-
             self.preview_box.set_theme_colors(
-
-                RINGLESS_ACTIVE_BORDER, borderColor
-
+                RINGLESS_ACTIVE_BORDER,
+                palette["swatch_inactive_border"],
+                swatch_shape=str(border["swatch_shape"]),
             )
 
-        
-        # Determine title bar text color and button hover backgrounds
-        title_text_color = "#666666" if is_dark_text else "#a0a0a0"
-        hover_bg = "rgba(0,0,0,0.08)" if is_dark_text else "rgba(255,255,255,0.12)"
+        # Determine title bar text color and button hover backgrounds from barBg
+        title_text_color = palette["bar_text"]
+        hover_bg = palette["bar_hover_bg"]
 
         font_factor = (self.cfg.get("fontSize", 100) / 100.0) * scale
         lbl_font_size = int(11 * font_factor)
@@ -446,12 +490,28 @@ class ThemeMixin:
             divider_color=border["title_bar_divider_color"],
             divider_width=tb_divider_w,
             scale=scale, font_size=fs_title, opacity=chrome_opacity / 100.0,
-            title_inset=bool(border_theme.get("title_bar_inset", False)),
+            title_inset=title_inset,
             grip_gap=max(2, int(4 * scale)),
             content_margins=(int(4 * scale), int(6 * scale),
                              int(4 * scale), int(6 * scale)),
             top_gap=max(0, int(self.cfg.get("panelTopGap", 6) * scale)),
-            diff_space=max(0, int(self.cfg.get("sliderDiffSpace", 8) * scale)))
+            diff_space=max(0, int(self.cfg.get("sliderDiffSpace", 8) * scale)),
+            tab_style=str(border["tab_style"]),
+            tab_border_color=str(palette["tab_border"]),
+            tab_accent_bg=str(palette["tab_accent_bg"]),
+            tab_accent_border=str(palette["tab_accent_border"]),
+            button_radius=int(border["button_radius"]),
+            mode_btn_border=str(palette["mode_btn_border"]),
+            swatch_shape=str(border["swatch_shape"]),
+            swatch_inactive_border=str(palette["swatch_inactive_border"]),
+            wheel_style=str(border["wheel_style"]),
+            wheel_ring_border=str(border["wheel_ring_border_color"]),
+            wheel_slice_border=str(border["wheel_slice_border_color"]),
+            groove_border_w=int(border["groove_border_width"]),
+            groove_border_color=str(border["groove_border_color"]),
+            groove_inner_border_w=int(border["groove_inner_border_width"]),
+            groove_inner_border_color=str(border["groove_inner_border_color"]),
+        )
         host = getattr(self, "panel_host", None)
         if host is not None:
             host.apply_chrome(self._floating_chrome)
@@ -562,6 +622,8 @@ class ThemeMixin:
         for chan, (slider, val_label) in self.slider_widgets.items():
             val_label.setFixedWidth(max(24, int(27 * val_w_factor)))
             val_label.setAlignment(val_align)
+            if hasattr(val_label, "set_arrow_color"):
+                val_label.set_arrow_color(value_text_css)
             _set_css(val_label, f"""
                 background-color: {value_bg_css};
                 border: {value_border_css};
@@ -575,7 +637,7 @@ class ThemeMixin:
         # Scale GradientSliders (slider + border theme aware)
         for chan, (slider, val_label) in self.slider_widgets.items():
             if isinstance(slider, GradientSlider):
-                slider.update_scale(scale, slider_theme, border)
+                slider.update_scale(scale, resolved_slider, border)
 
         # Room for the cursor's overhang (see create_group_sliders): the
         # cursor's centre is the value anchor, so at min / max the cursor
@@ -621,7 +683,7 @@ class ThemeMixin:
                 if visible:
                     shown.append(group)
             last_line_group = shown[-1] if shown else None
-        for group in ["RGB", "HSV", "HSL", "LAB", "OKLab", "OKLCh"]:
+        for group in [g for g in config.SLIDER_GROUPS if g != "History"]:
             container = getattr(self, "slider_containers", {}).get(group)
             if container is None:
                 continue
@@ -650,13 +712,25 @@ class ThemeMixin:
                 _set_css(container, "")
                 if lay is not None:
                     lay.setContentsMargins(0, 0, 0, 0)
+            if lay is not None:
+                lay.invalidate()
+            container.updateGeometry()
             
         # Style mode buttons dynamically (all floating picker toggle buttons,
         # including the LAB shape/harmony toggles, share one chrome).
         btn_w = int(28 * scale)
         btn_h = int(28 * scale)
-        btn_tc = QColor(text)
-        btn_fg_css = f"rgba({btn_tc.red()}, {btn_tc.green()}, {btn_tc.blue()}, 115)"
+        btn_radius = max(0, int(round(int(border["button_radius"]) * scale)))
+        mode_btn_css = build_mode_button_css(
+            bg=bg,
+            bar_bg=barBg,
+            fg=palette["mode_btn_fg"],
+            hover_fg=text,
+            border=palette["mode_btn_border"],
+            accent_border=palette["tab_accent_border"],
+            radius=btn_radius,
+            font_size=int(13 * scale),
+        )
         mode_buttons = [
             self.btn_mode_wheel,
             self.btn_mode_lab,
@@ -667,27 +741,45 @@ class ThemeMixin:
         for btn in mode_buttons:
             if btn is not None:
                 btn.setFixedSize(btn_w, btn_h)
-                _set_css(btn, f"""
-                    QPushButton {{
-                        background-color: {barBg};
-                        border: 1px solid {borderColor};
-                        border-radius: {int(4 * scale)}px;
-                        color: {btn_fg_css};
-                        font-size: {int(13 * scale)}px;
-                        font-weight: bold;
-                    }}
-                    QPushButton:hover {{
-                        background-color: {bg};
-                        border-color: #5a94e2;
-                    }}
-                """)
+                _set_css(btn, mode_btn_css)
+
+        # Style color wheel indicators/outlines & LAB slider borders per theme.
+        wheel_theme_kw = dict(
+            wheel_style=str(border["wheel_style"]),
+            ring_border_color=str(border["wheel_ring_border_color"]),
+            slice_border_color=str(border["wheel_slice_border_color"]),
+        )
+        _seen_wheels = set()
+        for _w in [
+            getattr(self, "color_wheel", None),
+            *(
+                getattr(p, "wheel", None)
+                for p in getattr(self, "wheel_panels", {}).values()
+            ),
+        ]:
+            if _w is not None and id(_w) not in _seen_wheels:
+                _seen_wheels.add(id(_w))
+                if hasattr(_w, "set_visual_theme"):
+                    _w.set_visual_theme(**wheel_theme_kw)
+
+        _lab_sl = getattr(self, "lab_slider", None)
+        if _lab_sl is not None and hasattr(_lab_sl, "set_border_theme"):
+            _lab_sl.set_border_theme(
+                border_w=int(border["groove_border_width"]),
+                border_color=str(border["groove_border_color"]),
+                inner_w=int(border["groove_inner_border_width"]),
+                inner_color=str(border["groove_inner_border_color"]),
+            )
 
         # Style compact inline color readouts (light/dark chips & text ink).
+        is_sharp_ps = str(border["tab_style"]) == "ps"
         for _ro_attr in ("readout_wheel", "readout_lab"):
             _ro = getattr(self, _ro_attr, None)
             if _ro is not None:
                 _ro.set_theme(
                     bg=bg, bar_bg=barBg, text=text, border=borderColor, scale=scale,
+                    corner_radius=0.0 if is_sharp_ps else 3.5,
+                    chip_radius=0.5 if is_sharp_ps else 1.5,
                 )
 
         # Keep the LAB harmony menu on the same chrome as the mode buttons.
@@ -696,8 +788,8 @@ class ThemeMixin:
             _set_css(harmony_menu, f"""
                 QMenu {{
                     background-color: {barBg};
-                    border: 1px solid {borderColor};
-                    color: {text};
+                    border: 1px solid {palette["mode_btn_border"]};
+                    color: {title_text_color};
                 }}
                 QMenu::item {{
                     padding: 4px 12px;
@@ -728,7 +820,9 @@ class ThemeMixin:
             history_bg = QColor(bg)
             if chrome_opacity < CHROME_OPACITY_MAX:
                 history_bg.setAlpha(0)
-            self.color_history.apply_theme(history_bg, border_color, text)
+            self.color_history.apply_theme(
+                history_bg, border["history_border_color"], text,
+            )
 
     def _place_floating_chrome(self, scale):
         """Place the floating swatch cluster and keep the sidebar on top."""
@@ -740,7 +834,14 @@ class ThemeMixin:
         self.sliders_container.installEventFilter(self)
 
         if self.cfg.get("hideHueRing", False):
-            self._sync_ringless_mode()
+            # Chrome placement runs in response to sliders_container events and
+            # must never overwrite the bounded stack height constraints.
+            prev_skip = getattr(self, "_skip_ringless_stack_min", False)
+            self._skip_ringless_stack_min = True
+            try:
+                self._sync_ringless_mode()
+            finally:
+                self._skip_ringless_stack_min = prev_skip
             self.preview_box.raise_()
             for _ro_attr in ("readout_wheel", "readout_lab"):
                 _ro = getattr(self, _ro_attr, None)

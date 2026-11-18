@@ -481,6 +481,10 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cb_show_title_bar.blockSignals(True)
         self.cb_show_title_bar.setChecked(self.cfg.get("showTitleBar", True))
         self.cb_show_title_bar.blockSignals(False)
+
+        self.cb_show_window_border.blockSignals(True)
+        self.cb_show_window_border.setChecked(self.cfg.get("showWindowBorder", True))
+        self.cb_show_window_border.blockSignals(False)
             
         # 3. Sliders — load only existing groups, respect module visibility
         for key in ["RGB", "HSV", "VHSV", "HSL", "LAB", "OKLab", "OKLCh"]:
@@ -931,6 +935,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.cfg["hideOnPopupMenu"] = self.cb_hide_on_menu.isChecked()
         self.cfg["showTaskbarIcon"] = self.cb_taskbar_icon.isChecked()
         self.cfg["showTitleBar"] = self.cb_show_title_bar.isChecked()
+        self.cfg["showWindowBorder"] = self.cb_show_window_border.isChecked()
         self.cfg["noFocusMode"] = self.cb_no_focus.isChecked()
         
         # Sliders (all groups stored, but only current-module groups shown in UI)

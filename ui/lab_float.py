@@ -158,7 +158,10 @@ class FloatingLabPage(QWidget):
             self.preview.bg_transparent = bool(source.bg_transparent)
             self.preview.active_slot = source.active_slot
             self.preview.set_theme_colors(
-                source.active_border_color, source.inactive_border_color)
+                source.active_border_color,
+                source.inactive_border_color,
+                swatch_shape=getattr(source, "_swatch_shape", "circle"),
+            )
         self.preview.update()
         self._place_overlays()
 
@@ -171,5 +174,16 @@ class FloatingLabPage(QWidget):
     def apply_chrome(self, chrome) -> None:
         if chrome is None:
             return
-        self.preview.set_theme_colors(RINGLESS_ACTIVE_BORDER, chrome.border_color)
+        inactive = getattr(chrome, "swatch_inactive_border", "") or chrome.border_color
+        shape = getattr(chrome, "swatch_shape", "circle") or "circle"
+        self.preview.set_theme_colors(
+            RINGLESS_ACTIVE_BORDER, inactive, swatch_shape=shape,
+        )
+        if hasattr(self.lab_slider, "set_border_theme"):
+            self.lab_slider.set_border_theme(
+                border_w=int(getattr(chrome, "groove_border_w", 0) or 0),
+                border_color=getattr(chrome, "groove_border_color", "") or "#888888",
+                inner_w=int(getattr(chrome, "groove_inner_border_w", 0) or 0),
+                inner_color=getattr(chrome, "groove_inner_border_color", "") or "#ffffff",
+            )
         self._place_overlays()

@@ -20,7 +20,13 @@ from ui.ringless_mode import (
     centered_control_offset,
     ringless_swatch_row,
 )
-from ui.transparent_swatch import TransparentTile, apply_preview_mouse_mask, clip_out_circle
+from ui.transparent_swatch import (
+    TransparentTile,
+    apply_preview_mouse_mask,
+    clip_out_circle,
+    hit_test_square_swatch,
+    paint_legacy_square_swatches,
+)
 
 _STROKE_PAD = 3  # Default padding around swatches for the compact control bar
 
@@ -40,6 +46,7 @@ class ColorPreviewBox(QWidget):
         self.active_border_color = QColor(RINGLESS_ACTIVE_BORDER); self.inactive_border_color = QColor(RINGLESS_INACTIVE_BORDER)
         self.fg_size = 40
         self.bg_size = 26
+        self._swatch_shape = "circle"
         self._ringless_layout: RinglessLayout | None = None
         self._cached_ringless_rects: tuple[QRectF, QRectF] | None = None
         # Legacy (non-ringless) mode: the transparent tile sits ABOVE the
@@ -50,11 +57,14 @@ class ColorPreviewBox(QWidget):
         self._trans_tile = TransparentTile(self)
         self._trans_tile.clicked.connect(lambda: request_transparent(self))
 
-    # 鈹€鈹€ Public API 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # ── Public API ────────────────────────────────────────────────────────
 
-    def set_theme_colors(self, active_border, inactive_border):
+    def set_theme_colors(self, active_border, inactive_border, swatch_shape=None):
         self.active_border_color = QColor(active_border)
         self.inactive_border_color = QColor(inactive_border)
+        if swatch_shape in ("circle", "square"):
+            self._swatch_shape = swatch_shape
+            self._trans_tile.set_sharp_corners(swatch_shape == "square")
         self.update()
 
     def set_colors(self, fg, bg):
@@ -195,7 +205,7 @@ class ColorPreviewBox(QWidget):
 
         fg_rect, bg_rect = rects
         assert self._ringless_layout is not None
-        radius = float(self._ringless_layout.corner_radius)
+        radius = 1.0 if self._swatch_shape == "square" else float(self._ringless_layout.corner_radius)
         # A transparent active slot keeps the swatch colors but moves the
         # highlight to the transparent tile — no blue border here.
         bg_active = self.active_slot == "bg" and not self.bg_transparent
@@ -253,6 +263,10 @@ class ColorPreviewBox(QWidget):
                 self._draw_ringless_paint(painter)
                 return
 
+            if self._swatch_shape == "square":
+                paint_legacy_square_swatches(self, painter)
+                return
+
             fg_cx, fg_cy, fg_r, bg_cx, bg_cy, bg_r = self.legacy_circle_geometry()
 
             # Draw circles in correct z-order (active on top). A transparent
@@ -275,47 +289,22 @@ class ColorPreviewBox(QWidget):
     # 鈹€鈹€ Hit-testing 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     def _get_clicked_slot(self, px, py):
-        # Ringless mode: rectangle hit-testing
         rects = self._ringless_swatch_rects()
         if rects is not None:
             fg_rect, bg_rect = rects
             pt = QPointF(px, py)
-            if self.active_slot == "fg":
-                if fg_rect.contains(pt):
-                    return "fg"
-                if bg_rect.contains(pt):
-                    return "bg"
-            else:
-                if bg_rect.contains(pt):
-                    return "bg"
-                if fg_rect.contains(pt):
-                    return "fg"
-            return None
+            order = (("fg", fg_rect), ("bg", bg_rect)) if self.active_slot == "fg" else (("bg", bg_rect), ("fg", fg_rect))
+            return next((slot for slot, r in order if r.contains(pt)), None)
 
-        # Legacy circle hit-testing. Shares legacy_circle_geometry() with the
-        # paint path — this used to carry its own stale constants (box 53,
-        # bg 26), which put the fg hit circle ~13% oversized and shifted a few
-        # pixels up/right of the drawn swatch: clicks in the empty margin
-        # selected fg, and the outer rim of the bg circle was dead to clicks.
+        if self._swatch_shape == "square":
+            return hit_test_square_swatch(self, px, py)
+
         fg_cx, fg_cy, fg_r, bg_cx, bg_cy, bg_r = self.legacy_circle_geometry()
-
-        d_fg = (px - fg_cx)**2 + (py - fg_cy)**2
-        d_bg = (px - bg_cx)**2 + (py - bg_cy)**2
-
-        r2_fg = fg_r ** 2
-        r2_bg = bg_r ** 2
-
+        in_fg = (px - fg_cx) ** 2 + (py - fg_cy) ** 2 <= fg_r ** 2
+        in_bg = (px - bg_cx) ** 2 + (py - bg_cy) ** 2 <= bg_r ** 2
         if self.active_slot == "fg":
-            if d_fg <= r2_fg:
-                return "fg"
-            elif d_bg <= r2_bg:
-                return "bg"
-        else:
-            if d_bg <= r2_bg:
-                return "bg"
-            elif d_fg <= r2_fg:
-                return "fg"
-        return None
+            return "fg" if in_fg else ("bg" if in_bg else None)
+        return "bg" if in_bg else ("fg" if in_fg else None)
 
     # 鈹€鈹€ Context menu 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 

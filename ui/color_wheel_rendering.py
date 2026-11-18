@@ -77,11 +77,22 @@ class ColorWheelRenderingMixin:
                 return
             slice_cx, slice_cy, slice_r = cx, cy, triangle_radius
 
+            wheel_style = getattr(self, "_wheel_style", "default")
+            ring_border_hex = getattr(self, "_ring_border_color", None)
+            if ring_border_hex and wheel_style in ("csp", "sai", "ps"):
+                ring_outline_color = QColor(ring_border_hex)
+            else:
+                ring_outline_color = QColor(128, 128, 128, 90)
+            ring_outline_key = (
+                wheel_style,
+                ring_outline_color.name(QColor.NameFormat.HexArgb),
+            )
+
             # 1) Draw Hue Ring with Caching (skip in oklch-slice mode — it has no ring)
             dpr = max(1.0, float(self.devicePixelRatioF()))
             if self.wheel_mode != "oklch-slice":
                 flip_h = self.cfg.get("flipColorWheelHorizontally", False)
-                ring_key = (int(cx), int(cy), int(outer_radius), int(inner_radius), flip_h, round(dpr, 2))
+                ring_key = (int(cx), int(cy), int(outer_radius), int(inner_radius), flip_h, round(dpr, 2), ring_outline_key)
                 if not hasattr(self, "_cached_ring_key") or self._cached_ring_key != ring_key or not hasattr(self, "_cached_ring_img") or self._cached_ring_img is None:
                     w = self.width()
                     h = self.height()
@@ -116,8 +127,8 @@ class ColorWheelRenderingMixin:
                     p.setBrush(Qt.BrushStyle.NoBrush)
                     p.drawEllipse(QPointF(cx, cy), r_mid, r_mid)
 
-                    # Draw thin gray outlines to eliminate aliasing/jagged edges
-                    p.setPen(QPen(QColor(128, 128, 128, 90), 1.0))
+                    # Draw thin outlines to eliminate aliasing/jagged edges
+                    p.setPen(QPen(ring_outline_color, 1.0))
                     p.drawEllipse(QPointF(cx, cy), outer_radius, outer_radius)
                     p.drawEllipse(QPointF(cx, cy), inner_radius, inner_radius)
                     p.end()
@@ -131,7 +142,7 @@ class ColorWheelRenderingMixin:
                 L_ring = 0.85
                 C_ring = 0.4
                 flip_h = self.cfg.get("flipColorWheelHorizontally", False)
-                ring_key = (int(cx), int(cy), int(outer_radius), int(inner_radius), flip_h, round(dpr, 2))
+                ring_key = (int(cx), int(cy), int(outer_radius), int(inner_radius), flip_h, round(dpr, 2), ring_outline_key)
                 if not hasattr(self, "_cached_oklch_ring_key") or self._cached_oklch_ring_key != ring_key or not hasattr(self, "_cached_oklch_ring_img"):
                     w = self.width()
                     h = self.height()
@@ -174,12 +185,28 @@ class ColorWheelRenderingMixin:
                     p.setPen(pen)
                     p.setBrush(Qt.BrushStyle.NoBrush)
                     p.drawEllipse(QPointF(cx, cy), r_mid, r_mid)
-                    p.setPen(QPen(QColor(128, 128, 128, 90), 1.0))
+                    p.setPen(QPen(ring_outline_color, 1.0))
                     p.drawEllipse(QPointF(cx, cy), outer_radius, outer_radius)
                     p.drawEllipse(QPointF(cx, cy), inner_radius, inner_radius)
                     p.end()
                     self._cached_oklch_ring_key = ring_key
                 painter.drawImage(0, 0, self._cached_oklch_ring_img)
+
+            # SAI's signature thin inscribed circle around the SV square / triangle
+            if wheel_style == "sai" and self.wheel_mode in (
+                "hsv-square", "hsl-square", "vhsv-square", "triangle", "hls-triangle"
+            ):
+                if self.wheel_mode in ("triangle", "hls-triangle"):
+                    inscribed_r = slice_r
+                else:
+                    half_sq = max(1, int(slice_r / 1.414) - 2)
+                    inscribed_r = math.hypot(half_sq, half_sq)
+                if inscribed_r > 4.0:
+                    painter.save()
+                    painter.setPen(QPen(ring_outline_color, 1.0))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawEllipse(QPointF(slice_cx, slice_cy), inscribed_r, inscribed_r)
+                    painter.restore()
 
             # 3) Draw Hue Indicator on Ring
             self.draw_hue_indicator(painter, cx, cy, inner_radius, outer_radius)
@@ -215,6 +242,22 @@ class ColorWheelRenderingMixin:
             self.draw_oklch_indicator(painter, slice_cx, slice_cy, slice_r)
         else:
             self.draw_hsl_indicator(painter, slice_cx, slice_cy, slice_r)
+
+    def _slice_outline_pen(self, fallback_alpha: int = 80) -> QPen:
+        """Return a 1px outline pen for the inner slice, theme-aware."""
+        slice_hex = getattr(self, "_slice_border_color", None)
+        if slice_hex:
+            color = QColor(slice_hex)
+            if color.isValid():
+                return QPen(color, 1.0)
+        return QPen(QColor(0, 0, 0, fallback_alpha), 1.0)
+
+    def _draw_square_outline(self, painter, cx, cy, half, width, height) -> None:
+        painter.save()
+        painter.setPen(self._slice_outline_pen())
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(QRectF(int(cx - half) + 0.5, int(cy - half) + 0.5, width - 1.0, height - 1.0))
+        painter.restore()
 
     def draw_triangle(self, painter, cx, cy, r):
         v0, v1, v2 = self.get_triangle_vertices(cx, cy, r)
@@ -256,6 +299,13 @@ class ColorWheelRenderingMixin:
         # Restore painter state
         painter.restore()
 
+        # Draw crisp outline so white/black triangle vertices never vanish into matching themes
+        painter.save()
+        painter.setPen(self._slice_outline_pen())
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(path)
+        painter.restore()
+
     def draw_hsl_square(self, painter, cx, cy, r):
         half = int(r / 1.414) - 2
         width = half * 2
@@ -268,9 +318,11 @@ class ColorWheelRenderingMixin:
         prewarmed = self._prewarmed_slices.get("hsl-square")
         if prewarmed is not None and prewarmed.get("key") == cache_key:
             painter.drawImage(int(cx - half), int(cy - half), prewarmed["image"])
+            self._draw_square_outline(painter, cx, cy, half, width, height)
             return
         if self._cached_img_key == cache_key and self._cached_img is not None:
             painter.drawImage(int(cx - half), int(cy - half), self._cached_img)
+            self._draw_square_outline(painter, cx, cy, half, width, height)
             return
 
         subsample = 3 if self.is_active_interaction() else 1
@@ -281,6 +333,7 @@ class ColorWheelRenderingMixin:
         self._cached_img_key = cache_key
 
         painter.drawImage(int(cx - half), int(cy - half), img)
+        self._draw_square_outline(painter, cx, cy, half, width, height)
 
     def draw_hsv_square(self, painter, cx, cy, r):
         half = int(r / 1.414) - 2
@@ -294,19 +347,11 @@ class ColorWheelRenderingMixin:
         prewarmed = self._prewarmed_slices.get("hsv-square")
         if prewarmed is not None and prewarmed.get("key") == cache_key:
             painter.drawImage(int(cx - half), int(cy - half), prewarmed["image"])
-            painter.save()
-            painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(QRectF(int(cx - half) + 0.5, int(cy - half) + 0.5, width - 1.0, height - 1.0))
-            painter.restore()
+            self._draw_square_outline(painter, cx, cy, half, width, height)
             return
         if self._cached_img_key == cache_key and self._cached_img is not None:
             painter.drawImage(int(cx - half), int(cy - half), self._cached_img)
-            painter.save()
-            painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(QRectF(int(cx - half) + 0.5, int(cy - half) + 0.5, width - 1.0, height - 1.0))
-            painter.restore()
+            self._draw_square_outline(painter, cx, cy, half, width, height)
             return
 
         subsample = self._slice_subsample()
@@ -317,11 +362,7 @@ class ColorWheelRenderingMixin:
         self._cached_img_key = cache_key
 
         painter.drawImage(int(cx - half), int(cy - half), img)
-        painter.save()
-        painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(QRectF(int(cx - half) + 0.5, int(cy - half) + 0.5, width - 1.0, height - 1.0))
-        painter.restore()
+        self._draw_square_outline(painter, cx, cy, half, width, height)
 
     def draw_vhsv_square(self, painter, cx, cy, r):
         half = int(r / 1.414) - 2
@@ -335,19 +376,11 @@ class ColorWheelRenderingMixin:
         prewarmed = self._prewarmed_slices.get("vhsv-square")
         if prewarmed is not None and prewarmed.get("key") == cache_key:
             painter.drawImage(int(cx - half), int(cy - half), prewarmed["image"])
-            painter.save()
-            painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(QRectF(int(cx - half) + 0.5, int(cy - half) + 0.5, width - 1.0, height - 1.0))
-            painter.restore()
+            self._draw_square_outline(painter, cx, cy, half, width, height)
             return
         if self._cached_img_key == cache_key and self._cached_img is not None:
             painter.drawImage(int(cx - half), int(cy - half), self._cached_img)
-            painter.save()
-            painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(QRectF(int(cx - half) + 0.5, int(cy - half) + 0.5, width - 1.0, height - 1.0))
-            painter.restore()
+            self._draw_square_outline(painter, cx, cy, half, width, height)
             return
 
         subsample = self._slice_subsample()
@@ -358,11 +391,7 @@ class ColorWheelRenderingMixin:
         self._cached_img_key = cache_key
 
         painter.drawImage(int(cx - half), int(cy - half), img)
-        painter.save()
-        painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(QRectF(int(cx - half) + 0.5, int(cy - half) + 0.5, width - 1.0, height - 1.0))
-        painter.restore()
+        self._draw_square_outline(painter, cx, cy, half, width, height)
 
     def _oklch_hue_for_ring(self) -> float:
         """OKLCh hue currently represented on screen, in degrees.
@@ -391,39 +420,79 @@ class ColorWheelRenderingMixin:
             angle_deg = (150.0 - hue) % 360.0
         else:
             angle_deg = (hue + 30.0) % 360.0
+        ring_width = outer_radius_diff = outer_r - inner_r
+        wheel_style = getattr(self, "_wheel_style", "default")
+
+        if wheel_style == "csp":
+            # CSP signature: crisp radial rectangular tick spanning the hue ring.
+            hw = max(2.2, min(4.0, ring_width * 0.16))
+            rect = QRectF(inner_r + 0.5, -hw, max(2.0, outer_radius_diff - 1.0), 2.0 * hw)
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.translate(cx, cy)
+            painter.rotate(-angle_deg)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            outer_pen = QPen(QColor(0, 0, 0, 225), 2.2)
+            outer_pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+            painter.setPen(outer_pen)
+            painter.drawRect(rect)
+            inner_pen = QPen(QColor(255, 255, 255, 240), 1.1)
+            inner_pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+            painter.setPen(inner_pen)
+            painter.drawRect(rect.adjusted(0.8, 0.8, -0.8, -0.8))
+            painter.restore()
+            return
+
         rad = math.radians(angle_deg)
         r = (inner_r + outer_r) / 2.0
-        pos_x = cx + r * math.cos(rad)
-        pos_y = cy - r * math.sin(rad)
-        
-        pos = QPointF(pos_x, pos_y)
-        
-        # Calculate indicator radius to be perfectly tangent to the color wheel ring width
-        ring_width = outer_r - inner_r
-        indicator_r = ring_width / 2.0
-        
-        # Outer black ring (width 2.0)
+        pos = QPointF(cx + r * math.cos(rad), cy - r * math.sin(rad))
+
+        if wheel_style == "sai":
+            # SAI signature: compact centered ring with royal-blue core & light halo.
+            indicator_r = max(3.2, min(5.5, ring_width * 0.25))
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(255, 255, 255, 200), 2.6))
+            painter.drawEllipse(pos, indicator_r, indicator_r)
+            painter.setPen(QPen(QColor(24, 92, 224), 1.6))
+            painter.drawEllipse(pos, indicator_r, indicator_r)
+            painter.restore()
+            return
+
+        # Default / PS: clean tangent double-ring circle
+        indicator_r = max(3.5, ring_width * (0.43 if wheel_style == "ps" else 0.5))
         painter.setPen(QPen(QColor(0, 0, 0), 2.0))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(pos, indicator_r - 1.0, indicator_r - 1.0)
-        
-        # Inner white ring (width 1.0) for maximum contrast on all gradient colors
         painter.setPen(QPen(QColor(255, 255, 255), 1.0))
         painter.drawEllipse(pos, indicator_r - 2.0, indicator_r - 2.0)
 
     def draw_indicator_ring(self, painter, pos):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        # Outer black border
-        painter.setPen(QPen(QColor(0, 0, 0, 180), 2))
+        wheel_style = getattr(self, "_wheel_style", "default")
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawEllipse(pos, 5, 5)
-        
-        # Inner white indicator ring
-        painter.setPen(QPen(QColor(255, 255, 255, 220), 1))
-        painter.drawEllipse(pos, 4, 4)
-        
+
+        if wheel_style == "csp":
+            # CSP dot: crisp white outer halo + dark inner ring
+            painter.setPen(QPen(QColor(255, 255, 255, 230), 1.8))
+            painter.drawEllipse(pos, 4.8, 4.8)
+            painter.setPen(QPen(QColor(20, 20, 20, 225), 1.1))
+            painter.drawEllipse(pos, 3.6, 3.6)
+        elif wheel_style == "sai":
+            # SAI dot: compact royal-blue circle with crisp light contrast halo
+            painter.setPen(QPen(QColor(255, 255, 255, 205), 2.2))
+            painter.drawEllipse(pos, 4.3, 4.3)
+            painter.setPen(QPen(QColor(24, 92, 224), 1.4))
+            painter.drawEllipse(pos, 4.3, 4.3)
+        else:
+            # Default / PS: outer black border + inner white indicator ring
+            painter.setPen(QPen(QColor(0, 0, 0, 180), 2))
+            painter.drawEllipse(pos, 5, 5)
+            painter.setPen(QPen(QColor(255, 255, 255, 220), 1))
+            painter.drawEllipse(pos, 4, 4)
+
         painter.restore()
 
     def draw_sv_indicator(self, painter, cx, cy, r):
@@ -515,7 +584,7 @@ class ColorWheelRenderingMixin:
         path.lineTo(v1)
         path.lineTo(v2)
         path.closeSubpath()
-        painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
+        painter.setPen(self._slice_outline_pen())
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(path)
 
@@ -582,7 +651,7 @@ class ColorWheelRenderingMixin:
             path.lineTo(edge_x[y], y + min_y)
         path.lineTo(min_x, max_y)
         path.closeSubpath()
-        painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
+        painter.setPen(self._slice_outline_pen())
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(path)
 
@@ -693,7 +762,7 @@ class ColorWheelRenderingMixin:
 
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor(0, 0, 0, 100), 1.0))
+        painter.setPen(self._slice_outline_pen(fallback_alpha=100))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(path)
         painter.restore()

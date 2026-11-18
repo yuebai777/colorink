@@ -269,6 +269,14 @@ class FloatingWheelPage(QWidget):
         self.lab_square = lab
         self.sync_lab_settings()
         self._sync_lab_from_owner()
+        last_chrome = getattr(self, "_last_chrome", None)
+        if last_chrome is not None and hasattr(slider, "set_border_theme"):
+            slider.set_border_theme(
+                border_w=int(getattr(last_chrome, "groove_border_w", 0) or 0),
+                border_color=getattr(last_chrome, "groove_border_color", "") or "#888888",
+                inner_w=int(getattr(last_chrome, "groove_inner_border_w", 0) or 0),
+                inner_color=getattr(last_chrome, "groove_inner_border_color", "") or "#ffffff",
+            )
         changed = getattr(self.owner, "on_floating_lab_color_changed", None)
         if callable(changed):
             lab.colorChanged.connect(
@@ -379,7 +387,10 @@ class FloatingWheelPage(QWidget):
             self.preview.bg_transparent = bool(source.bg_transparent)
             self.preview.active_slot = source.active_slot
             self.preview.set_theme_colors(
-                source.active_border_color, source.inactive_border_color)
+                source.active_border_color,
+                source.inactive_border_color,
+                swatch_shape=getattr(source, "_swatch_shape", "circle"),
+            )
         self.preview.update()
         color = getattr(getattr(self.owner, "color_state", None), "current", None)
         if color is not None and hasattr(self, "readout"):
@@ -416,24 +427,41 @@ class FloatingWheelPage(QWidget):
     def apply_chrome(self, chrome) -> None:
         if chrome is None:
             return
-        self.preview.set_theme_colors(RINGLESS_ACTIVE_BORDER, chrome.border_color)
-        scale = float(getattr(chrome, "scale", 1.0) or 1.0)
-        ink = QColor(chrome.text)
-        btn_fg = f"rgba({ink.red()}, {ink.green()}, {ink.blue()}, 115)"
-        self.mode_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {chrome.bar_bg};
-                border: 1px solid {chrome.border_color};
-                border-radius: {int(4 * scale)}px;
-                color: {btn_fg};
-                font-size: {int(13 * scale)}px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {chrome.background};
-                border-color: #5a94e2;
-            }}
-        """)
+        from ui.theme_contrast import build_mode_button_css
+
+        self._last_chrome = chrome
+        scale = max(0.5, float(getattr(chrome, "scale", 1.0) or 1.0))
+        inactive = getattr(chrome, "swatch_inactive_border", "") or chrome.border_color
+        shape = getattr(chrome, "swatch_shape", "circle") or "circle"
+        self.preview.set_theme_colors(
+            RINGLESS_ACTIVE_BORDER, inactive, swatch_shape=shape,
+        )
+        wheel = getattr(self.panel, "wheel", None)
+        if wheel is not None and hasattr(wheel, "set_visual_theme"):
+            wheel.set_visual_theme(
+                wheel_style=getattr(chrome, "wheel_style", "default") or "default",
+                ring_border_color=getattr(chrome, "wheel_ring_border", None) or None,
+                slice_border_color=getattr(chrome, "wheel_slice_border", None) or None,
+            )
+        if self.lab_slider is not None and hasattr(self.lab_slider, "set_border_theme"):
+            self.lab_slider.set_border_theme(
+                border_w=int(getattr(chrome, "groove_border_w", 0) or 0),
+                border_color=getattr(chrome, "groove_border_color", "") or "#888888",
+                inner_w=int(getattr(chrome, "groove_inner_border_w", 0) or 0),
+                inner_color=getattr(chrome, "groove_inner_border_color", "") or "#ffffff",
+            )
+        btn_radius = max(0, int(round(int(getattr(chrome, "button_radius", 4)) * scale)))
+        self.mode_btn.setStyleSheet(build_mode_button_css(
+            bg=chrome.background,
+            bar_bg=chrome.bar_bg,
+            fg=getattr(chrome, "bar_text", "") or chrome.text,
+            hover_fg=chrome.text,
+            border=getattr(chrome, "mode_btn_border", "") or chrome.border_color,
+            accent_border=getattr(chrome, "tab_accent_border", "") or "#5a94e2",
+            radius=btn_radius,
+            font_size=int(13 * scale),
+        ))
+        is_sharp_ps = str(getattr(chrome, "tab_style", "default") or "default") == "ps"
         if hasattr(self, "readout"):
             self.readout.set_theme(
                 bg=chrome.background,
@@ -441,6 +469,8 @@ class FloatingWheelPage(QWidget):
                 text=chrome.text,
                 border=chrome.border_color,
                 scale=scale,
+                corner_radius=0.0 if is_sharp_ps else 3.5,
+                chip_radius=0.5 if is_sharp_ps else 1.5,
             )
         self._place_overlays()
 

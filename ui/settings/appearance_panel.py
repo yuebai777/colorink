@@ -219,7 +219,7 @@ class AppearancePanelMixin:
             )
         if hasattr(self, "lbl_fullscreen_grayscale_sub"):
             self.lbl_fullscreen_grayscale_sub.setText(
-                i18n.tr("作用于所选屏幕全屏 · 快捷键：{key}", key=fs_key_disp)
+                i18n.tr("伪全屏覆盖所选屏幕（底部留极窄边缘防卡顿） · 快捷键：{key}", key=fs_key_disp)
             )
         if hasattr(self, "btn_toggle_fullscreen_grayscale"):
             self.btn_toggle_fullscreen_grayscale.setText(
@@ -1444,6 +1444,17 @@ class AppearancePanelMixin:
             i18n.tr("显示标题栏"),
             i18n.tr("隐藏后顶部边框与四周一致；可通过快捷键或托盘恢复"),
             self.cb_show_title_bar
+        ))
+
+        self.cb_show_window_border = QCheckBox(i18n.tr("显示窗口边框"))
+        self.cb_show_window_border.setToolTip(
+            i18n.tr("关闭后隐藏主窗口与浮窗外边框；隐藏标题栏时顶部也不会保留边框")
+        )
+        self.cb_show_window_border.stateChanged.connect(self.save_settings)
+        cl_frame.addWidget(self._make_setting_row(
+            i18n.tr("显示窗口边框"),
+            i18n.tr("显示或隐藏主窗口与浮窗外边框（不影响分组框与滑块边框样式）"),
+            self.cb_show_window_border
         ))
 
         self.cb_lock_position = QCheckBox(i18n.tr("锁定窗口位置"))

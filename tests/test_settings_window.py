@@ -565,3 +565,25 @@ def test_settings_show_hide_tolerate_a_deleted_main_window(sidebar, stub_main_wi
     sidebar.showEvent(QShowEvent())
 
 
+def test_window_border_toggle_control_exists_and_round_trips(sidebar):
+    window_page = sidebar.stack.widget(2)
+    assert window_page.isAncestorOf(sidebar.cb_show_window_border)
+    assert sidebar.cb_show_window_border.isChecked() is True
+
+    sidebar.cb_show_window_border.setChecked(False)
+    sidebar.save_settings()
+    assert sidebar.cfg["showWindowBorder"] is False
+
+    sidebar.cb_show_window_border.setChecked(True)
+    sidebar.save_settings()
+    assert sidebar.cfg["showWindowBorder"] is True
+
+    # Simulate external toggle (e.g. tray menu persisted to disk) followed by refresh_ui()
+    from core import config as core_config
+
+    sidebar.cfg["showWindowBorder"] = False
+    core_config.save_hotkey_config(sidebar.cfg)
+    sidebar.refresh_ui()
+    assert sidebar.cb_show_window_border.isChecked() is False
+
+

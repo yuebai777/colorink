@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import QApplication, QMenu, QWidget
 
 from core import i18n
 from ui.color_model import Color
+from ui.theme_contrast import blend_colors, is_light_color, readable_ink
 
 READOUT_MODES: tuple[str, ...] = (
     "rgb",
@@ -210,6 +211,8 @@ class ColorValueReadout(QWidget):
         self._bar_bg_color = QColor("#e5e5e5")
         self._text_color = QColor("#222222")
         self._border_color = QColor("#c8c8c8")
+        self._corner_radius = 3.5
+        self._chip_radius = 1.5
 
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -274,12 +277,32 @@ class ColorValueReadout(QWidget):
         text: str,
         border: str,
         scale: float | None = None,
+        corner_radius: float | None = None,
+        chip_radius: float | None = None,
     ) -> None:
         """Apply theme palette and optional UI scale."""
-        self._bg_color = QColor(bg)
-        self._bar_bg_color = QColor(bar_bg)
-        self._text_color = QColor(text)
-        self._border_color = QColor(border)
+        def _css_qcolor(val: str) -> QColor:
+            c = QColor(val)
+            if c.isValid():
+                return c
+            s = str(val or "").strip()
+            if s.startswith(("rgba(", "rgb(")) and s.endswith(")"):
+                parts = [p.strip() for p in s[s.index("(") + 1 : -1].split(",")]
+                if len(parts) >= 3:
+                    try:
+                        return QColor(int(float(parts[0])), int(float(parts[1])), int(float(parts[2])))
+                    except ValueError:
+                        pass
+            return QColor("#808080")
+
+        self._bg_color = _css_qcolor(bg)
+        self._bar_bg_color = _css_qcolor(bar_bg)
+        self._text_color = _css_qcolor(text)
+        self._border_color = _css_qcolor(border)
+        if corner_radius is not None:
+            self._corner_radius = max(0.0, float(corner_radius))
+        if chip_radius is not None:
+            self._chip_radius = max(0.0, float(chip_radius))
         if scale is not None:
             new_scale = max(0.5, float(scale))
             if abs(new_scale - self._scale) > 1e-4:
@@ -424,7 +447,7 @@ class ColorValueReadout(QWidget):
         menu.setStyleSheet(
             f"QMenu {{ background-color: {self._bar_bg_color.name()};"
             f" border: 1px solid {self._border_color.name()};"
-            f" color: {self._text_color.name()}; }}"
+            f" color: {readable_ink(self._bar_bg_color.name())}; }}"
             "QMenu::item { padding: 4px 12px; }"
             "QMenu::item:selected { background-color: #5a94e2; color: #ffffff; }"
         )
@@ -452,21 +475,32 @@ class ColorValueReadout(QWidget):
             s, badge_sz, _height, pad_x, inner_gap, field_gap, prefix_gap,
             val_font, val_fm, badge_font, badge_fm, prefix_font, prefix_fm,
         ) = self._layout_metrics()
-        is_dark = self._bg_color.lightness() < 128
+        use_pill = self._pill_backdrop or self._hovered
+        if use_pill:
+            pill_alpha = 220 if self._pill_backdrop else 190
+            surface_hex = blend_colors(
+                self._bg_color.name(), self._bar_bg_color.name(), pill_alpha / 255.0
+            )
+            ink_color = QColor(readable_ink(surface_hex))
+        else:
+            surface_hex = self._bg_color.name()
+            ink_color = self._text_color
+        is_dark = not is_light_color(surface_hex)
 
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         try:
             rect = QRectF(self.rect())
-            if self._pill_backdrop or self._hovered:
+            if use_pill:
                 fill = QColor(self._bar_bg_color)
                 fill.setAlpha(220 if self._pill_backdrop else 190)
                 border = QColor("#5a94e2" if self._hovered else self._border_color)
                 if not self._hovered:
                     border.setAlpha(150)
+                pill_r = self._corner_radius * s
                 path = QPainterPath()
-                path.addRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 3.5 * s, 3.5 * s)
+                path.addRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), pill_r, pill_r)
                 p.fillPath(path, fill)
                 p.setPen(QPen(border, 1.0))
                 p.drawPath(path)
@@ -476,7 +510,7 @@ class ColorValueReadout(QWidget):
 
             if spec.prefix:
                 p.setFont(prefix_font)
-                prefix_color = QColor(self._text_color)
+                prefix_color = QColor(ink_color)
                 prefix_color.setAlpha(175)
                 p.setPen(prefix_color)
                 pw = prefix_fm.horizontalAdvance(spec.prefix)
@@ -498,7 +532,7 @@ class ColorValueReadout(QWidget):
                 b_rect = QRectF(x, cy - badge_sz / 2.0, badge_sz, badge_sz)
                 fill_color = QColor(rgb_chips[badge.chip_index]) if badge.chip_index >= 0 else badge_bg
                 b_path = QPainterPath()
-                radius = min(2.0, 1.5 * s)
+                radius = min(2.0, self._chip_radius * s)
                 b_path.addRoundedRect(b_rect, radius, radius)
                 p.fillPath(b_path, fill_color)
                 if badge.chip_index >= 0:
@@ -516,7 +550,7 @@ class ColorValueReadout(QWidget):
                 x += badge_sz + inner_gap
 
                 p.setFont(val_font)
-                p.setPen(self._text_color)
+                p.setPen(ink_color)
                 slot_w = self._slot_width(val_fm, badge.value, badge.sample)
                 val_w = val_fm.horizontalAdvance(badge.value)
                 tb = val_fm.tightBoundingRect("8")

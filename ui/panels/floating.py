@@ -68,6 +68,22 @@ class PanelChrome:
     top_gap: int = 0
     #: Spacing between different panels/modules in px. The "面板之间间距" setting.
     diff_space: int = 8
+    #: Theme-derived chrome styling shared with tabs, wheels, sliders, swatches, buttons.
+    tab_style: str = "default"
+    tab_border_color: str = ""
+    tab_accent_bg: str = ""
+    tab_accent_border: str = ""
+    button_radius: int = 4
+    mode_btn_border: str = ""
+    swatch_shape: str = "circle"
+    swatch_inactive_border: str = ""
+    wheel_style: str = "default"
+    wheel_ring_border: str = ""
+    wheel_slice_border: str = ""
+    groove_border_w: int = 0
+    groove_border_color: str = ""
+    groove_inner_border_w: int = 0
+    groove_inner_border_color: str = ""
 
 
 #: Grab strip around a frameless window, in px.
@@ -492,12 +508,13 @@ class FloatingPanelWindow(PanelHolder, QWidget):
         chrome = getattr(self, "_chrome", None)
         scale = float(getattr(chrome, "scale", 1.0) or 1.0) if chrome is not None else 1.0
         border = chrome.border_width if chrome is not None else BORDER
+        top_edge = border if (chrome is None or chrome.title_inset) else 0
         bar = (max(12, int(round(PanelTitleBar.FLOATING_HEIGHT * scale)))
                if chrome is not None else PanelTitleBar.FLOATING_HEIGHT)
         pad = chrome.content_margins if chrome is not None else (4, 6, 4, 6)
         gap = chrome.grip_gap if chrome is not None else 4
         top_gap = max(0, int(getattr(chrome, "top_gap", 0) or 0))
-        needed_h = hint_h + bar + border * 2 + int(pad[1]) + int(gap) + top_gap * 2
+        needed_h = hint_h + bar + top_edge + border + int(pad[1]) + int(gap) + top_gap * 2
         if self.panel_host.has_fill_holder() and len(self.panel_ids) <= 1:
             min_w = max(160, int(180 * scale))
             min_h = max(180, int(200 * scale))
@@ -819,6 +836,8 @@ class FloatingPanelWindow(PanelHolder, QWidget):
 
     def apply_chrome(self, chrome: PanelChrome) -> None:
         """Wear the same frame, background and title band as the main window."""
+        prev_chrome = getattr(self, "_chrome", None)
+        prev_bw = prev_chrome.border_width if prev_chrome is not None else chrome.border_width
         self._chrome = chrome
         border_css = (f"{chrome.border_width}px solid {chrome.border_color}"
                       if chrome.border_width > 0 else "none")
@@ -844,7 +863,10 @@ class FloatingPanelWindow(PanelHolder, QWidget):
             int(left), top_margin, int(right), bottom_margin)
         if self.panel_host is not None:
             self.panel_host.apply_chrome(chrome)
-        self.adjust_size_for_content()
+        shrank_frame = chrome.border_width < prev_bw or (
+            prev_chrome is not None and prev_chrome.title_inset and not chrome.title_inset
+        )
+        self.adjust_size_for_content(shrink=shrank_frame)
 
     def _mounted_panel_widgets(self) -> list:
         """The widgets this window's host currently holds, alive ones only."""

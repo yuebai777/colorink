@@ -11,6 +11,10 @@ already uses, so the existing DPI/scale pipeline in `GradientSlider.update_scale
 and `MainWindow.apply_theme` keeps driving the absolute sizes — themes only
 shift the proportions.
 
+`resolve_slider_theme(theme, bg=...)` adapts indicator strokes/fills to the
+active window body colour so every theme remains crisp on white, gray, dark
+and custom eyedropper backgrounds.
+
 Every theme also names the border theme it belongs with (`pairs_with`, see
 `ui/border_themes.py`): the window frame, group frames and value-box chrome
 live there, and the default config key `borderStyle = "auto"` follows this
@@ -20,7 +24,7 @@ Adding a new theme = append a new entry to SLIDER_THEMES. No other file
 needs to change for the data to be picked up.
 """
 
-from typing import Dict, List, Tuple
+from ui.theme_contrast import relative_luma
 
 # Type alias for clarity; keep it loose so callers don't need to import.
 SliderTheme = dict[str, object]
@@ -34,7 +38,7 @@ SLIDER_THEMES: dict[str, SliderTheme] = {
         "groove_radius_factor": 1.0,       # 3px * scale * factor (rounded corner of gradient bar)
         # Handle shape: "rect" uses the native QSlider handle styled via the
         # sheet below; "triangle-below" hides the native handle and draws a
-        # small triangle (apex up) just under the groove in paintEvent.
+        # small triangle / pentagon / caret just under the groove in paintEvent.
         "handle_shape": "rect",
         # Handle (thumb) — only used when handle_shape == "rect"
         "handle_w_factor": 1.6,            # 5px → 8px at 1×
@@ -51,6 +55,7 @@ SLIDER_THEMES: dict[str, SliderTheme] = {
         #                               可写 "transparent" 让槽色透出）
         #                   "caret"   = 只画 "^" 细线，不填充
         "handle_tri_style": "filled",
+        "handle_tri_pentagon": False,      # True = PS 五边形屋顶指针（顶部尖角 + 下半部竖直边）
         # 底边加粗（SAI 的把手：底下压一条比三角略宽的粗黑条，
         # 黑条顶行再压一道浅灰线）。base_width = 0 表示不画，三条边一样粗。
         "handle_tri_base_width": 0,        # 底边厚度 px * scale
@@ -77,7 +82,7 @@ SLIDER_THEMES: dict[str, SliderTheme] = {
         "pairs_with": "default",
     },
     # ── 类 CLIP STUDIO PAINT ─────────────────────────────────
-    # 更窄的渐变槽、细圆角、滑条下方细 "^" 线指示（截图里不是实心三角）。
+    # 更窄的直角渐变槽、滑条下方细 "^" 线指示（截图里不是实心三角）。
     "csp": {
         "display_name": "类 CSP",
         "handle_shape": "triangle-below",
@@ -92,6 +97,7 @@ SLIDER_THEMES: dict[str, SliderTheme] = {
         "handle_hover_bg": "#3a3a3a",
         "handle_hover_border": "#5a94e2",
         "handle_tri_style": "caret",       # 细线 "^"，不填充
+        "handle_tri_pentagon": False,
         "handle_tri_base_width": 0,
         "handle_tri_base_overhang": 0,
         "handle_tri_base_color": "#000000",
@@ -99,7 +105,7 @@ SLIDER_THEMES: dict[str, SliderTheme] = {
         "handle_tri_size_w": 7,            # 截图实测：指示总宽约 14px
         "handle_tri_size_h": 7,            # 截图实测：指示高约 7px
         "handle_tri_offset_y": 2,          # 截图实测：与槽的间距约 2px
-        "handle_tri_color": "#717171",     # 截图实测线条灰
+        "handle_tri_color": "#717171",     # 截图实测线条灰（运行时会随背景自适应）
         "handle_tri_border": "#717171",
         "handle_tri_border_width": 1,
         "row_spacing": 2,
@@ -107,17 +113,17 @@ SLIDER_THEMES: dict[str, SliderTheme] = {
         "channel_label_weight": "bold",
         "value_label_width_factor": 1.0,
         "value_label_radius_factor": 0.67,
-        "value_label_padding": "0px 0px",
-        "value_label_align": "right",      # 截图里数值靠右（右边还有微调箭头）
+        "value_label_padding": "0px 2px",
+        "value_label_align": "right",      # 截图里数值靠右
         "pairs_with": "csp",
     },
     # ── 类 SAI ───────────────────────────────────────────────
-    # 更厚实的渐变槽、槽下方空心黑边三角、常规字重字母、数值纯文本无框。
+    # 厚实的渐变槽 + 双层凹槽边框 + 槽下方空心黑边三角 + 常规字重字母 + 右对齐纯文本。
     "sai": {
         "display_name": "类 SAI",
         "handle_shape": "triangle-below",
         "groove_h_factor": 0.8125,         # 截图实测：槽高约 13px
-        "groove_radius_factor": 0.33,      # 截图实测：约 0 / 极小圆角
+        "groove_radius_factor": 0.25,      # 极小圆角 / 近直角
         "handle_w_factor": 0.8,
         "handle_h_factor": 1.25,
         "handle_margin_y_factor": 1.0,
@@ -129,6 +135,7 @@ SLIDER_THEMES: dict[str, SliderTheme] = {
         # 放大截图数出来的形状：8 行高、总宽 13px、内部中空，
         # 底下是 2px 实心黑条（比三角每侧宽 1px），黑条顶行压一道浅灰线。
         "handle_tri_style": "outline",     # 空心三角 + 1px 黑描边
+        "handle_tri_pentagon": False,
         "handle_tri_base_width": 2,        # 底边那条粗黑条
         "handle_tri_base_overhang": 1,     # 黑条每侧比三角多出 1px（5.5+1 → 总宽 13）
         "handle_tri_base_color": "#000000",
@@ -149,7 +156,7 @@ SLIDER_THEMES: dict[str, SliderTheme] = {
         "pairs_with": "sai",
     },
     # ── 类 PHOTOSHOP ─────────────────────────────────────────
-    # 紧凑、直角、滑条下方白色实心三角（截图里没有深色描边）。
+    # 紧凑、直角、滑条下方白色五边形实心指针（运行时按背景明暗加细腻边缘防融色）。
     "ps": {
         "display_name": "类 PS",
         "handle_shape": "triangle-below",
@@ -163,12 +170,13 @@ SLIDER_THEMES: dict[str, SliderTheme] = {
         "handle_border": "#000000",
         "handle_hover_bg": "#1e1e1e",
         "handle_hover_border": "#5a94e2",
-        "handle_tri_style": "filled",      # 白色实心，无描边
+        "handle_tri_style": "filled",      # 白色实心
+        "handle_tri_pentagon": True,       # PS 标志性五边形小房子滑块指针
         "handle_tri_base_width": 0,
         "handle_tri_base_overhang": 0,
         "handle_tri_base_color": "#000000",
         "handle_tri_inner_line_color": "none",
-        "handle_tri_size_w": 7,            # 截图实测：三角总宽约 15px
+        "handle_tri_size_w": 7,            # 截图实测：指示总宽约 15px
         "handle_tri_size_h": 9,
         "handle_tri_offset_y": 0,          # 截图里三角顶点直接贴着槽底，没有留缝
         "handle_tri_color": "#ffffff",
@@ -179,7 +187,7 @@ SLIDER_THEMES: dict[str, SliderTheme] = {
         "channel_label_weight": "bold",
         "value_label_width_factor": 1.25,  # 截图里数值框比另外两家宽
         "value_label_radius_factor": 0.0,
-        "value_label_padding": "0px 3px",
+        "value_label_padding": "0px 4px",
         "value_label_align": "left",
         "pairs_with": "ps",
     },
@@ -191,6 +199,49 @@ DEFAULT_SLIDER_THEME = "default"
 def get_slider_theme(name) -> SliderTheme:
     """Resolve a slider theme key to its dict. Falls back to default."""
     return SLIDER_THEMES.get(name, SLIDER_THEMES[DEFAULT_SLIDER_THEME])
+
+
+def resolve_slider_theme(theme: SliderTheme, *, bg: str | None = None) -> SliderTheme:
+    """Return a copy of *theme* with handle contrast adapted to *bg*.
+
+    Keeps the raw ``SLIDER_THEMES`` entries pure data (and preserves existing
+    snapshot assertions), while preventing light handles from vanishing on
+    white panels or dark handles from vanishing on black panels.
+    """
+    resolved = dict(theme)
+    if bg is None:
+        return resolved
+
+    luma = relative_luma(bg)
+    is_light = luma >= 128.0
+    pairs = str(resolved.get("pairs_with", ""))
+
+    if pairs == "csp":
+        caret = "#606060" if luma >= 200.0 else ("#2d2d2d" if is_light else "#d0d0d0")
+        resolved["handle_tri_color"] = caret
+        resolved["handle_tri_border"] = caret
+    elif pairs == "sai":
+        if not is_light:
+            resolved["handle_tri_color"] = "#2c2c2c"
+            resolved["handle_tri_border"] = "#e2e2e2"
+            resolved["handle_tri_base_color"] = "#e2e2e2"
+            resolved["handle_tri_inner_line_color"] = "#7a7a7a"
+    elif pairs == "ps":
+        if luma >= 215.0:
+            # White/very-light panel: crisp border keeps the white thumb readable.
+            resolved["handle_tri_color"] = "#ffffff"
+            resolved["handle_tri_border"] = "#686868"
+            resolved["handle_tri_border_width"] = 1
+        elif is_light:
+            resolved["handle_tri_color"] = "#ffffff"
+            resolved["handle_tri_border"] = "#727272"
+            resolved["handle_tri_border_width"] = 1
+        else:
+            resolved["handle_tri_color"] = "#eaeaea"
+            resolved["handle_tri_border"] = "#181818"
+            resolved["handle_tri_border_width"] = 1
+
+    return resolved
 
 
 def list_slider_theme_names() -> list[tuple[str, str]]:

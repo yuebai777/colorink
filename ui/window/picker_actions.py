@@ -1124,24 +1124,46 @@ class PickerActionsMixin:
         self.move(x, y)
         self.show()
 
+    def _needs_foreground_tracker(self) -> bool:
+        sync_software = self.cfg.get("syncSoftware", "auto")
+        sync_thread = getattr(self, "sync_thread", None)
+        active_mode = getattr(sync_thread, "software_mode", None) if sync_thread is not None else None
+        return bool(
+            self.cfg.get("onlyShowInCsp", False)
+            or self.cfg.get("hideOnPopupMenu", False)
+            or sync_software in ("auto", "companion", "csp")
+            or active_mode == "companion"
+        )
+
     def init_foreground_tracker(self):
         from PyQt6.QtCore import QTimer
         self.foreground_timer = QTimer(self)
         self.foreground_timer.setInterval(100)
         self.foreground_timer.timeout.connect(self.check_foreground_window)
-        # Poll while onlyShowInCsp, hideOnPopupMenu, or auto sync switching is active
-        is_auto_sync = (self.cfg.get("syncSoftware", "auto") == "auto")
-        if (self.cfg.get("onlyShowInCsp", False)
-                or self.cfg.get("hideOnPopupMenu", False)
-                or is_auto_sync):
+        # Poll while onlyShowInCsp, hideOnPopupMenu, auto sync, or CSP companion watch is active
+        if self._needs_foreground_tracker():
             self.foreground_timer.start()
             self.check_foreground_window()
 
     def check_foreground_window(self):
+        if getattr(self, "_qr_scan_hiding", False):
+            return
+
         only_show_in_csp = bool(self.cfg.get("onlyShowInCsp", False))
         hide_on_popup_menu = bool(self.cfg.get("hideOnPopupMenu", False))
-        is_auto_sync = bool(self.cfg.get("syncSoftware", "auto") == "auto")
-        if not only_show_in_csp and not hide_on_popup_menu and not is_auto_sync:
+        sync_software = self.cfg.get("syncSoftware", "auto")
+        is_auto_sync = bool(sync_software == "auto")
+        sync_thread = getattr(self, "sync_thread", None)
+        active_mode = getattr(sync_thread, "software_mode", None) if sync_thread is not None else None
+        is_companion_watch = bool(
+            sync_software in ("companion", "csp")
+            or active_mode == "companion"
+            or getattr(self, "_companion_dialog", None) is not None
+            or getattr(self, "_qr_obscuring_hidden", False)
+            or getattr(self, "_qr_hidden_settings", False)
+        )
+        if (not only_show_in_csp and not hide_on_popup_menu
+                and not is_auto_sync and not is_companion_watch):
             return
 
         try:
@@ -1228,6 +1250,48 @@ class PickerActionsMixin:
                     if callable(maybe_prompt):
                         maybe_prompt()
 
+        if detected_app == "csp":
+            if (
+                getattr(self, "_companion_reconnect_pending", False)
+                and not getattr(self, "_companion_reconnect_prompted", False)
+                and not getattr(self, "_companion_prompt_scheduled", False)
+            ):
+                maybe_reprompt = getattr(self, "maybe_prompt_companion_reconnection", None)
+                if callable(maybe_reprompt):
+                    from PyQt6.QtCore import QTimer
+                    self._companion_prompt_scheduled = True
+                    QTimer.singleShot(800, maybe_reprompt)
+        elif detected_app is not None and detected_app != "csp":
+            dlg = getattr(self, "_companion_dialog", None)
+            if dlg is not None and getattr(dlg, "_auto_prompt", False):
+                try:
+                    dlg.reject()
+                    self._companion_reconnect_prompted = False
+                    self._companion_reconnect_pending = True
+                except Exception:
+                    pass
+
+        dlg = getattr(self, "_companion_dialog", None)
+        if (
+            only_show_in_csp
+            and dlg is not None
+            and getattr(dlg, "_auto_prompt", False)
+            and not getattr(dlg, "is_scanning", lambda: False)()
+        ):
+            if is_drawing_active or is_our_focused:
+                if getattr(self, "_companion_dialog_fg_hidden", False) and not getattr(self, "_qr_hidden_dialog", False):
+                    self._companion_dialog_fg_hidden = False
+                    from ui.window.sync_mixin import _show_without_stealing_focus
+                    _show_without_stealing_focus(dlg, raise_win=True)
+            else:
+                if dlg.isVisible():
+                    self._companion_dialog_fg_hidden = True
+                    dlg.hide()
+
+        sync_qr = getattr(self, "_sync_qr_overlap_visibility", None)
+        if callable(sync_qr):
+            sync_qr(_in_foreground_tick=True)
+
         menu_open = False
         if hide_on_popup_menu and not is_our_focused:
             # Never treat Colorink's own active QMenu popup as a drawing-app menu
@@ -1270,6 +1334,10 @@ class PickerActionsMixin:
             picker = getattr(self, "picker_overlay", None)
             if picker is not None and picker.is_active:
                 should_be_visible = True
+
+            # Temporarily hide when overlapping CSP's Companion QR dialog
+            if getattr(self, "_qr_obscuring_hidden", False):
+                should_be_visible = False
 
             # If follow_mouse_active is enabled and the window is visible, avoid auto-hiding it.
             if (getattr(self, "follow_mouse_active", False) and self.isVisible()
@@ -1317,73 +1385,24 @@ class PickerActionsMixin:
             self.title_bar.setVisible(self.cfg.get("showTitleBar", True))
         if hasattr(self, "tray_title_action"):
             self.tray_title_action.setChecked(self.cfg.get("showTitleBar", True))
+        if hasattr(self, "tray_border_action"):
+            self.tray_border_action.setChecked(self.cfg.get("showWindowBorder", True))
 
         # Update grayscale controller
-        new_backend = self.cfg.get("grayscaleFilterBackend", "dcomp")
-        if new_backend not in ("dcomp", "native", "mag"):
-            new_backend = "dcomp"
-        new_mode = self.cfg.get("grayscaleFilterMode", "oklch")
-        if new_mode not in ("oklch", "luma"):
-            new_mode = "oklch"
-        cls_name = type(self.grayscale_overlay).__name__
-        if cls_name == "DCompGrayscaleController":
-            current_backend = "dcomp"
-        elif cls_name == "MagFilterController":
-            current_backend = "mag"
-        else:
-            current_backend = "native"
-
-        if new_backend != current_backend:
-            self.grayscale_overlay.set_active(False)
-            close_fn = getattr(self.grayscale_overlay, "close", None)
-            if callable(close_fn):
-                close_fn()
-            if new_backend == "mag":
-                from core.mag_grayscale import MagFilterController
-                self.grayscale_overlay = MagFilterController(mode="luma")
-            elif new_backend == "native":
-                from core.native_grayscale import NativeGrayscaleController
-                self.grayscale_overlay = NativeGrayscaleController(mode=new_mode)
-            else:  # dcomp
-                from core.dcomp_grayscale import DCompGrayscaleController
-                dcomp_ctrl = DCompGrayscaleController(mode=new_mode)
-                if dcomp_ctrl.is_available and dcomp_ctrl.is_healthy:
-                    self.grayscale_overlay = dcomp_ctrl
-                else:
-                    from core.native_grayscale import NativeGrayscaleController
-                    fallback = NativeGrayscaleController(mode=new_mode)
-                    if fallback.is_available:
-                        self.grayscale_overlay = fallback
-                    else:
-                        from core.mag_grayscale import MagFilterController
-                        self.grayscale_overlay = MagFilterController(mode="luma")
-        screen_target = self.cfg.get("grayscaleFilterScreen", "all")
-        self.grayscale_overlay.set_target(screen_target)
-        self.grayscale_overlay.set_mode(
-            "luma" if new_backend == "mag" else new_mode
-        )
-        region_ctrl = getattr(self, "region_grayscale_overlay", None)
-        if region_ctrl is not None:
-            from core.region_grayscale import (
-                active_region_tuples,
-                read_region_entries_from_config,
-            )
-            region_ctrl.set_backend("mag" if new_backend == "mag" else "auto")
-            region_ctrl.set_target(screen_target)
-            region_ctrl.set_mode("luma" if new_backend == "mag" else new_mode)
-            region_ctrl.set_regions(active_region_tuples(read_region_entries_from_config(self.cfg)))
+        PickerActionsMixin._apply_grayscale_settings_from_cfg(self)
 
         # Update window flags dynamically
         self.update_window_flags()
         self.update_no_focus_policies()
 
-        # Keep the foreground tracker running while onlyShowInCsp, hideOnPopupMenu, or auto sync is on
+        # Keep the foreground tracker running while onlyShowInCsp, hideOnPopupMenu,
+        # auto sync, or CSP companion watch is on
         fg_timer = getattr(self, "foreground_timer", None)
-        is_auto_sync = (self.cfg.get("syncSoftware", "auto") == "auto")
-        need_tracker = bool(
+        needs_fn = getattr(self, "_needs_foreground_tracker", None)
+        need_tracker = needs_fn() if callable(needs_fn) else bool(
             self.cfg.get("onlyShowInCsp", False)
             or self.cfg.get("hideOnPopupMenu", False)
-            or is_auto_sync
+            or (self.cfg.get("syncSoftware", "auto") in ("auto", "companion", "csp"))
         )
         if need_tracker:
             if fg_timer is not None and not fg_timer.isActive():
@@ -1650,6 +1669,72 @@ class PickerActionsMixin:
 
     # ── Fullscreen & Window / Region Grayscale Filter ────────────────────
 
+    def _apply_grayscale_settings_from_cfg(self) -> None:
+        """Synchronize fullscreen and region grayscale controllers with ``self.cfg``."""
+        new_backend = self.cfg.get("grayscaleFilterBackend", "dcomp")
+        if new_backend not in ("dcomp", "native", "mag"):
+            new_backend = "dcomp"
+        new_mode = self.cfg.get("grayscaleFilterMode", "oklch")
+        if new_mode not in ("oklch", "luma"):
+            new_mode = "oklch"
+        cls_name = type(self.grayscale_overlay).__name__
+        if cls_name == "DCompGrayscaleController":
+            current_backend = "dcomp"
+        elif cls_name == "MagFilterController":
+            current_backend = "mag"
+        else:
+            current_backend = "native"
+
+        was_fs_active = self.grayscale_overlay.is_active is True
+        if new_backend != current_backend:
+            self.grayscale_overlay.set_active(False)
+            close_fn = getattr(self.grayscale_overlay, "close", None)
+            if callable(close_fn):
+                close_fn()
+            if new_backend == "mag":
+                from core.mag_grayscale import MagFilterController
+                self.grayscale_overlay = MagFilterController(mode="luma")
+            elif new_backend == "native":
+                from core.native_grayscale import NativeGrayscaleController
+                self.grayscale_overlay = NativeGrayscaleController(mode=new_mode)
+            else:  # dcomp
+                from core.dcomp_grayscale import DCompGrayscaleController
+                dcomp_ctrl = DCompGrayscaleController(mode=new_mode)
+                if dcomp_ctrl.is_available and dcomp_ctrl.is_healthy:
+                    self.grayscale_overlay = dcomp_ctrl
+                else:
+                    from core.native_grayscale import NativeGrayscaleController
+                    fallback = NativeGrayscaleController(mode=new_mode)
+                    if fallback.is_available:
+                        self.grayscale_overlay = fallback
+                    else:
+                        from core.mag_grayscale import MagFilterController
+                        self.grayscale_overlay = MagFilterController(mode="luma")
+        screen_target = self.cfg.get("grayscaleFilterScreen", "all")
+        self.grayscale_overlay.set_target(screen_target)
+        self.grayscale_overlay.set_mode(
+            "luma" if new_backend == "mag" else new_mode
+        )
+        if new_backend != current_backend and was_fs_active:
+            if not self.grayscale_overlay.set_active(True):
+                err = getattr(self.grayscale_overlay, "last_error", "")
+                if err:
+                    from PyQt6.QtWidgets import QMessageBox
+                    QMessageBox.warning(self, "灰度滤镜", err)
+        region_ctrl = getattr(self, "region_grayscale_overlay", None)
+        if region_ctrl is not None:
+            from core.region_grayscale import (
+                active_region_tuples,
+                read_region_entries_from_config,
+            )
+            region_ctrl.set_backend("mag" if new_backend == "mag" else "auto")
+            region_ctrl.set_target(screen_target)
+            region_ctrl.set_mode("luma" if new_backend == "mag" else new_mode)
+            region_ctrl.set_regions(active_region_tuples(read_region_entries_from_config(self.cfg)))
+        sync_ui = getattr(self, "_sync_sidebar_grayscale_ui", None)
+        if callable(sync_ui):
+            sync_ui()
+
     def _sync_sidebar_grayscale_ui(self) -> None:
         sidebar = getattr(self, "settings_sidebar", None)
         if sidebar is None:
@@ -1773,12 +1858,20 @@ class PickerActionsMixin:
                 fs_ctrl = getattr(self, "grayscale_overlay", None)
                 if fs_ctrl is not None and fs_ctrl.is_active:
                     fs_ctrl.set_active(False)
-                region_ctrl.set_active(True)
+                if not region_ctrl.set_active(True):
+                    err = getattr(region_ctrl, "last_error", "")
+                    if err:
+                        from PyQt6.QtWidgets import QMessageBox
+                        QMessageBox.warning(self, "区域灰度滤镜", err)
         elif activate_region is None:
             if resume == "region":
                 region_ctrl = getattr(self, "region_grayscale_overlay", None)
                 if region_ctrl is not None and not region_ctrl.is_active:
-                    region_ctrl.set_active(True)
+                    if not region_ctrl.set_active(True):
+                        err = getattr(region_ctrl, "last_error", "")
+                        if err:
+                            from PyQt6.QtWidgets import QMessageBox
+                            QMessageBox.warning(self, "区域灰度滤镜", err)
             elif resume == "fullscreen":
                 fs_ctrl = getattr(self, "grayscale_overlay", None)
                 if fs_ctrl is not None and not fs_ctrl.is_active:

@@ -104,6 +104,85 @@ def clip_out_circle(
     painter.setClipPath(clip.subtracted(hole))
 
 
+def clip_out_square(
+    painter: QPainter, rect: QRect, cx: float, cy: float, half: float,
+) -> None:
+    """Clip *painter* to *rect* minus the front square centred at *(cx, cy)*."""
+    clip = QPainterPath()
+    clip.addRect(QRectF(rect))
+    hole = QPainterPath()
+    hole.addRect(QRectF(cx - half, cy - half, half * 2.0, half * 2.0))
+    painter.setClipPath(clip.subtracted(hole))
+
+
+def draw_square_swatch(
+    painter: QPainter,
+    cx: float,
+    cy: float,
+    half: float,
+    color: QColor,
+    active: bool,
+    active_border: QColor,
+    inactive_border: QColor,
+) -> None:
+    """Draw a PS-style square swatch with crisp inner white rim and outer frame."""
+    outer_rect = QRectF(cx - half, cy - half, half * 2.0, half * 2.0)
+    bw = 2.0 if active else 1.0
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+    # Fill colour core inside a 1px white inner border + outer frame.
+    inset_fill = bw + 1.0
+    fill_rect = outer_rect.adjusted(inset_fill, inset_fill, -inset_fill, -inset_fill)
+    if fill_rect.width() > 0 and fill_rect.height() > 0:
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(color))
+        painter.drawRect(fill_rect)
+    # 1px inner crisp white (or subtle light gray if fill itself is very bright white)
+    inner_rim = QColor("#e2e2e2") if (not active and color.lightness() > 240) else QColor("#ffffff")
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.setPen(QPen(inner_rim, 1.0))
+    painter.drawRect(outer_rect.adjusted(bw + 0.5, bw + 0.5, -(bw + 0.5), -(bw + 0.5)))
+    # Outer active/inactive frame
+    painter.setPen(QPen(active_border if active else inactive_border, bw))
+    painter.drawRect(outer_rect.adjusted(bw / 2.0, bw / 2.0, -bw / 2.0, -bw / 2.0))
+    painter.restore()
+
+
+def paint_legacy_square_swatches(box, painter: QPainter) -> None:
+    """Paint overlapping PS-style square fg/bg swatches inside *box*'s geometry."""
+    fg_cx, fg_cy, fg_r, bg_cx, bg_cy, bg_r = box.legacy_circle_geometry()
+    fg_half = max(4.0, fg_r * 0.84)
+    bg_half = max(4.0, bg_r * 0.84)
+    fg_active = box.active_slot == "fg" and not box.fg_transparent
+    bg_active = box.active_slot == "bg" and not box.bg_transparent
+    if box.active_slot == "fg":
+        clip_out_square(painter, box.rect(), fg_cx, fg_cy, fg_half)
+        draw_square_swatch(painter, bg_cx, bg_cy, bg_half, box.bg_color, bg_active,
+                           box.active_border_color, box.inactive_border_color)
+        painter.setClipping(False)
+        draw_square_swatch(painter, fg_cx, fg_cy, fg_half, box.fg_color, fg_active,
+                           box.active_border_color, box.inactive_border_color)
+    else:
+        clip_out_square(painter, box.rect(), bg_cx, bg_cy, bg_half)
+        draw_square_swatch(painter, fg_cx, fg_cy, fg_half, box.fg_color, fg_active,
+                           box.active_border_color, box.inactive_border_color)
+        painter.setClipping(False)
+        draw_square_swatch(painter, bg_cx, bg_cy, bg_half, box.bg_color, bg_active,
+                           box.active_border_color, box.inactive_border_color)
+
+
+def hit_test_square_swatch(box, px: float, py: float) -> str | None:
+    """Hit-test PS-style square swatches respecting z-order."""
+    fg_cx, fg_cy, fg_r, bg_cx, bg_cy, bg_r = box.legacy_circle_geometry()
+    fg_half = max(4.0, fg_r * 0.84)
+    bg_half = max(4.0, bg_r * 0.84)
+    in_fg = abs(px - fg_cx) <= fg_half and abs(py - fg_cy) <= fg_half
+    in_bg = abs(px - bg_cx) <= bg_half and abs(py - bg_cy) <= bg_half
+    if box.active_slot == "fg":
+        return "fg" if in_fg else ("bg" if in_bg else None)
+    return "bg" if in_bg else ("fg" if in_fg else None)
+
+
 def _checker_pixmap(cell: int = 4, dpr: float = 1.0) -> QPixmap:
     """Build a crisp High-DPI 2×2 checkerboard tile for QBrush."""
     ratio = max(1.0, float(dpr))
@@ -156,8 +235,15 @@ class TransparentTile(QWidget):
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
         self._hover = False
+        self._sharp_corners = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMouseTracking(True)
+
+    def set_sharp_corners(self, sharp: bool) -> None:
+        sharp = bool(sharp)
+        if self._sharp_corners != sharp:
+            self._sharp_corners = sharp
+            self.update()
 
     @staticmethod
     def metrics(scale: float = 1.0) -> tuple[int, int]:
@@ -254,7 +340,7 @@ class TransparentTile(QWidget):
             if layout is not None and bool(
                 getattr(layout, "controls_enabled", False)
             ):
-                radius = max(0.0, float(layout.corner_radius) - inset + 0.5)
+                radius = 1.0 if self._sharp_corners else max(0.0, float(layout.corner_radius) - inset + 0.5)
                 painter.setBrush(QBrush(_checker_pixmap(4, dpr)))
                 painter.setPen(QPen(border_color, stroke_w))
                 painter.drawRoundedRect(rect, radius, radius)
@@ -266,12 +352,12 @@ class TransparentTile(QWidget):
                     max(1.0, self.width() - 2.0 * inner_inset),
                     max(1.0, self.height() - 2.0 * inner_inset),
                 )
-                inner_radius = inner_rect.height() / 2.0
+                inner_radius = 0.0 if self._sharp_corners else (inner_rect.height() / 2.0)
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QBrush(_checker_pixmap(4, dpr)))
                 painter.drawRoundedRect(inner_rect, inner_radius, inner_radius)
 
-                radius = rect.height() / 2.0
+                radius = 1.0 if self._sharp_corners else (rect.height() / 2.0)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.setPen(QPen(border_color, stroke_w))
                 painter.drawRoundedRect(rect, radius, radius)

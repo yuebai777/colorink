@@ -19,7 +19,7 @@ from core.foreground import focus_guard
 from ui import preview_clearance, window_layout
 from ui.hotkey_button import MOUSE_BUTTON_NAME_BY_QT, capture_active, parse_key_event
 from ui.picker_panes import visible_picker_chrome_height
-from ui.ringless_mode import RinglessConfig, resolve_ringless_layout
+from ui.ringless_mode import RinglessConfig, RinglessLayout, resolve_ringless_layout
 from ui.widgets import _title_bar_content_offset, _visible_title_bar_height
 
 
@@ -48,6 +48,352 @@ _OCR_CURSOR_BY_SHAPE = {
     Qt.CursorShape.PointingHandCursor: 32649,   # OCR_HAND
     Qt.CursorShape.ForbiddenCursor: 32648,      # OCR_NO
 }
+
+
+def _ringless_control_bar_height(cfg, scale: float) -> int:
+    """Return the ringless control bar height from ``ui.ringless_mode``."""
+    if not isinstance(cfg, dict) or not cfg.get("hideHueRing", False):
+        return 0
+    rc = RinglessConfig.from_values(
+        True,
+        cfg.get("ringlessControlsSide", "right"),
+        cfg.get("ringlessControlBarPosition", "top"),
+    )
+    return resolve_ringless_layout(rc, True, scale).control_bar_height
+
+
+def _target_picker_height(
+    eff_width,
+    margins_left,
+    margins_right,
+    stack_min_height,
+    cfg,
+    scale: float,
+) -> int:
+    """Single source of truth for the desired picker stack height.
+
+    Normal mode targets a square matching available width; ringless mode adds
+    the control bar height so the SV slice still receives a full square.
+    """
+    square = window_layout.picker_square_height(
+        eff_width, margins_left, margins_right, 0
+    )
+    cb_h = _ringless_control_bar_height(cfg, scale)
+    return max(int(stack_min_height), square + cb_h)
+
+
+def _stack_intrinsic_min_height(stack, *, include_current_min: bool = False) -> int:
+    """Read intrinsic minimum height of *stack* without circular height ratcheting."""
+    if stack is None:
+        return 0
+    result = 0
+    msh = getattr(stack, "minimumSizeHint", None)
+    if callable(msh):
+        try:
+            val = msh().height()
+            if isinstance(val, (int, float)):
+                result = max(result, int(val))
+        except (TypeError, ValueError, AttributeError, RuntimeError):
+            pass
+    if include_current_min:
+        mh = getattr(stack, "minimumHeight", None)
+        if callable(mh):
+            try:
+                val = mh()
+                if isinstance(val, (int, float)):
+                    result = max(result, int(val))
+            except (TypeError, ValueError, AttributeError, RuntimeError):
+                pass
+    return result
+
+
+def _measured_sliders_height(win) -> tuple[int, bool]:
+    """Return ``(sliders_height, sliders_visible)`` matching layout constraints."""
+    sc = getattr(win, "sliders_container", None)
+    host = getattr(win, "panel_host", None)
+    sc_hidden = False
+    if sc is not None:
+        is_hidden = getattr(sc, "isHidden", None)
+        if callable(is_hidden):
+            try:
+                sc_hidden = bool(is_hidden() is True)
+            except RuntimeError:
+                sc_hidden = False
+    if sc_hidden:
+        return 0, False
+
+    hint = 0
+    if host is not None:
+        col_fn = getattr(host, "column_hint", None)
+        if callable(col_fn):
+            try:
+                raw_col = col_fn()
+                if isinstance(raw_col, (int, float)):
+                    hint = int(raw_col)
+            except (TypeError, ValueError, AttributeError, RuntimeError):
+                pass
+        if hint <= 0:
+            for fn_name in ("sizeHint", "minimumSizeHint"):
+                fn = getattr(host, fn_name, None)
+                if callable(fn):
+                    try:
+                        val = fn().height()
+                        if isinstance(val, (int, float)):
+                            hint = max(hint, int(val))
+                    except (TypeError, ValueError, AttributeError, RuntimeError):
+                        pass
+    elif sc is not None:
+        sh = getattr(sc, "sizeHint", None)
+        if callable(sh):
+            try:
+                val = sh().height()
+                if isinstance(val, (int, float)):
+                    hint = int(val)
+            except (TypeError, ValueError, AttributeError, RuntimeError):
+                pass
+
+    outer = (
+        sc.layout()
+        if sc is not None and callable(getattr(sc, "layout", None))
+        else None
+    )
+    if host is not None and outer is not None and hint > 0:
+        hm = outer.contentsMargins()
+        extra_spacing = outer.spacing() * max(0, outer.count() - 1)
+        hint += hm.top() + hm.bottom() + extra_spacing
+
+    if hint > 0 and sc is not None:
+        # With a mounted PanelHost, only enforce minimumSizeHint() as a floor so
+        # background tab pages never inflate the window while layout minimums stay covered.
+        fn_names = (
+            ("minimumSizeHint",) if host is not None else ("sizeHint", "minimumSizeHint")
+        )
+        for fn_name in fn_names:
+            fn = getattr(sc, fn_name, None)
+            if callable(fn):
+                try:
+                    val = fn().height()
+                    if isinstance(val, (int, float)):
+                        hint = max(hint, int(val))
+                except (TypeError, ValueError, AttributeError, RuntimeError):
+                    pass
+    return max(0, int(hint)), True
+
+
+def _activate_slider_layouts(win) -> None:
+    """Invalidate and activate panel/slider layouts so size hints are fresh."""
+    host = getattr(win, "panel_host", None)
+    if host is not None:
+        hl = host.layout()
+        if hl is not None:
+            hl.invalidate()
+        host.updateGeometry()
+        if hl is not None:
+            hl.activate()
+    sc = getattr(win, "sliders_container", None)
+    if sc is not None:
+        sc.updateGeometry()
+    sl = getattr(win, "sliders_layout", None)
+    if sl is not None:
+        sl.invalidate()
+        sl.activate()
+    central = getattr(win, "central", None)
+    if central is not None:
+        central.updateGeometry()
+    ml = getattr(win, "main_layout", None)
+    if ml is not None:
+        ml.activate()
+
+
+def _available_picker_height(
+    win,
+    *,
+    window_height: int | None = None,
+    margins=None,
+    top_chrome_h: int | None = None,
+    band_sp: int | None = None,
+    top_sp: int | None = None,
+) -> int | None:
+    """Upper bound on picker stack height that fits cleanly above sliders.
+
+    Returns ``None`` on simplified unit-test harnesses without a real central layout.
+    """
+    central = getattr(win, "central", None)
+    main_layout = getattr(win, "main_layout", None)
+    if central is None or main_layout is None:
+        return None
+    try:
+        raw_h = window_height if window_height is not None else win.height()
+    except (TypeError, ValueError, AttributeError, RuntimeError):
+        return None
+    if not isinstance(raw_h, (int, float)) or int(raw_h) <= 0:
+        return None
+    total_h = int(raw_h)
+
+    if margins is None:
+        margins = main_layout.contentsMargins()
+
+    if top_chrome_h is None:
+        pdrop = getattr(win, "picker_drop", None)
+        extra_top = pdrop.extra_top_height() if pdrop is not None else 0
+        tb = getattr(win, "title_bar", None)
+        tb_h = _visible_title_bar_height(tb) if tb is not None else 0
+        top_chrome_h = tb_h + visible_picker_chrome_height(win) + extra_top
+
+    if band_sp is None:
+        band_fn = getattr(win, "_band_spacing", None)
+        band_sp = band_fn() if callable(band_fn) else main_layout.spacing()
+    if top_sp is None:
+        top_fn = getattr(win, "_top_stack_spacing", None)
+        top_sp = top_fn() if callable(top_fn) else band_sp
+
+    top_spacer = getattr(win, "_top_stack_gap", None)
+    effective_top_sp = (
+        0
+        if (top_spacer is not None and top_spacer.isHidden())
+        else max(0, int(top_sp))
+    )
+
+    sliders_h, sliders_visible = _measured_sliders_height(win)
+    bot_spacer = getattr(win, "_stack_sliders_gap", None)
+    if not sliders_visible or (bot_spacer is not None and bot_spacer.isHidden()):
+        bottom_band_sp = 0
+    else:
+        bottom_band_sp = max(0, int(band_sp))
+
+    consumed = (
+        margins.top() + margins.bottom()
+        + int(top_chrome_h)
+        + effective_top_sp
+        + bottom_band_sp
+        + sliders_h
+    )
+    return max(0, total_h - consumed)
+
+
+def _apply_stack_height_bounds(
+    win,
+    target_height: int,
+    ringless: bool,
+    *,
+    available_height: int | None = None,
+    active: bool = True,
+) -> tuple[int, int]:
+    """Apply picker stack min/max height bounds once without overlap.
+
+    ``stack.minimumHeight`` never exceeds ``available_height`` so the picker yields
+    before Qt can push it underneath ``sliders_container``.
+    """
+    stack = getattr(win, "stack", None)
+    if stack is None:
+        return (0, 0)
+    if not active:
+        if stack.minimumHeight() != 0:
+            stack.setMinimumHeight(0)
+        if stack.maximumHeight() != 0:
+            stack.setMaximumHeight(0)
+        return (0, 0)
+
+    target = max(0, int(target_height))
+    min_h = (
+        min(target, max(0, int(available_height)))
+        if available_height is not None
+        else target
+    )
+    max_h = 16777215 if ringless else target
+    cur_max = stack.maximumHeight()
+    if isinstance(cur_max, int) and max_h > cur_max:
+        stack.setMaximumHeight(max_h)
+    if stack.minimumHeight() != min_h:
+        stack.setMinimumHeight(min_h)
+    if stack.maximumHeight() != max_h:
+        stack.setMaximumHeight(max_h)
+    return (min_h, max_h)
+
+
+def _compute_content_height_state(win):
+    """Compute ``(required, visualizer_h, ringless, picker_active, avail_kwargs)``."""
+    sync_spacers = getattr(win, "_sync_band_spacers", None)
+    if callable(sync_spacers):
+        sync_spacers()
+    _activate_slider_layouts(win)
+    margins = win.main_layout.contentsMargins()
+    cfg = getattr(win, "cfg", None)
+    has_real_cfg = isinstance(cfg, dict)
+    ringless = bool(cfg.get("hideHueRing", False)) if has_real_cfg else False
+    scale = cfg.get("uiScale", 100) / 100.0 if has_real_cfg else 1.0
+
+    stack = getattr(win, "stack", None)
+    stack_visible = (
+        stack is not None
+        and callable(getattr(stack, "isVisible", None))
+        and bool(stack.isVisible())
+    )
+    stack_msh = (
+        _stack_intrinsic_min_height(
+            stack, include_current_min=not has_real_cfg
+        )
+        if stack_visible
+        else 0
+    )
+    pdrop = getattr(win, "picker_drop", None)
+    extra_top = pdrop.extra_top_height() if pdrop is not None else 0
+    extra_side = pdrop.extra_side_width() if pdrop is not None else 0
+    eff_width = max(160, win.width() - extra_side)
+
+    if not stack_visible:
+        visualizer_h = 0
+    elif has_real_cfg:
+        visualizer_h = _target_picker_height(
+            eff_width,
+            margins.left(),
+            margins.right(),
+            stack_msh,
+            cfg,
+            scale,
+        )
+    else:
+        visualizer_h = win._required_visualizer_height(
+            eff_width,
+            margins.left(),
+            margins.right(),
+            stack_msh,
+        )
+
+    show_picker = pdrop is None or pdrop.center_shows_picker()
+    if pdrop is not None and not show_picker:
+        visualizer_h = max(
+            visualizer_h,
+            pdrop.center_host.column_hint(),
+            pdrop.center_container.sizeHint().height(),
+        )
+
+    hint, _sliders_visible = _measured_sliders_height(win)
+    band_fn = getattr(win, "_band_spacing", None)
+    band_sp = band_fn() if callable(band_fn) else win.main_layout.spacing()
+    top_fn = getattr(win, "_top_stack_spacing", None)
+    top_sp = top_fn() if callable(top_fn) else band_sp
+    top_chrome_h = (
+        _visible_title_bar_height(win.title_bar)
+        + visible_picker_chrome_height(win)
+        + extra_top
+    )
+    required = win._required_content_height(
+        top_chrome_h,
+        visualizer_h,
+        hint,
+        margins.top(),
+        margins.bottom(),
+        band_sp,
+        top_spacing=top_sp,
+    )
+    avail_kwargs = {
+        "margins": margins,
+        "top_chrome_h": top_chrome_h,
+        "band_sp": band_sp,
+        "top_sp": top_sp,
+    }
+    return required, visualizer_h, ringless, (stack_visible and show_picker), avail_kwargs
 
 
 class LayoutMixin:
@@ -183,6 +529,41 @@ class LayoutMixin:
             return
         self._adjust_content_height()
 
+    def _ensure_dpi_min_height(self):
+        """Expand upward if a DPI ratio change grew chrome or fonts past window height."""
+        if getattr(self, "_adjusting_content_height", False) or not self.isVisible():
+            return
+        try:
+            (
+                required,
+                visualizer_h,
+                ringless,
+                picker_active,
+                avail_kwargs,
+            ) = _compute_content_height_state(self)
+        except AttributeError:
+            return
+
+        if self.minimumHeight() != required:
+            self.setMinimumHeight(required)
+        self._last_required_height = required
+        if self.height() < required:
+            cur_avail = _available_picker_height(self, **avail_kwargs)
+            _apply_stack_height_bounds(
+                self, visualizer_h, ringless,
+                available_height=cur_avail, active=picker_active,
+            )
+            self._adjusting_content_height = True
+            try:
+                self.resize(self.width(), required)
+            finally:
+                self._adjusting_content_height = False
+        final_avail = _available_picker_height(self, **avail_kwargs)
+        _apply_stack_height_bounds(
+            self, visualizer_h, ringless,
+            available_height=final_avail, active=picker_active,
+        )
+
     def _adjust_content_height(self):
         if getattr(self, "_adjusting_content_height", False):
             return
@@ -191,124 +572,14 @@ class LayoutMixin:
             self._content_height_adjust_pending = True
             return
         self._content_height_adjust_pending = False
-        required = 0
         try:
-            sync_spacers = getattr(self, "_sync_band_spacers", None)
-            if callable(sync_spacers):
-                sync_spacers()
-            host = getattr(self, "panel_host", None)
-            if host is not None:
-                host.updateGeometry()
-                host_layout = host.layout()
-                if host_layout is not None:
-                    host_layout.activate()
-            if hasattr(self, "sliders_container"):
-                self.sliders_container.updateGeometry()
-            self.sliders_layout.activate()
-            if hasattr(self, "central"):
-                self.central.updateGeometry()
-            self.main_layout.activate()
-            margins = self.main_layout.contentsMargins()
-            stack_msh = 0
-            if (hasattr(self, "stack") and self.stack is not None
-                    and self.stack.isVisible()):
-                msh = getattr(self.stack, "minimumSizeHint", None)
-                if callable(msh):
-                    try:
-                        stack_msh = max(stack_msh, int(msh().height()))
-                    except Exception:
-                        pass
-                mh = getattr(self.stack, "minimumHeight", None)
-                if callable(mh):
-                    try:
-                        stack_msh = max(stack_msh, int(mh()))
-                    except Exception:
-                        pass
-            stack_visible = (hasattr(self, "stack")
-                             and self.stack is not None
-                             and self.stack.isVisible())
-            pdrop = getattr(self, "picker_drop", None)
-            extra_top = pdrop.extra_top_height() if pdrop is not None else 0
-            extra_side = pdrop.extra_side_width() if pdrop is not None else 0
-            eff_width = max(160, self.width() - extra_side)
-            visualizer_h = (self._required_visualizer_height(
-                eff_width,
-                margins.left(),
-                margins.right(),
-                stack_msh,
-            ) if stack_visible else 0)
-            if pdrop is not None and not pdrop.center_shows_picker():
-                visualizer_h = max(
-                    visualizer_h,
-                    pdrop.center_host.column_hint(),
-                    pdrop.center_container.sizeHint().height(),
-                )
-            # Protect stack height so Qt layout cannot compress the color wheel!
-            if stack_visible:
-                self.stack.setMinimumHeight(visualizer_h)
-                cfg = getattr(self, "cfg", {})
-                if not cfg.get("hideHueRing", False):
-                    self.stack.setMaximumHeight(visualizer_h)
-                else:
-                    self.stack.setMaximumHeight(16777215)
-            elif hasattr(self, "stack") and self.stack is not None:
-                self.stack.setMinimumHeight(0)
-                self.stack.setMaximumHeight(0)
-
-            host = getattr(self, "panel_host", None)
-            if host is not None:
-                # Ask the dock tree for its column height. QWidget.sizeHint()
-                # includes all child widgets (even those hidden behind another
-                # tab!), so when tabs are in use sizeHint sums every page and
-                # refuses to shrink the last band under the picker. It is also
-                # stale before the first real layout pass: it still counts
-                # panels the user turned off, which is what left a saved tall
-                # window full of blank space on startup. column_hint walks the
-                # mounted tree (and is what the policy is supposed to read), so
-                # it wins; Qt's hint is only a fallback when nothing is
-                # mounted to walk.
-                hint = host.column_hint()
-                if hint <= 0:
-                    hint = max(host.sizeHint().height(),
-                               host.minimumSizeHint().height())
-            else:
-                hint = self.sliders_container.sizeHint().height()
-            # The host's own outer layout adds its margins/spacing on top of
-            # the column: pad the deterministic hint with the same amounts —
-            # but only when there is a column to pad.
-            outer = self.sliders_container.layout()
-            if host is not None and outer is not None and hint > 0:
-                hm = outer.contentsMargins()
-                extra_spacing = outer.spacing() * max(0, outer.count() - 1)
-                hint += hm.top() + hm.bottom() + extra_spacing
-            if hint > 0 and host is None:
-                sc = getattr(self, "sliders_container", None)
-                if sc is not None:
-                    sh = getattr(sc, "sizeHint", None)
-                    if callable(sh):
-                        try:
-                            hint = max(hint, int(sh().height()))
-                        except (TypeError, ValueError, AttributeError):
-                            pass
-                    msh = getattr(sc, "minimumSizeHint", None)
-                    if callable(msh):
-                        try:
-                            hint = max(hint, int(msh().height()))
-                        except (TypeError, ValueError, AttributeError):
-                            pass
-            band_fn = getattr(self, "_band_spacing", None)
-            band_sp = band_fn() if callable(band_fn) else self.main_layout.spacing()
-            top_fn = getattr(self, "_top_stack_spacing", None)
-            top_sp = top_fn() if callable(top_fn) else band_sp
-            required = self._required_content_height(
-                _visible_title_bar_height(self.title_bar)
-                + visible_picker_chrome_height(self)
-                + extra_top,
+            (
+                required,
                 visualizer_h,
-                hint,
-                margins.top(), margins.bottom(), band_sp,
-                top_spacing=top_sp,
-            )
+                ringless,
+                picker_active,
+                avail_kwargs,
+            ) = _compute_content_height_state(self)
         except AttributeError:
             return
 
@@ -326,13 +597,29 @@ class LayoutMixin:
             self.height(), required, getattr(self, "_last_auto_height", None),
             getattr(self, "_manual_height_override", False))
         self._manual_height_override = manual
-        if target == self.height():
-            return
-        self._adjusting_content_height = True
-        try:
-            self.resize(self.width(), target)
-        finally:
-            self._adjusting_content_height = False
+        if target != self.height():
+            # Bound stack height to min(current, target) first so growing never
+            # overlaps sliders for a frame and shrinking is never blocked.
+            pre_avail = _available_picker_height(
+                self,
+                window_height=min(int(self.height()), int(target)),
+                **avail_kwargs,
+            )
+            _apply_stack_height_bounds(
+                self, visualizer_h, ringless,
+                available_height=pre_avail, active=picker_active,
+            )
+            self._adjusting_content_height = True
+            try:
+                self.resize(self.width(), target)
+            finally:
+                self._adjusting_content_height = False
+
+        final_avail = _available_picker_height(self, **avail_kwargs)
+        _apply_stack_height_bounds(
+            self, visualizer_h, ringless,
+            available_height=final_avail, active=picker_active,
+        )
 
     def _sync_ringless_mode(self, wheel_size: int | None = None,
                             title_bar_height: int | None = None) -> None:
@@ -389,6 +676,14 @@ class LayoutMixin:
             )
             + visible_picker_chrome_height(self)
         )
+        was_ringless_preview = isinstance(
+            getattr(self.preview_box, "_ringless_layout", None), RinglessLayout
+        )
+        if layout.controls_enabled or was_ringless_preview:
+            # Ringless geometry takes over preview_box size/position without
+            # changing window width/height signature keys, so invalidate the
+            # legacy fit cache whenever entering or leaving ringless mode.
+            self._preview_fit_signature = None
         self.preview_box.set_ringless_layout(
             layout, self.width(), _tbh, self.stack.height()
         )
@@ -403,14 +698,20 @@ class LayoutMixin:
             self.lab_layout.setContentsMargins(0, control_margin, 0, 0)
 
         # ── Stack minimum height ──
-        if layout.controls_enabled:
-            self.stack.setMinimumHeight(max(1, _ws + layout.control_bar_height))
-            self.stack.setMaximumHeight(16777215)
-        else:
-            self.stack.setMinimumHeight(0)
+        if not getattr(self, "_skip_ringless_stack_min", False):
+            if layout.controls_enabled:
+                self.stack.setMinimumHeight(max(1, _ws + layout.control_bar_height))
+                self.stack.setMaximumHeight(16777215)
+            else:
+                self.stack.setMinimumHeight(0)
+
+        if was_ringless_preview and not layout.controls_enabled:
+            place_chrome = getattr(self, "_place_floating_chrome", None)
+            if callable(place_chrome):
+                place_chrome(scale)
 
     def _lock_picker_stack_square(self, margins=None, extra_side: int | None = None) -> None:
-        """Keep the non-ringless picker stack locked to a square across layout syncs."""
+        """Keep the non-ringless picker stack locked to its bounded square."""
         if getattr(self, "cfg", {}).get("hideHueRing", False):
             return
         stack = getattr(self, "stack", None)
@@ -426,10 +727,10 @@ class LayoutMixin:
         eff_w = max(160, self.width() - extra_side)
         square = window_layout.picker_square_height(
             eff_w, margins.left(), margins.right(), 0)
-        if stack.minimumHeight() != square:
-            stack.setMinimumHeight(square)
-        if stack.maximumHeight() != square:
-            stack.setMaximumHeight(square)
+        avail = _available_picker_height(self, margins=margins)
+        _apply_stack_height_bounds(
+            self, square, False, available_height=avail, active=True
+        )
 
     def window_layout(self, scale=None):
         """This window's bands, computed from plain numbers.
@@ -555,6 +856,7 @@ class LayoutMixin:
         if preview is None:
             return
         if getattr(self, "cfg", {}).get("hideHueRing", False):
+            self._preview_fit_signature = None
             wheel_size = int(round(layout.picker_size))
             self._sync_ringless_mode(wheel_size=wheel_size, title_bar_height=title_offset)
             return
@@ -573,7 +875,8 @@ class LayoutMixin:
         signature = (wheel_size, title_offset, window_h, sliders_h,
                      self.active_slot, preview.position_mode, bounds,
                      tuple(round(v, 2) for c in circles for v in c))
-        if signature == getattr(self, "_preview_fit_signature", None):
+        if (not isinstance(getattr(preview, "_ringless_layout", None), RinglessLayout)
+                and signature == getattr(self, "_preview_fit_signature", None)):
             return
         self._preview_fit_signature = signature
         metrics = (layout, title_offset, window_h, sliders_h)
@@ -928,17 +1231,39 @@ class LayoutMixin:
         # wheel stops tracking the width, and the corner the swatches live in
         # collapses. Capping it keeps the picker square the whole way through
         # and parks the surplus below, where the settle removes it.
-        ringless_enabled = bool(getattr(self, "cfg", {}).get("hideHueRing", False))
+        cfg = getattr(self, "cfg", {})
+        ringless_enabled = bool(cfg.get("hideHueRing", False)) if isinstance(cfg, dict) else False
         eff_w = max(160, w - extra_side)
+        stack_obj = getattr(self, "stack", None)
+        show_picker = (
+            (pdrop is None or pdrop.center_shows_picker())
+            and stack_obj is not None
+            and stack_obj.isHidden() is not True
+        )
+        stack_msh = _stack_intrinsic_min_height(stack_obj) if show_picker else 0
+        target_picker_h = (
+            _target_picker_height(
+                eff_w, margins.left(), margins.right(), stack_msh, cfg, dynamic_scale
+            )
+            if show_picker
+            else 0
+        )
+        tb = getattr(self, "title_bar", None)
+        tb_h = _visible_title_bar_height(tb) if tb is not None else 0
+        avail_picker_h = _available_picker_height(
+            self,
+            margins=margins,
+            top_chrome_h=tb_h + picker_tab_h,
+        )
+        _apply_stack_height_bounds(
+            self,
+            target_picker_h,
+            ringless_enabled,
+            available_height=avail_picker_h,
+            active=show_picker,
+        )
+        wheel_size = int(round(layout.picker_size))
         if not ringless_enabled:
-            square = window_layout.picker_square_height(
-                eff_w, margins.left(), margins.right(), 0)
-            if self.stack.minimumHeight() != square:
-                self.stack.setMinimumHeight(square)
-            if self.stack.maximumHeight() != square:
-                self.stack.setMaximumHeight(square)
-            wheel_size = int(round(layout.picker_size))
-            
             # ── Step 1: legacy preview sizing ALWAYS runs first ──
             # This restores legacy circle sizing/position when ringless is disabled,
             # and provides a baseline that ringless may override below.
@@ -947,16 +1272,6 @@ class LayoutMixin:
                 self.preview_box.raise_()
             else:
                 self.preview_box.hide()
-        else:
-            square = window_layout.picker_square_height(
-                eff_w, margins.left(), margins.right(), 0)
-            cb_h = max(1, round(30 * dynamic_scale))
-            ringless_min_h = square + cb_h
-            if self.stack.minimumHeight() != ringless_min_h:
-                self.stack.setMinimumHeight(ringless_min_h)
-            if self.stack.maximumHeight() != 16777215:
-                self.stack.setMaximumHeight(16777215)
-            wheel_size = int(round(layout.picker_size))
 
         # ── Step 2: push DPI-scaled button metrics down; panes do the rest ──
         btn_size = int(28 * dynamic_scale)
@@ -969,8 +1284,14 @@ class LayoutMixin:
         # ── Step 3: ringless layout sync ──
         # On wheel page: applies rectangle sizing over the legacy baseline.
         # On LAB page: same rectangle controls + top bar, with layout margin.
-        # Do NOT call _adjust_content_height() from resize-driven sync.
-        self._sync_ringless_mode(wheel_size=wheel_size, title_bar_height=title_offset)
+        # Do NOT call _adjust_content_height() from resize-driven sync, and keep
+        # the bounded stack height applied above intact.
+        prev_skip = getattr(self, "_skip_ringless_stack_min", False)
+        self._skip_ringless_stack_min = True
+        try:
+            self._sync_ringless_mode(wheel_size=wheel_size, title_bar_height=title_offset)
+        finally:
+            self._skip_ringless_stack_min = prev_skip
         lock_fn = getattr(self, "_lock_picker_stack_square", None)
         if callable(lock_fn):
             lock_fn(margins=margins, extra_side=extra_side)

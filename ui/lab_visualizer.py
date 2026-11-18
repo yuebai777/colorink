@@ -1122,6 +1122,31 @@ class LabSlider(QWidget):
         # the window and left a huge blank band under the plane.
         self._band_top = 0.0
         self._band_h = 0.0
+        self._border_w = 0
+        self._border_color = "#888888"
+        self._inner_border_w = 0
+        self._inner_border_color = "#ffffff"
+
+    def set_border_theme(
+        self,
+        *,
+        border_w: int = 0,
+        border_color: str = "#888888",
+        inner_w: int = 0,
+        inner_color: str = "#ffffff",
+    ) -> None:
+        """Apply groove border styling from the active border theme."""
+        bw = max(0, int(border_w))
+        iw = max(0, int(inner_w))
+        if (bw, str(border_color), iw, str(inner_color)) == (
+            self._border_w, self._border_color, self._inner_border_w, self._inner_border_color
+        ):
+            return
+        self._border_w = bw
+        self._border_color = str(border_color)
+        self._inner_border_w = iw
+        self._inner_border_color = str(inner_color)
+        self.update()
 
     def set_track_band(self, top: float, height: float) -> None:
         """Restrict the painted track (and its hit area) to one band."""
@@ -1211,6 +1236,21 @@ class LabSlider(QWidget):
         if gray_bottom < y_bottom - 0.5:
             painter.drawRect(QRectF(0.0, gray_bottom, float(w),
                                     y_bottom - gray_bottom))
+
+        # Groove outline (matches active border theme / SAI double-bevel).
+        if self._border_w > 0 and h > 2:
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            bw = float(self._border_w)
+            painter.setPen(QPen(QColor(self._border_color), bw))
+            painter.drawRect(QRectF(bw / 2.0, top + bw / 2.0, max(1.0, float(w) - bw), max(1.0, h - bw)))
+            if self._inner_border_w > 0:
+                ibw = float(self._inner_border_w)
+                inset = bw + ibw / 2.0
+                painter.setPen(QPen(QColor(self._inner_border_color), ibw))
+                painter.drawRect(QRectF(inset, top + inset, max(1.0, float(w) - 2.0 * inset), max(1.0, h - 2.0 * inset)))
+            painter.restore()
 
         # Draw indicator cursor (horizontal bar), centred on its value.
         # Rounding the centre keeps the 2px stroke crisp; it used to truncate

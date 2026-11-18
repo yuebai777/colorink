@@ -49,11 +49,29 @@ def apply_slider_bleed(owner, bleed) -> int:
     active theme and uiScale work out to.
     """
     amount = max(0, int(bleed))
+    changed = getattr(owner, "_applied_slider_bleed", None) != amount
     for pair in getattr(owner, "slider_bleed_spacers", []):
         for spacer in pair:
             if spacer is not None:
+                hint_fn = getattr(spacer, "sizeHint", None)
+                if callable(hint_fn) and hint_fn().width() != -amount:
+                    changed = True
                 spacer.changeSize(-amount, 0, QSizePolicy.Policy.Fixed,
                                   QSizePolicy.Policy.Minimum)
+    if changed:
+        try:
+            owner._applied_slider_bleed = amount
+        except AttributeError:
+            pass
+        for row in getattr(owner, "slider_row_layouts", ()):
+            if row is not None and callable(getattr(row, "invalidate", None)):
+                row.invalidate()
+        containers = getattr(owner, "slider_containers", None)
+        if isinstance(containers, dict):
+            for container in containers.values():
+                if (container is not None
+                        and callable(getattr(container, "updateGeometry", None))):
+                    container.updateGeometry()
     return amount
 
 

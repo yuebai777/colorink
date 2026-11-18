@@ -3,7 +3,7 @@
 import math
 from typing import cast
 
-from PyQt6.QtCore import QPointF, QRect, QRectF, Qt
+from PyQt6.QtCore import QPointF, QRect, QRectF, QSize, Qt
 from PyQt6.QtGui import QColor, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen, QPolygonF
 from PyQt6.QtWidgets import QSlider, QStyle, QStyleOptionSlider
 
@@ -81,9 +81,27 @@ class GradientSlider(QSlider):
         # ThemeMixin.apply_theme); None = no groove outline.
         self._groove_border_w = 0
         self._groove_border_color = "#000000"
+        self._groove_inner_border_w = 0
+        self._groove_inner_border_color = "#ffffff"
         self.update_scale(1.0)
         self._gamut_min = None
         self._gamut_max = None
+
+    def _preferred_height(self) -> int:
+        """Height needed for groove and cursor indicator across all QStyles."""
+        return max(int(self.minimumHeight()), int(self.groove_h), 1)
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        if self.orientation() == Qt.Orientation.Horizontal:
+            return QSize(hint.width(), max(hint.height(), self._preferred_height()))
+        return hint
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        if self.orientation() == Qt.Orientation.Horizontal:
+            return QSize(hint.width(), max(hint.height(), self._preferred_height()))
+        return hint
 
     def set_in_gamut_range(self, mn, mx):
         """Set the valid in-gamut L range.
@@ -244,14 +262,22 @@ class GradientSlider(QSlider):
         # Nothing here depends on the widget's size, only on scale/theme, so a
         # window drag re-ran the whole thing (stylesheet + re-polish) for every
         # slider on every resize event. Skip when the inputs are unchanged.
-        signature = (
-            float(scale),
-            id(theme) if theme is not None else None,
-            None if border is None else (
+        theme_sig = (
+            None
+            if theme is None
+            else tuple(sorted((str(k), repr(v)) for k, v in theme.items()))
+        )
+        border_sig = (
+            None
+            if border is None
+            else (
                 int(border.get("groove_border_width", 0) or 0),
                 str(border.get("groove_border_color", "#000000")),
-            ),
+                int(border.get("groove_inner_border_width", 0) or 0),
+                str(border.get("groove_inner_border_color", "#ffffff")),
+            )
         )
+        signature = (float(scale), theme_sig, border_sig)
         if signature == getattr(self, "_scale_signature", None):
             return
         self._scale_signature = signature
@@ -262,6 +288,9 @@ class GradientSlider(QSlider):
             raw_w = int(border.get("groove_border_width", 0) or 0)
             self._groove_border_w = max(0, int(raw_w * scale)) if raw_w > 0 else 0
             self._groove_border_color = str(border.get("groove_border_color", "#000000"))
+            raw_in_w = int(border.get("groove_inner_border_width", 0) or 0)
+            self._groove_inner_border_w = max(0, int(raw_in_w * scale)) if raw_in_w > 0 else 0
+            self._groove_inner_border_color = str(border.get("groove_inner_border_color", "#ffffff"))
         t = self._theme
         handle_shape = str(t.get("handle_shape", "rect"))
         self.scale = scale
@@ -335,6 +364,7 @@ class GradientSlider(QSlider):
         if widget_style is not None:
             widget_style.unpolish(self)
             widget_style.polish(self)
+        self.updateGeometry()
 
     def set_gradient(self, colors):
         if hasattr(self, "_cached_colors") and self._cached_colors == colors:
@@ -412,15 +442,47 @@ class GradientSlider(QSlider):
                     painter.restore()
 
         # Groove outline (border theme). Inset by half the pen width so the
-        # stroke stays inside the widget instead of being clipped.
+        # stroke stays inside the widget instead of being clipped; optional
+        # inner bevel (SAI's classic crisp light/recessed inner rim) sits
+        # immediately inside the outer outline.
         if self._groove_border_w > 0 and axis_w > 0:
             bw_g = self._groove_border_w
+            painter.save()
+            if self.groove_radius < 0.5:
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                outer_rect = QRectF(
+                    math.floor(axis_x0) + bw_g / 2.0,
+                    groove_y + bw_g / 2.0,
+                    max(1.0, math.ceil(axis_x1) - math.floor(axis_x0) - bw_g),
+                    max(1.0, self.groove_h - bw_g),
+                )
+            else:
+                outer_rect = groove_rect.adjusted(bw_g / 2, bw_g / 2, -bw_g / 2, -bw_g / 2)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(QPen(QColor(self._groove_border_color), bw_g))
-            painter.drawRoundedRect(
-                groove_rect.adjusted(bw_g / 2, bw_g / 2, -bw_g / 2, -bw_g / 2),
-                self.groove_radius, self.groove_radius,
-            )
+            if self.groove_radius < 0.5:
+                painter.drawRect(outer_rect)
+            else:
+                painter.drawRoundedRect(outer_rect, self.groove_radius, self.groove_radius)
+
+            if self._groove_inner_border_w > 0:
+                bw_in = self._groove_inner_border_w
+                inset = bw_g + bw_in / 2.0
+                if self.groove_radius < 0.5:
+                    inner_rect = QRectF(
+                        math.floor(axis_x0) + inset,
+                        groove_y + inset,
+                        max(1.0, math.ceil(axis_x1) - math.floor(axis_x0) - 2.0 * inset),
+                        max(1.0, self.groove_h - 2.0 * inset),
+                    )
+                    painter.setPen(QPen(QColor(self._groove_inner_border_color), bw_in))
+                    painter.drawRect(inner_rect)
+                else:
+                    inner_rect = groove_rect.adjusted(inset, inset, -inset, -inset)
+                    inner_r = max(0.0, self.groove_radius - bw_g)
+                    painter.setPen(QPen(QColor(self._groove_inner_border_color), bw_in))
+                    painter.drawRoundedRect(inner_rect, inner_r, inner_r)
+            painter.restore()
 
         if handle_shape == "triangle-below":
             half_w = self._triangle_half_width()
@@ -530,6 +592,20 @@ class GradientSlider(QSlider):
                             painter.drawRect(QRectF(
                                 bx0 + inset, bar_top, inner_w, line_h
                             ))
+                elif bool(t.get("handle_tri_pentagon", False)) and tri_style == "filled":
+                    shoulder_y = round((tri_base_y + tri_size_h * 0.48) * dpr) / dpr
+                    poly = QPolygonF([
+                        apex,
+                        QPointF(handle_x - tri_size_w, shoulder_y),
+                        QPointF(handle_x - tri_size_w, tri_bottom),
+                        QPointF(handle_x + tri_size_w, tri_bottom),
+                        QPointF(handle_x + tri_size_w, shoulder_y),
+                    ])
+                    pen = QPen(tri_pen)
+                    if tri_bw > 0:
+                        pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+                    painter.setPen(pen)
+                    painter.drawPolygon(poly)
                 else:
                     painter.setPen(tri_pen)
                     painter.drawPolygon(QPolygonF([apex, left, right]))

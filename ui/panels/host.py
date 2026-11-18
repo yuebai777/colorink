@@ -661,15 +661,23 @@ class PanelHost(QWidget):
         whose panels were all floated or switched off still reported a full
         column height — and the window's content-height policy grew the frame
         to fit that phantom band instead of closing up (the blank strip the
-        user sees after dragging the last module out).
+        user sees after dragging the last module out). When populated, return
+        ``column_hint()`` directly so layout hints stay lockstep with the
+        window height budget.
         """
-        if self.column_hint() <= 0:
+        col_h = self.column_hint()
+        if col_h <= 0:
             return QSize(super().sizeHint().width(), 0)
+        if not self.has_fill_holder():
+            return QSize(super().sizeHint().width(), col_h)
         return super().sizeHint()
 
     def minimumSizeHint(self) -> QSize:
-        if self.column_hint() <= 0:
+        col_h = self.column_hint()
+        if col_h <= 0:
             return QSize(super().minimumSizeHint().width(), 0)
+        if not self.has_fill_holder():
+            return QSize(super().minimumSizeHint().width(), col_h)
         return super().minimumSizeHint()
 
     def _panel_hidden(self, panel_id: str) -> bool:
@@ -713,7 +721,8 @@ class PanelHost(QWidget):
             # dragging the visible groups out into their own window.
             if box is None or self._panel_hidden(node.panel):
                 return 0
-            return int(box.sizeHint().height())
+            return max(int(box.sizeHint().height()),
+                       int(box.minimumSizeHint().height()))
         if isinstance(node, Tabs):
             return self._tabs_hint(node)
         if not isinstance(node, Split):
@@ -791,10 +800,18 @@ class PanelHost(QWidget):
             self.set_stack_spacing(diff_space)
         for frame in self._frames.values():
             frame.title_bar.apply_chrome(chrome)
+            frame.updateGeometry()
         for tabs, _node in self._tabs:
             self._style_tabs(tabs)
         for splitter, _node in self._splitters:
             self._style_splitter(splitter)
+        for container, _node in self._stacks:
+            box = container.layout()
+            if box is not None:
+                box.invalidate()
+            container.updateGeometry()
+        self._layout.invalidate()
+        self.updateGeometry()
 
     def _style_splitter(self, splitter: QSplitter) -> None:
         """Style QSplitter handles with transparent background and theme spacing."""
@@ -825,36 +842,20 @@ class PanelHost(QWidget):
         chrome = self._chrome
         if chrome is None:
             return
-        scale = max(0.5, float(getattr(chrome, "scale", 1.0) or 1.0))
-        pad_x = max(2, int(round(5 * scale)))
-        pad_y = max(2, int(round(3 * scale)))
-        font = max(7, int(round(
-            (getattr(chrome, "font_size", 0) or 11) * 0.85)))
-        bar_bg = getattr(chrome, "bar_bg", "") or "transparent"
-        bg = getattr(chrome, "background", "") or "transparent"
-        text = getattr(chrome, "text", "") or "#222222"
-        bar_text = getattr(chrome, "bar_text", "") or text
-        divider = getattr(chrome, "divider_color", "") or bar_bg
-        divider_w = max(1, int(getattr(chrome, "divider_width", 0) or 1))
+        from ui.theme_contrast import build_tab_bar_css
+
         top_gap = max(0, int(getattr(chrome, "top_gap", 0) or 0))
-        css = (
+        pane_css = (
             "QTabWidget { background: transparent; }"
             "QTabWidget::pane { border: none; background: transparent;"
             f" margin-top: {top_gap}px;"
             " }"
-            "QTabBar { background: transparent;"
-            f" font-size: {font}px;"
-            " }"
-            "QTabBar::tab {"
-            f" background: {bar_bg}; color: {bar_text};"
-            f" padding: {pad_y}px {pad_x}px;"
-            f" font-size: {font}px; border: none;"
-            " }"
-            "QTabBar::tab:selected {"
-            f" background: {bg}; color: {text};"
-            f" border-top: {divider_w}px solid {divider};"
-            " }"
-            f"QTabBar::tab:hover:!selected {{ color: {text}; }}"
+        )
+        css = build_tab_bar_css(
+            chrome,
+            bar_selector="QTabBar",
+            tab_selector="QTabBar::tab",
+            pane_css=pane_css,
         )
         if getattr(tabs, "_panel_css", None) == css:
             return
@@ -868,11 +869,19 @@ class PanelHost(QWidget):
         The theme pass changes this with the UI scale; rebuilding the tree
         for it would re-parent every panel on each pass.
         """
-        self._stack_spacing = max(0, int(spacing))
+        gap = max(0, int(spacing))
+        self._stack_spacing = gap
         for container, _node in self._stacks:
             box = container.layout()
             if box is not None:
-                box.setSpacing(max(0, int(spacing)))
+                box.setSpacing(gap)
+                box.invalidate()
+                box.activate()
+            container.updateGeometry()
+        for tabs, _node in self._tabs:
+            tabs.updateGeometry()
+        self._layout.invalidate()
+        self.updateGeometry()
 
     # ── drag to rearrange ────────────────────────────────────────────────
 

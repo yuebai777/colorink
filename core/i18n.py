@@ -69,6 +69,7 @@ _EN: dict[str, str] = {
     "打开设置": "Open settings",
     "显示/隐藏": "Show / hide",
     "显示标题栏": "Show title bar",
+    "显示窗口边框": "Show window border",
     "退出": "Quit",
     "设置": "Settings",
     # ── Hotkeys ──
@@ -350,6 +351,14 @@ _EN: dict[str, str] = {
     "从 JSON 文件恢复设置": "Restore settings from a JSON file",
     "恢复全部设置为出厂默认值": "Reset all settings to defaults",
     "隐藏后顶部边框与四周一致；可通过快捷键或托盘菜单恢复": "Hides the top border to match the other edges; restore via hotkey or tray menu",
+    "显示或隐藏主窗口与浮窗外边框（不影响分组框与滑块边框样式）": (
+        "Show or hide the outer frame around the main window and floating panels "
+        "(group frames and slider borders remain styled)"
+    ),
+    "关闭后隐藏主窗口与浮窗外边框；隐藏标题栏时顶部也不会保留边框": (
+        "Hide the outer border on the main window and floating panels; "
+        "no top border remains even when the title bar is hidden"
+    ),
     "开启后不能拖动窗口": "The window cannot be dragged while enabled",
     "开机后自动启动 Colorink（仅当前用户，不需要管理员权限）": "Start Colorink automatically at login for the current user (no admin rights required)",
     "画图软件不在前台时自动隐藏悬浮面板": "Auto-hide the floating panel when the drawing app is not in the foreground",
@@ -579,6 +588,7 @@ _EN: dict[str, str] = {
     "开启区域灰度": "Enable Region",
     "关闭区域灰度": "Disable Region",
     "作用于所选屏幕全屏 · 快捷键：{key}": "Covers selected screen(s) · Shortcut: {key}",
+    "伪全屏覆盖所选屏幕（底部留极窄边缘防卡顿） · 快捷键：{key}": "Pseudo-fullscreen on selected screen(s) (thin bottom strip uncovered for smoothness) · Shortcut: {key}",
     "无边框穿透窗口 ({scope}) · 快捷键：{key}": "Frameless click-through ({scope}) · Shortcut: {key}",
     "当前范围": "Active Scope",
     "+ 框选 / 编辑": "+ Add / Edit",
@@ -617,6 +627,72 @@ _EN: dict[str, str] = {
     "恢复最大化": "Maximize",
     "取消": "Cancel",
     "切换为色环视图（本浮窗）": "Switch to wheel view (this window)",
+    # ── CSP Companion reconnect & QR auto-hide ──
+    "连接 / 重连 CSP 智能手机...": "Connect / Reconnect CSP Smartphone...",
+    "CSP 智能手机需要重新连接": "CSP Smartphone Reconnection Needed",
+    "CSP 智能手机连接": "CSP Smartphone Connection",
+    "CSP 智能手机连接已断开：请在 CSP 中点击「文件 → 连接智能手机」重新连接": (
+        "CSP Smartphone connection lost: in CSP click File → Connect to smartphone to reconnect"
+    ),
+    "请在 CSP 中点击「文件 → 连接智能手机」重新打开二维码，点击此通知打开连接向导": (
+        "In CSP click File → Connect to smartphone to reopen the QR code, then click here to reconnect"
+    ),
+    "○ 需要重新连接 — 请在 CSP 打开「文件 → 连接智能手机」": (
+        "○ Reconnection needed — open File → Connect to smartphone in CSP"
+    ),
+    "<b style='font-size:13px;'>🔗 CSP 智能手机连接已断开，请重新连接</b>": (
+        "<b style='font-size:13px;'>🔗 CSP Smartphone connection lost — please reconnect</b>"
+    ),
+    "在 <b>CLIP STUDIO PAINT</b> 顶部点击菜单 <b>文件 → 连接智能手机</b>": (
+        "In <b>CLIP STUDIO PAINT</b>, click menu <b>File → Connect to smartphone</b>"
+    ),
+    "（弹出二维码窗口时，Colorink 若有遮挡会自动临时隐藏）": (
+        "(If Colorink overlaps the QR dialog, it will temporarily hide automatically)"
+    ),
+    "二维码窗口弹出后将自动扫描重连，或点击下方 <b>自动扫描二维码</b>": (
+        "Scanning and reconnecting starts automatically once the QR dialog opens, or click <b>Auto-scan QR code</b> below"
+    ),
+    "（也可手动粘贴二维码链接 URL）": "(Or paste the QR URL manually)",
+    "<b style='font-size:13px;'>🔗 CSP 智能手机连接 — 操作步骤</b>": (
+        "<b style='font-size:13px;'>🔗 CSP Smartphone Connection — Steps</b>"
+    ),
+    "打开 <b>CLIP STUDIO PAINT</b>": "Open <b>CLIP STUDIO PAINT</b>",
+    "点击菜单 <b>文件 → 连接智能手机</b>": "Click menu <b>File → Connect to smartphone</b>",
+    "（CSP 会弹出二维码窗口；扫描时 Colorink 会自动临时隐藏以避免遮挡）": (
+        "(CSP opens a QR code dialog; Colorink hides temporarily while scanning so nothing is covered)"
+    ),
+    "点击下方 <b>自动扫描二维码</b>，": "Click <b>Auto-scan QR code</b> below,",
+    "或手动粘贴二维码旁边的 URL": "or paste the companion URL manually",
+    "<b>连接 URL</b>（可选，手动粘贴链接）：": "<b>Connection URL</b> (optional, paste manually):",
+    "粘贴以 https://companion.clip-studio.com 开头的 URL": "Paste a URL starting with https://companion.clip-studio.com",
+    "等待在 CSP 中打开「文件 → 连接智能手机」...": "Waiting for File → Connect to smartphone to open in CSP...",
+    "📷 自动扫描二维码": "📷 Auto-scan QR code",
+    "临时隐藏软件并截屏搜索 CSP 的二维码": "Temporarily hide Colorink and scan screen for CSP's QR code",
+    "连接": "Connect",
+    "✓ 重新连接成功！颜色同步已恢复": "✓ Reconnected! Color sync resumed",
+    "✓ 连接成功！颜色同步已启动": "✓ Connected! Color sync started",
+    "URL 格式不正确，请检查后重试": "Invalid URL format — check and try again",
+    "请先扫描二维码或粘贴 URL": "Scan a QR code or paste a URL first",
+    "正在连接 {host}:{port}...": "Connecting to {host}:{port}...",
+    "连接重试中，请保持 CSP 二维码窗口打开...": "Retrying connection — keep CSP's QR dialog open...",
+    "连接失败 — 请确认：\n1. CSP 正在运行且\"连接智能手机\"窗口已打开\n2. URL 完整且未过期（每次打开都会生成新的）\n3. 防火墙未阻止 TCP 连接": (
+        "Connection failed — verify:\n"
+        "1. CSP is running with \"Connect to smartphone\" open\n"
+        "2. The URL is complete and not expired (each open generates a new one)\n"
+        "3. Firewall is not blocking TCP"
+    ),
+    "重新扫描": "Rescan",
+    "扫描中...": "Scanning...",
+    "正在临时隐藏软件并扫描屏幕上的二维码...": "Temporarily hiding Colorink to scan screen for QR code...",
+    "✓ 发现 CSP 服务器: {host}:{port}": "✓ Found CSP server: {host}:{port}",
+    "已检测到「连接智能手机」窗口，等待二维码显示后重试...": "Detected \"Connect to smartphone\" dialog, retrying after QR renders...",
+    "已检测到「连接智能手机」窗口，但未识别到二维码，请点击「重新扫描」": "Detected \"Connect to smartphone\" dialog, but QR code was not recognized — click \"Rescan\"",
+    "未找到二维码 — 请确认 CSP 的\"连接智能手机\"窗口可见，\n或手动粘贴 URL 后点击\"连接\"": (
+        "No QR code found — ensure CSP's \"Connect to smartphone\" dialog is visible,\n"
+        "or paste the URL manually and click \"Connect\""
+    ),
+    "已检测到 CSP「连接智能手机」窗口，准备自动扫描...": "Detected CSP \"Connect to smartphone\" dialog, preparing auto-scan...",
+    "✓ CSP 智能手机已连接": "✓ CSP Smartphone connected",
 }
 
 

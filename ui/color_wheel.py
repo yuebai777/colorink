@@ -71,6 +71,9 @@ class ColorWheel(
 
         # Mode
         self.wheel_mode = "hsv-square"
+        self._wheel_style = "default"
+        self._ring_border_color: str | None = None
+        self._slice_border_color: str | None = None
 
         # Ringless-mode layout (None = full mode / disabled)
         self._ringless_layout: RinglessLayout | None = None
@@ -109,6 +112,34 @@ class ColorWheel(
         # Invalidate the ring cache so it gets redrawn with the new settings
         if hasattr(self, "_cached_ring_key"):
             delattr(self, "_cached_ring_key")
+        self.update()
+
+    def set_visual_theme(
+        self,
+        *,
+        wheel_style: str = "default",
+        ring_border_color: str | None = None,
+        slice_border_color: str | None = None,
+    ) -> None:
+        """Apply border/wheel aesthetic tokens from the active theme."""
+        style = str(wheel_style or "default")
+        if style not in ("default", "csp", "sai", "ps"):
+            style = "default"
+        ring_changed = (
+            style != getattr(self, "_wheel_style", "default")
+            or ring_border_color != getattr(self, "_ring_border_color", None)
+        )
+        slice_changed = slice_border_color != getattr(self, "_slice_border_color", None)
+        if not ring_changed and not slice_changed:
+            return
+        self._wheel_style = style
+        self._ring_border_color = ring_border_color
+        self._slice_border_color = slice_border_color
+        if ring_changed:
+            if hasattr(self, "_cached_ring_key"):
+                delattr(self, "_cached_ring_key")
+            if hasattr(self, "_cached_oklch_ring_key"):
+                delattr(self, "_cached_oklch_ring_key")
         self.update()
 
 

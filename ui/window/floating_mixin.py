@@ -1809,6 +1809,8 @@ class FloatingPanelsMixin:
             try:
                 window.set_foreground_hidden(not visible)
                 if visible:
+                    if getattr(window, "_qr_hidden", False):
+                        continue
                     # getattr/None defaults: a window whose C++ object was
                     # recycled by PyQt can surface a wrapper without its
                     # Python state (same class of teardown race the

@@ -120,3 +120,82 @@ def test_hidden_title_bar_keeps_top_border_offset():
     title_bar = FakeTitleBar(False)
     layout = SimpleNamespace(contentsMargins=lambda: SimpleNamespace(top=lambda: 4))
     assert _title_bar_content_offset(title_bar, layout) == 4
+
+
+def test_hidden_title_bar_without_border_has_zero_top_offset():
+    title_bar = FakeTitleBar(False)
+    layout = SimpleNamespace(contentsMargins=lambda: SimpleNamespace(top=lambda: 0))
+    assert _title_bar_content_offset(title_bar, layout) == 0
+
+
+class _ToggleStub:
+    def __init__(self, checked: bool = True):
+        self._checked = checked
+        self._blocked = False
+
+    def blockSignals(self, blocked: bool):
+        self._blocked = bool(blocked)
+
+    def setChecked(self, checked: bool):
+        self._checked = bool(checked)
+
+    def isChecked(self) -> bool:
+        return self._checked
+
+
+def _make_fake_window():
+    calls = []
+    title_bar = FakeTitleBar(True)
+    sidebar = SimpleNamespace(
+        cb_show_title_bar=_ToggleStub(True),
+        cb_show_window_border=_ToggleStub(True),
+    )
+    fake = SimpleNamespace(
+        cfg={"showTitleBar": True, "showWindowBorder": True, "uiScale": 100},
+        title_bar=title_bar,
+        tray_title_action=_ToggleStub(True),
+        tray_border_action=_ToggleStub(True),
+        settings_sidebar=sidebar,
+        apply_style=lambda *a, **kw: calls.append("apply_style"),
+        apply_theme=lambda *a, **kw: calls.append("apply_theme"),
+        apply_layout=lambda *a, **kw: calls.append("apply_layout"),
+        update_geometries=lambda *a, **kw: calls.append("update_geometries"),
+        _adjust_content_height=lambda *a, **kw: calls.append("_adjust_content_height"),
+        save_window_geometry=lambda *a, **kw: calls.append("save_window_geometry"),
+        _calls=calls,
+    )
+    return fake
+
+
+def test_set_title_bar_visible_updates_style_and_settings_checkbox():
+    fake = _make_fake_window()
+    with patch("ui.window.tray_mixin.config.save_hotkey_config") as save:
+        MainWindow.set_title_bar_visible(fake, False)
+    assert fake.cfg["showTitleBar"] is False
+    assert fake.title_bar.isVisible() is False
+    assert fake.tray_title_action.isChecked() is False
+    assert fake.settings_sidebar.cb_show_title_bar.isChecked() is False
+    assert "apply_style" in fake._calls
+    assert fake._calls.count("update_geometries") == 1
+    assert fake._calls.count("_adjust_content_height") == 1
+    save.assert_called_once()
+
+
+def test_set_window_border_visible_toggles_and_persists():
+    fake = _make_fake_window()
+    with patch("ui.window.tray_mixin.config.save_hotkey_config") as save:
+        MainWindow.set_window_border_visible(fake, False)
+        assert fake.cfg["showWindowBorder"] is False
+        assert fake.tray_border_action.isChecked() is False
+        assert fake.settings_sidebar.cb_show_window_border.isChecked() is False
+        assert "apply_theme" in fake._calls
+        assert "_adjust_content_height" in fake._calls
+
+        fake._calls.clear()
+        MainWindow.set_window_border_visible(fake, True)
+        assert fake.cfg["showWindowBorder"] is True
+        assert fake.tray_border_action.isChecked() is True
+        assert fake.settings_sidebar.cb_show_window_border.isChecked() is True
+        assert "apply_theme" in fake._calls
+        assert "_adjust_content_height" in fake._calls
+    assert save.call_count == 2

@@ -578,32 +578,15 @@ class PickerTabBar(QTabBar):
         """Apply PanelChrome styling matching PanelHost._style_tabs."""
         if chrome is None:
             return
+        from ui.theme_contrast import build_tab_bar_css
+
         scale = max(0.5, float(getattr(chrome, "scale", 1.0) or 1.0))
-        pad_x = max(2, int(round(5 * scale)))
         pad_y = max(2, int(round(3 * scale)))
-        pad_bottom = max(1, pad_y - 1)
-        font = max(7, int(round(
-            (getattr(chrome, "font_size", 0) or 11) * 0.85)))
-        bar_bg = getattr(chrome, "bar_bg", "") or "transparent"
-        bg = getattr(chrome, "background", "") or "transparent"
-        text = getattr(chrome, "text", "") or "#222222"
-        bar_text = getattr(chrome, "bar_text", "") or text
-        divider = getattr(chrome, "divider_color", "") or bar_bg
-        divider_w = max(1, int(getattr(chrome, "divider_width", 0) or 1))
-        css = (
-            "QTabBar#PickerTabBar { background: transparent;"
-            f" font-size: {font}px;"
-            " }"
-            "QTabBar#PickerTabBar::tab {"
-            f" background: {bar_bg}; color: {bar_text};"
-            f" padding: {pad_y}px {pad_x}px {pad_bottom}px {pad_x}px;"
-            f" font-size: {font}px; border: none;"
-            " }"
-            "QTabBar#PickerTabBar::tab:selected {"
-            f" background: {bg}; color: {text};"
-            f" border-top: {divider_w}px solid {divider};"
-            " }"
-            f"QTabBar#PickerTabBar::tab:hover:!selected {{ color: {text}; }}"
+        css = build_tab_bar_css(
+            chrome,
+            bar_selector="QTabBar#PickerTabBar",
+            tab_selector="QTabBar#PickerTabBar::tab",
+            pad_bottom=max(1, pad_y - 1),
         )
         if self._panel_css == css:
             return

@@ -704,3 +704,79 @@ def test_indicator_survives_a_taller_row(slider_style):
 
     widest = max(max(xs) - min(xs) + 1 for xs in rows.values())
     assert widest >= expected_span - 1
+
+
+@pytest.mark.parametrize(
+    "border_key,show_border,show_title,ratio,expected",
+    [
+        ("default", True, True, 1.0, (4, False, False)),
+        ("default", True, False, 1.0, (4, False, True)),
+        ("default", False, True, 1.0, (0, False, False)),
+        ("default", False, False, 1.0, (0, False, False)),
+        ("csp", True, True, 1.0, (4, True, True)),
+        ("csp", True, False, 1.0, (4, True, True)),
+        ("csp", False, True, 1.0, (0, False, False)),
+        ("csp", False, False, 1.0, (0, False, False)),
+        ("csp", True, True, 1.5, (4, True, True)),
+        ("csp", False, False, 1.5, (0, False, False)),
+    ],
+)
+def test_resolve_window_frame_metrics_adapts_border_and_title_bar(
+    border_key, show_border, show_title, ratio, expected
+):
+    from ui.window.theme import resolve_window_frame_metrics
+
+    bt = resolve_border_theme(get_border_theme(border_key), **UI_COLORS)
+    cfg = {"showWindowBorder": show_border, "showTitleBar": show_title}
+    assert resolve_window_frame_metrics(cfg, bt, show_title, ratio) == expected
+
+
+def test_floating_window_chrome_adapts_to_show_window_border_and_shrinks(qapp):
+    from PyQt6.QtWidgets import QLabel
+    from ui.panels.floating import FloatingPanelWindow, PanelChrome
+
+    fwin = FloatingPanelWindow("sliders.hsv", "HSV")
+    panel = QLabel("HSV")
+    panel.setFixedHeight(80)
+    fwin.set_panel(panel)
+    fwin.show()
+
+    chrome_csp = PanelChrome(
+        background="#2b2b2b",
+        border_color="#404040",
+        border_width=4,
+        title_inset=True,
+        radius=0,
+    )
+    fwin.apply_chrome(chrome_csp)
+    m = fwin.layout().contentsMargins()
+    assert (m.left(), m.top(), m.right(), m.bottom()) == (4, 4, 4, 4)
+    assert "4px solid #404040" in fwin.styleSheet()
+    tall_csp = fwin.height()
+
+    chrome_default = PanelChrome(
+        background="#2b2b2b",
+        border_color="#404040",
+        border_width=4,
+        title_inset=False,
+        radius=0,
+    )
+    fwin.apply_chrome(chrome_default)
+    m = fwin.layout().contentsMargins()
+    assert (m.left(), m.top(), m.right(), m.bottom()) == (4, 0, 4, 4)
+    tall_default = fwin.height()
+    assert tall_default < tall_csp
+
+    chrome_borderless = PanelChrome(
+        background="#2b2b2b",
+        border_color="#404040",
+        border_width=0,
+        title_inset=False,
+        radius=0,
+    )
+    fwin.apply_chrome(chrome_borderless)
+    m = fwin.layout().contentsMargins()
+    assert (m.left(), m.top(), m.right(), m.bottom()) == (0, 0, 0, 0)
+    assert "border: none;" in fwin.styleSheet()
+    assert fwin.height() < tall_default
+    fwin.close()
