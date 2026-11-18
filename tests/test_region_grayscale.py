@@ -406,9 +406,14 @@ def test_settings_sidebar_multi_region_controls_and_toggles(qapp, monkeypatch):
     assert sidebar.lbl_grayscale_region.text() == "默认最大化"
 
 
-def test_windowed_mag_multi_region_bounds():
+def test_windowed_mag_multi_region_bounds(monkeypatch):
     import threading
-    from core.region_grayscale import WindowedMagGrayscale
+    import core.region_grayscale as rg
+    from core.region_grayscale import WindowedMagGrayscale, pseudo_fullscreen_physical_rect
+
+    assert pseudo_fullscreen_physical_rect(0, 0, 1920, 1080) == (0, 0, 1920, 1078)
+    assert pseudo_fullscreen_physical_rect(0, 0, 2560, 1600) == (0, 0, 2560, 1597)
+    assert pseudo_fullscreen_physical_rect(-1920, 0, 3840, 2160) == (-1920, 0, 3840, 2156)
 
     mag = WindowedMagGrayscale.__new__(WindowedMagGrayscale)
     mag._user32 = None
@@ -423,11 +428,23 @@ def test_windowed_mag_multi_region_bounds():
     mag.last_error = ""
     mag._cond = threading.Condition()
 
+    # In maximized/pseudo-fullscreen mode with multiple monitors, each screen gets its own pseudo-fullscreen rect
+    monkeypatch.setattr(
+        rg,
+        "enumerate_physical_monitor_rects",
+        lambda _u32=None: [(0, 0, 2560, 1600), (2560, 0, 1920, 1080)],
+    )
+    assert mag._compute_bounds_list() == [(0, 0, 2560, 1597), (2560, 0, 1920, 1078)]
+    mag.set_target("1")
+    assert mag._compute_bounds_list() == [(2560, 0, 1920, 1078)]
+    mag.set_target("all")
+
     assert mag.set_regions([(10, 20, 300, 400), (500, 600, 200, 150)]) is True
     assert mag.regions == [(10, 20, 300, 400), (500, 600, 200, 150)]
     assert mag._compute_bounds_list() == [(10, 20, 300, 400), (500, 600, 200, 150)]
     mag.clear_regions()
     assert mag.regions == []
+    assert mag._compute_bounds_list() == [(0, 0, 2560, 1597), (2560, 0, 1920, 1078)]
 
 
 def test_picker_actions_multi_region_flow(qapp, monkeypatch):
@@ -538,3 +555,96 @@ def test_picker_actions_multi_region_flow(qapp, monkeypatch):
     assert host.toggle_fullscreen_grayscale() is True
     assert host.grayscale_overlay.is_active is True
     assert host.region_grayscale_overlay.is_active is False
+
+
+def test_on_settings_saved_preserves_fullscreen_and_reactivates_on_backend_switch(qapp, monkeypatch):
+    """Saving settings with saved regions must not clip an active fullscreen DComp filter,
+    and switching backends while fullscreen is active must keep it running on the new backend."""
+    tmp = tempfile.mkdtemp(prefix="colorink-picker-saved-")
+    monkeypatch.setattr(config, "get_user_data_dir", lambda: tmp)
+
+    from PyQt6.QtWidgets import QWidget
+    import core.dcomp_grayscale as dg_mod
+    import core.native_grayscale as ng_mod
+    from ui.window.picker_actions import PickerActionsMixin
+
+    class FakeSharedDLL:
+        def __init__(self):
+            self.active = False
+            self.healthy = True
+            self.regions = []
+            self.mode = 0
+            self.target = -1
+
+        def dcomp_filter_init(self): return True
+        def dcomp_filter_set_active(self, active): self.active = bool(active); return True
+        def dcomp_filter_set_mode(self, mode): self.mode = int(mode)
+        def dcomp_filter_set_target(self, target): self.target = int(target); return True
+        def dcomp_filter_is_active(self): return self.active
+        def dcomp_filter_is_healthy(self): return self.healthy
+        def dcomp_filter_get_screen_count(self): return 1
+        def dcomp_filter_get_stats(self, buf): buf[4] = 1
+        def dcomp_filter_set_region(self, x, y, w, h):
+            self.regions = [(x, y, w, h)] if w > 0 and h > 0 else []
+            return True
+        def dcomp_filter_set_regions(self, arr, count):
+            self.regions = [(arr[i].x, arr[i].y, arr[i].w, arr[i].h) for i in range(count)]
+            return True
+        def dcomp_filter_cleanup(self): self.active = False
+
+    shared_dll = FakeSharedDLL()
+    DCompGrayscaleController._dll_clients.clear()
+    DCompGrayscaleController._active_owner = None
+    monkeypatch.setattr(DCompGrayscaleController, "_find_dll", staticmethod(lambda: "fake.dll"))
+    monkeypatch.setattr(DCompGrayscaleController, "_load_dll", lambda self, p: setattr(self, "_dll", shared_dll))
+
+    class FakeNative:
+        is_available = True
+        is_healthy = True
+        def __init__(self, mode="oklch"):
+            self.mode = mode
+            self.target = "all"
+            self.is_active = False
+            self.last_error = ""
+        def set_target(self, t): self.target = t
+        def set_mode(self, m): self.mode = m
+        def set_active(self, a, m=None): self.is_active = bool(a); return True
+        def close(self): self.is_active = False
+
+    monkeypatch.setattr(ng_mod, "NativeGrayscaleController", FakeNative)
+
+    class Host(PickerActionsMixin, QWidget):
+        def __init__(self):
+            super().__init__()
+            self.cfg = config.load_hotkey_config()
+            self.cfg["grayscaleFilterBackend"] = "dcomp"
+            self.cfg["grayscaleFilterMode"] = "oklch"
+            write_regions_to_config(self.cfg, [{"x": 50, "y": 50, "width": 300, "height": 200, "enabled": True}])
+            self.grayscale_overlay = dg_mod.DCompGrayscaleController(mode="oklch")
+            self.region_grayscale_overlay = RegionGrayscaleController(mode="oklch")
+            self.sync_thread = None
+            self.settings_sidebar = None
+            self.sidebar_sync_count = 0
+
+        def _sync_sidebar_grayscale_ui(self):
+            self.sidebar_sync_count += 1
+
+    host = Host()
+    assert host.grayscale_overlay.set_active(True) is True
+    assert host.grayscale_overlay.is_active is True
+    assert host.region_grayscale_overlay.is_active is False
+
+    # Saving settings while fullscreen is active must NOT push region rects into shared DLL
+    host._apply_grayscale_settings_from_cfg()
+    assert host.grayscale_overlay.is_active is True
+    assert host.region_grayscale_overlay.is_active is False
+    assert shared_dll.regions == []
+    assert host.sidebar_sync_count >= 1
+
+    # Switching backend while fullscreen is active preserves active state on new backend
+    host.cfg["grayscaleFilterBackend"] = "native"
+    host._apply_grayscale_settings_from_cfg()
+    assert isinstance(host.grayscale_overlay, FakeNative)
+    assert host.grayscale_overlay.is_active is True
+    assert shared_dll.active is False
+

@@ -178,6 +178,94 @@ def format_region_status_from_entries(entries: list[dict], tr_fn=None) -> str:
     )
 
 
+def pseudo_fullscreen_physical_rect(x: int, y: int, w: int, h: int) -> tuple[int, int, int, int]:
+    """计算单个显示器的伪全屏物理矩形（底部保留 2~4 物理像素不覆盖滤镜，防止 DWM 全屏卡顿）."""
+    margin = max(2, min(4, h // 500)) if h > 8 else 0
+    return (int(x), int(y), max(1, int(w)), max(1, int(h) - margin))
+
+
+def enumerate_physical_monitor_rects(user32=None) -> list[tuple[int, int, int, int]]:
+    """枚举各显示器在物理桌面坐标系中的 (x, y, width, height)，顺序与 Qt screens 一致."""
+    win_monitors: list[tuple[int, int, int, int]] = []
+    try:
+        import win32api
+        for hmon, _hdc, _rect in win32api.EnumDisplayMonitors():
+            info = win32api.GetMonitorInfo(hmon)
+            mon = info.get("Monitor")
+            if mon and len(mon) == 4:
+                ml, mt, mr, mb = (int(v) for v in mon)
+                if mr > ml and mb > mt:
+                    win_monitors.append((ml, mt, mr - ml, mb - mt))
+    except Exception:
+        win_monitors = []
+
+    try:
+        from PyQt6.QtGui import QGuiApplication
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if isinstance(app, QGuiApplication):
+            screens = list(app.screens())
+            if screens:
+                if len(screens) == 1 and len(win_monitors) == 1:
+                    return [win_monitors[0]]
+                indexed_screens = sorted(
+                    enumerate(screens),
+                    key=lambda pair: (pair[1].geometry().x(), pair[1].geometry().y()),
+                )
+                sorted_win = sorted(
+                    enumerate(win_monitors),
+                    key=lambda pair: (pair[1][0], pair[1][1]),
+                )
+                used: set[int] = set()
+                ordered_by_idx: dict[int, tuple[int, int, int, int]] = {}
+                for scr_idx, scr in indexed_screens:
+                    geo = scr.geometry()
+                    dpr = max(0.5, float(scr.devicePixelRatio() or 1.0))
+                    ew = max(1, int(round(geo.width() * dpr)))
+                    eh = max(1, int(round(geo.height() * dpr)))
+                    matched = None
+                    for w_idx, wrect in sorted_win:
+                        if w_idx in used:
+                            continue
+                        if abs(wrect[2] - ew) <= 2 and abs(wrect[3] - eh) <= 2:
+                            if len(screens) == len(win_monitors) or (
+                                wrect[0] == 0 and wrect[1] == 0 and geo.x() == 0 and geo.y() == 0
+                            ):
+                                matched = wrect
+                                used.add(w_idx)
+                                break
+                    if matched is None:
+                        for w_idx, wrect in sorted_win:
+                            if w_idx in used:
+                                continue
+                            if abs(wrect[2] - ew) <= 2 and abs(wrect[3] - eh) <= 2:
+                                matched = wrect
+                                used.add(w_idx)
+                                break
+                    if matched is None:
+                        matched = (int(round(geo.x() * dpr)), int(round(geo.y() * dpr)), ew, eh)
+                    ordered_by_idx[scr_idx] = matched
+                return [ordered_by_idx[i] for i in range(len(screens))]
+    except Exception:
+        pass
+
+    if win_monitors:
+        return win_monitors
+
+    if user32 is not None:
+        try:
+            vx = int(user32.GetSystemMetrics(76))
+            vy = int(user32.GetSystemMetrics(77))
+            vw = int(user32.GetSystemMetrics(78))
+            vh = int(user32.GetSystemMetrics(79))
+            if vw > 0 and vh > 0:
+                return [(vx, vy, vw, vh)]
+        except Exception:
+            pass
+
+    return [(0, 0, 1920, 1080)]
+
+
 class WindowedMagGrayscale:
     """基于 Win32 WC_MAGNIFIER 窗口控件的高帧率无边框穿透区域灰度后端.
 
@@ -363,45 +451,18 @@ class WindowedMagGrayscale:
         return self.set_regions([])
 
     def _compute_bounds(self) -> tuple[int, int, int, int]:
-        regions = self.regions
-        if regions:
-            return regions[0]
-
-        try:
-            from PyQt6.QtGui import QGuiApplication
-            from PyQt6.QtWidgets import QApplication
-            app = QApplication.instance()
-            if isinstance(app, QGuiApplication):
-                screens = app.screens()
-                if 0 <= self._target_index < len(screens):
-                    scr = screens[self._target_index]
-                    geo = scr.geometry()
-                    dpr = scr.devicePixelRatio()
-                    x = int(round(geo.x() * dpr))
-                    y = int(round(geo.y() * dpr))
-                    w = int(round(geo.width() * dpr))
-                    h = int(round(geo.height() * dpr))
-                    if w > 0 and h > 0:
-                        return (x, y, w, h)
-        except Exception:
-            pass
-
-        if self._user32 is not None:
-            vx = int(self._user32.GetSystemMetrics(76))  # SM_XVIRTUALSCREEN
-            vy = int(self._user32.GetSystemMetrics(77))  # SM_YVIRTUALSCREEN
-            vw = int(self._user32.GetSystemMetrics(78))  # SM_CXVIRTUALSCREEN
-            vh = int(self._user32.GetSystemMetrics(79))  # SM_CYVIRTUALSCREEN
-            if vw > 0 and vh > 0:
-                return (vx, vy, vw, vh)
-
-        return (0, 0, 1920, 1080)
+        return self._compute_bounds_list()[0]
 
     def _compute_bounds_list(self) -> list[tuple[int, int, int, int]]:
         with self._cond:
             regions = list(self._regions)
+            target_idx = self._target_index
         if regions:
             return regions
-        return [self._compute_bounds()]
+        monitors = enumerate_physical_monitor_rects(self._user32)
+        if 0 <= target_idx < len(monitors):
+            return [pseudo_fullscreen_physical_rect(*monitors[target_idx])]
+        return [pseudo_fullscreen_physical_rect(*m) for m in monitors]
 
     def _create_mag_slot(
         self, hinst, x: int, y: int, w: int, h: int
@@ -480,6 +541,17 @@ class WindowedMagGrayscale:
             return
 
         hinst = kernel32.GetModuleHandleW(None)
+        dwm_flush = None
+        try:
+            dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
+            fn = getattr(dwmapi, "DwmFlush", None)
+            if fn is not None:
+                fn.argtypes = []
+                fn.restype = ctypes.c_long
+                dwm_flush = fn
+        except Exception:
+            dwm_flush = None
+
         init_bounds = self._compute_bounds_list()
         x0, y0, w0, h0 = init_bounds[0]
         first_slot = self._create_mag_slot(hinst, x0, y0, w0, h0)
@@ -565,6 +637,12 @@ class WindowedMagGrayscale:
                 rect = wintypes.RECT(bx, by, bx + bw, by + bh)
                 mag.MagSetWindowSource(mag_hwnd, rect)
 
+            if dwm_flush is not None:
+                try:
+                    if dwm_flush() == 0:
+                        continue
+                except Exception:
+                    dwm_flush = None
             dt = time.perf_counter() - t0
             if dt < 0.002:
                 time.sleep(0.004)

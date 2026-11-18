@@ -47,70 +47,26 @@ class _MonitorMap:
 
 def build_monitor_maps() -> list[_MonitorMap]:
     """构建物理桌面像素与 Qt 逻辑屏幕几何之间的映射."""
+    from core.region_grayscale import enumerate_physical_monitor_rects
+
     app = QApplication.instance()
     screens = list(app.screens()) if isinstance(app, QGuiApplication) else []
     if not screens:
         return [_MonitorMap(0, (0, 0, 1920, 1080), QRect(0, 0, 1920, 1080), 1.0)]
 
-    win_monitors: list[tuple[int, int, int, int]] = []
-    if win32api is not None:
-        try:
-            for hmon, _hdc, _rect in win32api.EnumDisplayMonitors():
-                info = win32api.GetMonitorInfo(hmon)
-                mon = info.get("Monitor")
-                if mon and len(mon) == 4:
-                    win_monitors.append((int(mon[0]), int(mon[1]), int(mon[2]), int(mon[3])))
-        except Exception:
-            win_monitors = []
-
-    used_win: set[int] = set()
+    phys_rects = enumerate_physical_monitor_rects()
     maps: list[_MonitorMap] = []
-
-    # 按位置排序便于多同分辨率屏幕稳定匹配
-    indexed_screens = list(enumerate(screens))
-    indexed_screens.sort(key=lambda pair: (pair[1].geometry().x(), pair[1].geometry().y()))
-    sorted_win = sorted(enumerate(win_monitors), key=lambda pair: (pair[1][0], pair[1][1]))
-
-    for scr_idx, scr in indexed_screens:
+    for idx, scr in enumerate(screens):
         geo = scr.geometry()
         dpr = max(0.5, float(scr.devicePixelRatio() or 1.0))
-        expected_w = int(round(geo.width() * dpr))
-        expected_h = int(round(geo.height() * dpr))
-
-        matched: tuple[int, int, int, int] | None = None
-        if len(screens) == 1 and len(win_monitors) == 1:
-            matched = win_monitors[0]
-        elif sorted_win:
-            # 优先匹配原点 + 尺寸一致，再按尺寸匹配尚未分配的显示器
-            for w_idx, w_rect in sorted_win:
-                if w_idx in used_win:
-                    continue
-                ww = w_rect[2] - w_rect[0]
-                wh = w_rect[3] - w_rect[1]
-                if abs(ww - expected_w) <= 2 and abs(wh - expected_h) <= 2:
-                    if len(screens) == len(win_monitors) or (w_rect[0] == 0 and w_rect[1] == 0 and geo.x() == 0 and geo.y() == 0):
-                        matched = w_rect
-                        used_win.add(w_idx)
-                        break
-            if matched is None:
-                for w_idx, w_rect in sorted_win:
-                    if w_idx in used_win:
-                        continue
-                    ww = w_rect[2] - w_rect[0]
-                    wh = w_rect[3] - w_rect[1]
-                    if abs(ww - expected_w) <= 2 and abs(wh - expected_h) <= 2:
-                        matched = w_rect
-                        used_win.add(w_idx)
-                        break
-
-        if matched is None:
+        if idx < len(phys_rects):
+            px, py, pw, ph = phys_rects[idx]
+            matched = (px, py, px + pw, py + ph)
+        else:
             px = int(round(geo.x() * dpr))
             py = int(round(geo.y() * dpr))
-            matched = (px, py, px + expected_w, py + expected_h)
-
-        maps.append(_MonitorMap(scr_idx, matched, geo, dpr))
-
-    maps.sort(key=lambda m: m.index)
+            matched = (px, py, px + int(round(geo.width() * dpr)), py + int(round(geo.height() * dpr)))
+        maps.append(_MonitorMap(idx, matched, geo, dpr))
     return maps
 
 

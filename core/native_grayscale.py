@@ -35,7 +35,7 @@ import sys
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, QRect, pyqtSignal
 
 # Stale-camera recovery: bounded retries with short backoff (the old runtime
 # used 5 attempts × 1.0s sleeps, which turned a stuck previous camera into a
@@ -163,6 +163,64 @@ def _disarm_fault_watchdog(runtime) -> bool:
     return True
 
 
+_PSEUDO_FULLSCREEN_MARGIN_LOGICAL = 2
+
+
+def pseudo_fullscreen_geometry(screen_geo: QRect) -> QRect:
+    """Compute per-monitor pseudo-fullscreen geometry leaving a thin bottom strip uncovered.
+
+    Leaving a 2px logical strip uncovered at the bottom of each monitor prevents
+    Windows DWM / OpenGL drivers from promoting the borderless window into
+    exclusive/fullscreen flip mode (which causes frame stutter and input lag),
+    while staying unobtrusive across multi-monitor HiDPI layouts.
+    """
+    h = screen_geo.height()
+    margin = _PSEUDO_FULLSCREEN_MARGIN_LOGICAL if h > 8 else 0
+    return QRect(
+        screen_geo.x(),
+        screen_geo.y(),
+        screen_geo.width(),
+        max(1, h - margin),
+    )
+
+
+def _sync_overlay_uv(widget) -> None:
+    """Adjust the runtime VBO bottom V-coord to match pseudo-fullscreen height 1:1."""
+    vbo = getattr(widget, "_vbo", None)
+    if vbo is None or not hasattr(vbo, "bind"):
+        return
+    full_geo = getattr(widget, "_colorink_full_geometry", None)
+    target_geo = getattr(widget, "_colorink_target_geometry", None)
+    if full_geo is None or target_geo is None or full_geo.height() <= 0:
+        return
+    v_bottom = min(1.0, max(0.01, float(target_geo.height()) / float(full_geo.height())))
+    import array as _array
+    data = _array.array("f", [
+        -1.0, -1.0, 0.0, v_bottom,
+         1.0, -1.0, 1.0, v_bottom,
+         1.0,  1.0, 1.0, 0.0,
+        -1.0,  1.0, 0.0, 0.0,
+    ])
+    try:
+        vbo.bind()
+        raw = data.tobytes()
+        vbo.allocate(raw, len(raw))
+        vbo.release()
+    except Exception:
+        pass
+
+
+def _resolve_widget_target_geometry(widget) -> QRect | None:
+    screen = getattr(widget, "_screen", None)
+    if screen is not None:
+        full_geo = screen.geometry()
+        widget._colorink_full_geometry = full_geo
+        target_geo = pseudo_fullscreen_geometry(full_geo)
+        widget._colorink_target_geometry = target_geo
+        return target_geo
+    return getattr(widget, "_colorink_target_geometry", None)
+
+
 def _install_prewarm(runtime):
     """Patch the runtime overlay for off-screen warmup and fast toggles.
 
@@ -179,13 +237,34 @@ def _install_prewarm(runtime):
 
     def prewarm_show(widget, *args, **kwargs):
         if not getattr(widget, "_colorink_reveal_ready", False):
-            geometry = widget.geometry()
-            widget._colorink_target_geometry = geometry
-            widget.setGeometry(-10000, -10000, geometry.width(), geometry.height())
+            screen = getattr(widget, "_screen", None)
+            full_geo = screen.geometry() if screen is not None else widget.geometry()
+            target_geo = pseudo_fullscreen_geometry(full_geo)
+            widget._colorink_full_geometry = full_geo
+            widget._colorink_target_geometry = target_geo
+            widget.setGeometry(-32000, -32000, target_geo.width(), target_geo.height())
         return original_show(widget, *args, **kwargs)
 
     overlay_cls.show = prewarm_show
     overlay_cls._colorink_original_show = original_show
+
+    orig_init_gl = getattr(overlay_cls, "initializeGL", None)
+    if callable(orig_init_gl):
+        def patched_init_gl(widget):
+            orig_init_gl(widget)
+            _sync_overlay_uv(widget)
+
+        overlay_cls.initializeGL = patched_init_gl
+        overlay_cls._colorink_original_initializeGL = orig_init_gl
+
+    orig_resize_gl = getattr(overlay_cls, "resizeGL", None)
+    if callable(orig_resize_gl):
+        def patched_resize_gl(widget, w: int, h: int):
+            orig_resize_gl(widget, w, h)
+            _sync_overlay_uv(widget)
+
+        overlay_cls.resizeGL = patched_resize_gl
+        overlay_cls._colorink_original_resizeGL = orig_resize_gl
 
     # ------------------------------------------------------------------
     # Async dxcam init (replaces the runtime's blocking _init_camera).
@@ -274,7 +353,7 @@ def _install_prewarm(runtime):
                             continue
                         cam.start(
                             target_fps=max(30, round(widget._screen.refreshRate())),
-                            video_mode=True,
+                            video_mode=False,
                         )
                         if gen == getattr(widget, "_colorink_init_gen", gen):
                             widget._camera = cam
@@ -321,6 +400,40 @@ def _install_prewarm(runtime):
         widget._on_frame_swapped()
 
     overlay_cls._colorink_kick_capture = _colorink_kick_capture
+
+    orig_frame_swapped = getattr(overlay_cls, "_on_frame_swapped", None)
+    if callable(orig_frame_swapped):
+        @pyqtSlot()
+        def _colorink_idle_poll(widget):
+            widget._colorink_idle_poll_pending = False
+            if not widget.isVisible() or getattr(widget, "_camera", None) is None:
+                return
+            widget._on_frame_swapped()
+
+        def patched_frame_swapped(widget):
+            if not widget.isVisible():
+                return
+            camera = getattr(widget, "_camera", None)
+            if camera is None:
+                return
+            if (
+                getattr(widget, "_initialized", False)
+                and getattr(widget, "_texture", None) is not None
+                and getattr(widget, "_pending_frame", None) is None
+                and getattr(camera, "is_capturing", False)
+            ):
+                ts = getattr(camera, "latest_frame_time", None)
+                if ts is not None and ts == getattr(widget, "_last_frame_ticks", None):
+                    if not getattr(widget, "_colorink_idle_poll_pending", False):
+                        from PyQt6.QtCore import QTimer
+                        widget._colorink_idle_poll_pending = True
+                        QTimer.singleShot(8, widget._colorink_idle_poll)
+                    return
+            return orig_frame_swapped(widget)
+
+        overlay_cls._colorink_idle_poll = _colorink_idle_poll
+        overlay_cls._on_frame_swapped = patched_frame_swapped
+        overlay_cls._colorink_original_on_frame_swapped = orig_frame_swapped
 
     # ------------------------------------------------------------------
     # Stop capture while keeping the overlay (and its GL context) alive.
@@ -493,7 +606,7 @@ class NativeGrayscaleController:
                 self._watched_screens.add(screen)
 
     def _on_screen_layout_changed(self, *args) -> None:
-        """Re-apply the latest per-screen geometry to every overlay."""
+        """Re-apply the latest per-screen pseudo-fullscreen geometry to every overlay."""
         self._watch_current_screens()
         if self._impl is None or not self._impl.is_active:
             return
@@ -502,10 +615,21 @@ class NativeGrayscaleController:
                 screen = getattr(widget, "_screen", None)
                 if screen is None:
                     continue
-                geometry = screen.geometry()
-                widget._colorink_target_geometry = geometry
-                if getattr(widget, "_colorink_reveal_ready", False):
+                geometry = _resolve_widget_target_geometry(widget)
+                if geometry is not None and getattr(widget, "_colorink_reveal_ready", False):
+                    wh = widget.windowHandle() if hasattr(widget, "windowHandle") else None
+                    if wh is not None and hasattr(wh, "setScreen"):
+                        try:
+                            wh.setScreen(screen)
+                        except Exception:
+                            pass
                     widget.setGeometry(geometry)
+                    if widget.geometry() != geometry:
+                        widget.setGeometry(geometry)
+                    if getattr(widget, "_initialized", False) and hasattr(widget, "makeCurrent"):
+                        widget.makeCurrent()
+                        _sync_overlay_uv(widget)
+                        widget.doneCurrent()
             except Exception:
                 pass
 
@@ -589,9 +713,26 @@ class NativeGrayscaleController:
 
     def _reveal_overlays(self) -> None:
         for widget in list(getattr(self._impl, "_overlays", [])):
-            geometry = getattr(widget, "_colorink_target_geometry", None)
+            screen = getattr(widget, "_screen", None)
+            geometry = _resolve_widget_target_geometry(widget)
+            if screen is not None:
+                wh = widget.windowHandle() if hasattr(widget, "windowHandle") else None
+                if wh is not None and hasattr(wh, "setScreen"):
+                    try:
+                        wh.setScreen(screen)
+                    except Exception:
+                        pass
             if geometry is not None:
                 widget.setGeometry(geometry)
+                if widget.geometry() != geometry:
+                    widget.setGeometry(geometry)
+            if getattr(widget, "_initialized", False) and hasattr(widget, "makeCurrent"):
+                try:
+                    widget.makeCurrent()
+                    _sync_overlay_uv(widget)
+                    widget.doneCurrent()
+                except Exception:
+                    pass
             widget._colorink_reveal_ready = True
             widget.show()
             widget.raise_()
@@ -602,8 +743,8 @@ class NativeGrayscaleController:
         # light preheat. The runtime's prewarm_show() used the same off-screen
         # trick during warmup.
         for widget in list(getattr(self._impl, "_overlays", [])):
-            geometry = widget.geometry()
-            widget.setGeometry(-10000, -10000, geometry.width(), geometry.height())
+            geometry = getattr(widget, "_colorink_target_geometry", None) or widget.geometry()
+            widget.setGeometry(-32000, -32000, geometry.width(), geometry.height())
             widget._colorink_reveal_ready = False
 
     def _start_capture_all(self) -> None:
@@ -769,7 +910,6 @@ class NativeGrayscaleController:
 
     def _poll_transition(self) -> None:
         self._transition_poll_scheduled = False
-        self._transition_not_before = 0.0
         self._warming = False
         if not self._warm_releasing:
             self._warmed = False
@@ -794,6 +934,7 @@ class NativeGrayscaleController:
                 # DuplicateOutput) must not wedge the toggle forever. Drop the
                 # wait; the next start's stale-camera recovery will retry or
                 # surface a clear error once the old thread dies.
+                self._transition_not_before = 0.0
                 self._stopping_overlays.clear()
                 self._warm_releasing = False
                 gc.collect()
@@ -803,6 +944,7 @@ class NativeGrayscaleController:
                 return
             self._schedule_transition_poll()
             return
+        self._transition_not_before = 0.0
         self._stopping_overlays.clear()
         self._warm_releasing = False
         gc.collect()

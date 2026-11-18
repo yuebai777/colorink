@@ -8,6 +8,7 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
+import weakref
 from pathlib import Path
 
 
@@ -47,6 +48,9 @@ def _parse_region_rect(
 class DCompGrayscaleController:
     """基于 DirectComposition 显存直通的零延迟 OKLCh 灰度滤镜控制器."""
 
+    _dll_clients: weakref.WeakSet[DCompGrayscaleController] = weakref.WeakSet()
+    _active_owner: weakref.ref[DCompGrayscaleController] | None = None
+
     def __init__(self, mode: str = "oklch"):
         self._dll = None
         self._dll_path = self._find_dll()
@@ -55,11 +59,13 @@ class DCompGrayscaleController:
         self._target_index = -1
         self._region: tuple[int, int, int, int] | None = None
         self._regions: list[tuple[int, int, int, int]] = []
+        self._session_claimed = False
         self.last_error = ""
 
         if self._dll_path:
             try:
                 self._load_dll(self._dll_path)
+                DCompGrayscaleController._dll_clients.add(self)
             except Exception as exc:
                 self.last_error = f"DComp DLL 加载失败: {exc}"
         else:
@@ -136,6 +142,24 @@ class DCompGrayscaleController:
 
         self._dll = dll
 
+    def _is_owned_by_other(self) -> bool:
+        """Return True when another live controller instance actively owns the shared DLL."""
+        owner_ref = DCompGrayscaleController._active_owner
+        owner = owner_ref() if owner_ref is not None else None
+        if owner is None or owner is self:
+            return False
+        if not getattr(owner, "_session_claimed", False) or owner._dll is None:
+            return False
+        if hasattr(owner._dll, "dcomp_filter_is_active"):
+            try:
+                if not bool(owner._dll.dcomp_filter_is_active()):
+                    owner._session_claimed = False
+                    DCompGrayscaleController._active_owner = None
+                    return False
+            except Exception:
+                pass
+        return True
+
     @property
     def is_available(self) -> bool:
         return self._dll is not None
@@ -145,9 +169,17 @@ class DCompGrayscaleController:
         if not self._dll:
             return False
         try:
-            return bool(self._dll.dcomp_filter_is_active())
+            active = bool(self._dll.dcomp_filter_is_active())
         except Exception:
             return False
+        if not active:
+            if getattr(self, "_session_claimed", False):
+                self._session_claimed = False
+                owner_ref = DCompGrayscaleController._active_owner
+                if owner_ref is not None and owner_ref() is self:
+                    DCompGrayscaleController._active_owner = None
+            return False
+        return not self._is_owned_by_other()
 
     @property
     def is_healthy(self) -> bool:
@@ -173,7 +205,7 @@ class DCompGrayscaleController:
         if mode not in ("oklch", "luma"):
             raise ValueError("DComp 后端仅支持 oklch 或 luma")
         self._mode = mode
-        if not self._dll:
+        if not self._dll or self._is_owned_by_other():
             return
         try:
             mode_code = 1 if mode == "luma" else 0
@@ -195,7 +227,7 @@ class DCompGrayscaleController:
                 idx = -1
         self._target_index = idx
 
-        if not self._dll:
+        if not self._dll or self._is_owned_by_other():
             return
         try:
             self._dll.dcomp_filter_set_target(idx)
@@ -261,6 +293,8 @@ class DCompGrayscaleController:
     def _sync_region(self) -> bool:
         if not self._dll:
             return False
+        if self._is_owned_by_other():
+            return True
         regions = self.regions
         try:
             if len(regions) > 1 and hasattr(self._dll, "dcomp_filter_set_regions"):
@@ -308,6 +342,14 @@ class DCompGrayscaleController:
 
         try:
             if active:
+                # Transfer shared-DLL ownership to this controller before pushing parameters
+                prev_ref = DCompGrayscaleController._active_owner
+                prev_owner = prev_ref() if prev_ref is not None else None
+                if prev_owner is not None and prev_owner is not self:
+                    prev_owner._session_claimed = False
+                self._session_claimed = True
+                DCompGrayscaleController._active_owner = weakref.ref(self)
+
                 # 激活前确保同步当前模式、屏幕和区域设置
                 mode_code = 1 if self._mode == "luma" else 0
                 self._dll.dcomp_filter_set_mode(mode_code)
@@ -320,6 +362,7 @@ class DCompGrayscaleController:
 
                 ok = bool(self._dll.dcomp_filter_set_active(True))
                 if not ok:
+                    self._release_ownership()
                     self.last_error = "激活 DComp 灰度滤镜失败"
                     return False
                 self._dll.dcomp_filter_set_target(self._target_index)
@@ -347,11 +390,22 @@ class DCompGrayscaleController:
 
                 return True
             else:
+                if self._is_owned_by_other():
+                    self._session_claimed = False
+                    return True
+                self._release_ownership()
                 self._dll.dcomp_filter_set_active(False)
                 return True
         except Exception as exc:
+            self._release_ownership()
             self.last_error = f"控制 DComp 灰度失败: {exc}"
             return False
+
+    def _release_ownership(self) -> None:
+        self._session_claimed = False
+        owner_ref = DCompGrayscaleController._active_owner
+        if owner_ref is not None and owner_ref() is self:
+            DCompGrayscaleController._active_owner = None
 
     def toggle(self) -> bool:
         return self.set_active(not self.is_active, self._mode)
@@ -361,11 +415,13 @@ class DCompGrayscaleController:
 
     def close(self) -> None:
         self.stop()
+        DCompGrayscaleController._dll_clients.discard(self)
         if self._dll:
-            try:
-                self._dll.dcomp_filter_cleanup()
-            except Exception:
-                pass
+            if not DCompGrayscaleController._dll_clients:
+                try:
+                    self._dll.dcomp_filter_cleanup()
+                except Exception:
+                    pass
             self._dll = None
 
     def get_stats(self) -> dict[str, int]:

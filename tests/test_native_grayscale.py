@@ -421,3 +421,213 @@ def test_dispatch_invoke_calls_bound_method_without_extra_arg():
     widget = DummyOverlay()
     ng._dispatch_invoke(widget, "_colorink_kick_capture")
     assert widget.called
+
+
+def test_pseudo_fullscreen_geometry_leaves_bottom_strip_per_screen():
+    assert ng.pseudo_fullscreen_geometry(QRect(0, 0, 1920, 1080)) == QRect(0, 0, 1920, 1078)
+    assert ng.pseudo_fullscreen_geometry(QRect(0, 0, 1707, 1067)) == QRect(0, 0, 1707, 1065)
+    assert ng.pseudo_fullscreen_geometry(QRect(-1920, -200, 1920, 1080)) == QRect(-1920, -200, 1920, 1078)
+
+
+def test_multi_monitor_native_pseudo_fullscreen_and_uv_sync(monkeypatch):
+    class FakeScreen:
+        def __init__(self, geo):
+            self._geo = geo
+
+        def geometry(self):
+            return self._geo
+
+    class FakeVBO:
+        def __init__(self):
+            self.bound = False
+            self.released = False
+            self.allocated = None
+
+        def bind(self):
+            self.bound = True
+
+        def allocate(self, data, size):
+            import struct
+            self.allocated = struct.unpack("16f", data)
+            self.size = size
+
+        def release(self):
+            self.released = True
+
+    class MultiMonWidget(_FakeWidget):
+        def __init__(self, idx, screen):
+            super().__init__(idx)
+            self._screen = screen
+            self._vbo = FakeVBO()
+            self.setGeometry(screen.geometry())
+
+        def makeCurrent(self):
+            pass
+
+        def doneCurrent(self):
+            pass
+
+    class MultiMonImpl:
+        is_active = False
+        is_healthy = True
+
+        def __init__(self, mode):
+            self.mode = mode
+            self.target = "all"
+            self.s0 = FakeScreen(QRect(0, 0, 1707, 1067))
+            self.s1 = FakeScreen(QRect(1707, 0, 1920, 1080))
+            self.s2 = FakeScreen(QRect(-1920, 0, 1920, 1080))
+            self._overlays = []
+
+        def set_mode(self, mode):
+            self.mode = mode
+
+        def set_target(self, target):
+            self.target = target
+
+        def set_active(self, active, mode=None):
+            self.is_active = active
+            if active:
+                self._overlays = [
+                    MultiMonWidget(0, self.s0),
+                    MultiMonWidget(1, self.s1),
+                    MultiMonWidget(2, self.s2),
+                ]
+                for w in self._overlays:
+                    w._colorink_start_capture()
+            else:
+                self._overlays = []
+
+    class FakeRuntime:
+        GrayscaleOverlay = MultiMonImpl
+
+    queue = _TimerQueue()
+    monkeypatch.setattr(QTimer, "singleShot", queue.singleShot)
+    monkeypatch.setattr(ng, "_ensure_runtime_loaded", lambda: FakeRuntime())
+
+    c = ng.NativeGrayscaleController()
+    c.start()
+    queue.run_all()
+
+    overlays = c._impl._overlays
+    assert len(overlays) == 3
+    assert overlays[0].geometry() == QRect(0, 0, 1707, 1065)
+    assert overlays[1].geometry() == QRect(1707, 0, 1920, 1078)
+    assert overlays[2].geometry() == QRect(-1920, 0, 1920, 1078)
+
+    # VBO bottom V-coordinate matches pseudo_h / full_h for 1:1 pixel mapping
+    assert overlays[0]._vbo.allocated is not None
+    assert overlays[0]._vbo.allocated[3] == pytest.approx(1065.0 / 1067.0, rel=1e-5)
+    assert overlays[1]._vbo.allocated[3] == pytest.approx(1078.0 / 1080.0, rel=1e-5)
+
+    # Dynamic screen layout change updates each screen's pseudo-fullscreen geometry and UVs
+    c._impl.s1._geo = QRect(1707, 100, 2560, 1440)
+    c._on_screen_layout_changed()
+    assert overlays[1].geometry() == QRect(1707, 100, 2560, 1438)
+    assert overlays[1]._vbo.allocated[3] == pytest.approx(1438.0 / 1440.0, rel=1e-5)
+
+
+def test_poll_transition_honors_not_before_cooldown(monkeypatch):
+    """_poll_transition must respect _transition_not_before before clearing it and restarting."""
+    import time as time_mod
+    from PyQt6.QtCore import QTimer
+    import core.native_grayscale as ng
+
+    class DummyImpl:
+        is_active = False
+        is_healthy = True
+        _overlays = []
+        def __init__(self, mode="oklch"): pass
+        def set_mode(self, m): pass
+        def set_target(self, t): pass
+
+    class DummyRuntime:
+        GrayscaleOverlay = DummyImpl
+
+    monkeypatch.setattr(ng, "_ensure_runtime_loaded", lambda: DummyRuntime())
+    scheduled = []
+    monkeypatch.setattr(QTimer, "singleShot", lambda ms, fn: scheduled.append((ms, fn)))
+
+    c = ng.NativeGrayscaleController()
+    started = []
+    c.start = lambda: started.append(True)
+
+    clock = [100.0]
+    monkeypatch.setattr(time_mod, "monotonic", lambda: clock[0])
+
+    c._stopping_overlays = []
+    c._transition_started_at = 100.0
+    c._transition_not_before = 100.25
+    c._pending_start = True
+
+    # Before cooldown finishes: must keep waiting and NOT wipe _transition_not_before or start early
+    clock[0] = 100.05
+    c._poll_transition()
+    assert c._transition_not_before == pytest.approx(100.25)
+    assert c._pending_start is True
+    assert started == []
+    assert len(scheduled) == 1
+
+    # Once cooldown finishes: clears _transition_not_before and triggers pending start
+    clock[0] = 100.26
+    c._poll_transition()
+    assert c._transition_not_before == 0.0
+    assert c._pending_start is False
+    assert started == [True]
+
+
+def test_install_prewarm_skips_idle_frame_swapped_redraw(monkeypatch):
+    """_install_prewarm wraps _on_frame_swapped to avoid redundant OpenGL swaps when desktop is idle."""
+    from PyQt6.QtCore import QTimer, pyqtSignal, QObject
+    import core.native_grayscale as ng
+
+    class DummyBase(QObject):
+        frameSwapped = pyqtSignal()
+        def __init__(self):
+            super().__init__()
+            self._screen = type("S", (), {"refreshRate": lambda s: 60.0})()
+            self._camera = None
+            self._initialized = True
+            self._texture = object()
+            self._pending_frame = None
+            self._last_frame_ticks = 42.0
+            self.visible = True
+            self.orig_calls = 0
+
+        def isVisible(self):
+            return self.visible
+
+        def show(self): pass
+        def cleanup(self): pass
+        def initializeGL(self): pass
+        def resizeGL(self, w, h): pass
+        def _on_frame_swapped(self):
+            self.orig_calls += 1
+
+    class DummyRuntime:
+        _ShaderOverlay = DummyBase
+
+    scheduled = []
+    monkeypatch.setattr(QTimer, "singleShot", lambda ms, fn: scheduled.append((ms, fn)))
+
+    ng._install_prewarm(DummyRuntime())
+    w = DummyBase()
+    cam = type("Cam", (), {"is_capturing": True, "latest_frame_time": 42.0})()
+    w._camera = cam
+
+    # Idle: latest_frame_time == _last_frame_ticks -> skip update/draw and schedule idle poll
+    w._on_frame_swapped()
+    assert w.orig_calls == 0
+    assert len(scheduled) == 1
+    assert w._colorink_idle_poll_pending is True
+
+    # Duplicate idle call while poll is already queued does not flood timers
+    w._on_frame_swapped()
+    assert len(scheduled) == 1
+
+    # New frame arrives -> idle poll invokes orig _on_frame_swapped cleanly
+    cam.latest_frame_time = 43.0
+    scheduled[0][1]()
+    assert w._colorink_idle_poll_pending is False
+    assert w.orig_calls == 1
+
