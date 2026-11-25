@@ -83,29 +83,6 @@ class CSPSync(ProfileMixin, ProcessMixin, MemoryMixin, SlotMixin):
         self.pid: int | None = None
         self.module_base: int | None = None
         self.target: int | None = None
-        # Cached absolute addresses of every sub-color memory copy
-        # (re-resolved on demand when the cache goes stale).
-        self._sub_copy_addrs: list[int] | None = None
-        # Same for the MAIN color slot (+0x3C HSV u32 copies).
-        self._main_copy_addrs: list[int] | None = None
-        # Last *verified* copy sets. Kept separately from the live cache as
-        # the fallback for writes whose value is a trivial pattern (pure
-        # black is twelve zero bytes and matches everywhere, so a scan can
-        # no longer identify the copies) — see SlotMixin._remembered_copies.
-        self._sub_copy_addrs_known: list[int] | None = None
-        self._main_copy_addrs_known: list[int] | None = None
-        # Per-slot monotonic timestamp of the last copy-locate scan, so a
-        # failed locate can not re-scan the whole address space on every
-        # single write (that is what wedged the polling thread).
-        self._copy_scan_ts: dict[str, float] = {}
-        # Per-slot 12-byte pattern the authoritative copies still held when a
-        # write first degraded to the UI mirror. The mirror moves on with our
-        # own writes, so without this the copies could never be recognised
-        # again and the slot stayed dead for the rest of the session — see
-        # SlotMixin._copies_from_peer_slot.
-        self._stale_patterns: dict[str, bytes] = {}
-        # Last copy-locate outcome per slot ("main"/"sub"), for diagnostics.
-        self._copy_locate_notes: dict[str, str] = {}
 
         # Currently selected build profile + the per-channel layout we
         # resolved from config.ini (or the defaults).

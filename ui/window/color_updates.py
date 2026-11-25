@@ -155,12 +155,10 @@ class ColorUpdatesMixin:
         self.color_history.configure(
             self.cfg.get("historyColumns", 8),
             self.cfg.get("historyRows", 2),
-            self.cfg.get("historySwatchSize", 18),
         )
         # Restore persisted colors (config stores a list of entries — old
         # format [r,g,b] or new format {"rgb":[r,g,b],"s":"hsv","v":[h,s,v]})
         persisted = self.cfg.get("historyColors", [])
-        self._history_source = {}  # index → {"source":..., "values":...}
         self._color_source_store = {}  # hex_key → {"rgb":..., "s":..., "v":...}
         self._SOURCE_CHANNELS = {
             "rgb": ("r", "g", "b"), "cmyk": ("c", "m", "y", "k"),
@@ -170,7 +168,7 @@ class ColorUpdatesMixin:
         if persisted:
             from PyQt6.QtGui import QColor as _QColor
             initial_colors = []
-            for i, entry in enumerate(persisted):
+            for entry in persisted:
                 src = vals = None
                 if isinstance(entry, list):
                     r, g, b = int(entry[0]), int(entry[1]), int(entry[2])
@@ -179,8 +177,6 @@ class ColorUpdatesMixin:
                     r, g, b = int(rgb[0]), int(rgb[1]), int(rgb[2])
                     src = entry.get("s")
                     vals = entry.get("v")
-                    if src and vals:
-                        self._history_source[i] = {"source": src, "values": vals}
                 else:
                     continue
                 hex_key = f"#{r:02x}{g:02x}{b:02x}"
@@ -657,13 +653,6 @@ class ColorUpdatesMixin:
             r, g, b = self.current_rgb
             self.lab_square.set_color(r, g, b, block_signals=True)
             self.lab_square.prerender()
-
-    def _is_slider_drag_active(self):
-        """Return True while any channel slider is held by the user."""
-        for slider, _ in getattr(self, "slider_widgets", {}).values():
-            if slider.isSliderDown():
-                return True
-        return bool(getattr(getattr(self, "lab_slider", None), "dragging", False))
 
     def _schedule_deferred_color_updates(self, r, g, b, rgb_float=None):
         """Schedule the heavy visual-only rendering (slider groove gradients

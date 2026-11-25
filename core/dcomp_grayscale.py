@@ -110,15 +110,8 @@ class DCompGrayscaleController:
         dll.dcomp_filter_is_healthy.argtypes = []
         dll.dcomp_filter_is_healthy.restype = ctypes.c_bool
 
-        dll.dcomp_filter_get_screen_count.argtypes = []
-        dll.dcomp_filter_get_screen_count.restype = ctypes.c_int
-
         dll.dcomp_filter_cleanup.argtypes = []
         dll.dcomp_filter_cleanup.restype = None
-
-        if hasattr(dll, "dcomp_filter_get_frame_count"):
-            dll.dcomp_filter_get_frame_count.argtypes = []
-            dll.dcomp_filter_get_frame_count.restype = ctypes.c_uint64
 
         if hasattr(dll, "dcomp_filter_get_stats"):
             dll.dcomp_filter_get_stats.argtypes = [ctypes.POINTER(ctypes.c_uint64)]

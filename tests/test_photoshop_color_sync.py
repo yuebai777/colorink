@@ -1,19 +1,22 @@
-"""Unit tests for PhotoshopSync target selection / recheck (no COM)."""
+"""Unit tests for PhotoshopSync target selection, liveness fallback, and unified CEP bridge."""
 
 import types
 from unittest.mock import MagicMock
 
 from core.photoshop_color_sync import PhotoshopSync
 from core.photoshop_instances import (
-    COM_KIND,
     SCRIPT_BRIDGE_KIND,
     PhotoshopInstance,
 )
 
 
-def _inst(kind, label="X", pid=1, progid=None):
-    return PhotoshopInstance(kind=kind, label=label, exe_path=r"D:\X\Photoshop.exe",
-                             pid=pid, progid=progid)
+def _inst(label="X", pid=1):
+    return PhotoshopInstance(
+        kind=SCRIPT_BRIDGE_KIND,
+        label=label,
+        exe_path=r"D:\X\Photoshop.exe",
+        pid=pid,
+    )
 
 
 class TestSetVersion:
@@ -27,7 +30,7 @@ class TestSetVersion:
     def test_set_version_same_value_is_noop(self):
         ps = PhotoshopSync()
         ps._reset = MagicMock()
-        # current_version starts as "auto" → same-value call must be a no-op
+        # current_version starts as "auto" -> same-value call must be a no-op
         assert ps.set_version("auto") is False
         ps._reset.assert_not_called()
 
@@ -63,7 +66,6 @@ class TestProcessAliveFallback:
 
         ps = PhotoshopSync()
         ps._pid = 1234
-        # OpenProcess denied: emulate via a stub that returns 0.
         ps.K32 = types.SimpleNamespace(OpenProcess=lambda *a: 0)  # type: ignore[assignment]
 
         class _Proc:
@@ -95,32 +97,17 @@ class TestProcessAliveFallback:
 
 
 class TestUnifiedBridge:
-    """Every Photoshop edition — genuine, green/portable, or
-    cracked-with-COM — shares ONE sync path: the user-level CEP bridge.
-    connect() must always route to _connect_bridge with the picked
-    instance's pid; COM automation is retired."""
+    """Every Photoshop edition shares ONE sync path: the user-level CEP bridge."""
 
-    def test_connect_routes_green_instance_to_bridge(self):
+    def test_connect_routes_instance_to_bridge_without_com_backend(self):
         ps = PhotoshopSync()
-        green = _inst(SCRIPT_BRIDGE_KIND, "Green", pid=42)
-        ps._detect = lambda force=False: [green]
+        assert not hasattr(ps, "_connect_com")
+        inst = _inst("Adobe Photoshop 2024 (同步桥)", pid=42)
+        ps._detect = lambda force=False: [inst]
         ps._connect_bridge = MagicMock(return_value=True)
         assert ps.connect() is True
-        ps._connect_bridge.assert_called_once()
+        ps._connect_bridge.assert_called_once_with(inst)
         assert ps._pid == 42
-
-    def test_connect_routes_com_kind_instance_to_bridge(self):
-        """A registered / cracked-with-COM instance must use the same
-        bridge path — no COM branch may be taken."""
-        ps = PhotoshopSync()
-        reg = _inst(COM_KIND, "Reg", pid=7, progid="Photoshop.Application.140")
-        ps._detect = lambda force=False: [reg]
-        ps._connect_com = MagicMock(return_value=True)
-        ps._connect_bridge = MagicMock(return_value=True)
-        assert ps.connect() is True
-        ps._connect_bridge.assert_called_once()
-        ps._connect_com.assert_not_called()
-        assert ps._pid == 7
 
     def test_no_instances_sets_error(self):
         ps = PhotoshopSync()
@@ -139,4 +126,3 @@ class TestUnifiedBridge:
 
         assert ps.assume_drawing_active() is True
         mock_bridge.assume_drawing_active.assert_called_once()
-

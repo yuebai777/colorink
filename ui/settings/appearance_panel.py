@@ -164,10 +164,6 @@ class AppearancePanelMixin:
             lbl.setText(i18n.tr(
                 "系统 Mag 模式仅支持 BT.709 Luma 亮度并作用于全部屏幕；区域灰度同步使用 Windows 放大镜窗口。"
             ))
-        elif backend == "native":
-            lbl.setText(i18n.tr(
-                "全屏灰度使用 GPU 兼容模式；区域灰度优先使用 DComp 显存直通（不可用时自动回退至 Mag 窗口）。"
-            ))
         else:
             lbl.setText(i18n.tr(
                 "DComp 显存直通提供零拷贝低延迟的 OKLCh / Luma 渲染；配置局部区域后将按桌面坐标跨屏生效。"
@@ -1672,11 +1668,9 @@ class AppearancePanelMixin:
         grid_gray.addWidget(QLabel(i18n.tr("渲染方式")), 2, 0)
         self.combo_grayscale_backend = NonScrollComboBox()
         self.combo_grayscale_backend.addItem(i18n.tr("OKLCh (DComp 显存直通)"), "dcomp")
-        self.combo_grayscale_backend.addItem(i18n.tr("OKLCh (GPU兼容)"), "native")
         self.combo_grayscale_backend.addItem(i18n.tr("系统 Luma (Mag)"), "mag")
         self.combo_grayscale_backend.setToolTip(
-            i18n.tr("OKLCh (DComp 显存直通)：DirectComposition 零拷贝直通，延迟 <1ms 极致流畅（推荐）；\n"
-            "OKLCh (GPU兼容)：基于 OpenGL 的兼容覆盖层；\n"
+            i18n.tr("OKLCh (DComp 显存直通)：DirectComposition 低延迟渲染，支持 OKLCh / Luma 与多区域（推荐）；\n"
             "系统 Luma (Mag)：Windows 硬件颜色矩阵，仅支持 BT.709 亮度。"))
         self.combo_grayscale_backend.currentTextChanged.connect(self._on_grayscale_backend_changed)
         grid_gray.addWidget(self.combo_grayscale_backend, 2, 1)

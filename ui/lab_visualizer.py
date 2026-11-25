@@ -19,9 +19,7 @@ from PyQt6.QtWidgets import QWidget
 
 from ui.color_conversions import (
     lab_to_rgb,
-    lab_to_rgb_array,
     oklab_to_rgb,
-    oklab_to_rgb_array,
     rgb_to_lab,
     rgb_to_oklab,
 )

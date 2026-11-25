@@ -127,10 +127,8 @@ python main.py
 
 ## 灰度滤镜说明
 
-- **Native（默认）**：OKLCh 感知灰度更符合人眼明度感知；Luma 模式为标准 BT.709 权重。可指定只对某一台显示器生效。依赖 dxcam + OpenGL，GPU 需支持 OpenGL 3.3+
-- **Mag**：系统级灰度，全屏生效，仅提供 Luma 模式，兼容性最好（不支持 OpenGL 的环境可用）
-
-所选后端无法运行时不再静默切换，而是明确提示原因，可在设置中手动更换。
+- **DComp（默认）**：基于 Rust `dcomp_filter.dll` 的低延迟渲染，支持 OKLCh 感知均匀灰度、BT.709 Luma 亮度、按屏目标以及多区域窗口灰度
+- **Mag**：Windows 系统级颜色矩阵灰度，全屏生效，仅提供 Luma 模式，兼容性最好；DComp 不可用时自动回退至 Mag 后端
 
 ## 打包（独立 EXE）
 
@@ -148,7 +146,7 @@ python build_pyqt.py
 
 ## 开发
 
-- 灰度原生运行时（`native_grayscale/runtime/grayscale_overlay.pyc`）随仓库分发，`python native_grayscale/build_runtime.py` 可复现编译；原生灰度不可用时自动回退 Mag 后端
+- 灰度 DComp 引擎源码位于 `native_dcomp/`（Rust），系统级回退引擎位于 `mag_overlay/`（C++）
 - `tests/` 是自动化测试的全部入口：`python -m pytest` 一把跑完（发布契约、窗口布局不变量、首次启动默认值、高精度色彩转换、边界吸附、面板拖拽回归等）
 - `tools/release/` 是发布链路（版本同步、产物打包、资产与安装包校验）；`tools/feedback-worker/` 是文档站反馈页的服务端
 

@@ -481,7 +481,7 @@ class TestGrayscaleFilterSettings:
         assert sidebar.combo_grayscale_mode.itemText(0) == "Luma (BT.709 标准)"
         assert not sidebar.combo_grayscale_mode.isEnabled()
 
-    def test_native_luma_config_mapping(self, sidebar):
+    def test_dcomp_luma_config_mapping(self, sidebar):
         screen_items = [
             sidebar.combo_grayscale_screen.itemText(i)
             for i in range(sidebar.combo_grayscale_screen.count())
@@ -495,7 +495,7 @@ class TestGrayscaleFilterSettings:
             combo.blockSignals(True)
         sidebar.combo_grayscale_screen.setCurrentText(target)
         sidebar.combo_grayscale_mode.setCurrentText("Luma (BT.709 标准)")
-        sidebar.combo_grayscale_backend.setCurrentText("OKLCh (GPU兼容)")
+        sidebar.combo_grayscale_backend.setCurrentText("OKLCh (DComp 显存直通)")
         for combo in (
             sidebar.combo_grayscale_screen,
             sidebar.combo_grayscale_mode,
@@ -510,7 +510,7 @@ class TestGrayscaleFilterSettings:
         assert cfg == {
             "grayscaleFilterScreen": expected_screen,
             "grayscaleFilterMode": "luma",
-            "grayscaleFilterBackend": "native",
+            "grayscaleFilterBackend": "dcomp",
         }
 
     def test_mag_config_forces_all_screens(self, sidebar):
@@ -585,5 +585,29 @@ def test_window_border_toggle_control_exists_and_round_trips(sidebar):
     core_config.save_hotkey_config(sidebar.cfg)
     sidebar.refresh_ui()
     assert sidebar.cb_show_window_border.isChecked() is False
+
+
+def test_software_changed_prompts_companion_in_english_locale(sidebar, stub_main_window, monkeypatch):
+    """_on_software_changed must inspect combo_software.currentData(), not translated text."""
+    from PyQt6.QtCore import QTimer
+
+    scheduled = []
+    monkeypatch.setattr(QTimer, "singleShot", lambda _ms, fn: scheduled.append(fn))
+
+    called = []
+    stub_main_window.maybe_prompt_companion_connection = lambda: called.append(True)
+
+    idx = sidebar.combo_software.findData("companion")
+    assert idx >= 0
+    sidebar.combo_software.blockSignals(True)
+    sidebar.combo_software.setCurrentIndex(idx)
+    sidebar.combo_software.blockSignals(False)
+
+    # Pass an English-translated label to prove text comparison is no longer used.
+    sidebar._on_software_changed("CSP Companion (phone)")
+    assert len(scheduled) == 1
+    scheduled[0]()
+    assert called == [True]
+
 
 

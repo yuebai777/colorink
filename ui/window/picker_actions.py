@@ -12,10 +12,8 @@ from PyQt6.QtWidgets import QMenu, QPushButton
 
 from core import config
 from core.foreground import (
-    _exe_matches_drawing_app,
     _is_popup_menu_class,
     _resolve_process_exe,
-    _title_matches_drawing_app,
     identify_drawing_app,
     is_drawing_app_menu_open,
     resolve_auto_sync_mode,
@@ -466,20 +464,6 @@ class PickerActionsMixin:
                 pass
 
 
-    def _init_module_button(self):
-        """Create a floating button next to ⊙/△ to cycle HSV→HLS→LCH modules."""
-        btn = PickerIconButton("HSV", self.pane_wheel, icon_kind="module:hsv")
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setToolTip("切换色彩空间模块 (HSV / HLS / LCH)")
-        btn.clicked.connect(self._next_module)
-        # Never keep keyboard focus — Space (the default LAB-toggle hotkey)
-        # must not re-activate this button from anywhere in the window.
-        btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        btn.setVisible(self.cfg.get("showModuleSwitchButton", True))
-        btn.setObjectName("ModuleButton")
-        self.pane_wheel.set_module_button(btn)
-        self.btn_module = btn
-
     def _init_lab_toggle_buttons(self):
         """Create the LAB pane shape toggle + harmony-mode menu buttons.
 
@@ -877,15 +861,6 @@ class PickerActionsMixin:
         if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
             self.settings_sidebar.notify_module_changed()
 
-    def _next_module(self):
-        """Cycle to the next module in _MODULE_ORDER."""
-        try:
-            idx = _MODULE_ORDER.index(self._current_module)
-        except ValueError:
-            idx = 0
-        next_idx = (idx + 1) % len(_MODULE_ORDER)
-        self._apply_module(_MODULE_ORDER[next_idx])
-
     def refresh_slider_visibility_and_order(self, defer: bool = False):
         """Re-assemble the slider column: order, visibility, height.
 
@@ -1099,8 +1074,12 @@ class PickerActionsMixin:
 
     def show_window_at_cursor(self):
         self._user_hidden = False
+        if callable(getattr(self, "isMinimized", None)) and self.isMinimized():
+            self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
         if self.cfg.get("lockWindowPosition", False):
             self.show()
+            if callable(getattr(self, "raise_", None)):
+                self.raise_()
             return
         from PyQt6.QtGui import QCursor
         from PyQt6.QtWidgets import QApplication
@@ -1123,6 +1102,8 @@ class PickerActionsMixin:
         
         self.move(x, y)
         self.show()
+        if callable(getattr(self, "raise_", None)):
+            self.raise_()
 
     def _needs_foreground_tracker(self) -> bool:
         sync_software = self.cfg.get("syncSoftware", "auto")
@@ -1672,18 +1653,16 @@ class PickerActionsMixin:
     def _apply_grayscale_settings_from_cfg(self) -> None:
         """Synchronize fullscreen and region grayscale controllers with ``self.cfg``."""
         new_backend = self.cfg.get("grayscaleFilterBackend", "dcomp")
-        if new_backend not in ("dcomp", "native", "mag"):
+        if new_backend not in ("dcomp", "mag"):
             new_backend = "dcomp"
         new_mode = self.cfg.get("grayscaleFilterMode", "oklch")
         if new_mode not in ("oklch", "luma"):
             new_mode = "oklch"
         cls_name = type(self.grayscale_overlay).__name__
-        if cls_name == "DCompGrayscaleController":
-            current_backend = "dcomp"
-        elif cls_name == "MagFilterController":
+        if cls_name == "MagFilterController":
             current_backend = "mag"
         else:
-            current_backend = "native"
+            current_backend = "dcomp"
 
         was_fs_active = self.grayscale_overlay.is_active is True
         if new_backend != current_backend:
@@ -1694,22 +1673,14 @@ class PickerActionsMixin:
             if new_backend == "mag":
                 from core.mag_grayscale import MagFilterController
                 self.grayscale_overlay = MagFilterController(mode="luma")
-            elif new_backend == "native":
-                from core.native_grayscale import NativeGrayscaleController
-                self.grayscale_overlay = NativeGrayscaleController(mode=new_mode)
             else:  # dcomp
                 from core.dcomp_grayscale import DCompGrayscaleController
                 dcomp_ctrl = DCompGrayscaleController(mode=new_mode)
                 if dcomp_ctrl.is_available and dcomp_ctrl.is_healthy:
                     self.grayscale_overlay = dcomp_ctrl
                 else:
-                    from core.native_grayscale import NativeGrayscaleController
-                    fallback = NativeGrayscaleController(mode=new_mode)
-                    if fallback.is_available:
-                        self.grayscale_overlay = fallback
-                    else:
-                        from core.mag_grayscale import MagFilterController
-                        self.grayscale_overlay = MagFilterController(mode="luma")
+                    from core.mag_grayscale import MagFilterController
+                    self.grayscale_overlay = MagFilterController(mode="luma")
         screen_target = self.cfg.get("grayscaleFilterScreen", "all")
         self.grayscale_overlay.set_target(screen_target)
         self.grayscale_overlay.set_mode(
@@ -1964,16 +1935,6 @@ class PickerActionsMixin:
             entries.append(new_entry)
         self.apply_grayscale_regions(entries, activate=False)
         self._restore_after_region_selection(activate_region=True)
-
-    def _on_grayscale_region_selected(self, x: int, y: int, width: int, height: int) -> None:
-        """Backward-compatible single-rectangle selection handler."""
-        self._on_grayscale_regions_selected([{
-            "x": x,
-            "y": y,
-            "width": width,
-            "height": height,
-            "enabled": True,
-        }])
 
     def _on_grayscale_region_reset(self) -> None:
         """Callback when user resets to maximized inside the region selector."""

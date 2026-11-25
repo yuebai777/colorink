@@ -351,21 +351,6 @@ def hsv_to_rgb_float(values: Mapping[str, Any]) -> dict[str, float]:
     return {"r": r * 255.0, "g": g * 255.0, "b": b * 255.0}
 
 
-def rgb_to_hls_float(rgb: Mapping[str, Any]) -> dict[str, float]:
-    """RGB → HLS with full float precision.
-
-    Returns ``{"h": 0-360, "l": 0-100, "s": 0-100}`` as floats.
-    """
-    r = _clip_float_255(float(rgb["r"])) / 255.0
-    g = _clip_float_255(float(rgb["g"])) / 255.0
-    b = _clip_float_255(float(rgb["b"])) / 255.0
-    h, l, s = colorsys.rgb_to_hls(r, g, b)
-    h_deg = h * 360.0
-    if h_deg >= 360.0:
-        h_deg = 0.0
-    return {"h": h_deg, "l": l * 100.0, "s": s * 100.0}
-
-
 def hls_to_rgb_float(values: Mapping[str, Any]) -> dict[str, float]:
     """HLS → RGB with full float precision.
 
@@ -522,48 +507,6 @@ def cmyk_to_rgb_values(values: Mapping[str, int]) -> dict[str, int]:
     }
 
 
-def _gcr_k_fraction_float(rgb: Mapping[str, Any]) -> float:
-    """Float version of :func:`_gcr_k_fraction` — uses float HSV for saturation."""
-    lab = rgb_to_lab_values(rgb)  # already returns float
-    chroma = math.sqrt(lab["a"] * lab["a"] + lab["b"] * lab["b"])
-    saturation = min(1.0, max(0.0, rgb_to_hsv_float(rgb)["s"] / 100.0))
-
-    lightness_factor = 0.0
-    if lab["l"] < _GCR.lightness_kick_in:
-        span = max(1.0, _GCR.lightness_kick_in - _GCR.lightness_saturated)
-        t = min(1.0, max(0.0, (_GCR.lightness_kick_in - lab["l"]) / span))
-        lightness_factor = math.pow(t, _GCR.lightness_exponent)
-
-    chroma_suppress = min(1.0, max(0.0, 1.0 - chroma / _GCR.chroma_suppress_ref))
-    saturation_suppress = math.pow(1.0 - saturation, _GCR.saturation_exponent)
-    return min(1.0, max(0.0, lightness_factor * max(chroma_suppress, saturation_suppress)))
-
-
-def rgb_to_cmyk_float(rgb: Mapping[str, Any]) -> dict[str, float]:
-    """RGB → CMYK with full float precision. Returns c/m/y/k: 0-100 (float)."""
-    r = _clip_float_255(float(rgb["r"]))
-    g = _clip_float_255(float(rgb["g"]))
-    b = _clip_float_255(float(rgb["b"]))
-    c_pure = 1.0 - r / 255.0
-    m_pure = 1.0 - g / 255.0
-    y_pure = 1.0 - b / 255.0
-    neutral = min(c_pure, m_pure, y_pure)
-    k = neutral * _gcr_k_fraction_float({"r": r, "g": g, "b": b})
-    c = max(0.0, c_pure - k)
-    m = max(0.0, m_pure - k)
-    y = max(0.0, y_pure - k)
-
-    total = c + m + y + k
-    if total > _GCR.total_ink_cap:
-        chroma_sum = max(1e-6, c + m + y)
-        scale = (_GCR.total_ink_cap - k) / chroma_sum
-        c *= scale
-        m *= scale
-        y *= scale
-
-    return {"c": c * 100.0, "m": m * 100.0, "y": y * 100.0, "k": k * 100.0}
-
-
 def cmyk_to_rgb_float(values: Mapping[str, Any]) -> dict[str, float]:
     """CMYK → RGB with full float precision. Returns r/g/b: 0-255 (float)."""
     c = _clip_float(float(values["c"]), 100.0) / 100.0
@@ -610,32 +553,14 @@ def space_to_rgb_values(space_name: str, values: Mapping[str, int]) -> dict[str,
 
 
 # ---------------------------------------------------------------------------
-# Float-precision dispatch tables (NO int rounding)
+# Float-precision dispatch table (NO int rounding)
 # ---------------------------------------------------------------------------
-_RGB_TO_SPACE_FLOAT: dict[str, Callable[[Mapping[str, Any]], dict[str, float]]] = {
-    "rgb": lambda rgb: {"r": float(rgb["r"]), "g": float(rgb["g"]), "b": float(rgb["b"])},
-    "cmyk": rgb_to_cmyk_float,
-    "hsv": rgb_to_hsv_float,
-    "hls": rgb_to_hls_float,
-}
-
 _SPACE_TO_RGB_FLOAT: dict[str, Callable[[Mapping[str, Any]], dict[str, float]]] = {
     "rgb": lambda v: {"r": float(v["r"]), "g": float(v["g"]), "b": float(v["b"])},
     "cmyk": cmyk_to_rgb_float,
     "hsv": hsv_to_rgb_float,
     "hls": hls_to_rgb_float,
 }
-
-
-def rgb_to_space_float(space_name: str, rgb: Mapping[str, Any]) -> dict[str, float]:
-    """RGB → *space_name* with full float precision (no int rounding).
-
-    Same interface as :func:`rgb_to_space_values` but returns floats.
-    """
-    try:
-        return _RGB_TO_SPACE_FLOAT[space_name](rgb)
-    except KeyError:
-        raise KeyError(f"unknown color space: {space_name!r}") from None
 
 
 def space_to_rgb_float(space_name: str, values: Mapping[str, Any]) -> dict[str, float]:

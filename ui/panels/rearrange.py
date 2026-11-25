@@ -289,28 +289,23 @@ def merge_panel_into_page(node: Tabs, panel_id: str, target: str):
     except StopIteration:
         return node
 
-    if panel_id in node.panels():
-        src = next(i for i, page in enumerate(pages) if panel_id in page)
-        if src == dst:
-            pages[dst].remove(panel_id)
-            target_idx = pages[dst].index(target)
-            pages[dst].insert(target_idx + 1, panel_id)
-            return Tabs((), node.current, tuple(tuple(p) for p in pages))
-        pages[src].remove(panel_id)
+    src = next(i for i, page in enumerate(pages) if panel_id in page)
+    if src == dst:
+        pages[dst].remove(panel_id)
         target_idx = pages[dst].index(target)
         pages[dst].insert(target_idx + 1, panel_id)
-        current = node.current
-        if not pages[src]:
-            del pages[src]
-            if current == src:
-                current = dst if dst < src else dst - 1
-            elif src < current:
-                current -= 1
-        elif current == src:
-            current = dst
-    else:
-        target_idx = pages[dst].index(target)
-        pages[dst].insert(target_idx + 1, panel_id)
+        return Tabs((), node.current, tuple(tuple(p) for p in pages))
+    pages[src].remove(panel_id)
+    target_idx = pages[dst].index(target)
+    pages[dst].insert(target_idx + 1, panel_id)
+    current = node.current
+    if not pages[src]:
+        del pages[src]
+        if current == src:
+            current = dst if dst < src else dst - 1
+        elif src < current:
+            current -= 1
+    elif current == src:
         current = dst
 
     if len(pages) == 1:

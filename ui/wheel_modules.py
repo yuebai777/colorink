@@ -45,6 +45,3 @@ class WheelModulePanel(QWidget):
 
     def minimumSizeHint(self) -> QSize:
         return QSize(120, 120)
-
-    def title(self) -> str:
-        return self.key.upper()

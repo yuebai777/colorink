@@ -39,8 +39,6 @@ _CSP_VERSION_ITEMS: list[tuple[str, str]] = [
     ("csp4.x", "CSP 4.x（仅主色）"),
     ("csp5.x", "CSP 5.0（仅主色）"),
 ]
-_CSP_DISPLAY_TO_VALUE = {disp: val for val, disp in _CSP_VERSION_ITEMS}
-_CSP_VALUE_TO_DISPLAY = dict(_CSP_VERSION_ITEMS)
 # 每项的悬停说明
 _CSP_VERSION_TIPS: dict[str, str] = {
     "auto": "自动检测 CSP 主版本；内存模式仅 4.x/5.0 支持主色同步。"

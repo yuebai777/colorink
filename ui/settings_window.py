@@ -33,7 +33,6 @@ class SettingsWindow(QDialog):
         super().__init__(None)  # no Qt parent — independent window
         self._main_window = main_window
         self.sidebar = sidebar
-        self._drag_offset: QPoint | None = None
         self._was_visible_before_pick: bool = False
 
         self.setWindowFlags(
@@ -42,7 +41,7 @@ class SettingsWindow(QDialog):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        # Rail (100px) + gap + content panel
+        # Rail (108px) + gap + content panel
         self.setFixedWidth(520)
 
         self._build_ui()
@@ -165,48 +164,9 @@ class SettingsWindow(QDialog):
 
     # ── Positioning ───────────────────────────────────────────────────────
 
-    def show_near_main_window(self):
-        """Show the settings window beside the main window, clamping to screen."""
+    def _compute_pos_near_main_window(self) -> tuple[int, int]:
+        """Compute clamped (x, y) placing the settings window beside MainWindow."""
         mw = self._main_window
-        if hasattr(self.sidebar, "nav") and hasattr(self.sidebar, "_last_settings_tab"):
-            self.sidebar.nav.setCurrentRow(self.sidebar._last_settings_tab)
-        if mw.isVisible():
-            mw_geo = mw.frameGeometry()
-            target_x = mw_geo.right() + 8
-            target_y = mw_geo.top()
-
-            # If the right side is off-screen, place on the left
-            try:
-                screen = QApplication.screenAt(mw_geo.center())
-                if screen is None:
-                    screen = QApplication.primaryScreen()
-            except Exception:
-                screen = QApplication.primaryScreen()
-            if screen is not None:
-                avail = screen.availableGeometry()
-                if target_x + self.width() > avail.right():
-                    target_x = mw_geo.left() - self.width() - 8
-                # Clamp to available geometry
-                target_x = max(avail.left(), min(target_x, avail.right() - self.width()))
-                target_y = max(avail.top(), min(target_y, avail.bottom() - self.height()))
-        else:
-            # Main window hidden — keep current position
-            target_x = self.x()
-            target_y = self.y()
-
-        self.move(target_x, target_y)
-        self._apply_fixed_size()
-        self.show()
-        self.raise_()
-        self.activateWindow()
-
-    def position_near_main_window(self):
-        """Reposition without showing (called from main window resizeEvent)."""
-        if not self.isVisible():
-            return
-        mw = self._main_window
-        if not mw.isVisible():
-            return
         mw_geo = mw.frameGeometry()
         target_x = mw_geo.right() + 8
         target_y = mw_geo.top()
@@ -223,7 +183,31 @@ class SettingsWindow(QDialog):
                 target_x = mw_geo.left() - self.width() - 8
             target_x = max(avail.left(), min(target_x, avail.right() - self.width()))
             target_y = max(avail.top(), min(target_y, avail.bottom() - self.height()))
+        return target_x, target_y
 
+    def show_near_main_window(self):
+        """Show the settings window beside the main window, clamping to screen."""
+        mw = self._main_window
+        if hasattr(self.sidebar, "nav") and hasattr(self.sidebar, "_last_settings_tab"):
+            self.sidebar.nav.setCurrentRow(self.sidebar._last_settings_tab)
+        if mw.isVisible():
+            target_x, target_y = self._compute_pos_near_main_window()
+        else:
+            # Main window hidden — keep current position
+            target_x = self.x()
+            target_y = self.y()
+
+        self.move(target_x, target_y)
+        self._apply_fixed_size()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def position_near_main_window(self):
+        """Reposition without showing (called from main window resizeEvent)."""
+        if not self.isVisible() or not self._main_window.isVisible():
+            return
+        target_x, target_y = self._compute_pos_near_main_window()
         self.move(target_x, target_y)
 
 

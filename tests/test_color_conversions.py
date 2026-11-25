@@ -19,7 +19,6 @@ import numpy as np
 import pytest
 
 from ui import color_conversions as cc
-from ui import oklab_colors  # compatibility shim must keep working
 
 # ── Anchors (computed with coloraide 8.10, independent implementation) ──
 ANCHORS = [
@@ -274,14 +273,6 @@ def test_vectorized_hsv_hls_match_colorsys():
             assert abs(r2[i, j] - cr) < 1e-9
             assert abs(g2[i, j] - cg) < 1e-9
             assert abs(b2[i, j] - cb) < 1e-9
-
-
-# ── Compatibility shim ──────────────────────────────────────────────────
-
-
-def test_oklab_colors_shim_reexports():
-    for name in ("rgb_to_oklab", "oklab_to_rgb", "rgb_to_oklch", "oklch_to_rgb"):
-        assert getattr(oklab_colors, name) is getattr(cc, name)
 
 
 # ── Cross-validation against coloraide (independent oracle) ─────────────

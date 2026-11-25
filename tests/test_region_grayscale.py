@@ -565,7 +565,7 @@ def test_on_settings_saved_preserves_fullscreen_and_reactivates_on_backend_switc
 
     from PyQt6.QtWidgets import QWidget
     import core.dcomp_grayscale as dg_mod
-    import core.native_grayscale as ng_mod
+    import core.mag_grayscale as mg_mod
     from ui.window.picker_actions import PickerActionsMixin
 
     class FakeSharedDLL:
@@ -598,10 +598,10 @@ def test_on_settings_saved_preserves_fullscreen_and_reactivates_on_backend_switc
     monkeypatch.setattr(DCompGrayscaleController, "_find_dll", staticmethod(lambda: "fake.dll"))
     monkeypatch.setattr(DCompGrayscaleController, "_load_dll", lambda self, p: setattr(self, "_dll", shared_dll))
 
-    class FakeNative:
+    class FakeMag:
         is_available = True
         is_healthy = True
-        def __init__(self, mode="oklch"):
+        def __init__(self, mode="luma"):
             self.mode = mode
             self.target = "all"
             self.is_active = False
@@ -611,7 +611,7 @@ def test_on_settings_saved_preserves_fullscreen_and_reactivates_on_backend_switc
         def set_active(self, a, m=None): self.is_active = bool(a); return True
         def close(self): self.is_active = False
 
-    monkeypatch.setattr(ng_mod, "NativeGrayscaleController", FakeNative)
+    monkeypatch.setattr(mg_mod, "MagFilterController", FakeMag)
 
     class Host(PickerActionsMixin, QWidget):
         def __init__(self):
@@ -642,9 +642,9 @@ def test_on_settings_saved_preserves_fullscreen_and_reactivates_on_backend_switc
     assert host.sidebar_sync_count >= 1
 
     # Switching backend while fullscreen is active preserves active state on new backend
-    host.cfg["grayscaleFilterBackend"] = "native"
+    host.cfg["grayscaleFilterBackend"] = "mag"
     host._apply_grayscale_settings_from_cfg()
-    assert isinstance(host.grayscale_overlay, FakeNative)
+    assert isinstance(host.grayscale_overlay, FakeMag)
     assert host.grayscale_overlay.is_active is True
     assert shared_dll.active is False
 

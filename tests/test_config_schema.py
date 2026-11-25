@@ -70,6 +70,38 @@ def test_migrate_config_drops_sliders_split_in_v4():
     assert cfg[CONFIG_SCHEMA_KEY] == CONFIG_SCHEMA_VERSION
 
 
+def test_migrate_config_v7_retires_native_backend_and_dead_keys():
+    cfg = migrate_config({
+        "grayscaleFilterBackend": "native",
+        "colorWheelMode": "hsv",
+        "historySwatchSize": 18,
+        CONFIG_SCHEMA_KEY: 6,
+    })
+
+    assert cfg["grayscaleFilterBackend"] == "dcomp"
+    assert "colorWheelMode" not in cfg
+    assert "historySwatchSize" not in cfg
+    assert cfg[CONFIG_SCHEMA_KEY] == CONFIG_SCHEMA_VERSION
+
+
+def test_sanitize_types_validates_font_size_and_hide_on_popup_menu(tmp_path):
+    with patch("core.config.get_user_data_dir", return_value=str(tmp_path)):
+        (tmp_path / config.HOTKEY_CFG_NAME).write_text(
+            json.dumps({
+                "fontSize": "not-an-int",
+                "hideOnPopupMenu": "bad-bool",
+                "grayscaleFilterBackend": "native",
+                CONFIG_SCHEMA_KEY: CONFIG_SCHEMA_VERSION,
+            }),
+            encoding="utf-8",
+        )
+        cfg = config.load_hotkey_config()
+
+    assert cfg["fontSize"] == 100
+    assert cfg["hideOnPopupMenu"] is False
+    assert cfg["grayscaleFilterBackend"] == "dcomp"
+
+
 def test_migrate_config_is_idempotent_for_current_version():
     already = {
         "pickKey": "F2",

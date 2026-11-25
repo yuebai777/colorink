@@ -973,9 +973,6 @@ class PanelHost(QWidget):
         if remount:
             self.set_tree(self._tree)
 
-    def floating_panels(self) -> tuple[str, ...]:
-        return tuple(sorted(self._floating))
-
     def frame_for(self, panel_id: str) -> PanelFrame | None:
         return self._frames.get(panel_id)
 

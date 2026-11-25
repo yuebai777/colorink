@@ -6,7 +6,13 @@ from dataclasses import dataclass
 import numpy as np
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
 
-from ui.color_conversions import find_max_lab_c, find_max_oklch_c
+from ui.color_conversions import (
+    find_max_lab_c,
+    find_max_oklch_c,
+    lab_to_linear_array,
+    oklab_to_linear_array,
+    srgb_encode_u8,
+)
 
 # The disc reproduces the square a*b* plane's colours: the rim uses each
 # hue's own sRGB gamut boundary (no uniform chroma cap), so no colour of
@@ -66,70 +72,14 @@ class LabPrewarmTask(QRunnable):
             self.signals.failed.emit((self.request, repr(exc)))
 
 
-# sRGB encode is a pow() per channel — three of them on every pixel of the
-# plane. The curve only depends on one scalar, so it is tabulated once and
-# indexed instead: same bytes out (the table is finer than the 8-bit result),
-# a fraction of the time, and it is what makes full-quality rendering cheap
-# enough to keep during a drag.
-_ENCODE_STEPS = 8192
-_ENCODE_LUT: np.ndarray | None = None
-
-
-def _encode_lut() -> np.ndarray:
-    global _ENCODE_LUT
-    if _ENCODE_LUT is None:
-        linear = np.linspace(0.0, 1.0, _ENCODE_STEPS, dtype=np.float64)
-        srgb = np.where(linear <= 0.0031308,
-                        12.92 * linear,
-                        1.055 * np.power(linear, 1.0 / 2.4) - 0.055) * 255.0
-        _ENCODE_LUT = np.clip(np.rint(srgb), 0.0, 255.0).astype(np.uint8)
-    return _ENCODE_LUT
-
-
-def _encode_channel(linear: np.ndarray) -> np.ndarray:
-    """Linear light → 8-bit sRGB, through the lookup table."""
-    index = np.clip(linear, 0.0, 1.0) * (_ENCODE_STEPS - 1)
-    return _encode_lut()[index.astype(np.int32)]
-
-
 def _rgba_bytes(red: np.ndarray, green: np.ndarray, blue: np.ndarray, mask: np.ndarray) -> bytes:
     """Pack LINEAR-light channels (0..1) + coverage into RGBA8888."""
     rgba = np.empty((*red.shape, 4), dtype=np.uint8)
-    rgba[..., 0] = _encode_channel(red)
-    rgba[..., 1] = _encode_channel(green)
-    rgba[..., 2] = _encode_channel(blue)
+    rgba[..., 0] = srgb_encode_u8(red)
+    rgba[..., 1] = srgb_encode_u8(green)
+    rgba[..., 2] = srgb_encode_u8(blue)
     rgba[..., 3] = np.where(mask, 255, 0).astype(np.uint8)
     return rgba.tobytes()
-
-
-def _lab_to_rgb(lightness: np.ndarray, a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    y_const = (lightness + 16.0) / 116.0
-    x = a / 500.0 + y_const
-    z = y_const - b / 200.0
-    x_val = 0.96422 * np.where(x > 0.206893, x ** 3, (x - 16.0 / 116.0) / 7.787)
-    y_val = np.where(y_const > 0.206893, y_const ** 3, (y_const - 16.0 / 116.0) / 7.787)
-    z_val = 0.82521 * np.where(z > 0.206893, z ** 3, (z - 16.0 / 116.0) / 7.787)
-    x65 = 0.9555766558 * x_val - 0.0230393428 * y_val + 0.0631636684 * z_val
-    y65 = -0.0282895469 * x_val + 1.0099416212 * y_val + 0.0210076609 * z_val
-    z65 = 0.0122981793 * x_val - 0.0204830040 * y_val + 1.3299098908 * z_val
-    r = x65 * 3.2404542 - y65 * 1.5371385 - z65 * 0.4985314
-    g = -x65 * 0.9692660 + y65 * 1.8760108 + z65 * 0.0415560
-    blue = x65 * 0.0556434 - y65 * 0.2040259 + z65 * 1.0572252
-    # LINEAR light: the sRGB curve is applied once, by table, in _rgba_bytes.
-    # In-gamut is 0..1 here, exactly what 0..255 was after the curve.
-    return r, g, blue
-
-
-def _oklab_to_rgb(lightness: np.ndarray, a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    l_ = lightness + 0.3963377774 * a + 0.2158037573 * b
-    m_ = lightness - 0.1055613458 * a - 0.0638541728 * b
-    s_ = lightness - 0.0894841775 * a - 1.2914855480 * b
-    l3, m3, s3 = l_ ** 3, m_ ** 3, s_ ** 3
-    r = 4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3
-    g = -1.2684380042 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3
-    blue = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3
-    # LINEAR light (see _lab_to_rgb).
-    return r, g, blue
 
 
 def _max_chroma_array(
@@ -149,10 +99,10 @@ def _max_chroma_array(
     for _ in range(16):
         mid = (lo + hi) * 0.5
         if mode == "lab":
-            red, green, blue = _lab_to_rgb(
+            red, green, blue = lab_to_linear_array(
                 np.full_like(a_dir, lightness), mid * a_dir, mid * b_dir)
         else:
-            red, green, blue = _oklab_to_rgb(
+            red, green, blue = oklab_to_linear_array(
                 np.full_like(a_dir, lightness), mid * a_dir, mid * b_dir)
         ok = ((red >= 0.0) & (red <= 1.0)
               & (green >= 0.0) & (green <= 1.0)
@@ -301,9 +251,9 @@ def render_lab_disc(request: LabPrewarmRequest) -> LabPrewarmResult:
 
     light = np.float32(lightness)
     if request.render_mode == "oklab":
-        red, green, blue = _oklab_to_rgb(light, a, b)
+        red, green, blue = oklab_to_linear_array(light, a, b)
     else:
-        red, green, blue = _lab_to_rgb(light, a, b)
+        red, green, blue = lab_to_linear_array(light, a, b)
 
     # The disc's alpha edge is exclusively the geometric circle.  ``max_c``
     # comes from 2048 bin-centre directions, so at sharp gamut corners a
@@ -330,9 +280,9 @@ def render_lab_plane(request: LabPrewarmRequest) -> LabPrewarmResult:
     y = np.linspace(request.max_b, request.min_b, image_size, dtype=np.float32)
     aa, bb = np.meshgrid(x, y)
     if request.render_mode == "oklab":
-        red, green, blue = _oklab_to_rgb(np.float32(request.lightness / 100.0), aa, bb)
+        red, green, blue = oklab_to_linear_array(np.float32(request.lightness / 100.0), aa, bb)
     else:
-        red, green, blue = _lab_to_rgb(np.float32(request.lightness), aa, bb)
+        red, green, blue = lab_to_linear_array(np.float32(request.lightness), aa, bb)
     mask = ((red >= 0.0) & (red <= 1.0) & (green >= 0.0) & (green <= 1.0)
             & (blue >= 0.0) & (blue <= 1.0))
     return LabPrewarmResult(

@@ -102,20 +102,25 @@ class HotkeyMixin:
         elif hotkey_type == "toggleTitleBarKey":
             self.toggle_title_bar()
         elif hotkey_type == "followMouseKey":
-            self.follow_mouse_active = not self.follow_mouse_active
-            self.cfg["followMouseEnabled"] = self.follow_mouse_active
-            config.save_hotkey_config(self.cfg)
-            print(f"[Hotkeys] Follow Mouse toggled to: {self.follow_mouse_active}")
+            # Summon/move to the cursor in one press even when follow-mouse
+            # is already active or the window was hidden — toggling off on
+            # every odd press forced users (especially stylus users) to press
+            # twice to pull the wheel to the pen tip.
+            if not getattr(self, "follow_mouse_active", False):
+                self.follow_mouse_active = True
+                self.cfg["followMouseEnabled"] = True
+                config.save_hotkey_config(self.cfg)
+                print("[Hotkeys] Follow Mouse enabled")
 
-            # Immediately move to cursor if activated and window is visible
-            if self.follow_mouse_active and self.isVisible():
-                self.show_window_at_cursor()
+                sidebar = getattr(self, "settings_sidebar", None)
+                if sidebar is not None and hasattr(sidebar, "cb_follow_mouse"):
+                    if isinstance(getattr(sidebar, "cfg", None), dict):
+                        sidebar.cfg["followMouseEnabled"] = True
+                    sidebar.cb_follow_mouse.blockSignals(True)
+                    sidebar.cb_follow_mouse.setChecked(True)
+                    sidebar.cb_follow_mouse.blockSignals(False)
 
-            # Sync settings sidebar if visible
-            if hasattr(self, 'settings_sidebar') and self.settings_sidebar.isVisible():
-                self.settings_sidebar.cb_follow_mouse.blockSignals(True)
-                self.settings_sidebar.cb_follow_mouse.setChecked(self.follow_mouse_active)
-                self.settings_sidebar.cb_follow_mouse.blockSignals(False)
+            self.show_window_at_cursor()
         elif hotkey_type in ("toggleLabKey", "toggleLabLocalKey"):
             # System-wide hook path: the Qt event filter already consumed the
             # key when a Colorink window has focus. Without focus — e.g. while
@@ -177,57 +182,6 @@ class HotkeyMixin:
             toggle_fs = getattr(self, "toggle_fullscreen_grayscale", None)
             if callable(toggle_fs):
                 toggle_fs()
-                return
-            try:
-                region_ctrl = getattr(self, "region_grayscale_overlay", None)
-                if region_ctrl is not None and region_ctrl.is_active:
-                    region_ctrl.set_active(False)
-                result = self.grayscale_overlay.toggle()
-                if result is False:
-                    # Current backend failed: auto-fallback to Mag backend
-                    # so the grayscale filter opens seamlessly without disturbing the user!
-                    from core.mag_grayscale import MagFilterController
-                    if not isinstance(self.grayscale_overlay, MagFilterController):
-                        backend_name = type(self.grayscale_overlay).__name__
-                        err = getattr(self.grayscale_overlay, "last_error", "")
-                        print(f"[Hotkeys] Backend {backend_name} failed ({err}), falling back to Mag backend...")
-                        mag_ctrl = MagFilterController(mode="luma")
-                        if mag_ctrl.is_available:
-                            try:
-                                self.grayscale_overlay.set_active(False)
-                                close_fn = getattr(self.grayscale_overlay, "close", None)
-                                if callable(close_fn):
-                                    close_fn()
-                            except Exception:
-                                pass
-                            self.grayscale_overlay = mag_ctrl
-                            self.cfg["grayscaleFilterBackend"] = "mag"
-                            config.save_hotkey_config(self.cfg)
-                            result = self.grayscale_overlay.toggle()
-                            if result:
-                                print("[Hotkeys] Successfully fell back to Mag filter backend")
-                                return
-                    err = getattr(self.grayscale_overlay, "last_error", "")
-                    if err:
-                        from PyQt6.QtWidgets import QMessageBox
-                        QMessageBox.warning(self, "灰度滤镜", err)
-            except Exception as e:
-                print(f"[Hotkeys] Grayscale toggle error: {e}")
-                from core.mag_grayscale import MagFilterController
-                if not isinstance(self.grayscale_overlay, MagFilterController):
-                    try:
-                        mag_ctrl = MagFilterController(mode="luma")
-                        if mag_ctrl.is_available:
-                            self.grayscale_overlay = mag_ctrl
-                            self.cfg["grayscaleFilterBackend"] = "mag"
-                            config.save_hotkey_config(self.cfg)
-                            if self.grayscale_overlay.toggle():
-                                print("[Hotkeys] Recovered from exception with Mag backend")
-                                return
-                    except Exception:
-                        pass
-                from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.warning(self, "灰度滤镜", f"切换失败: {e}")
         elif hotkey_type == "regionGrayscaleKey":
             print("[Hotkeys] Region Grayscale Filter toggled")
             toggle_fn = getattr(self, "toggle_region_grayscale", None)

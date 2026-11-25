@@ -182,22 +182,23 @@ def build():
     print(f"{'='*60}")
     for name, ok in results.items():
         status = "OK" if ok else "FAILED"
-        dist_dir = os.path.join("dist", name)
+        label = "Onefile" if name == "onefile" else "Onedir"
+        dist_dir = os.path.join("dist", label)
         if ok:
-            if name == "Onefile":
+            if name == "onefile":
                 exe = os.path.join(dist_dir, "Colorink.exe")
                 if os.path.exists(exe):
                     sz = os.path.getsize(exe) / (1024*1024)
-                    print(f"  [{status}] {name}: {exe} ({sz:.1f} MB)")
+                    print(f"  [{status}] {label}: {exe} ({sz:.1f} MB)")
             else:
                 total = sum(
                     os.path.getsize(os.path.join(dp, f))
                     for dp, _, files in os.walk(dist_dir)
                     for f in files
                 ) / (1024*1024)
-                print(f"  [{status}] {name}: {dist_dir}\\ ({total:.1f} MB)")
+                print(f"  [{status}] {label}: {dist_dir}\\ ({total:.1f} MB)")
         else:
-            print(f"  [{status}] {name}")
+            print(f"  [{status}] {label}")
 
 if __name__ == "__main__":
     build()

@@ -330,11 +330,12 @@ class SyncPanelMixin:
             "完全生效（不再占用其脚本引擎）。"))
         self._refresh_ps_bridge_status()
 
-    def _on_software_changed(self, text):
+    def _on_software_changed(self, _text):
         """When the user picks Photoshop, offer the restart fix once; when picking CSP, offer companion setup."""
-        if text == "Photoshop":
+        mode = self.combo_software.currentData()
+        if mode == "ps":
             QTimer.singleShot(400, self._maybe_prompt_ps_bridge)
-        elif text in ("CSP Companion（手机）", "CLIP Studio Paint"):
+        elif mode in ("companion", "csp"):
             parent = self._parent
             if parent is not None:
                 maybe_prompt = getattr(parent, "maybe_prompt_companion_connection", None)
@@ -345,7 +346,7 @@ class SyncPanelMixin:
         """One-time dialog: bridge deployed but Photoshop not restarted yet."""
         if self._ps_bridge_prompted:
             return
-        if self.combo_software.currentText() != "Photoshop":
+        if self.combo_software.currentData() != "ps":
             return
         ps_sync = self._ps_sync()
         if ps_sync is None:

@@ -95,14 +95,6 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         pdrop = getattr(self, "picker_drop", None)
         return bool(pdrop is not None and pdrop.owns_panel(panel_id))
 
-    def _sync_picker_mode_buttons(self):
-        """The wheel/LAB toggle only makes sense while both pages are here."""
-        both = self.stack.count() > 1
-        for name in ("btn_mode_wheel", "btn_mode_lab"):
-            button = getattr(self, name, None)
-            if button is not None:
-                button.setEnabled(both)
-
     def _panel_rearranged(self, tree):
         """The user dragged a panel somewhere else.
 
@@ -214,8 +206,7 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         self._dpi_transition = False
 
         # Fullscreen grayscale:
-        # dcomp: DirectComposition 显存直通零拷贝 (支持 OKLCh/Luma，延迟 <1ms)
-        # native: DXGI Desktop Duplication + OpenGL 兼容模式
+        # dcomp: DirectComposition 硬件加速 (支持 OKLCh/Luma，延迟 <1ms)
         # mag: Windows 系统级别 Luma 灰度
         mode = self.cfg.get("grayscaleFilterMode", "oklch")
         backend = self.cfg.get("grayscaleFilterBackend", "dcomp")
@@ -225,29 +216,15 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         if backend == "mag":
             from core.mag_grayscale import MagFilterController
             self.grayscale_overlay = MagFilterController(mode="luma")
-        elif backend == "native":
-            from core.native_grayscale import NativeGrayscaleController
-            self.grayscale_overlay = NativeGrayscaleController(mode=mode)
-            if not self.grayscale_overlay.is_available:
-                from core.mag_grayscale import MagFilterController as _Mag
-                fallback = _Mag(mode="luma")
-                if fallback.is_available:
-                    print("[Grayscale] Native backend unavailable — falling back to Mag (Luma)")
-                    self.grayscale_overlay = fallback
         else:  # dcomp (默认优先推荐)
             from core.dcomp_grayscale import DCompGrayscaleController
             self.grayscale_overlay = DCompGrayscaleController(mode=mode)
             if not self.grayscale_overlay.is_available or not self.grayscale_overlay.is_healthy:
-                print("[Grayscale] DComp backend unavailable — falling back to Native (OpenGL)")
-                from core.native_grayscale import NativeGrayscaleController
-                fallback = NativeGrayscaleController(mode=mode)
-                if fallback.is_available:
-                    self.grayscale_overlay = fallback
-                else:
-                    from core.mag_grayscale import MagFilterController as _Mag
-                    mag_fb = _Mag(mode="luma")
-                    if mag_fb.is_available:
-                        self.grayscale_overlay = mag_fb
+                print("[Grayscale] DComp backend unavailable — falling back to Mag (Luma)")
+                from core.mag_grayscale import MagFilterController as _Mag
+                mag_fb = _Mag(mode="luma")
+                if mag_fb.is_available:
+                    self.grayscale_overlay = mag_fb
 
         screen_target = self.cfg.get("grayscaleFilterScreen", "all")
         self.grayscale_overlay.set_target(screen_target)
@@ -274,17 +251,6 @@ class MainWindow(PickerActionsMixin, ThemeMixin, LayoutMixin, ColorUpdatesMixin,
         if backend != "mag" and not os.environ.get("PYTEST_CURRENT_TEST"):
             # grayscale_overlay.prepare runs once the window is up:
             self._dcomp_warmup_timer.start(800)
-            # Pre-import dxcam off the GUI thread so the first Ctrl+Alt+D does not
-            # pay the one-time ~0.4s module/D3D11/comtypes import cost.
-            if sys.modules.get("dxcam") is None:
-                import importlib as _importlib
-                import threading as _threading
-                _threading.Thread(
-                    target=_importlib.import_module,
-                    args=("dxcam",),
-                    daemon=True,
-                    name="colorink-dxcam-preload",
-                ).start()
 
         # Global color picker overlay (magnifier + click-to-pick)
         self.picker_overlay = ColorPickerOverlay(None)

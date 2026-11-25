@@ -111,11 +111,6 @@ class FloatingWheelPage(QWidget):
         page = options.get(self.panel_id) or {}
         return page.get(key, default)
 
-    def has_option(self, key: str) -> bool:
-        cfg = getattr(self.owner, "cfg", {}) or {}
-        options = cfg.get("floatingWheelPageOptions") or {}
-        return key in (options.get(self.panel_id) or {})
-
     def _remember(self, key: str, value) -> None:
         cfg = getattr(self.owner, "cfg", None)
         if cfg is None:

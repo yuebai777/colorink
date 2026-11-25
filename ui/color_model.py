@@ -193,18 +193,6 @@ class Color:
     def b(self) -> int:
         return self.rgb[2]
 
-    @property
-    def r_float(self) -> float:
-        return self.rgb_float[0]
-
-    @property
-    def g_float(self) -> float:
-        return self.rgb_float[1]
-
-    @property
-    def b_float(self) -> float:
-        return self.rgb_float[2]
-
 
 class ColorState:
     """Mutable editor state: the current Color plus hue memory.

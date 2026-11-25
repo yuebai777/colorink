@@ -96,14 +96,6 @@ class MemorySyncThread(QThread):
         self._companion_reconnect_notified = False
         self.last_write_time = 0.0
         self._last_error_text = ("", False)
-        # PS read-back throttle: get_color/get_bg_color on the COM backend
-        # are real COM round-trips into Photoshop's UI thread (~6-8 calls
-        # per read); polling them every 100 ms (~60-80 COM calls/s) keeps a
-        # genuine Photoshop's engine permanently busy and can starve its
-        # CEP plugins (e.g. Coolorus) — the same failure mode as the old
-        # bridge panel. The script-bridge panel only rewrites state.txt
-        # every 0.5 s anyway, so a 0.5 s read cadence serves both backends.
-        self._last_ps_read = 0.0
         
         # Instantiate per-software sync backends
         self.csp_sync = csp_brush_link.CSPSync()
@@ -407,7 +399,7 @@ class MemorySyncThread(QThread):
                         if old_color is None:
                             old_color = self._last_write_old_color.get(
                                 color_index, self._last_synced_color.get(color_index))
-                        if transparent and self.software_mode not in ("companion", "csp"):
+                        if transparent and self.software_mode not in ("companion", "udm"):
                             print(f"[Sync] transparent write unsupported in mode '{self.software_mode}' — skipped")
                             continue
                         self._last_write_old_color[color_index] = old_color
@@ -416,7 +408,7 @@ class MemorySyncThread(QThread):
 
                         if transparent:
                             # Transparent is a flag on the ACTIVE slot
-                            # (companion: IsColorTransparent; CSP 5.1 memory:
+                            # (companion: IsColorTransparent; UDM memory:
                             # +0x08 = 0xFFFFFFFF). Both main and sub slots
                             # support it — the backends activate the target
                             # slot before setting the flag.
@@ -434,18 +426,6 @@ class MemorySyncThread(QThread):
                                     )
                                     self._last_companion_hsv = self.companion_hsv
                                 self._last_read_transparent[color_index] = True
-                            elif self.software_mode == 'csp':
-                                self.csp_sync.set_color(
-                                    r, g, b, source_space=src_space,
-                                    source_values=src_vals, transparent=True,
-                                    color_index=color_index,
-                                )
-                                # CSP 内存模式的透明标志属于激活槽，读回总是以
-                                # index 0 报告（get_color），所以种子必须落在 0
-                                # 上——否则下一轮 get_sub_color (transparent=0)
-                                # 会把它误判为"槽 1 已清除"并发
-                                # 出虚假的 transparent_changed(1, False)。
-                                self._last_read_transparent[0] = True
                             elif self.software_mode == 'udm':
                                 self.udm_sync.set_color(
                                     r, g, b, source_space=src_space,
@@ -456,9 +436,6 @@ class MemorySyncThread(QThread):
                             continue
 
                         if self.software_mode == 'csp':
-                            # 纯内存写副色：`_write_sub_color` 会把新模式写入
-                            # 进程内搜索到的全部副本（含权威笔刷副本），不依赖
-                            # companion —— csp 内存模式与 companion 完全独立。
                             self.csp_sync.set_color(
                                 r, g, b, source_space=src_space,
                                 source_values=src_vals, color_index=color_index,
@@ -506,19 +483,10 @@ class MemorySyncThread(QThread):
                 connected = False
 
                 if self.software_mode == 'csp':
-                    # 纯内存模式：主色/副色全部从 CSP 进程内存读取（主槽
-                    # +0x3C.. / 副槽 +0x9C..，均为 HSV u32 比例编码），
-                    # 与 companion 完全独立。
+                    # 纯内存模式（CSP 4.x / 5.0）：只读取主色槽，与 companion 独立。
                     main_color = self.csp_sync.get_color()
-                    sub_color = self.csp_sync.get_sub_color()
                     if main_color is not None:
                         colors.append(main_color)
-                    if sub_color is not None:
-                        colors.append(sub_color)
-                    active = self.csp_sync.get_active_slot_index()
-                    if active is not None and active != self._last_active_slot:
-                        self._last_active_slot = active
-                        self.signals.active_slot_changed.emit(active)
                     status = self.csp_sync.status()
                     connected = status.get('connected', False)
                     # CSP 5.1 内存同步已移除：把原因抛给 UI（显示在同步页），
@@ -529,16 +497,6 @@ class MemorySyncThread(QThread):
                         self._last_error_text = err_pair
                         self.signals.error_changed.emit(
                             self.software_mode, csp_unsupported, False)
-                    # NOTE: this used to proactively warm CSP's copy-address
-                    # caches here. A locate scan reads every committed page of
-                    # the CSP process (2.4 GB working set observed, ~1.1s per
-                    # scan, two scans per prime), and paying that at connect
-                    # made the app feel worse right when the user starts
-                    # working. The copy set is now established for free instead:
-                    # whichever slot the user changes first performs a locate
-                    # anyway, and that locate also remembers the OTHER slot's
-                    # copies via _remember_peer_siblings(), so no extra scan is
-                    # ever run on Colorink's behalf.
                 elif self.software_mode == 'sai':
                     color = self.sai2_sync.get_color()
                     if color is not None:

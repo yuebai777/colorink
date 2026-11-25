@@ -33,15 +33,6 @@ from ui.window.module_defs import ALL_SLIDERS
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
 
-# Resolve resource paths relative to the repo root so packaged builds
-# (PyInstaller) work regardless of the current working directory.
-
-# CSP 内存模式版本选项：显示文本 ↔ 配置存储值。CSP 5.1 内存同步已移除，
-# 内存模式仅 csp4.x / csp5.x 主色同步；前景/背景与透明请用手机（Companion）模式。
-# 每项的悬停说明
-
-
-
 
 class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
                       SettingsHelpersMixin, QWidget):
@@ -89,7 +80,6 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.nav.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.nav.setFrameShape(QFrame.Shape.NoFrame)
-        self._nav_icons = {}
         for text, kind in [
             ("快捷键", "hotkeys"),
             ("界面", "interface"),
@@ -371,7 +361,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         
         self.combo_grayscale_mode.blockSignals(True)
         backend = self.cfg.get("grayscaleFilterBackend", "dcomp")
-        if backend not in ("dcomp", "native", "mag"):
+        if backend not in ("dcomp", "mag"):
             backend = "dcomp"
         self._update_grayscale_screen_options(backend)
         self._update_grayscale_mode_options(backend)
@@ -561,7 +551,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.combo_lab_harmony.blockSignals(False)
 
         self.cb_show_lab_lightness.blockSignals(True)
-        self.cb_show_lab_lightness.setChecked(self.cfg.get("showLabLightnessSlider", True))
+        self.cb_show_lab_lightness.setChecked(self.cfg.get("showLabLightnessSlider", False))
         self.cb_show_lab_lightness.blockSignals(False)
         for checkbox, key, default in (
                 (getattr(self, "cb_sliders_tabs", None), "slidersTabs", False),
@@ -573,7 +563,7 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.refresh_floating_panel_list()
         
         self.cb_flip_wheel.blockSignals(True)
-        self.cb_flip_wheel.setChecked(self.cfg.get("flipColorWheelHorizontally", False))
+        self.cb_flip_wheel.setChecked(self.cfg.get("flipColorWheelHorizontally", True))
         self.cb_flip_wheel.blockSignals(False)
 
         self.cb_show_color_readout.blockSignals(True)
@@ -645,17 +635,6 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
         self.apply_theme()
         self._refresh_module_sliders()
         self._refresh_autostart_status()
-
-
-
-
-
-
-
-
-
-
-
 
     def _sync_hotkey_none_buttons(self):
         """Show each「无」button only while its hotkey is bound.
@@ -1074,14 +1053,6 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
                     w.setVisible(visible)
         self._reorder_slider_rows_ui()
 
-    def _visible_slider_keys(self):
-        """Slider keys the ordering controls act on: the active module's rows
-        plus History (always shown), in global display order."""
-        module = self.cfg.get("colorSpaceModule", "hsv")
-        allowed = set(self._MODULE_SLIDER_MAP.get(module, ALL_SLIDERS))
-        return [k for k in config.sorted_slider_groups(self.cfg)
-                if k == "History" or k in allowed]
-
     def _reorder_slider_rows_ui(self):
         """Show the rows in the order the window shows the panels.
 
@@ -1135,23 +1106,6 @@ class SettingsSidebar(UpdatePanelMixin, SyncPanelMixin, AppearancePanelMixin,
     def _persist_and_emit(self):
         self._persist_config()
         self.settingChanged.emit()
-
-
-
-
-
-
-
-    # -- Green/portable Photoshop script-bridge notice ----------------------
-
-
-
-
-
-
-
-
-
 
     def scroll_step_decrease(self):
         val = self.cfg.get("sliderScrollStep", 1)

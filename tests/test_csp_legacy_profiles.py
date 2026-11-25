@@ -89,15 +89,11 @@ def _make_legacy_sync(version_key: str = "csp4.x") -> CSPSync:
 
 
 def _forbid_copy_machinery(sync: CSPSync) -> None:
-    """Make every 5.1-only helper explode if the legacy path touches it."""
-    def boom(*_a, **_k):
-        raise AssertionError("5.1 copy-locate machinery reached from the "
-                             "legacy u16x2_dup path")
-
+    """Assert the retired CSP 5.1 copy-locate machinery is absent."""
     for name in ("_search_pattern", "_locate_hsv_copies", "_drop_sibling_slot_hits",
                  "_remembered_copies", "_copy_cache_is_live",
                  "_read_rgb_u32", "_write_rgb_u32", "_write_sub_color"):
-        setattr(sync, name, boom)
+        assert not hasattr(sync, name), f"retired 5.1 helper still present: {name}"
 
 
 # ── profile registry is untouched ─────────────────────────────────────────
@@ -105,7 +101,6 @@ def _forbid_copy_machinery(sync: CSPSync) -> None:
 @pytest.mark.parametrize("key,base_offset,fmt", [
     ("csp4.x", 0x0518C2C0, "u16x2_dup"),
     ("csp5.x", 0x05449DB0, "u16x2_dup"),
-    ("csp5.1", 0x0556BFC8, "rgb_u32"),
 ])
 def test_profile_constants(key, base_offset, fmt):
     profile = _PROFILE_INDEX[key]
@@ -234,19 +229,3 @@ def test_explicit_legacy_pin_still_switches():
     assert sync.current_version == "csp5.x"
     assert sync.color_format == "u16x2_dup"
     assert sync.pm is None                              # forces a reconnect
-
-
-def test_the_guard_is_not_vacuous():
-    """Counter-proof for every ``_forbid_copy_machinery`` test above.
-
-    Flipping the very same stub to the 5.1 layout must trip the guard, which
-    is what makes "the legacy path never reaches it" a real assertion rather
-    than a test that could never fail.
-    """
-    sync = _make_legacy_sync()
-    sync.color_format = "rgb_u32"
-    sync._sub_copy_addrs = None
-    sync._main_copy_addrs = None
-    _forbid_copy_machinery(sync)
-    with pytest.raises(AssertionError):
-        sync.set_color(200, 100, 50)

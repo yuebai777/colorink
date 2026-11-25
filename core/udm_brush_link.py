@@ -428,16 +428,6 @@ class UDMSync:
         assert self.pm is not None
         self.pm.write_int(address, _u32_to_signed(value))
 
-    def _read_float32(self, address: int) -> float:
-        assert self.pm is not None
-        raw = self.pm.read_bytes(address, 4)
-        return struct.unpack("<f", raw)[0]
-
-    def _write_float32(self, address: int, value: float) -> None:
-        assert self.pm is not None
-        raw = struct.pack("<f", float(value))
-        self.pm.write_bytes(address, raw, 4)
-
     def _snapshot_color_slot(self, base_addr: int) -> dict[str, dict[str, Any]]:
         snapshots: dict[str, dict[str, Any]] = {}
         for space_name, offsets in self.space_offsets.items():

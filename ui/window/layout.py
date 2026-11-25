@@ -515,12 +515,10 @@ class LayoutMixin:
     def _run_deferred_content_height(self):
         if getattr(self, "resizing", False):
             # Still dragging the frame: snapping the height now would yank the
-            # window out from under the cursor. Re-arm and let the release (or
-            # the next settle) do it.
-            timer = getattr(self, "_width_height_timer", None)
-            if timer is not None:
-                timer.start(max(80, timer.interval()))
-                return
+            # window out from under the cursor. Re-arm the settle timer and let
+            # the release do it.
+            self._schedule_settle(width_changed=True)
+            return
         self._content_height_adjust_pending = False
         if not self.isVisible():
             # 仍处于隐藏状态：不重 arm 定时器（否则 0ms 定时器会无限自旋，
@@ -1640,10 +1638,6 @@ class LayoutMixin:
             print("[Hotkeys] Local LAB shortcut: picker wheel/LAB")
             return True
         return False
-
-    def _local_view_shortcut_zone(self, global_pos: QPoint | None = None) -> bool:
-        """Compatibility alias for the unified tab-switch zone check."""
-        return self._is_tab_shortcut_zone(global_pos)
 
     def _run_local_view_shortcut(self, global_pos: QPoint | None = None) -> bool:
         """Compatibility alias executing the unified tab-switch action."""

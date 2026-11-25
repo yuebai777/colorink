@@ -184,12 +184,6 @@ def start_background_refresh():
         _refresh_thread.start()
 
 
-def invalidate():
-    """Ask the background thread to refresh sooner. Never blocks, never
-    enumerates on the calling thread."""
-    _refresh_wake.set()
-
-
 def taskbar_rects():
     """Latest taskbar-rect snapshot ((l, t, r, b) physical px). May be empty."""
     return _rects_snapshot

@@ -240,11 +240,6 @@ class FloatingPanelsMixin:
         # a collapsed height — floating a tall column panel by panel left
         # windows 7px tall, with the panel squashed inside them.
         original = QSize(widget.size())
-        reference = getattr(self, "floating_reference_size", None)
-        if callable(reference):
-            supplied = reference(panel_id, widget)
-            if supplied is not None:
-                original = QSize(supplied)
         if fallback_size is not None:
             fallback = (QSize(*fallback_size) if isinstance(fallback_size, (tuple, list))
                         else QSize(fallback_size))
@@ -288,12 +283,6 @@ class FloatingPanelsMixin:
         # window we are about to put it in. No re-mount here — the refresh at
         # the end of this method is the pass that mounts the column.
         host.set_floating_panels(set(windows), remount=False)
-        # Panels the host never mounted (the LAB view lives in the picker's
-        # stack, not in the dock tree) have to be unhooked by whoever owns
-        # them — the host's floating set means nothing to them.
-        detach = getattr(self, "detach_floating_panel", None)
-        if callable(detach):
-            detach(panel_id, widget)
         pdrop = getattr(self, "picker_drop", None)
         if pdrop is not None and pdrop.owns_panel(panel_id):
             pdrop.remove_panel(panel_id)
@@ -307,9 +296,6 @@ class FloatingPanelsMixin:
             window.set_panel(widget)
             window.setGeometry(*rect)
             window.adjust_size_for_content(min_content_h=original.height())
-            size_owner = getattr(self, "float_panel_size", None)
-            if callable(size_owner):
-                size_owner(panel_id, widget, rect)
             if panel_id in saved:
                 state = saved[panel_id]
                 window.setGeometry(*rect)
@@ -320,23 +306,21 @@ class FloatingPanelsMixin:
                 w_final = max(rect[2], window.width())
                 h_final = max(rect[3], window.height())
                 window.setGeometry(rect[0], rect[1], w_final, h_final)
-                self_correct = getattr(self, "floating_self_correct", None)
-                if not callable(self_correct) or self_correct(panel_id):
-                    window.ensurePolished()
-                    layout = window.layout()
-                    if layout is not None:
-                        layout.activate()
-                    if hasattr(window, "body") and window.body and window.body.layout():
-                        window.body.layout().activate()
-                    panel = window.panel()
-                    if panel is not None and panel.width() > 0 and panel.height() > 0:
-                        fix_w = original.width() - panel.width()
-                        fix_h = original.height() - panel.height()
-                        if fix_w or fix_h:
-                            window.resize(
-                                max(MIN_FLOATING_SIZE[0], window.width() + fix_w),
-                                max(MIN_FLOATING_SIZE[1], window.height() + fix_h),
-                            )
+                window.ensurePolished()
+                layout = window.layout()
+                if layout is not None:
+                    layout.activate()
+                if hasattr(window, "body") and window.body and window.body.layout():
+                    window.body.layout().activate()
+                panel = window.panel()
+                if panel is not None and panel.width() > 0 and panel.height() > 0:
+                    fix_w = original.width() - panel.width()
+                    fix_h = original.height() - panel.height()
+                    if fix_w or fix_h:
+                        window.resize(
+                            max(MIN_FLOATING_SIZE[0], window.width() + fix_w),
+                            max(MIN_FLOATING_SIZE[1], window.height() + fix_h),
+                        )
         self._present_torn_window(window, handoff, fallback_snap, no_focus)
         # Only now: a window that is still being assembled must not be able
         # to write its half-built geometry over the record it was restored
@@ -994,9 +978,6 @@ class FloatingPanelsMixin:
         has_remaining = any(w is window for w in windows.values())
         if not has_remaining:
             self._retire_floating_window(window)
-        attach = getattr(self, "attach_floating_panel", None)
-        claimed = bool(widget is not None and callable(attach)
-                       and attach(panel_id, widget))
         host = getattr(self, "panel_host", None)
         fn = getattr(self, "refresh_slider_visibility_and_order", None)
         if host is not None:
@@ -1012,7 +993,7 @@ class FloatingPanelsMixin:
             if not (refresh and callable(fn)):
                 pdrop.sync_docks(remount=True)
             dock_host = pdrop.host_owning(panel_id) or host
-        if (not claimed and widget is not None and host is not None
+        if (widget is not None and host is not None
                 and host.widget_for(panel_id) is None
                 and (pdrop is None or not pdrop.owns_panel(panel_id))):
             # Nothing claimed it (the group is not in the current tree):
@@ -1145,9 +1126,6 @@ class FloatingPanelsMixin:
                 window._panels[pid] = widget
                 widget.removeEventFilter(window)
                 widget.installEventFilter(window)
-                detach = getattr(self, "detach_floating_panel", None)
-                if callable(detach):
-                    detach(pid, raw_widget)
 
             tree = leader_state.tree
             if tree is None:
@@ -1332,13 +1310,6 @@ class FloatingPanelsMixin:
             pdrop.hide_drop_hint(immediate=True)
             for edge_host in pdrop.edge_hosts():
                 edge_host.clear_drop_hint()
-
-        owner_target = getattr(self, "dock_target_at", None)
-        if callable(owner_target):
-            owner_spot = owner_target(panel_id, global_pos)
-            if owner_spot:
-                self.dock_panel(panel_id)
-                return
 
         snapshot = capture_window_snapshot(source_window)
         no_focus = bool(getattr(self, "cfg", {}).get("noFocusMode", True))
@@ -1605,9 +1576,6 @@ class FloatingPanelsMixin:
                     self._retire_floating_window(old_win)
             else:
                 widget = self.panel_widget(panel_id)
-                detach = getattr(self, "detach_floating_panel", None)
-                if callable(detach):
-                    detach(panel_id, widget)
         except RuntimeError:
             # old_win was torn down before the deferred finish ran; the panel
             # is already remapped, so fall through to the main-host remount.

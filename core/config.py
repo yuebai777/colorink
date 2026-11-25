@@ -10,7 +10,7 @@ HOTKEY_CFG_NAME = "hotkey-config.json"
 # when the shape of the config changes and register a migration below; old
 # configs are migrated forward on load instead of relying on ad-hoc key pops.
 CONFIG_SCHEMA_KEY = "schemaVersion"
-CONFIG_SCHEMA_VERSION = 6
+CONFIG_SCHEMA_VERSION = 7
 
 # Envelope marker for the settings backup/restore JSON export.
 SETTINGS_EXPORT_FORMAT = "colorink-settings"
@@ -36,7 +36,7 @@ def get_slider_order(cfg, group: str) -> int:
 
 
 def sorted_slider_groups(cfg):
-    """Return the seven slider groups ordered by their config order values.
+    """Return the eight slider groups ordered by their config order values.
 
     Ties are broken by the canonical group order, so the result is always a
     strict, stable total order.
@@ -101,8 +101,7 @@ def default_hotkey_config():
         "showWindowBorder": True,         # 显示/隐藏窗口外边框（主窗口与浮出面板外框）
         "grayscaleFilterScreen": "all",
         "grayscaleFilterMode": "oklch",
-        # dcomp = DirectComposition 显存直通（零拷贝零延迟，推荐）；
-        # native = DXGI Desktop Duplication + OpenGL 兼容层；
+        # dcomp = DirectComposition 硬件加速（支持 OKLCh / Luma 及多区域，推荐）；
         # mag = Windows 系统颜色矩阵（仅 Luma，作用于全部屏幕）
         "grayscaleFilterBackend": "dcomp",
         "grayscaleFilterRegion": None,    # 兼容旧版：主自定义区域 {"x", "y", "width", "height"}，None 表示默认最大化无边框窗口
@@ -146,7 +145,6 @@ def default_hotkey_config():
         "visualizerMode": "lab",
         "labViewShape": "square",
         "labHarmonyMode": "analogous",
-        "colorWheelMode": "hsv",
         "colorSpaceModule": "hsv",          # "hsv" | "vhsv" | "hls" | "rgb" | "lch"
         "showModuleSwitchButton": True,     # show/hide picker module tab bar
         "wheelModuleTabs": ["hsv", "vhsv", "hls", "rgb", "lch"],
@@ -163,7 +161,6 @@ def default_hotkey_config():
         "orderSlidersHistory": 8,
         "historyColumns": 8,
         "historyRows": 2,
-        "historySwatchSize": 18,
         "historyColors": [],
         "sliderStyle": "default",
         # 边框主题（窗口外框 / 分组框 / 数值框）。"auto" = 跟随滑块样式配对，
@@ -183,6 +180,7 @@ def default_hotkey_config():
         "syncSoftware": "auto",
         "psVersion": "auto",
         "uiScale": 100,
+        "fontSize": 100,
         # 窗口背景 / 边框的不透明度（百分比，100 = 完全不透明）。只作用于
         # 窗口底色、外框与标题栏那一条 chrome，滑块 / 色轮 / 色块等内容
         # 永远不透明，取值范围见 ui/chrome_opacity.py。
@@ -199,7 +197,7 @@ def default_hotkey_config():
 
 
 def normalize_slider_orders(cfg):
-    """Make the seven slider-order keys unique 1..7 values.
+    """Make the eight slider-order keys unique 1..8 values.
 
     Legacy configs could carry duplicate order values (for example the old
     History default collided with RGB). The move up/down controls in the
@@ -296,6 +294,15 @@ def _migrate_5_to_6(cfg: dict) -> dict:
     return cfg
 
 
+def _migrate_6_to_7(cfg: dict) -> dict:
+    """Drop retired ``colorWheelMode``/``historySwatchSize`` and migrate ``native`` grayscale to ``dcomp``."""
+    cfg.pop("colorWheelMode", None)
+    cfg.pop("historySwatchSize", None)
+    if cfg.get("grayscaleFilterBackend") == "native":
+        cfg["grayscaleFilterBackend"] = "dcomp"
+    return cfg
+
+
 # Registered migrations, keyed by the target schema version they produce.
 _CONFIG_MIGRATIONS: dict[int, Callable[[dict], dict]] = {
     1: _migrate_0_to_1,
@@ -304,6 +311,7 @@ _CONFIG_MIGRATIONS: dict[int, Callable[[dict], dict]] = {
     4: _migrate_3_to_4,
     5: _migrate_4_to_5,
     6: _migrate_5_to_6,
+    7: _migrate_6_to_7,
 }
 
 
@@ -341,7 +349,7 @@ _BOOL_KEYS = frozenset({
     "showSlidersRGB", "showSlidersHSV", "showSlidersVHSV", "showSlidersHSL", "showSlidersLAB",
     "showSlidersOKLab", "showSlidersOKLCh", "showSlidersHistory",
     "showTitleBar", "showWindowBorder", "showTaskbarIcon", "lockWindowSize", "lockWindowPosition",
-    "onlyShowInCsp", "openAtLogin", "checkUpdatesOnStartup",
+    "onlyShowInCsp", "hideOnPopupMenu", "openAtLogin", "checkUpdatesOnStartup",
     "followMouseEnabled", "noFocusMode", "showLabLightnessSlider",
     "mouseHotkeyZoneFilter",
     "slidersTabs", "panelDrag",
@@ -351,8 +359,8 @@ _BOOL_KEYS = frozenset({
     "showColorValueReadout",
 })
 _INT_KEYS = frozenset({
-    "uiScale", "pickerZoom", "historyColumns", "historyRows",
-    "historySwatchSize", "sliderScrollStep", "sliderSameSpace",
+    "uiScale", "fontSize", "pickerZoom", "historyColumns", "historyRows",
+    "sliderScrollStep", "sliderSameSpace",
     "sliderDiffSpace", "panelTopGap", "backgroundOpacity",
 })
 _VALID_READOUT_MODES = frozenset({
@@ -387,6 +395,9 @@ def _sanitize_types(cfg: dict) -> dict:
             cfg["colorValueReadoutMode"] = mode.lower()
         else:
             cfg.pop("colorValueReadoutMode", None)
+    if "grayscaleFilterBackend" in cfg:
+        if cfg.get("grayscaleFilterBackend") not in ("dcomp", "mag"):
+            cfg["grayscaleFilterBackend"] = "dcomp"
     if "floatingWindowHotkeys" in cfg and not isinstance(cfg.get("floatingWindowHotkeys"), dict):
         cfg.pop("floatingWindowHotkeys", None)
     if "grayscaleFilterRegions" in cfg:

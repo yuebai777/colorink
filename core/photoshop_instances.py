@@ -1,17 +1,11 @@
-"""Detect running Photoshop instances (genuine, green/portable, or
-cracked-with-COM).
+"""Detect running Photoshop instances (genuine, green/portable, or custom).
 
-Pure logic module — no COM calls, no PyQt — so it stays unit-testable.
+Pure logic module — no COM calls, no registry lookups, no PyQt — so it stays
+fast and unit-testable.
 
 Every edition shares ONE sync path (the user-level CEP bridge in
 :mod:`core.photoshop_script_bridge`), routed per instance by PID, so
-display labels are uniform: ``<folder> (同步桥)``. The ``kind`` /
-``progid`` fields are internal bookkeeping only — they no longer
-influence labels or backend selection.
-
-``find_registered_progids`` probes the well-known versioned ProgIDs
-(``Photoshop.Application`` plus ``Photoshop.Application.130..260``) because
-enumerating the whole registry hive is far too slow for the sync loop.
+display labels are uniform: ``<folder> (同步桥)``.
 """
 
 from __future__ import annotations
@@ -20,22 +14,17 @@ import os
 from dataclasses import dataclass
 
 PROCESS_NAME = "Photoshop.exe"
-COM_KIND = "com"
 SCRIPT_BRIDGE_KIND = "script-bridge"
-
-# Versioned ProgID suffixes to probe (13 registry lookups, not a hive scan).
-_VERSION_PROGID_NUMBERS = range(130, 271, 10)
 
 
 @dataclass(frozen=True, slots=True)
 class PhotoshopInstance:
-    """A running Photoshop process and the best way to sync with it."""
+    """A running Photoshop process and its display label."""
 
-    kind: str                  # COM_KIND | SCRIPT_BRIDGE_KIND (internal only)
+    kind: str                  # always SCRIPT_BRIDGE_KIND
     label: str                 # uniform display label "<folder> (同步桥)"
     exe_path: str
     pid: int
-    progid: str | None = None  # set only for COM_KIND
 
 
 def find_running_photoshop() -> list[tuple[int, str]]:
@@ -52,35 +41,6 @@ def find_running_photoshop() -> list[tuple[int, str]]:
     return out
 
 
-def find_registered_progids() -> list[tuple[str, str]]:
-    """Return ``[(progid, local_server32), ...]`` for every registered
-    Photoshop COM ProgID whose server executable path resolves.
-
-    The server path has any `` /Automation`` argument stripped; broken
-    registrations (missing CLSID / LocalServer32) are skipped.
-    """
-    import winreg
-
-    found: list[tuple[str, str]] = []
-    candidates = ["Photoshop.Application"]
-    candidates += [f"Photoshop.Application.{n}" for n in _VERSION_PROGID_NUMBERS]
-    for progid in candidates:
-        try:
-            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, progid + "\\CLSID") as ck:
-                clsid = winreg.QueryValueEx(ck, "")[0]
-            if not clsid:
-                continue
-            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, f"CLSID\\{clsid}") as ck2:
-                with winreg.OpenKey(ck2, "LocalServer32") as lk:
-                    path = winreg.QueryValueEx(lk, "")[0]
-        except OSError:
-            continue
-        path = (path or "").split(" /", 1)[0].strip().strip('"')
-        if path:
-            found.append((progid, path))
-    return found
-
-
 def _instance_label(exe_path: str) -> str:
     folder = os.path.basename(os.path.dirname(os.path.abspath(exe_path)))
     if not folder:
@@ -89,28 +49,16 @@ def _instance_label(exe_path: str) -> str:
 
 
 def detect_instances() -> list[PhotoshopInstance]:
-    """Classify every running Photoshop process by sync backend."""
-    regs = find_registered_progids()
-    instances: list[PhotoshopInstance] = []
-    for pid, exe in find_running_photoshop():
-        norm = os.path.normcase(os.path.abspath(exe))
-        match = next(
-            (r for r in regs
-             if os.path.normcase(os.path.abspath(r[1])) == norm),
-            None,
+    """Return every running Photoshop process as a CEP-bridge instance."""
+    return [
+        PhotoshopInstance(
+            kind=SCRIPT_BRIDGE_KIND,
+            label=_instance_label(exe),
+            exe_path=exe,
+            pid=pid,
         )
-        if match is not None:
-            instances.append(PhotoshopInstance(
-                kind=COM_KIND, label=_instance_label(exe),
-                exe_path=exe, pid=pid, progid=match[0],
-            ))
-        else:
-            instances.append(PhotoshopInstance(
-                kind=SCRIPT_BRIDGE_KIND,
-                label=_instance_label(exe),
-                exe_path=exe, pid=pid,
-            ))
-    return instances
+        for pid, exe in find_running_photoshop()
+    ]
 
 
 def pick_target(

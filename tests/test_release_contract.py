@@ -165,14 +165,14 @@ def test_companion_debug_logging_is_disabled_for_release_builds():
 SPEC_FILES = ["Colorink.spec", "Colorink Onefile.spec"]
 SOURCE_DIRS = ["ui", "core"]
 ICON_REF_RE = re.compile(r"icons/([A-Za-z0-9_.\-]+\.(?:png|ico))")
-BINARY_RESOURCE_RE = re.compile(r'"([A-Za-z0-9_.\-]+\.(?:exe|dll|slang|slangp|pyc))"')
+BINARY_RESOURCE_RE = re.compile(r'"([A-Za-z0-9_.\-]+\.(?:exe|dll))"')
 # Directories where bundled binary resources live (source of truth for
 # "does a referenced file name exist on disk" — avoids walking venv/).
 _BINARY_SEARCH_DIRS = [
     PROJECT_ROOT,
     PROJECT_ROOT / "core",
     PROJECT_ROOT / "mag_overlay" / "build",
-    PROJECT_ROOT / "native_grayscale" / "runtime",
+    PROJECT_ROOT / "native_dcomp",
 ]
 
 
@@ -262,7 +262,7 @@ def test_spec_declared_binary_resources_exist_on_disk():
     for spec_name, declared in zip(SPEC_FILES, _spec_declared_resources()):
         missing = []
         for rel in sorted(declared):
-            if rel.endswith((".exe", ".dll", ".slang", ".slangp", ".pyc")):
+            if rel.endswith((".exe", ".dll")):
                 if not (PROJECT_ROOT / rel).is_file():
                     missing.append(rel)
         assert not missing, (
@@ -294,7 +294,7 @@ def test_spec_declared_binaries_cover_source_references():
         (PROJECT_ROOT / s).read_text(encoding="utf-8") for s in SPEC_FILES
     ):
         for match in re.finditer(r"_add_if_exists\('([^']+)'", content):
-            if match.group(1).endswith((".exe", ".dll", ".slang", ".slangp", ".pyc")):
+            if match.group(1).endswith((".exe", ".dll")):
                 declared.add(Path(match.group(1)).name)
     missing = sorted(referenced - declared)
     assert not missing, (

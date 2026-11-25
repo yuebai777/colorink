@@ -1,77 +1,28 @@
-"""Tests for Photoshop instance detection (registered COM vs green/portable).
-
-Mocks psutil + winreg so the pure detection logic is testable without a
-running Photoshop or a real registry.
-"""
+"""Tests for Photoshop process instance detection (pure psutil, no registry)."""
 
 import sys
 import types
-
-import pytest
 
 from core import photoshop_instances as pi
 
 GREEN_EXE = r"D:\Program Files\AdobePhotoshop_CC_2019_20.0.10.28848_Green\Adobe Photoshop CC 2019\Photoshop.exe"
 REG_EXE = r"D:\Program Files\Adobe Photoshop 2020\Photoshop.exe"
-REG_GUID = "{c4c3e2fb-d66c-44e5-96a0-349f951cb3d4}"
 
 
 def _fake_psutil(procs):
-    fake = types.SimpleNamespace(
+    return types.SimpleNamespace(
         process_iter=lambda attrs=None: iter(procs),
         NoSuchProcess=OSError,
         AccessDenied=PermissionError,
     )
-    return fake
-
-
-def _fake_winreg(entries):
-    """entries: absolute key path -> default value string."""
-
-    class _Key:
-        def __init__(self, path):
-            self.path = path
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def QueryValueEx(self, name, *a):
-            if self.path in entries:
-                return (entries[self.path], 1)
-            raise OSError
-
-    def OpenKey(root, sub):
-        base = root.path if isinstance(root, _Key) else ""
-        full = f"{base}\\{sub}" if isinstance(root, _Key) else sub
-        # A key "exists" when it has a value or any deeper value registered.
-        if full in entries or any(e.startswith(full + "\\") for e in entries):
-            return _Key(full)
-        raise OSError
-
-    def QueryValueEx(key, name):
-        return key.QueryValueEx(name)
-
-    return types.SimpleNamespace(
-        OpenKey=OpenKey, QueryValueEx=QueryValueEx, HKEY_CLASSES_ROOT="ROOT")
 
 
 def _proc(pid, name, exe):
     return types.SimpleNamespace(info={"pid": pid, "name": name, "exe": exe})
 
 
-@pytest.fixture
-def no_registry(monkeypatch):
-    monkeypatch.setitem(sys.modules, "winreg", _fake_winreg({}))
-
-
-def _install(monkeypatch, procs=None, entries=None):
-    monkeypatch.setitem(
-        sys.modules, "psutil", _fake_psutil(procs or []))
-    monkeypatch.setitem(
-        sys.modules, "winreg", _fake_winreg(entries or {}))
+def _install(monkeypatch, procs=None):
+    monkeypatch.setitem(sys.modules, "psutil", _fake_psutil(procs or []))
 
 
 # ── find_running_photoshop ───────────────────────────────────────────────
@@ -106,91 +57,21 @@ class TestFindRunning:
         assert pi.find_running_photoshop() == []
 
 
-# ── find_registered_progids ──────────────────────────────────────────────
-
-class TestRegisteredProgids:
-    def test_returns_progid_with_stripped_automation_args(self, monkeypatch):
-        _install(monkeypatch, entries={
-            "Photoshop.Application.140\\CLSID": REG_GUID,
-            f"CLSID\\{REG_GUID}\\LocalServer32": f'"{REG_EXE}" /Automation',
-        })
-        got = pi.find_registered_progids()
-        assert got == [("Photoshop.Application.140", REG_EXE)]
-
-    def test_skips_missing_clsid(self, monkeypatch):
-        _install(monkeypatch, entries={})
-        assert pi.find_registered_progids() == []
-
-    def test_skips_missing_local_server32(self, monkeypatch):
-        _install(monkeypatch, entries={
-            "Photoshop.Application.140\\CLSID": REG_GUID,
-        })
-        assert pi.find_registered_progids() == []
-
-    def test_probes_version_independent_and_versioned(self, monkeypatch):
-        seen = []
-
-        class _Key:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def QueryValueEx(self, name, *a):
-                raise OSError
-
-        def OpenKey(root, sub):
-            seen.append(sub)
-            raise OSError
-
-        fake = types.SimpleNamespace(
-            OpenKey=OpenKey, QueryValueEx=lambda k, n: k.QueryValueEx(n),
-            HKEY_CLASSES_ROOT="ROOT")
-        monkeypatch.setitem(sys.modules, "winreg", fake)
-        pi.find_registered_progids()
-        assert "Photoshop.Application\\CLSID" in seen
-        assert "Photoshop.Application.210\\CLSID" in seen  # within 130..260 range
-
-
-# ── detect_instances classification ──────────────────────────────────────
+# ── detect_instances ─────────────────────────────────────────────────────
 
 class TestDetect:
-    def test_registered_running_is_com(self, monkeypatch):
-        _install(monkeypatch, procs=[_proc(42, "Photoshop.exe", REG_EXE)],
-                 entries={
-                     "Photoshop.Application.210\\CLSID": REG_GUID,
-                     f"CLSID\\{REG_GUID}\\LocalServer32": REG_EXE,
-                 })
+    def test_every_running_instance_uses_script_bridge(self, monkeypatch):
+        _install(monkeypatch, procs=[
+            _proc(7, "Photoshop.exe", GREEN_EXE),
+            _proc(42, "Photoshop.exe", REG_EXE),
+        ])
         instances = pi.detect_instances()
-        assert len(instances) == 1
-        inst = instances[0]
-        assert inst.kind == pi.COM_KIND
-        assert inst.progid == "Photoshop.Application.210"
-        assert inst.pid == 42
-        assert "(同步桥)" in inst.label
+        assert len(instances) == 2
+        assert all(inst.kind == pi.SCRIPT_BRIDGE_KIND for inst in instances)
+        assert all("(同步桥)" in inst.label for inst in instances)
+        assert [inst.pid for inst in instances] == [7, 42]
 
-    def test_green_running_is_script_bridge(self, monkeypatch, no_registry):
-        _install(monkeypatch, procs=[_proc(7, "Photoshop.exe", GREEN_EXE)])
-        instances = pi.detect_instances()
-        assert len(instances) == 1
-        inst = instances[0]
-        assert inst.kind == pi.SCRIPT_BRIDGE_KIND
-        assert inst.progid is None
-        assert "(同步桥)" in inst.label
-
-    def test_mixed_installs_classified_independently(self, monkeypatch):
-        _install(monkeypatch,
-                 procs=[_proc(1, "Photoshop.exe", GREEN_EXE),
-                        _proc(2, "Photoshop.exe", REG_EXE)],
-                 entries={
-                     "Photoshop.Application.210\\CLSID": REG_GUID,
-                     f"CLSID\\{REG_GUID}\\LocalServer32": REG_EXE,
-                 })
-        kinds = {inst.kind for inst in pi.detect_instances()}
-        assert kinds == {pi.COM_KIND, pi.SCRIPT_BRIDGE_KIND}
-
-    def test_no_running_photoshop_returns_empty(self, monkeypatch, no_registry):
+    def test_no_running_photoshop_returns_empty(self, monkeypatch):
         _install(monkeypatch, procs=[])
         assert pi.detect_instances() == []
 
@@ -200,9 +81,8 @@ class TestDetect:
 class TestPickTarget:
     def _instances(self):
         return [
-            pi.PhotoshopInstance(kind=pi.COM_KIND, label="A (同步桥)",
-                                 exe_path=r"D:\A\Photoshop.exe", pid=1,
-                                 progid="Photoshop.Application.210"),
+            pi.PhotoshopInstance(kind=pi.SCRIPT_BRIDGE_KIND, label="A (同步桥)",
+                                 exe_path=r"D:\A\Photoshop.exe", pid=1),
             pi.PhotoshopInstance(kind=pi.SCRIPT_BRIDGE_KIND, label="B (同步桥)",
                                  exe_path=r"D:\B\Photoshop.exe", pid=2),
         ]

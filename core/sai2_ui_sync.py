@@ -43,7 +43,8 @@ Design rules (why this is safe to bolt onto a working app):
 
 * ``sync()`` never raises: any failure returns ``False`` and leaves the
   already-written colour slot untouched, so the brush colour is never wrong.
-* Opt-in: the caller decides whether to call it (``sai2UiSync`` config key).
+* Panel mode (``auto`` / ``vhsv`` / ``hsv`` / ``hsl``) is controlled via the
+  ``sai2PanelMode`` config key.
 * No hard-coded window handles: controls are discovered at runtime by class,
   size and vertical order, and re-discovered when they go stale.
 * Whitelist writes only: the colour slot plus the three picker fields.
@@ -105,9 +106,7 @@ def _log(msg: str) -> None:
 # ── pure helpers (unit-tested without SAI) ────────────────────────────────
 def normalize_mode(value: object) -> str:
     """Map config/env spellings onto ``auto``/``vhsv``/``hsv``/``hsl``."""
-    if value is True or value is None:
-        return DEFAULT_MODE
-    if value is False:
+    if value is None or isinstance(value, bool):
         return DEFAULT_MODE
     return _MODE_ALIASES.get(str(value).strip().lower(), DEFAULT_MODE)
 

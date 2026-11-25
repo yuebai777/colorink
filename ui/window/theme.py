@@ -116,7 +116,7 @@ class ThemeMixin:
         if scale is None:
             scale = self.cfg.get("uiScale", 100) / 100.0
 
-        visible = bool(self.cfg.get("showLabLightnessSlider", True))
+        visible = bool(self.cfg.get("showLabLightnessSlider", False))
         gap = max(4, int(round(8 * scale)))
         bar_w = max(10, int(round(18 * scale)))
 
@@ -869,24 +869,9 @@ class ThemeMixin:
                 int(window_layout.wheel_size_for(self.width(), h, scale)),
                 title_offset, h, sliders_h, self.active_slot)
 
-        # The placement above sizes the cluster from sliders_container's
-        # sizeHint(), which can lag a grip-toggle re-mount by a few px (and
-        # more at odd DPRs) — a cluster released with a stale hint lands on
-        # the tab strip. Once the container has real geometry, never let the
-        # cluster's bottom enter the sliders area. A *hidden* container is not
-        # a floor: with every panel floated it maps to y=0 and this would pull
-        # the cluster up over the title bar.
-        container = self.sliders_container
-        if (container.height() > 0 and container.isVisible()
-                and container.mapTo(self, QPoint(0, 0)).y() > 0):
-            sliders_top = container.mapTo(self, QPoint(0, 0)).y()
-            bottom = self.preview_box.y() + self.preview_box.height()
-            clearance = max(4, int(6 * scale))
-            if bottom > sliders_top - clearance:
-                self.preview_box.move(
-                    self.preview_box.x(),
-                    max(0, sliders_top - self.preview_box.height()
-                        - clearance))
+        clamp = getattr(self, "_clamp_preview_box", None)
+        if callable(clamp):
+            clamp(self.preview_box)
         self.preview_box.raise_()
         for _ro_attr in ("readout_wheel", "readout_lab"):
             _ro = getattr(self, _ro_attr, None)

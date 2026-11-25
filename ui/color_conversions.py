@@ -3,9 +3,8 @@
 
 Every colour-space transform the UI performs (slider handlers, groove
 gradients, colour wheel math, LAB visualiser) lives here — and only here.
-Historically the same math was inlined in ``ui/lab_visualizer.py``,
-``ui/oklab_colors.py`` and ``ui/color_wheel.py``; those files now import
-from this module.
+Historically the same math was inlined in ``ui/lab_visualizer.py`` and
+``ui/color_wheel.py``; those files now import from this module.
 
 Scope / contract:
 

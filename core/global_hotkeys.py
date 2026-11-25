@@ -170,7 +170,13 @@ def bind_mouse_hotkey(hotkey_type: str, hotkey_str: str):
         get_hotkey_signals().triggered.emit(hotkey_type)
 
     try:
-        handler = _mouse.on_button(callback, buttons=(button,), types=(_mouse.DOWN,))
+        # Listen for both DOWN and DOUBLE: on Windows ``mouse._winmouse``
+        # turns a button-down into DOUBLE whenever *any* prior button event
+        # (such as lifting a stylus tip = LEFT UP) happened within
+        # GetDoubleClickTime(), which otherwise drops the first pen-button press.
+        handler = _mouse.on_button(
+            callback, buttons=(button,), types=(_mouse.DOWN, _mouse.DOUBLE)
+        )
     except Exception as e:
         print(f"[Hotkeys] Failed to bind mouse hotkey {hotkey_type} ({hotkey_str}): {e}")
         return

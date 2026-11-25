@@ -65,6 +65,7 @@ def test_dcomp_controller_unhealthy_aborts():
 
 def test_hotkey_mixin_grayscale_fallback_to_mag(monkeypatch):
     from ui.window.hotkey_mixin import HotkeyMixin
+    from ui.window.picker_actions import PickerActionsMixin
     from core.mag_grayscale import MagFilterController
 
     class FakeBrokenController:
@@ -76,10 +77,14 @@ def test_hotkey_mixin_grayscale_fallback_to_mag(monkeypatch):
         def close(self):
             pass
 
-    class FakeHost(HotkeyMixin):
+    class FakeHost(HotkeyMixin, PickerActionsMixin):
         def __init__(self):
             self.cfg = {"grayscaleFilterBackend": "dcomp"}
             self.grayscale_overlay = FakeBrokenController()
+            self.region_grayscale_overlay = None
+
+        def _sync_sidebar_grayscale_ui(self):
+            pass
 
     host = FakeHost()
     monkeypatch.setattr(MagFilterController, "is_available", True)

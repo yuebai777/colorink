@@ -68,8 +68,6 @@ _PROFILES: tuple[_CSPBuildProfile, ...] = (
     _CSPBuildProfile("csp4.x", "CLIPStudioPaint.exe", 0x0518C2C0, _AOB_CSP4_0),
     _CSPBuildProfile("csp5.x", "CLIPStudioPaint.exe", 0x05449DB0, _AOB_CSP5_0,
                      aob_offset=0x0D),
-    _CSPBuildProfile("csp5.1", "CLIPStudioPaint.exe", 0x0556BFC8, "",
-                     color_format="rgb_u32"),
 )
 _PROFILE_INDEX: dict[str, _CSPBuildProfile] = {p.key: p for p in _PROFILES}
 
@@ -81,8 +79,6 @@ def _normalize_version_key(raw: object) -> str:
     and maps them to the simplified "csp4.x" / "csp5.x" scheme.
     """
     text = str(raw or "").strip().lower()
-    if "5.1" in text:
-        return "csp5.1"
     if "5.0" in text or "csp5" in text or "5.x" in text:
         return "csp5.x"
     if "4." in text or "csp4" in text or "4.x" in text:
@@ -143,18 +139,10 @@ class ProfileMixin:
         self.intermediate_offset = profile.intermediate_offset
         self.aob_signature = profile.aob_signature
         self.color_format = profile.color_format
-        # 切换版本即切换进程/布局：清空色相记忆与副本缓存，避免
-        # 主/副槽或新旧版本之间串扰（旧值在新进程里没有意义）。
+        # 切换版本即切换进程/布局：清空色相记忆，避免新旧版本之间串扰。
         self._last_hsv_h = 0.0
         self._last_hsv_s = 0.0
         self._resolve_fail_count = 0
-        self._sub_copy_addrs = None
-        self._main_copy_addrs = None
-        self._sub_copy_addrs_known = None
-        self._main_copy_addrs_known = None
-        self._copy_scan_ts = {}
-        self._stale_patterns = {}
-        self._copy_locate_notes = {}
         # 版本/进程变化：清空不可用标记，允许重新尝试连接。
         self.unsupported_reason = ""
 
@@ -175,8 +163,7 @@ class ProfileMixin:
         self.r_off = _parse_int(sec.get("redoffset",   hex(self.r_off)))
         self.g_off = _parse_int(sec.get("greenoffset", hex(self.g_off)))
         self.b_off = _parse_int(sec.get("blueoffset",  hex(self.b_off)))
-        if self._profile.color_format == "u16x2_dup":
-            self.color_format = sec.get("colorformat", self.color_format)
+        self.color_format = sec.get("colorformat", self.color_format)
         self.space_offsets = build_space_offsets(self.r_off)
         _log(
             "Config loaded: "

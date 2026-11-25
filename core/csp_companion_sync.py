@@ -24,6 +24,7 @@ with MemorySyncThread.
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import select
@@ -63,8 +64,68 @@ _MAX_U32 = 4294967295
 # Heartbeat interval (seconds)
 _HEARTBEAT_INTERVAL = 3.0
 
+# User inactivity threshold (seconds) before Companion Mode switches to
+# passive keepalive (IdleTimerResetRequested=False + paused Sync* polling),
+# allowing CSP's built-in 2-minute work-time auto-pause to trigger normally.
+_IDLE_THRESHOLD = 15.0
+
 # Debug logging
 _DEBUG = False
+
+
+class _LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.c_uint),
+        ("dwTime", ctypes.c_uint32),
+    ]
+
+
+def _get_system_idle_seconds() -> float:
+    """Return seconds elapsed since the last OS mouse/keyboard/stylus input.
+
+    Uses Win32 ``GetLastInputInfo`` + ``GetTickCount`` (32-bit wrap-safe).
+    Fails open (returns ``0.0``, meaning active) on non-Windows or if the API
+    call is unavailable so color sync is never stuck idle.
+    """
+    if sys.platform != "win32":
+        return 0.0
+    try:
+        lii = _LASTINPUTINFO()
+        lii.cbSize = ctypes.sizeof(_LASTINPUTINFO)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
+            return 0.0
+        now_ms = ctypes.windll.kernel32.GetTickCount() & 0xFFFFFFFF
+        elapsed_ms = (now_ms - (lii.dwTime & 0xFFFFFFFF)) & 0xFFFFFFFF
+        return elapsed_ms / 1000.0
+    except Exception:
+        return 0.0
+
+
+def _is_csp_or_self_foreground() -> bool:
+    """True when CSP or Colorink owns the foreground window (fail-open).
+
+    Prevents mouse/keyboard activity in unrelated apps (e.g. a browser) from
+    resetting CSP's idle timer while CSP sits in the background.
+    """
+    if sys.platform != "win32":
+        return True
+    try:
+        import win32gui
+        import win32process
+        from core.foreground import _resolve_process_exe, identify_drawing_app
+
+        hwnd = win32gui.GetForegroundWindow()
+        if not hwnd:
+            return True
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        if not pid or pid == os.getpid():
+            return True
+        exe = _resolve_process_exe(pid)
+        if not exe:
+            return True
+        return identify_drawing_app(exe_name=exe) == "csp"
+    except Exception:
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +388,8 @@ class CSPCompanionSync:
         self._connected: bool = False
         self._aborting: bool = False
         self._last_heartbeat: float = 0.0
+        self._was_idle: bool = False
+        self._last_local_activity: float = 0.0
         self._host: str = ""
         self._port: int = 0
         self._password: str = ""
@@ -512,7 +575,7 @@ class CSPCompanionSync:
         # If already connected, check if still alive
         if self._connected and self._sock is not None:
             try:
-                self._send_heartbeat()
+                self._send_heartbeat(reset_idle=self._is_user_active())
                 return True
             except Exception:
                 self._disconnect()
@@ -548,6 +611,8 @@ class CSPCompanionSync:
 
             self._connected = True
             self._last_heartbeat = time.time()
+            self._last_local_activity = time.time()
+            self._was_idle = False
             self.last_error = ""
             self.consecutive_failures = 0
             self.ever_connected = True
@@ -677,25 +742,51 @@ class CSPCompanionSync:
         self._send_heartbeat()
         _log("Activation ritual done")
 
-    def _send_heartbeat(self) -> None:
-        """Send TellHeartbeat with idle-reset flag.
+    def _is_user_active(self) -> bool:
+        """True when the user is actively interacting with CSP or Colorink.
 
-        MUST include ``IdleTimerResetRequested: true`` or CSP returns
-        empty ``{}`` for all Sync* responses after ~15 seconds.
+        Returns False once there has been no input for ``_IDLE_THRESHOLD``
+        seconds, or when another unrelated app is in the foreground (unless
+        Colorink itself just wrote a color).
+        """
+        if time.time() - getattr(self, "_last_local_activity", 0.0) < _IDLE_THRESHOLD:
+            return True
+        if _get_system_idle_seconds() >= _IDLE_THRESHOLD:
+            return False
+        return _is_csp_or_self_foreground()
+
+    def _send_heartbeat(self, reset_idle: bool = True) -> None:
+        """Send TellHeartbeat, optionally resetting CSP's idle timer.
+
+        When actively syncing, ``IdleTimerResetRequested: true`` keeps CSP
+        returning full Sync* payloads. While the user is idle (or away in
+        another app), sending ``IdleTimerResetRequested: false`` keeps the TCP
+        session alive without preventing CSP's 2-minute work-time auto-pause.
         """
         self._send_raw(_build_message("TellHeartbeat", {
-            "IdleTimerResetRequested": True,
+            "IdleTimerResetRequested": bool(reset_idle),
         }))
 
-    def _ensure_heartbeat(self) -> None:
-        """Send heartbeat if interval has elapsed."""
-        if self._connected and time.time() - self._last_heartbeat > _HEARTBEAT_INTERVAL:
+    def _ensure_heartbeat(self, *, force_reset_idle: bool = False) -> bool:
+        """Send heartbeat if interval has elapsed (or waking up from idle).
+
+        Returns whether the user is currently active.
+        """
+        active = True if force_reset_idle else self._is_user_active()
+        was_idle = getattr(self, "_was_idle", False)
+        waking_up = active and was_idle
+        self._was_idle = not active
+
+        if self._connected and (
+            waking_up or time.time() - self._last_heartbeat > _HEARTBEAT_INTERVAL
+        ):
             try:
-                self._send_heartbeat()
+                self._send_heartbeat(reset_idle=active)
                 self._last_heartbeat = time.time()
             except Exception:
                 self.last_error = "disconnected"
                 self._disconnect()
+        return active
 
     # ------------------------------------------------------------------
     # Raw I/O
@@ -786,69 +877,6 @@ class CSPCompanionSync:
             return None
         return {"r": hsv["r"], "g": hsv["g"], "b": hsv["b"]}
 
-    def get_colors_hsv(self) -> dict | None:
-        """Read BOTH main and sub UI colors plus the active index.
-
-        Returns ``{"main": ColorHSV, "sub": ColorHSV, "active_index": int,
-        "transparent": bool}``. Used by the memory-mode observer so main
-        and sub color changes are tracked independently of the active
-        slot (a slot switch alone must not overwrite Colorink's values).
-        """
-        if not self._connected:
-            if not self.connect():
-                return None
-        stale_msgs = self._recv_messages(timeout=0.05)
-        self._ensure_heartbeat()
-        try:
-            self._send_raw(_build_message("SyncColorCircleUIState", {
-                "IsManipulating": False,
-                "HSVColorMainH": 0,
-                "HSVColorMainS": 0,
-                "HSVColorMainV": 0,
-                "CurrentColorIndex": 0,
-                "ColorSelectionModel": "HSV",
-            }))
-            for attempt in range(3):
-                msgs = self._recv_messages(timeout=0.3)
-                for _type, _cmd, detail_json in msgs:
-                    if _cmd not in ("SyncColorCircleUIState", "SetCurrentColor"):
-                        continue
-                    try:
-                        d: _CSPColorState = json.loads(detail_json)
-                        if not d or d == {}:
-                            continue
-                    except Exception:
-                        continue
-                    idx = int(d.get("CurrentColorIndex", 0))
-                    transp = bool(d.get("IsCurrentColorTransparent", False))
-
-                    def parse_ch(prefix: str) -> dict | None:
-                        h = d.get(f"{prefix}H")
-                        s = d.get(f"{prefix}S")
-                        v = d.get(f"{prefix}V")
-                        if h is None or s is None or v is None:
-                            return None
-                        r, g, b = _hsv_to_rgb_u32(int(h), int(s), int(v))
-                        return {"h": int(h) / _MAX_U32 * 360.0,
-                                "s": int(s) / _MAX_U32 * 100.0,
-                                "v": int(v) / _MAX_U32 * 100.0,
-                                "r": r, "g": g, "b": b,
-                                "transparent": transp, "index": 0}
-
-                    main = parse_ch("HSVColorMain")
-                    sub = parse_ch("HSVColorSub")
-                    if main is None:
-                        main = parse_ch("HSVColor")
-                    if main is None and sub is None:
-                        continue
-                    return {"main": main, "sub": sub,
-                            "active_index": idx, "transparent": transp}
-            return None
-        except Exception as exc:
-            _log(f"get_colors_hsv error: {exc}")
-            self._disconnect()
-            return None
-
     def get_color_hsv(self) -> ColorHSV | None:
         """Read CSP's brush color, returning native HSV + RGB.
 
@@ -868,7 +896,9 @@ class CSPCompanionSync:
         if stale_msgs:
             _log(f"get_color_hsv: drained {len(stale_msgs)} stale msgs before request")
 
-        self._ensure_heartbeat()
+        active = self._ensure_heartbeat()
+        if not self._connected or not active:
+            return None
 
         try:
             # SyncColorCircleUIState is *the* read command (not GetCurrentColor).
@@ -1004,43 +1034,6 @@ class CSPCompanionSync:
                 "transparent": bool(d.get("IsCurrentColorTransparent", False)),
                 "index": idx}
 
-    def _parse_color_response(self, msgs: list[tuple[int, str, str]]) -> dict[str, int] | None:
-        """Extract RGB from SyncColorCircleUIState response messages.
-
-        CSP responds with the current color state; we extract the active
-        slot (Main/Sub based on CurrentColorIndex), decode uint32 HSV,
-        and convert to 8-bit RGB.
-        """
-        for _type, _cmd, detail_json in msgs:
-            # Server can push SyncColorCircleUIState as notification or
-            # respond to SetCurrentColor with success.
-            if _cmd in ("SyncColorCircleUIState", "SetCurrentColor"):
-                try:
-                    d: _CSPColorState = json.loads(detail_json)
-                    if not d or d == {}:
-                        continue
-                    idx = d.get("CurrentColorIndex", 0)
-                    if idx == 0:
-                        h = d.get("HSVColorMainH", d.get("HSVColorH", 0))
-                        s = d.get("HSVColorMainS", d.get("HSVColorS", 0))
-                        v = d.get("HSVColorMainV", d.get("HSVColorV", 0))
-                    else:
-                        h = d.get("HSVColorSubH", d.get("HSVColorH", 0))
-                        s = d.get("HSVColorSubS", d.get("HSVColorS", 0))
-                        v = d.get("HSVColorSubV", d.get("HSVColorV", 0))
-                    if h == 0 and s == 0 and v == 0:
-                        # Could be unset — try legacy fields
-                        h = d.get("HSVColorH", 0)
-                        s = d.get("HSVColorS", 0)
-                        v = d.get("HSVColorV", 0)
-                    if h == 0 and s == 0 and v == 0:
-                        continue
-                    r, g, b = _hsv_to_rgb_u32(h, s, v)
-                    return {"r": r, "g": g, "b": b}
-                except Exception as exc:
-                    _log(f"Parse color response error: {exc}")
-        return None
-
     def set_color(self, r: int, g: int, b: int, hsv_u32: tuple[int, int, int] | None = None,
                   transparent: bool = False, color_index: int = 0) -> bool:
         """Write a color to CSP's brush via Companion protocol.
@@ -1060,7 +1053,10 @@ class CSPCompanionSync:
             if not self.connect():
                 return False
 
-        self._ensure_heartbeat()
+        self._last_local_activity = time.time()
+        self._ensure_heartbeat(force_reset_idle=True)
+        if not self._connected:
+            return False
 
         # Skip if same as last set color for THIS slot (dedup is per-slot:
         # a single shared cache would wrongly suppress the sub-slot write

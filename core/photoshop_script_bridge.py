@@ -350,23 +350,6 @@ var cmdMtime = 0;
 var lastToken = "";
 var lastStateStr = "";
 
-function stateScript(d) {
-    var suff = pidSuffix();
-    return "(function(){try{var d='" + d + "';" +
-        "var fg=app.foregroundColor;var bg=app.backgroundColor;" +
-        "var s=new File(d+'/state" + suff + ".txt');s.open('w');" +
-        "s.write(Math.round(fg.rgb.red)+'|'+Math.round(fg.rgb.green)+'|'+Math.round(fg.rgb.blue)+'|'+Math.round(bg.rgb.red)+'|'+Math.round(bg.rgb.green)+'|'+Math.round(bg.rgb.blue));" +
-        "s.close();}catch(e){}})()";
-}
-function beatScript(d) {
-    // Keep PANEL_VERSION in sync with PANEL_VERSION_FILENAME below
-    var suff = pidSuffix();
-    return "(function(){try{var d='" + d + "';" +
-        "var pv=new File(d+'/panel_version" + suff + ".txt');pv.open('w');" +
-        "pv.write('17');pv.close();" +
-        "var h=new File(d+'/heartbeat" + suff + ".txt');h.open('w');" +
-        "h.write(String(new Date().getTime()));h.close();}catch(e){}})()";
-}
 function applyScript(d, parts) {
     // parts: <token>|<pid>|<index>|<r>|<g>|<b>  or  <token>|<pid>|swap  or  <token>|<pid>|both|<fg_r>|<fg_g>|<fg_b>|<bg_r>|<bg_g>|<bg_b>
     // Safe in-process write path: Prefer ActionManager setd with Srce="photoshopPicker".
@@ -589,8 +572,6 @@ function poll() {
             });
             return;
         }
-        if (doState) { evalScript(stateScript(d), function () {}); }
-        if (doBeat)  { evalScript(beatScript(d), function () {}); }
     } catch (e) {}
 }
 setInterval(function () {

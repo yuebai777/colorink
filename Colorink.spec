@@ -94,7 +94,6 @@ _add_if_exists('core/data/sponsors.json', 'core/data', _datas, 'sponsor list')
 _add_if_exists('core/data/avatars/miya.jpg', 'core/data/avatars', _datas, 'sponsor avatar (みや)')
 _add_if_exists('core/data/avatars/shenge.jpg', 'core/data/avatars', _datas, 'sponsor avatar (生哥)')
 _add_if_exists('mag_overlay/build/mag_filter.exe', 'mag_overlay/build', _datas, 'Mag filter')
-_add_if_exists('native_grayscale/runtime/grayscale_overlay.pyc', 'native_grayscale/runtime', _datas, 'Native grayscale base runtime')
 _add_if_exists('native_dcomp/dcomp_filter.dll', 'native_dcomp', _datas, 'DComp grayscale filter DLL')
 
 a = Analysis(
@@ -103,17 +102,6 @@ a = Analysis(
     binaries=_binaries,
     datas=_datas,
     hiddenimports=[
-        'dxcam',
-        'dxcam.core',
-        'dxcam.core.device',
-        'dxcam.core.output',
-        # Loaded via importlib.import_module("dxcam.processor._numpy_kernels")
-        # inside dxcam.processor.cv2_processor — a string import PyInstaller
-        # cannot see statically. Without the .pyd the numpy backend falls
-        # back to the cv2 processor, which needs opencv (not shipped).
-        'dxcam.processor._numpy_kernels',
-        'comtypes',
-        'comtypes.client',
         # CSP Companion QR scanning uses delayed imports.
         'mss',
         'mss.base',
@@ -123,9 +111,6 @@ a = Analysis(
         'pyzbar.pyzbar',
         'PIL',
         'PIL.Image',
-        # Ensure PyQt OpenGL modules are included
-        'PyQt6.QtOpenGL',
-        'PyQt6.QtOpenGLWidgets',
     ],
     hookspath=[],
     hooksconfig={},

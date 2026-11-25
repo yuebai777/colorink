@@ -3,7 +3,6 @@ pywin32>=306
 keyboard>=0.13.5
 mouse>=0.7.1
 psutil>=5.9.8
-dxcam>=0.3.0
 numpy>=2.0
 
 # CSP Companion QR scanning

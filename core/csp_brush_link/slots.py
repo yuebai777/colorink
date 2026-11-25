@@ -1,12 +1,11 @@
-"""CSP color-slot read/write and introspection.
+"""CSP color-slot read/write and introspection (CSP 4.x / 5.0 u16x2_dup layout).
 
-Extracted from ``core.csp_brush_link``: sub/main colour slot addressing,
-multi-copy HSV writes, public get/set/status/dump and the diagnostic dump.
+Extracted from ``core.csp_brush_link``: color-slot addressing, public
+get/set/status/dump, and the diagnostic dump.
 """
 
 from __future__ import annotations
 
-import time
 from typing import Any, Mapping
 
 try:
@@ -18,10 +17,8 @@ try:
         encode_space_values_float,
         format_space_values,
         resolve_active_rgb,
-        rgb_to_hsv_float,
         rgb_to_space_values,
         space_to_rgb_float,
-        space_to_rgb_values,
     )
 except ImportError:
     from brush_color_spaces import (
@@ -32,10 +29,8 @@ except ImportError:
         encode_space_values_float,
         format_space_values,
         resolve_active_rgb,
-        rgb_to_hsv_float,
         rgb_to_space_values,
         space_to_rgb_float,
-        space_to_rgb_values,
     )
 
 from core.csp_brush_link.memory import _clamp_byte, _decode_u16x2_duplicate
@@ -43,736 +38,6 @@ from core.csp_brush_link.profiles import _log
 
 
 class SlotMixin:
-    # A copy-locate scan walks CSP's whole address space and costs seconds
-    # even when it ends up finding nothing usable. When the previous attempt
-    # could not identify the authoritative copies, retry at most once per
-    # this many seconds — writes in between go to the remembered copy set
-    # (or the mirror slot), so a rescan can never stall the polling thread
-    # write after write.
-    _COPY_RESCAN_INTERVAL = 3.0
-
-    # Distance between the main and the sub colour sub-object inside one
-    # colour struct (verified live on CSP 5.1: RGB 0x20 -> 0x80, HSV
-    # 0x3C -> 0x9C, i.e. the sub object is a copy of the main object 0x60
-    # bytes further on). A copy scan matches by value, so when both slots
-    # hold the SAME colour every struct yields two hits 0x60 apart and the
-    # slots become indistinguishable — writing one would clobber the other.
-    _SLOT_STRIDE = 0x60
-
-    def get_sub_color(self) -> dict[str, int] | None:
-        """Public facade for the 5.1 sub-color slot (index 1)."""
-        return self._read_sub_color()
-
-    def get_active_slot_index(self) -> int | None:
-        """Current active-slot index: 0 = main, 1 = sub.
-
-        Returns ``None`` while the active slot is transparent (the flag
-        overwrites the low byte with 0xFF).
-        """
-        if self.pm is None or not self._resolve_rgb_target() or self.target is None:
-            return None
-        try:
-            raw = self._read_u32(self.target + self._TRANSPARENT_FLAG_OFFS)
-        except Exception:
-            return None
-        if raw == self._TRANSPARENT_FLAG_ON:
-            return None
-        return int(raw & 0xFF)
-
-    def _read_sub_color(self) -> dict[str, int] | None:
-        """Read the 5.1 sub-color (background) slot as 8-bit RGB.
-
-        Sub slot stores three u32 HSV channels (proportional encoding) at
-        +0x9C/+0xA0/+0xA4. The transparent flag belongs to the active
-        slot and is reported by :meth:`get_color` (main path); sub
-        transparency is not reported here to avoid duplicate signals.
-
-        NOTE: +0x9C is only ONE of the sub-color copies in memory — the
-        brush reads from multiple copies (see :meth:`_write_sub_color`).
-        When :attr:`_sub_copy_addrs` has been located (by an earlier
-        write), read from that authoritative copy set instead of trusting
-        the +0x9C mirror alone: the mirror can lag behind the brush copy
-        (first switch to the background color then shows a stale value).
-        """
-        if self.pm is None or not self._resolve_rgb_target() or self.target is None:
-            return None
-        pm = self.pm
-        target = self.target
-        try:
-            addrs = getattr(self, "_sub_copy_addrs", None)
-            if addrs:
-                # 写路径定位的副本集（含权威笔刷副本）。验证所有副本仍持
-                # 有同一 12 字节模式才可信；任一失效/不一致即回退 +0x9C。
-                raws_12 = pm.read_bytes(addrs[0], 12)
-                ok_cache = True
-                for addr in addrs[1:]:
-                    try:
-                        if pm.read_bytes(addr, 12) != raws_12:
-                            ok_cache = False
-                            break
-                    except Exception:
-                        ok_cache = False
-                        break
-                if ok_cache:
-                    raws = tuple(
-                        int.from_bytes(raws_12[i * 4:(i + 1) * 4], "little")
-                        for i in range(3)
-                    )
-                    values = decode_space_raws("hsv", raws)
-                    rgb = space_to_rgb_values("hsv", values)
-                    return {
-                        "r": _clamp_byte(rgb["r"]),
-                        "g": _clamp_byte(rgb["g"]),
-                        "b": _clamp_byte(rgb["b"]),
-                        "transparent": 0,
-                        "index": 1,
-                    }
-            raws = tuple(self._read_u32(target + off) for off in self._SUB_HSV_OFFS)
-            values = decode_space_raws("hsv", raws)
-            rgb = space_to_rgb_values("hsv", values)
-            return {
-                "r": _clamp_byte(rgb["r"]),
-                "g": _clamp_byte(rgb["g"]),
-                "b": _clamp_byte(rgb["b"]),
-                "transparent": 0,
-                "index": 1,
-            }
-        except Exception as exc:
-            _log(f"_read_sub_color: exception: {exc}")
-            return None
-
-    def has_sub_copy_cache(self) -> bool:
-        """True once the sub-color copy addresses are known."""
-        return bool(getattr(self, "_sub_copy_addrs", None))
-
-    def capture_sub_copies_from_current(self) -> int:
-        """Search the process for the CURRENT sub-color value and cache the
-        hit addresses (authoritative brush source + UI mirrors).
-
-        Call right after a companion-protocol sub-color write so the cache
-        includes CSP's authoritative copy. Returns the number of copies.
-        """
-        if self.pm is None or self.target is None:
-            return 0
-        try:
-            old = b"".join(
-                self._read_u32(self.target + off).to_bytes(4, "little")
-                for off in self._SUB_HSV_OFFS
-            )
-            hits = self._search_pattern(old, max_hits=self._SUB_COPY_LIMIT + 1)
-            base_addr = self.target + self._SUB_HSV_OFFS[0]
-            if len(hits) <= self._SUB_COPY_LIMIT:
-                addrs = list(hits)
-                if base_addr not in addrs:
-                    addrs.append(base_addr)
-            else:
-                addrs = [base_addr]
-            if len(addrs) > 1:
-                self._sub_copy_addrs = addrs
-                # Verified copy set: also keep it as the fallback a later
-                # trivial-pattern (black/white) write can reuse.
-                self._sub_copy_addrs_known = list(addrs)
-            else:
-                # Mirror only — the copies could not be identified. Caching
-                # that would re-validate against our own writes forever and
-                # lock the degradation in (same invariant as
-                # :meth:`_locate_hsv_copies`).
-                self._sub_copy_addrs = None
-            _log(f"capture_sub_copies: {len(addrs)} copies of current sub color")
-            return len(addrs)
-        except Exception as exc:
-            _log(f"capture_sub_copies: exception: {exc}")
-            return 0
-
-    def _copy_cache_is_live(self, addrs: list[int], expected: bytes) -> bool:
-        """True while every cached copy address still holds *expected*."""
-        pm = self.pm
-        if pm is None or not addrs:
-            return False
-        for addr in addrs:
-            try:
-                if pm.read_bytes(addr, 12) != expected:
-                    return False
-            except Exception:
-                return False
-        return True
-
-    def _remembered_copies(self, cache_attr: str,
-                           base_addr: int) -> list[int] | None:
-        """Last verified copy set for this slot, if it still looks coherent.
-
-        Needed whenever a scan can no longer identify the copies:
-
-        * the value is a *trivial* pattern (pure black is twelve zero bytes
-          and matches everywhere), or
-        * only the mirror slot holds the value, because a previous degraded
-          write updated the mirror alone.
-
-        Those addresses were verified while the color still was distinctive,
-        so reusing them is what lets such a write reach the brush instead of
-        only the UI mirror.
-
-        Guards: the set must belong to the current slot pointer (a stored set
-        always contains its ``base_addr``) and the authoritative copies must
-        still be readable and hold one and the same value — CSP keeps its
-        copies in sync, a recycled allocation would not.  The mirror itself
-        is excluded from that check: it is the one address a degraded write
-        has already changed.
-        """
-        known = getattr(self, cache_attr + "_known", None)
-        pm = self.pm
-        if not known or pm is None or base_addr not in known:
-            return None
-        others = [addr for addr in known if addr != base_addr]
-        if not others:
-            return None
-        try:
-            reference = pm.read_bytes(others[0], 12)
-            for addr in others[1:]:
-                if pm.read_bytes(addr, 12) != reference:
-                    return None
-        except Exception:
-            setattr(self, cache_attr + "_known", None)
-            return None
-        return list(known)
-
-    def _drop_sibling_slot_hits(self, hits: list[int], base_off: int,
-                                base_addr: int) -> list[int]:
-        """Remove hits that belong to the OTHER colour slot.
-
-        The main and the sub colour live in two sub-objects of one struct,
-        ``_SLOT_STRIDE`` bytes apart. The scan matches by value, so while
-        both slots hold the same colour (very common — e.g. both black)
-        every struct produces two hits ``_SLOT_STRIDE`` apart and writing
-        the main slot would silently overwrite the sub slot (verified live:
-        a main write turned the sub colour magenta too).
-
-        A hit is the sibling's field when its counterpart at the matching
-        stride distance is also a hit, so it can be dropped without ever
-        touching the case where the two slots hold different colours (then
-        the sibling's bytes simply do not match and nothing is filtered).
-        """
-        if not hits:
-            return hits
-        # Locating the sub slot? Then the main field sits _SLOT_STRIDE lower,
-        # and a hit whose counterpart above it also matched is the main one.
-        locating_sub = base_off == self._SUB_HSV_OFFS[0]
-        delta = self._SLOT_STRIDE if locating_sub else -self._SLOT_STRIDE
-        hit_set = set(hits)
-        kept = [
-            addr for addr in hits
-            if addr == base_addr or (addr + delta) not in hit_set
-        ]
-        if len(kept) != len(hits):
-            _log(f"_locate_hsv_copies: dropped {len(hits) - len(kept)} hits "
-                 f"belonging to the other colour slot (both slots hold the "
-                 f"same colour)")
-        return kept
-
-    def _slot_label(self, base_off: int) -> str:
-        """Human name of the colour slot a field offset belongs to."""
-        if base_off == self._RGB_U32_OFFS[0]:
-            return "main"
-        if base_off == self._SUB_HSV_OFFS[0]:
-            return "sub"
-        return f"0x{base_off:X}"
-
-    def _peer_slot(self, base_off: int) -> tuple[str, tuple[int, ...], int] | None:
-        """Describe the OTHER colour slot of the same struct.
-
-        Returns ``(peer cache attribute, peer field offsets, delta)`` where
-        ``this_address + delta`` is the peer's matching field: the main HSV
-        block (+0x3C) and the sub HSV block (+0x9C) are two sub-objects of one
-        colour struct ``_SLOT_STRIDE`` bytes apart — the same relationship
-        :meth:`_drop_sibling_slot_hits` already depends on. ``None`` for
-        anything that is not one of the two colour blocks.
-        """
-        if base_off == self._RGB_U32_OFFS[0]:
-            return ("_sub_copy_addrs", self._SUB_HSV_OFFS, self._SLOT_STRIDE)
-        if base_off == self._SUB_HSV_OFFS[0]:
-            return ("_main_copy_addrs", self._RGB_U32_OFFS, -self._SLOT_STRIDE)
-        return None
-
-    def _peer_copies_for_derivation(self, cache_attr: str,
-                                    offs: tuple[int, ...],
-                                    allow_scan: bool) -> list[int] | None:
-        """Locate the PEER slot's copies, to derive this slot's copies from.
-
-        Free when the peer's cached (or last-verified) set still holds its
-        current pattern. Otherwise a capped scan is run only if *allow_scan*,
-        and only once per ``_COPY_RESCAN_INTERVAL`` — such a scan walks the
-        whole address space, and repeating one per write is what froze the
-        polling thread before v1.6.7. Returns ``None`` when the peer's colour
-        is itself too trivial to identify.
-        """
-        if self.pm is None or self.target is None:
-            return None
-        peer_base = self.target + offs[0]
-        pattern = b"".join(
-            self._read_u32(self.target + off).to_bytes(4, "little")
-            for off in offs
-        )
-        for attr in (cache_attr, cache_attr + "_known"):
-            cached = getattr(self, attr, None)
-            if cached and self._copy_cache_is_live(cached, pattern):
-                return list(cached)
-        if not allow_scan:
-            return None
-        scan_ts = getattr(self, "_copy_scan_ts", None)
-        if scan_ts is None:
-            scan_ts = {}
-            self._copy_scan_ts = scan_ts
-        key = cache_attr + "_derive"
-        last = scan_ts.get(key)
-        now = time.monotonic()
-        if last is not None and now - last < self._COPY_RESCAN_INTERVAL:
-            return None
-        scan_ts[key] = now
-        hits = self._search_pattern(pattern, max_hits=self._SUB_COPY_LIMIT + 1)
-        if len(hits) > self._SUB_COPY_LIMIT:
-            return None
-        hits = self._drop_sibling_slot_hits(hits, offs[0], peer_base)
-        addrs = list(hits)
-        if peer_base not in addrs:
-            addrs.append(peer_base)
-        return addrs if len(addrs) > 1 else None
-
-    def _copies_from_peer_slot(self, old: bytes, cache_attr: str,
-                               base_off: int, base_addr: int,
-                               allow_scan: bool) -> list[int] | None:
-        """Derive this slot's copy set from the OTHER slot's copy set.
-
-        Both slots fail the same way and must recover the same way — that
-        symmetry is the point. A value scan cannot identify the copies when the
-        colour is *trivial* (CSP's default foreground black is twelve zero
-        bytes, its default background white is eight 0x00 then four 0xFF; both
-        match far past ``_SUB_COPY_LIMIT``), and it cannot identify them either
-        once a previous degraded write has left a value that ONLY the UI mirror
-        holds. Deriving across ``_SLOT_STRIDE`` from the slot that *can* be
-        located is what carries the write to CSP's brush anyway.
-
-        Safety, in order:
-
-        * every derived address currently holds *old* (the live pattern of this
-          slot) — the normal case, proving these are really this slot's fields;
-        * or every derived address except the mirror holds the pattern recorded
-          when this slot first degraded (``_stale_patterns``). That is the
-          recovery case: our mirror-only writes never reached the authoritative
-          copies, so they still hold the pre-degradation value, and the mirror
-          is the one address a degraded write has already changed;
-        * or at least TWO derived addresses besides the mirror agree with each
-          other. CSP keeps its copies in sync, so agreement at the expected
-          stride identifies them even when we never observed the divergence
-          (a mirror already out of step when Colorink attached, or a slot
-          pointer that moved since). One lone sibling is not evidence — see
-          ``test_derivation_is_rejected_when_the_sibling_does_not_match`` — so
-          the bar is two.
-
-        The mirror must be among the derived addresses in every case: a set that
-        contains this slot's own known-good field at the expected stride proves
-        the geometry, not just the values. Returns ``None`` when none of them
-        can be established, leaving the caller on its previous behaviour.
-        """
-        peer = self._peer_slot(base_off)
-        pm = self.pm
-        if peer is None or pm is None or self.target is None:
-            return None
-        peer_attr, peer_offs, delta = peer
-        peer_addrs = self._peer_copies_for_derivation(peer_attr, peer_offs,
-                                                     allow_scan)
-        if not peer_addrs:
-            return None
-        derived: list[tuple[int, bytes]] = []
-        for addr in peer_addrs:
-            candidate = addr - delta
-            try:
-                derived.append((candidate, pm.read_bytes(candidate, 12)))
-            except Exception:
-                return None
-        addrs = [addr for addr, _ in derived]
-        if len(addrs) < 2 or base_addr not in addrs:
-            return None
-        if all(value == old for _, value in derived):
-            return addrs
-        label = self._slot_label(base_off)
-        peer_label = self._slot_label(peer_offs[0])
-        others = [value for addr, value in derived if addr != base_addr]
-        stale = (getattr(self, "_stale_patterns", None) or {}).get(cache_attr)
-        if stale is not None and others and all(value == stale for value in others):
-            _log(f"_locate_hsv_copies: {label} copies still hold the "
-                 f"pre-degradation pattern — recovering through the "
-                 f"{peer_label} slot")
-            return addrs
-        if len(others) >= 2 and len(set(others)) == 1:
-            _log(f"_locate_hsv_copies: {len(others)} {label} copies agree with "
-                 f"each other but not with the mirror — recovering through the "
-                 f"{peer_label} slot")
-            return addrs
-        return None
-
-    def _degraded_copy_fallback(self, old: bytes, cache_attr: str,
-                                base_off: int, base_addr: int, reason: str,
-                                allow_scan: bool = True) -> list[int]:
-        """Best copy set available when the value scan identified nothing.
-
-        Order: the last verified set, then the set derived from the OTHER
-        slot's copies via ``_SLOT_STRIDE``, then the UI mirror alone — which
-        does not reach the brush.
-        """
-        remembered = self._remembered_copies(cache_attr, base_addr)
-        if remembered:
-            self._note_locate(base_off, f"remembered {len(remembered)}")
-            self._clear_stale_pattern(cache_attr)
-            _log(f"_locate_hsv_copies: {reason} — remembered copy set, NOT cached")
-            return remembered
-        derived = self._copies_from_peer_slot(old, cache_attr, base_off,
-                                              base_addr, allow_scan)
-        if derived:
-            # Validated against live memory at every address, so this is a
-            # genuine copy set and may be cached (unlike a mirror-only result,
-            # which would re-validate against our own writes forever and lock
-            # the degradation in).
-            setattr(self, cache_attr, derived)
-            setattr(self, cache_attr + "_known", list(derived))
-            self._note_locate(base_off, f"derived {len(derived)}")
-            self._clear_stale_pattern(cache_attr)
-            _log(f"_locate_hsv_copies: {reason} — derived {len(derived)} "
-                 f"{self._slot_label(base_off)} copies from the peer slot "
-                 f"(±0x{self._SLOT_STRIDE:X})")
-            return derived
-        # The mirror is about to receive a write the brush will never read, so
-        # remember what the authoritative copies still hold: the NEXT locate
-        # can no longer scan for it (the mirror moves on), and that recorded
-        # pattern is what lets :meth:`_copies_from_peer_slot` recognise the
-        # real copies again instead of the slot staying dead for the session.
-        self._remember_stale_pattern(cache_attr, old)
-        self._note_locate(base_off, f"mirror-only ✗ ({reason})")
-        _log(f"_locate_hsv_copies: {reason} — mirror-only write, NOT cached")
-        return [base_addr]
-
-    def _remember_peer_siblings(self, addrs: list[int], base_off: int) -> None:
-        """Piggyback: remember the PEER slot's copies implied by this locate.
-
-        Costs no scan — this slot's copy set was just identified, so the peer's
-        fields ``_SLOT_STRIDE`` away are known too. Recording them means a
-        later write to that slot whose own pattern is trivial (black/white)
-        already has a verified set to fall back on. Runs in both directions:
-        a foreground locate covers the background slot and vice versa.
-        """
-        peer = self._peer_slot(base_off)
-        pm = self.pm
-        if peer is None or pm is None or self.target is None:
-            return
-        peer_attr, peer_offs, delta = peer
-        known_attr = peer_attr + "_known"
-        if getattr(self, known_attr, None):
-            return
-        peer_base = self.target + peer_offs[0]
-        try:
-            expected = pm.read_bytes(peer_base, 12)
-        except Exception:
-            return
-        derived = []
-        for addr in addrs:
-            candidate = addr + delta
-            try:
-                if pm.read_bytes(candidate, 12) != expected:
-                    return
-            except Exception:
-                return
-            derived.append(candidate)
-        if len(derived) < 2 or peer_base not in derived:
-            return
-        setattr(self, known_attr, list(derived))
-        _log(f"_locate_hsv_copies: remembered {len(derived)} "
-             f"{self._slot_label(peer_offs[0])} copies alongside the "
-             f"{self._slot_label(base_off)} copy set "
-             f"(±0x{self._SLOT_STRIDE:X})")
-
-    # ----- degraded-state bookkeeping -------------------------------------
-    def _remember_stale_pattern(self, cache_attr: str, old: bytes) -> None:
-        """Record the pattern the authoritative copies hold, once.
-
-        Only the FIRST degraded write sees a mirror that still agrees with the
-        copies; every later one reads back a value we wrote ourselves, so the
-        first record is the one worth keeping.
-        """
-        stale = getattr(self, "_stale_patterns", None)
-        if stale is None:
-            stale = {}
-            self._stale_patterns = stale
-        stale.setdefault(cache_attr, old)
-
-    def _clear_stale_pattern(self, cache_attr: str) -> None:
-        stale = getattr(self, "_stale_patterns", None)
-        if stale:
-            stale.pop(cache_attr, None)
-
-    def _note_locate(self, base_off: int, outcome: str) -> None:
-        """Record how the last copy-locate for this slot ended.
-
-        Surfaced through :attr:`copy_locate_state` in the copyable diagnostics,
-        so a "colour does not sync" report carries the one fact that decides
-        the case: whether the write reached CSP's brush copies or only the UI
-        mirror.
-        """
-        notes = getattr(self, "_copy_locate_notes", None)
-        if notes is None:
-            notes = {}
-            self._copy_locate_notes = notes
-        notes[self._slot_label(base_off)] = outcome
-
-    @property
-    def copy_locate_state(self) -> str:
-        """Last copy-locate outcome per colour slot, e.g. ``main=located 8``."""
-        notes = getattr(self, "_copy_locate_notes", None)
-        if not notes:
-            return ""
-        return "; ".join(f"{slot}={outcome}"
-                         for slot, outcome in sorted(notes.items()))
-
-    def _locate_hsv_copies(self, old: bytes, cache_attr: str,
-                           base_off: int) -> list[int]:
-        """Locate every in-memory copy of the current HSV u32 pattern.
-
-        The brush reads main/sub colors from MULTIPLE copies (verified: 8
-        copies for both slots on CSP 5.1); the base slot alone is not the
-        brush source. The cached address list is trusted only while every
-        address still holds *old* (CSP may create/destroy copies at
-        runtime).
-
-        A scan can fail to identify the copies in two ways, and neither may
-        be cached — a cached degraded set would be re-validated against the
-        value we wrote ourselves (always passing) and would lock the
-        degradation in forever:
-
-        * the pattern is trivial (black/white) and matches far too often,
-        * only the mirror holds the pattern, i.e. the authoritative copies
-          are momentarily out of sync (typically right after a degraded
-          write of our own).
-
-        Both cases fall back to the remembered copy set, then to the copy set
-        derived from the OTHER slot across ``_SLOT_STRIDE``, then to the mirror,
-        and are retried on a later write (see ``_COPY_RESCAN_INTERVAL``). The
-        fallbacks are deliberately symmetric between the two slots: while only
-        the sub slot could derive its copies from the main slot, one failed
-        foreground locate degraded every later foreground write for the rest of
-        the session (the mirror moved on alone, so no scan could ever match the
-        copies again) while the background kept syncing — reported as "内存模式
-        下 CSP 前景色不同步，背景色正常".
-        """
-        if self.target is None or self.pm is None:
-            return []
-        base_addr = self.target + base_off
-
-        addrs = getattr(self, cache_attr, None)
-        if addrs:
-            if self._copy_cache_is_live(addrs, old):
-                self._note_locate(base_off, f"cached {len(addrs)}")
-                self._clear_stale_pattern(cache_attr)
-                return addrs
-            setattr(self, cache_attr, None)
-
-        # A remembered set that STILL holds the live pattern is as good as the
-        # live cache, and trusting it here avoids a scan we already know the
-        # answer to. This is what keeps the first background write free after a
-        # main locate remembered the sub siblings: without it the sub pattern
-        # (CSP's default white) was scanned first — ~1.1s reading every
-        # committed page of a 2.4 GB process — only to be discarded as trivial
-        # and fall back to this very set.
-        known = getattr(self, cache_attr + "_known", None)
-        if known and base_addr in known and self._copy_cache_is_live(known, old):
-            setattr(self, cache_attr, list(known))
-            self._note_locate(base_off, f"verified {len(known)}")
-            self._clear_stale_pattern(cache_attr)
-            return list(known)
-
-        scan_ts = getattr(self, "_copy_scan_ts", None)
-        if scan_ts is None:
-            scan_ts = {}
-            self._copy_scan_ts = scan_ts
-        last = scan_ts.get(cache_attr)
-        now = time.monotonic()
-        if last is not None and now - last < self._COPY_RESCAN_INTERVAL:
-            # 扫描冷却中：写记住的副本集，或由【已缓存】的另一槽副本推导
-            # （不触发新扫描）；都没有才只写镜像槽。全地址空间扫描每次要
-            # 几秒，逐次写入都重扫会把轮询线程彻底堵死。
-            return self._degraded_copy_fallback(
-                old, cache_attr, base_off, base_addr,
-                "scan on cooldown", allow_scan=False)
-        scan_ts[cache_attr] = now
-
-        hits = self._search_pattern(old, max_hits=self._SUB_COPY_LIMIT + 1)
-        if len(hits) > self._SUB_COPY_LIMIT:
-            # 平凡模式（黑 = 全 0，12 个零字节；白 / 灰同理）在进程内存里
-            # 处处命中，无法区分权威笔刷副本。退回已验证的副本集 / 由另一
-            # 槽副本按 _SLOT_STRIDE 推导；都不行才只写镜像槽。
-            return self._degraded_copy_fallback(
-                old, cache_attr, base_off, base_addr,
-                f">{self._SUB_COPY_LIMIT} hits (trivial pattern)")
-
-        hits = self._drop_sibling_slot_hits(hits, base_off, base_addr)
-        addrs = list(hits)
-        if base_addr not in addrs:
-            addrs.append(base_addr)
-        if len(addrs) > 1:
-            setattr(self, cache_attr, addrs)
-            setattr(self, cache_attr + "_known", list(addrs))
-            self._note_locate(base_off, f"located {len(addrs)}")
-            self._clear_stale_pattern(cache_attr)
-            _log(f"_locate_hsv_copies: located {len(addrs)} copies")
-            # Free: the peer slot's fields sit _SLOT_STRIDE away, so record
-            # them now while they are still coherent. A later write to that
-            # slot whose own pattern is trivial then has a verified set to fall
-            # back on instead of degrading to the UI mirror. Symmetric on
-            # purpose — a foreground locate covers the background slot and a
-            # background locate covers the foreground slot.
-            self._remember_peer_siblings(addrs, base_off)
-            return addrs
-
-        # 只有镜像槽持有该值：权威副本此刻不同步（通常是上一次降级写入
-        # 只写了镜像）。同样退回已验证副本集 / 另一槽推导，绝不缓存降级结果
-        # ——一旦缓存，校验读到的总是自己刚写过的值（恒通过），会把降级
-        # 状态永久锁死。
-        return self._degraded_copy_fallback(
-            old, cache_attr, base_off, base_addr,
-            "only the mirror holds the pattern")
-
-    def _write_sub_color(self, r: int, g: int, b: int) -> bool:
-        """Write the 5.1 sub-color slot (HSV u32) to EVERY in-memory copy.
-
-        The brush reads the sub color from multiple copies; +0x9C alone is
-        only the UI mirror. We search the process for the current sub-color
-        pattern once (cached), then write the new value to all copies.
-        """
-        if self.pm is None or not self._resolve_rgb_target() or self.target is None:
-            return False
-        try:
-            # 当前副色模式（缓存验证用）+ 新模式
-            old = b"".join(
-                self._read_u32(self.target + off).to_bytes(4, "little")
-                for off in self._SUB_HSV_OFFS
-            )
-            hsv = rgb_to_space_values("hsv", {"r": _clamp_byte(r), "g": _clamp_byte(g), "b": _clamp_byte(b)})
-            new = b"".join(raw.to_bytes(4, "little") for raw in encode_space_values("hsv", hsv))
-
-            addrs = self._locate_hsv_copies(old, "_sub_copy_addrs", self._SUB_HSV_OFFS[0])
-            for addr in addrs:
-                self.pm.write_bytes(addr, new, 12)
-            _log(f"set_color (rgb_u32 sub): RGB=[{r}, {g}, {b}] -> {len(addrs)} copies")
-            return True
-        except Exception as exc:
-            _log(f"set_color (rgb_u32 sub): exception: {exc}")
-            return False
-
-    def _resolve_rgb_target(self) -> bool:
-        """Re-resolve the 5.1 global color slot pointer and validate it."""
-        if self.pm is None or self.module_base is None:
-            return False
-        try:
-            dereferenced = int(self.pm.read_longlong(self.module_base + self.base_offset))
-            if dereferenced:
-                self.target = dereferenced
-            if self.target is None:
-                raise ValueError("target pointer not resolved")
-            # Reading all three RGB channels validates the cached target.
-            for off in self._RGB_U32_OFFS:
-                _ = self.pm.read_int(self.target + off)
-            self._resolve_fail_count = 0
-            return True
-        except Exception as exc:
-            _log(f"_resolve_rgb_target: target unreadable: {exc}")
-            self.target = None
-            self._resolve_fail_count += 1
-            if self._resolve_fail_count >= self._RESOLVE_FAIL_LIMIT:
-                # 目标进程大概率已退出：释放句柄，让下一次访问重新 connect。
-                # 否则 pm 一直非 None，重连入口（`if self.pm is None`）永远
-                # 不触发，CSP 重启后 Colorink 会永久显示未连接。
-                _log(f"_resolve_rgb_target: {self._resolve_fail_count} consecutive "
-                     f"failures — dropping connection")
-                self._drop_connection()
-                self._resolve_fail_count = 0
-            return False
-
-    def _read_rgb_u32(self) -> dict[str, int] | None:
-        if self.pm is None or not self._resolve_rgb_target() or self.target is None:
-            return None
-        # +0x3C/+0x40/+0x44 store HSV as proportional u32s (same encoding
-        # as the sub slot at +0x9C) — NOT RGB. Verified against companion:
-        # CSP itself updates exactly these three u32s on main-color change.
-        raws = tuple(self._read_u32(self.target + off) for off in self._RGB_U32_OFFS)
-        values = decode_space_raws("hsv", raws)
-        rgb = space_to_rgb_values("hsv", values)
-        rgb["transparent"] = 1 if self._read_transparent_flag() else 0
-        return rgb
-
-    def _write_rgb_u32(self, r: int, g: int, b: int,
-                       source_space: str | None = None,
-                       source_values: Mapping[str, float] | None = None) -> bool:
-        if self.pm is None or not self._resolve_rgb_target() or self.target is None:
-            return False
-
-        rgb = {
-            "r": _clamp_byte(r),
-            "g": _clamp_byte(g),
-            "b": _clamp_byte(b),
-        }
-        try:
-            # Main slot stores HSV as proportional u32s at +0x3C/+0x40/+0x44
-            # (verified against companion: CSP itself updates exactly these
-            # three u32s). Like the sub slot, the brush reads the main color
-            # from MULTIPLE in-memory copies — writing the base slot alone
-            # does not reach CSP. Locate every copy and write all of them.
-            if (source_space == "hsv" and source_values
-                    and "h" in source_values and "s" in source_values
-                    and "v" in source_values):
-                # 源空间直写：用户在 HSV 滑块上的精确浮点值直接编码，
-                # 不经 RGB 往返（避免色相精度损失），与 set_color 的
-                # docstring 承诺一致。
-                h_deg = float(source_values["h"]) % 360.0
-                s_pct = float(source_values["s"])
-                v_pct = float(source_values["v"])
-                if s_pct < 1.0:
-                    h_deg = self._last_hsv_h
-                else:
-                    self._last_hsv_h = h_deg
-                if v_pct < 1.0:
-                    s_pct = self._last_hsv_s
-                else:
-                    self._last_hsv_s = s_pct
-            else:
-                hsv = rgb_to_hsv_float(rgb)
-                if hsv["s"] < 1.0:
-                    h_deg = self._last_hsv_h
-                else:
-                    h_deg = hsv["h"]
-                    self._last_hsv_h = h_deg
-                if hsv["v"] < 1.0:
-                    s_pct = self._last_hsv_s
-                else:
-                    s_pct = hsv["s"]
-                    self._last_hsv_s = s_pct
-                v_pct = hsv["v"]
-            new = b"".join(
-                u.to_bytes(4, "little")
-                for u in encode_space_values_float(
-                    "hsv", {"h": h_deg, "s": s_pct, "v": v_pct}
-                )
-            )
-            old = b"".join(
-                self._read_u32(self.target + off).to_bytes(4, "little")
-                for off in self._RGB_U32_OFFS
-            )
-            addrs = self._locate_hsv_copies(old, "_main_copy_addrs", self._RGB_U32_OFFS[0])
-            for addr in addrs:
-                self.pm.write_bytes(addr, new, 12)
-            _log(f"set_color (rgb_u32): RGB=[{rgb['r']}, {rgb['g']}, {rgb['b']}] "
-                 f"-> {len(addrs)} copies")
-            return True
-        except Exception as exc:
-            _log(f"set_color (rgb_u32): exception: {exc}")
-            return False
-
     def _snapshot_color_slot(self, base_addr: int) -> dict[str, dict[str, Any]]:
         snapshots: dict[str, dict[str, Any]] = {}
         for space_name, offsets in self.space_offsets.items():
@@ -833,9 +98,6 @@ class SlotMixin:
         if self.pm is None and not self.connect():
             return None
 
-        if self.color_format == "rgb_u32":
-            return self._read_rgb_u32()
-
         space_addrs = self._resolve_space_addresses()
         if not space_addrs:
             _log("get_color: target not ready")
@@ -858,8 +120,10 @@ class SlotMixin:
         if source_space == "hsv":
             h_val = source_values.get("h", 0)
             s_val = source_values.get("s", 0)
-            if h_val > 0 or s_val > 1: self._last_hsv_h = h_val
-            if source_values.get("v", 0) > 1: self._last_hsv_s = s_val
+            if h_val > 0 or s_val > 1:
+                self._last_hsv_h = h_val
+            if source_values.get("v", 0) > 1:
+                self._last_hsv_s = s_val
         source_raws = snapshots[source_space]["raws"]
         _log(
             "get_color: "
@@ -874,47 +138,17 @@ class SlotMixin:
     def set_color(self, r: int, g: int, b: int, source_space: str | None = None,
                   source_values: Mapping[str, float] | None = None,
                   transparent: bool = False, color_index: int = 0) -> bool:
-        """Write color to CSP memory, optionally preserving native source-space precision.
+        """Write color to CSP 4.x/5.0 memory, optionally preserving source-space precision.
 
         *source_space* / *source_values* (the space the user last interacted
         with and its float values) are written directly to that space's memory
         slot via :func:`encode_space_values_float` — no int rounding, no
-        RGB → source round-trip loss.
+        RGB -> source round-trip loss.
 
-        Other spaces are derived from the source (or from the passed RGB when
-        no source is given) with standard int conversions.
-
-        *transparent* sets the CSP 5.1 transparent flag (target+0x08); the
-        u16x2_dup builds (4.x/5.x) have no verified flag offset, so the
-        flag write is skipped there with a log line.
-
-        *color_index* selects the slot: 0 = main color (u32 HSV channels at
-        +0x3C, + transparent flag), 1 = sub color (u32 HSV channels at
-        +0x9C; no transparent state in CSP's model).
+        *transparent* is unsupported for u16x2_dup builds (4.x/5.0) and skipped.
         """
         if self.pm is None and not self.connect():
             return False
-
-        if self.color_format == "rgb_u32":
-            if transparent:
-                # Transparent belongs to the ACTIVE slot: activate the
-                # target slot first, then set the transparent flag.
-                self._write_u32(self.target + self._TRANSPARENT_FLAG_OFFS,
-                                1 if color_index == 1 else 0)
-                return self._write_transparent_flag(True)
-            if color_index == 1:
-                # Sub slot: write HSV channels + activate the sub slot so
-                # the brush (which paints the active slot) uses this color.
-                ok_sub = self._write_sub_color(r, g, b)
-                self._write_u32(self.target + self._TRANSPARENT_FLAG_OFFS, 1)
-                return ok_sub
-            if not self._write_transparent_flag(False):
-                return False
-            ok_main = self._write_rgb_u32(r, g, b, source_space=source_space,
-                                          source_values=source_values)
-            # Activate the main slot (clearing +0x08 low byte to 0).
-            self._write_u32(self.target + self._TRANSPARENT_FLAG_OFFS, 0)
-            return ok_main
 
         if transparent:
             _log("set_color: transparent unsupported for u16x2_dup builds — skipped")
@@ -953,7 +187,7 @@ class SlotMixin:
             for space_name in SPACE_ORDER:
                 if source_space and space_name == source_space and source_values is not None:
                     # Source space: encode directly from float values — no
-                    # RGB → source round-trip precision loss.
+                    # RGB -> source round-trip precision loss.
                     encoded = encode_space_values_float(space_name, source_values)
                 elif space_name == "hsv":
                     encoded = encode_space_values(space_name, hsv_vals)
@@ -993,15 +227,12 @@ class SlotMixin:
             self.connect()
         connected = False
         if self.pm is not None:
-            if self.color_format == "rgb_u32":
-                connected = self._resolve_rgb_target()
-            else:
-                space_addrs = self._resolve_space_addresses()
-                connected = (
-                    self.pm is not None
-                    and self.target is not None
-                    and space_addrs is not None
-                )
+            space_addrs = self._resolve_space_addresses()
+            connected = (
+                self.pm is not None
+                and self.target is not None
+                and space_addrs is not None
+            )
         return {
             "connected": bool(connected),
             "pid": self.pid if connected else None,
@@ -1023,20 +254,6 @@ class SlotMixin:
         """
         if self.pm is None and not self.connect():
             return {"error": "not connected"}
-        if self.color_format == "rgb_u32":
-            if not self._resolve_rgb_target() or self.target is None:
-                return {"error": "not connected"}
-            rgb = self._read_rgb_u32()
-            raw = [
-                f"0x{self._read_u32(self.target + off):08X}"
-                for off in self._RGB_U32_OFFS
-            ]
-            return {
-                "target": f"0x{self.target:X}",
-                "format": "rgb_u32",
-                "raw_u32": raw,
-                "rgb": rgb,
-            }
         if self._resolve_space_addresses() is None or self.target is None:
             return {"error": "not connected"}
         assert self.pm is not None

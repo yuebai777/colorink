@@ -15,7 +15,6 @@ from PyQt6.QtWidgets import QTabBar, QWidget
 
 from ui.ringless_mode import centered_control_offset
 from ui.panels.drag import PANEL_MIME
-from ui.wheel_grip import WHEEL_GRIP_MIME
 from ui.widgets.color_value_readout import place_readout_beside_buttons
 
 if TYPE_CHECKING:
@@ -431,16 +430,13 @@ class PickerTabBar(QTabBar):
     @staticmethod
     def _wheel_payload(mime):
         """The wheel panel id carried by a drag, or None."""
-        for fmt in (WHEEL_GRIP_MIME, PANEL_MIME):
-            if not mime.hasFormat(fmt):
-                continue
-            try:
-                panel_id = bytes(mime.data(fmt)).decode("utf-8")
-            except (TypeError, ValueError, UnicodeDecodeError):
-                continue
-            if panel_id.startswith("wheel."):
-                return panel_id
-        return None
+        if not mime.hasFormat(PANEL_MIME):
+            return None
+        try:
+            panel_id = bytes(mime.data(PANEL_MIME)).decode("utf-8")
+        except (TypeError, ValueError, UnicodeDecodeError):
+            return None
+        return panel_id if panel_id.startswith("wheel.") else None
 
     def dragEnterEvent(self, event):
         ctrl = getattr(self, "_drop_controller", None)

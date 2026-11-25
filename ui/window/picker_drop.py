@@ -38,7 +38,6 @@ from ui.panels.transitions import (
     snap_widget_update,
     spawn_dock_ghost,
 )
-from ui.wheel_grip import WHEEL_GRIP_MIME
 
 SLOT_TOP = "top"
 SLOT_LEFT = "left"
@@ -370,9 +369,6 @@ class PickerDropController(QObject):
     def has_any_docks(self) -> bool:
         return any(bool(h.visible_panels()) for h in self._hosts.values())
 
-    def has_visible_center_tabs(self) -> bool:
-        return self.center_tab_bar.isVisible() and self.center_tab_bar.count() > 1
-
     def _band_spacing(self) -> int:
         if hasattr(self.owner, "_band_spacing"):
             return max(0, int(self.owner._band_spacing()))
@@ -427,14 +423,10 @@ class PickerDropController(QObject):
 
     @staticmethod
     def _dragged_panel_from_mime(mime) -> str | None:
-        if mime is None:
+        if mime is None or not mime.hasFormat(PANEL_MIME):
             return None
-        for fmt in (PANEL_MIME, WHEEL_GRIP_MIME):
-            if mime.hasFormat(fmt):
-                text = bytes(mime.data(fmt)).decode("utf-8", "ignore").strip()
-                if text:
-                    return text
-        return None
+        text = bytes(mime.data(PANEL_MIME)).decode("utf-8", "ignore").strip()
+        return text or None
 
     def _picker_bounds_in_owner(self, *, allow_collapsed: bool = False) -> QRect | None:
         owner = self.owner
@@ -757,23 +749,15 @@ class PickerDropController(QObject):
         windows = owner.floating_windows()
         pages = getattr(owner, "_floating_wheel_pages", {})
         previews = getattr(owner, "_floating_preview_boxes", None)
-        restore_opts = getattr(owner, "_restore_wheel_page_options", None)
         for pid in pids:
             windows.pop(pid, None)
-            widget = source_window.take_panel(pid)
+            source_window.take_panel(pid)
             page = pages.pop(pid, None)
             if page is not None:
-                if callable(restore_opts) and registry.is_wheel_panel(pid):
-                    key = registry.wheel_panel_key(pid)
-                    if key:
-                        restore_opts(key, page)
-                widget = page.take_panel()
+                page.take_panel()
                 if previews is not None and page.preview in previews:
                     previews.remove(page.preview)
                 page.deleteLater()
-            attach = getattr(owner, "attach_floating_panel", None)
-            if widget is not None and callable(attach):
-                attach(pid, widget)
         owner._retire_floating_window(source_window)
         main_host = getattr(owner, "panel_host", None)
         if main_host is not None:
@@ -840,7 +824,7 @@ class PickerDropController(QObject):
             if target_host.isVisible():
                 dest = QRect(target_host.mapToGlobal(QPoint(0, 0)), target_host.size())
             else:
-                dest = QRect(global_pos, snapshot.size())
+                dest = QRect(global_pos, snapshot[1].size())
             spawn_dock_ghost(
                 snapshot,
                 dest,

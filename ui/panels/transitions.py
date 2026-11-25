@@ -178,63 +178,6 @@ def reveal_floating_window(
     )
 
 
-def animate_window_geometry(
-    widget: QWidget,
-    target_rect: QRect,
-    *,
-    duration_ms: int = 135,
-) -> None:
-    """Smoothly interpolate an already-visible window to ``target_rect``."""
-    _stop_attr_anim(widget, "_geom_transition_anim")
-    end_rect = QRect(target_rect)
-    start_rect = QRect(widget.geometry())
-    if (
-        not animations_enabled()
-        or duration_ms <= 0
-        or not widget.isVisible()
-        or start_rect == end_rect
-    ):
-        widget.setGeometry(end_rect)
-        return
-
-    anim = QVariantAnimation(widget)
-    anim.setDuration(int(duration_ms))
-    anim.setStartValue(0.0)
-    anim.setEndValue(1.0)
-    anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-    ref = weakref.ref(widget)
-
-    def _lerp(a: int, b: int, t: float) -> int:
-        return int(round(a + (b - a) * t))
-
-    def _on_val(val) -> None:
-        w = ref()
-        if w is None or not w.isVisible():
-            return
-        t = float(val)
-        rect = QRect(
-            _lerp(start_rect.x(), end_rect.x(), t),
-            _lerp(start_rect.y(), end_rect.y(), t),
-            _lerp(start_rect.width(), end_rect.width(), t),
-            _lerp(start_rect.height(), end_rect.height(), t),
-        )
-        try:
-            w.setGeometry(rect)
-        except RuntimeError:
-            pass
-
-    def _on_done() -> None:
-        w = ref()
-        if w is not None and getattr(w, "_geom_transition_anim", None) is anim:
-            setattr(w, "_geom_transition_anim", None)
-        anim.deleteLater()
-
-    anim.valueChanged.connect(_on_val)
-    anim.finished.connect(_on_done)
-    setattr(widget, "_geom_transition_anim", anim)
-    anim.start()
-
-
 class _DockTransitionGhost(QWidget):
     """Non-activating translucent snapshot that glides toward a dock or tear target."""
 
@@ -1265,10 +1208,6 @@ class DragTearSession:
     @property
     def preview(self) -> _DragTearPreview | None:
         return self._preview
-
-    def on_target_changed(self, target: object | None) -> None:
-        if not self._finished:
-            self.update_state(target, QCursor.pos())
 
     def update_state(
         self,

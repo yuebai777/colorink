@@ -6,9 +6,9 @@ strip that represents the page currently on screen: dragging it tears that
 page off, double-clicking floats it, right-clicking offers the same actions as
 a slider panel grip.
 
-It carries its own MIME type: a wheel page is owned by the picker stack, not
-by the slider PanelHost, so dropping the grip over the slider column must not
-silently move the wheel into a slider page.
+It emits the standard ``PANEL_MIME`` payload so wheel pages can also drop
+into ``PanelHost`` and edge/center dock slots, while the picker tab strip
+recognises them by their ``wheel.`` prefix.
 """
 
 from __future__ import annotations
@@ -16,8 +16,6 @@ from __future__ import annotations
 from PyQt6.QtCore import QMimeData
 
 from ui.panels.drag import PANEL_MIME, PanelTitleBar
-
-WHEEL_GRIP_MIME = "application/x-colorink-wheel"
 
 
 def visible_wheel_grip_height(bar) -> int:

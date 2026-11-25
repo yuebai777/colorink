@@ -27,10 +27,4 @@ features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Threading",
     "Win32_System_LibraryLoader",
-    "Win32_System_WinRT",
-    "Win32_System_WinRT_Graphics_Capture",
-    "Win32_System_WinRT_Direct3D11",
-    "Graphics_Capture",
-    "Graphics_DirectX",
-    "Graphics_DirectX_Direct3D11",
 ]

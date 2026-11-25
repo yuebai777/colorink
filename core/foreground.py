@@ -23,8 +23,6 @@ _DRAWING_APP_MODES = (
     ("udmpaint", "udm"),         # UDM Paint (UDMPaintPro.exe / UDMPaintEx.exe)
 )
 
-_DRAWING_APP_EXE_MARKERS = tuple(marker for marker, _ in _DRAWING_APP_MODES)
-
 # Executables known to be non-drawing applications (browsers, shells, editors, chat).
 # When the foreground PID resolves to any of these, title fallback is strictly denied.
 _KNOWN_NON_DRAWING_EXES = {
@@ -1230,7 +1228,7 @@ class StylusFocusGuard:
     # -- 交还 -----------------------------------------------------------
     @staticmethod
     def _is_drawing_app(pid: int) -> bool:
-        """capture 到的那个窗口是不是画图软件（PS / SAI / CSP / UDM / Krita / Painter 等）。
+        """capture 到的那个窗口是不是受支持的画图软件（PS / SAI / CSP / UDM）。
 
         对画图软件**不做**"我们是否确实拿到了前台/焦点"的检查：WinTab 的上下文
         焦点可能在驱动层就被换走了（我们自己的窗口没有激活、`GetFocus()` 也是 0，
