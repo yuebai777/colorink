@@ -1,3 +1,17 @@
+## v1.8.20
+
+优化鼠标跟随快捷键单按呼出体验与 CSP Companion 心跳空闲复位机制，移除已废弃的旧版 `native_grayscale` / `dxcam` / OpenGL 兼容层并精简同步桥接与打包体积，同时更新最新鸣谢名单。
+
+### 变更
+
+- **移除旧版灰度与兼容桥接冗余**：彻底移除废弃的 `native_grayscale`、`dxcam`、`PyQtOpenGL` 依赖与旧版 `photoshop_bridge.jsx` / `oklab_colors`，精简 `csp_brush_link` 与 `photoshop_color_sync` 桥接实现及 PyInstaller 打包配置（配置升级至 `schemaVersion=7`）。
+- **同步最新鸣谢名单**：合入最新 `sponsors.json` 鸣谢名单更新。
+
+### 修复
+
+- **单按呼出跟随鼠标窗口（`followMouseKey`）**：即使已开启鼠标跟随或窗口处于隐藏状态，按下鼠标/数位笔跟随快捷键时直接单按呼出并移动至光标位置，无需重复按两次。
+- **CSP Companion 心跳与闲置复位优化**：新增系统输入空闲检测与主动写色空闲重置（`_ensure_heartbeat(force_reset_idle=True)`），提升长时间挂机与切换窗口后的同步稳定性；同步微调设置窗口定位、面板布局及鼠标快捷键绑定体验。
+
 ## v1.8.19
 
 全面升级 CSP Companion 断线自动重连与二维码防遮挡隐藏机制，加固 DirectComposition 与原生灰度滤镜的多显示器拓扑重建与所有权协调，并引入统一对比度衍生引擎以优化明暗主题下的边框、滑条、数值条与标题栏排版表现。
